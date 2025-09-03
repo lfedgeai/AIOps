@@ -7,10 +7,9 @@ The aim of this AIOps workstream under the LFEdge umbrella is to deliver AI supp
 
 ## Why it matters
 - **Manage Complexity** – Distributed and heterogenous environments can be complex and hard to manage. Hece we are utilizing AI to help secure, fault-find and manage those environments.
-
-- **Adopt** – Due to the vast differences distributed environments have wrt connectivity, workloads and general resource constraints, AIOps trains and finetunes the AI models 'on the job'
-
-- **Scale** – Only AIOps can truly enable growing distributed environments to remain manageable and secure.
+- **Adopt** – Due to the vast differences distributed environments have wrt connectivity, workloads and general resource constraints, AIOps trains and finetunes the AI models 'on the job', learning and adopting to changing environments
+- **Scale** – Only AIOps can enable growing distributed environments to remain manageable and secure.
+Other factors are cost reduction, improving system perfomance, and decreasing incident resolution time.
 
 ## AIOps Component Overview
 ### Bootstrapping
