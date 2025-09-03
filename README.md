@@ -5,7 +5,7 @@ AIOps under the LFEdge umbrella delivers AI supported operations for heterogeneo
  **In short: AegisEdgeAI makes it impossible for an AI workload to run on the wrong machine, in the wrong location, or in a compromised state — and cryptographically proves it.**
 
 ## Binding user, device, and workload identities from manufacture through runtime with geofencing enforcement
-![Alt text](zero-trust/images/AegisEdgeAI-flow.png)
+![Alt text](AIOpsOverview.png)
 
 ## Why it matters
 - **Manage Complexity** – Distributed and heterogenous environments can be complex and hard to manage. Hece we are utilizing AI to help secure, fault-find and manage those environments.
