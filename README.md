@@ -2,9 +2,7 @@
 
 AIOps under the LFEdge umbrella delivers AI supported operations for heterogeneous and complex edge environments.
 
- **In short: AegisEdgeAI makes it impossible for an AI workload to run on the wrong machine, in the wrong location, or in a compromised state — and cryptographically proves it.**
-
-## Binding user, device, and workload identities from manufacture through runtime with geofencing enforcement
+## AIOps workflow and high level component overview
 ![Alt text](AIOpsOverview.png)
 
 ## Why it matters
@@ -13,6 +11,41 @@ AIOps under the LFEdge umbrella delivers AI supported operations for heterogeneo
 - **Adopt** – Due to the vast differences distributed environments have wrt connectivity, workloads and general resource constraints, AIOps trains and finetunes the AI models 'on the job'
 
 - **Scale** – Only AIOps can truly enable growing distributed environments to remain manageable and secure.
+
+## AIOps Component Overview
+### Bootstrapping
+#### Infra & Runtime (Kind | MicroShift | Fedora)
+#### Setup of secure communication infrastructure
+#### Deployment, config & localisation
+### UI/API
+#### Inference | Model selection | Model training | Testing | Rollout
+### MLOps
+#### Workflows
+### AI Engineering
+#### AI Model development | training | testing | validation | comparison
+### Data Platform & Storage
+Data engineering/science | data Pipelines/workflows | data cleansing | Analytics | data collection | storage (Iceberg|MinIO)| data entity models | data query 
+###  Security & Trust (cross-cutting) (Lead: Ramki Krishnan)
+Platform | Model | MLOps
+Encrypted data transfer | storage
+Workload identity (SPIFFE | SPIRE | CitadelAI)
+Geofencing | non-repudiation | Verifiability
+### Inference
+Model inference engine
+Authentication | authorization
+Predictive Models | LLM | RAG (system documentation, data entity information) 
+Alerting
+### Remediation
+Slack | Chatbot | Agents | Automation
+### Telemetry
+Signal collection | OTEL
+Model performance (accuracy), energy consumption,optimized inference
+Logging | tracing | metrics 
+### Other
+Documentation | web-site
+
+
+
 
 ## Team
 - [Andreas Spanner](https://lf-edge.atlassian.net/wiki/people/59fc56048499730e3412487a?ref=confluence) (Red Hat) (Lead)
