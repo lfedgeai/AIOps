@@ -1,6 +1,6 @@
 # AIOps - for distributed environments and edge
 
-AIOps under the LFEdge umbrella delivers AI supported operations for heterogeneous and complex edge environments.
+AIOps under the LFEdge umbrella delivers AI supported operations for heterogeneous and complex distributed and edge environments.
 
 ## AIOps workflow and high level component overview
 ![Alt text](AIOpsOverview.png)
