@@ -14,35 +14,35 @@ The aim of this AIOps workstream under the LFEdge umbrella is to deliver AI supp
 
 ## AIOps Component Overview
 ### Bootstrapping
-#### Infra & Runtime (Kind | MicroShift | Fedora)
-#### Setup of secure communication infrastructure
-#### Deployment, config & localisation
+- Infra & Runtime (Kind | MicroShift | Fedora)
+- Setup of secure communication infrastructure
+- Deployment, config & localisation
 ### UI/API
-#### Inference | Model selection | Model training | Testing | Rollout
+- Inference | Model selection | Model training | Testing | Rollout
 ### MLOps
-#### Workflows
+- Workflows
 ### AI Engineering
-#### AI Model development | training | testing | validation | comparison
+- AI Model development | training | testing | validation | comparison
 ### Data Platform & Storage
-Data engineering/science | data Pipelines/workflows | data cleansing | Analytics | data collection | storage (Iceberg|MinIO)| data entity models | data query 
+- Data engineering/science | data Pipelines/workflows | data cleansing | Analytics | data collection | storage (Iceberg|MinIO)| data entity models | data query 
 ###  Security & Trust (cross-cutting) (Lead: Ramki Krishnan)
-Platform | Model | MLOps
-Encrypted data transfer | storage
-Workload identity (SPIFFE | SPIRE | CitadelAI)
-Geofencing | non-repudiation | Verifiability
+- Platform | Model | MLOps
+- Encrypted data transfer | storage
+- Workload identity (SPIFFE | SPIRE | CitadelAI)
+- Geofencing | non-repudiation | Verifiability
 ### Inference
-Model inference engine
-Authentication | authorization
-Predictive Models | LLM | RAG (system documentation, data entity information) 
-Alerting
+- Model inference engine
+- Authentication | authorization
+- Predictive Models | LLM | RAG (system documentation, data entity information) 
+- Alerting
 ### Remediation
-Slack | Chatbot | Agents | Automation
+- Slack | Chatbot | Agents | Automation
 ### Telemetry
-Signal collection | OTEL
-Model performance (accuracy), energy consumption,optimized inference
-Logging | tracing | metrics 
+- Signal collection | OTEL
+- Model performance (accuracy), energy consumption,optimized inference
+- Logging | tracing | metrics 
 ### Other
-Documentation | web-site
+- Documentation | web-site
 
 
 
