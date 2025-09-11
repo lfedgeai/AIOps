@@ -6,13 +6,13 @@ The aim of this AIOps workstream under the LFEdge umbrella is to deliver AI supp
 ![Alt text](AIOpsOverview.png)
 
 The 'Recommend' arrow has several human in the loop (HIL) maturity levels:
-- Level 1: the lowest level is Assisted Questioning
-- Level 2: Migitgation Solution Generation
-- Level 3: Command Recommendation
-- Level 4: Script Generation
+- Level 1: Assisted Questioning (lowest level of maturity)
+- Level 2: Migitgation Solution Generation (checklist of tasks)
+- Level 3: Command Recommendation (low level command recommendation according to the checklist)
+- Level 4: Script Generation (entire script of all commands)
 
 before we move into the Autonomous Operations realm with
-- Level 5: Automatic Execution
+- Level 5: Automatic Execution (no HIL)
 
 (source https://arxiv.org/pdf/2507.12472)
 
