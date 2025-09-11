@@ -5,7 +5,7 @@ The aim of this AIOps workstream under the LFEdge umbrella is to deliver AI supp
 ## AIOps workflow and high level component overview
 ![Alt text](AIOpsOverview.png)
 
-The 'Recommend' arrow has several human in the loop (HIL) maturity levels:
+The 'Recommend' arrow has several human in the loop (HIL) remediation maturity levels:
 - Level 1: Assisted Questioning (lowest level of maturity)
 - Level 2: Migitgation Solution Generation (checklist of tasks)
 - Level 3: Command Recommendation (low level command recommendation according to the checklist)
