@@ -10,6 +10,7 @@ The 'Recommend' arrow has several human in the loop (HIL) maturity levels:
 - Level 2: Migitgation Solution Generation
 - Level 3: Command Recommendation
 - Level 4: Script Generation
+
 before we move into the Autonomous Operations realm with
 - Level 5: Automatic Execution
 
