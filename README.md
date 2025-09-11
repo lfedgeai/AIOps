@@ -5,6 +5,16 @@ The aim of this AIOps workstream under the LFEdge umbrella is to deliver AI supp
 ## AIOps workflow and high level component overview
 ![Alt text](AIOpsOverview.png)
 
+The 'Recommend' arrow has several human in the loop (HIL) maturity levels:
+- Level 1: the lowest level is Assisted Questioning
+- Level 2: Migitgation Solution Generation
+- Level 3: Command Recommendation
+- Level 4: Script Generation
+before we move into the Autonomous Operations realm with
+- Level 5: Automatic Execution
+
+(source https://arxiv.org/pdf/2507.12472)
+
 ## Why it matters
 - **Manage Complexity** – Distributed and heterogenous environments can be complex and hard to manage. Hece we are utilizing AI to help secure, fault-find and manage those environments.
 - **Adopt** – Due to the vast differences distributed environments have wrt connectivity, workloads and general resource constraints, AIOps trains and finetunes the AI models 'on the job', learning and adopting to changing environments
