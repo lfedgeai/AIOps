@@ -59,9 +59,10 @@ Other factors are cost reduction, improving system perfomance, and decreasing in
 
 
 ## Team
-- [Andreas Spanner](https://lf-edge.atlassian.net/wiki/people/59fc56048499730e3412487a?ref=confluence) (Red Hat) (Lead)
-- [Ramki Krishnan](https://lf-edge.atlassian.net/wiki/people/557058:c8c42130-9c8b-41ae-b9e2-058af2eff879?ref=confluence) Component Lead - Security
-- [Jey Paulraj]  Component Lead - Bootstrapping 
-- [Clyde Tedrick]
-- [Giri]
-- [Prathiba] Component Lead - Data
+- [Andreas Spanner](https://lf-edge.atlassian.net/wiki/people/59fc56048499730e3412487a?ref=confluence) (Red Hat) (Lead) 
+- [Ramki Krishnan](https://lf-edge.atlassian.net/wiki/people/557058:c8c42130-9c8b-41ae-b9e2-058af2eff879?ref=confluence) (Intel) Component Lead - Security
+- [Jey Paulraj]  (Red Hat) Component Lead - Demo 
+- [Clyde Tedrick] (Zaga)
+- [Giri] (Zaga)
+- [Prathiba] (Zaga) Component Lead - Data
+- [Stas Kozlov] (Red Hat) 
