@@ -1,0 +1,33 @@
+# Use a lightweight Alpine Linux base image
+FROM docker.io/alpine:3.18
+
+# Install curl and ca-certificates using apk, Alpine's package manager
+RUN apk add --no-cache curl ca-certificates
+
+# Define the OpenTelemetry Collector version and architecture
+ARG OTELCOL_VERSION=0.136.0
+ARG ARCH=amd64
+
+# Download and extract the OpenTelemetry Collector Contrib binary for Linux
+RUN curl -L --fail "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTELCOL_VERSION}/otelcol-contrib_${OTELCOL_VERSION}_linux_${ARCH}.tar.gz" \
+-o otelcol.tar.gz && \
+tar -xzf otelcol.tar.gz && \
+# Move the binary to a standard location and rename it for simplicity
+mv otelcol-contrib /usr/local/bin/otelcol && \
+rm otelcol.tar.gz
+
+# Add a directory for the configuration file
+WORKDIR /etc/otelcol
+
+# Copy the configuration file into the image
+COPY otel-config.yaml /etc/otelcol/config.yaml
+
+#debug
+RUN cat /etc/otelcol/config.yaml
+
+
+# Expose the default OTLP ports
+EXPOSE 4317 4318
+
+# Set the entrypoint to run the collector with the configuration
+ENTRYPOINT ["/usr/local/bin/otelcol", "--config", "/etc/otelcol/config.yaml"]
