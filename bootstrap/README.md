@@ -25,8 +25,12 @@ The aim is to test the approaches for performance across:
 ## bootstrapping architecture
 
 The idea is to have a simple podman based container harness consisting of the following:
-- 3 containers based on container images on quay.io that simulate the distributed environments
+- 3 containers based on local container builds for the remote location in order to setup the distributed environment
 - A single central log and metrics aggregation container to trigger model training and inference
 - Secure OTEL based communication between all containers
-- Benchmarking against selected benchmarks 
+- Benchmarking against selected benchmarks
+
+### bootrap build
+- build your remote containers (remote folder)
+- build your centralized telemtery collection point via (otel-lgtm) (central folder)
 
