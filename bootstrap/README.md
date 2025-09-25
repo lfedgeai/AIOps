@@ -32,5 +32,11 @@ The idea is to have a simple podman based container harness consisting of the fo
 
 ### bootrap build
 - build your remote containers (remote folder)
+```
+podman build -t otel-aiops-edge:v1 .
+podman run -p 4317:4317 -p 4318:4318 -p 8889:8889 localhost/otel-aiops-edge:v1 🔭
+```
+The traces, metrics & logs exporters are configured to debug and otlp to allow for local and remote introspection of the telemetry data.
+
 - build your centralized telemtery collection point via (otel-lgtm) (central folder)
 
