@@ -1,16 +1,102 @@
 version: "3.9"
+
 services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: iceberg_user
+      POSTGRES_PASSWORD: iceberg_pass
+      POSTGRES_DB: iceberg_metadata
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - edge-network
+      - otel-net
+
+  minio:
+    image: minio/minio
+    container_name: minio1
+    environment:
+      - MINIO_ROOT_USER=minioAdmin
+      - MINIO_ROOT_PASSWORD=minio1234
+    ports:
+      - 9001:9001
+      - 9000:9000
+      - 9002:9002
+    command: ["server", "/data", "--console-address", ":9002"]
+    networks:
+      edge-network:
+        aliases:
+          - warehouse.minio
+      otel-net:
+
+  mc:
+    depends_on:
+      - minio
+    image: minio/mc
+    container_name: mc
+    environment:
+      - AWS_ACCESS_KEY_ID=minioAdmin
+      - AWS_SECRET_ACCESS_KEY=minio1234
+      - AWS_REGION=us-east-1
+    entrypoint: >
+      /bin/sh -c "
+      sleep 10 && 
+      mc alias set minio http://minio:9000 minioAdmin minio1234 && 
+      mc mb minio/warehouse || echo 'source Bucket already exists' &&
+      mc mb minio/edge || echo 'source Bucket already exists';
+      "
+    networks:
+      - edge-network
+      - otel-net
+
+  iceberg-catalog:
+    build:
+      context: ./iceberg
+      dockerfile: Dockerfile
+    container_name: iceberg
+    environment:
+      - AWS_ACCESS_KEY_ID=minioAdmin
+      - AWS_SECRET_ACCESS_KEY=minio1234
+      - AWS_REGION=us-east-1
+      - CATALOG_WAREHOUSE=s3://warehouse/
+      - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
+      - CATALOG_S3_ENDPOINT=http://minio:9000
+      - CATALOG_CATALOG__IMPL=org.apache.iceberg.jdbc.JdbcCatalog
+      - CATALOG_URI=jdbc:postgresql://postgres:5432/iceberg_metadata
+      - CATALOG_JDBC_USER=iceberg_user
+      - CATALOG_JDBC_PASSWORD=iceberg_pass
+      - CATALOG_JDBC_DRIVER=org.postgresql.Driver
+      - REST_PORT=8181
+    ports:
+      - 8181:8181
+    depends_on:
+      - postgres
+      - minio
+      - mc
+    networks:
+      - edge-network
+      - otel-net
 
   otel-aggregator:
     image: otel/opentelemetry-collector-contrib:latest
     container_name: otel-aggregator
     command: [ "--config", "/etc/otel-config.yaml" ]
     ports:
-    - "4318:4318" 
-    - "4317:4317"
+      - "4318:4318"
+      - "4317:4317"
     volumes:
-    - ./etc/otel-config.yaml:/etc/otel-config.yaml:Z
+      - ./etc/otel-config.yaml:/etc/otel-config.yaml:Z
+    networks:
+      - otel-net
+      - edge-network
+
+volumes:
+  pgdata:
+
 networks:
-  default:
-    external:
-      name: otel-net
+  edge-network:
+  otel-net:
+    external: true
