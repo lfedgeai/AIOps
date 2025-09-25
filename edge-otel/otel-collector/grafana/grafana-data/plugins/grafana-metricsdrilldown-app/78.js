@@ -1,0 +1,2 @@
+"use strict";(self.webpackChunkgrafana_metricsdrilldown_app=self.webpackChunkgrafana_metricsdrilldown_app||[]).push([[78],{9078:(e,a,r)=>{r.r(a),r.d(a,{default:()=>l});var t=r(7985),n=r(5959),s=r.n(n);function l({trail:e}){return s().createElement(t.$L,{scene:e,createBrowserHistorySteps:!0,updateUrlOnInit:!0,namespace:e.state.urlNamespace},s().createElement(e.Component,{model:e}))}}}]);
+//# sourceMappingURL=78.js.map?_cache=fe806019ac02064618d0
