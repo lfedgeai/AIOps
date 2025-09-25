@@ -59,3 +59,7 @@ podman run -d \                                                                 
   otel-lgtm:latest
 ```
 
+to test your setup connect to your grafana dashboard on port `3000` and query for Up to see if you are receving the telemetry data as expected.
+
+<img title="Grafana dashboard showing UP as value 1" alt="Grafa Dashboard" src="/GrafanaOK.png">
+
