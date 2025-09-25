@@ -38,5 +38,24 @@ podman run -p 4317:4317 -p 4318:4318 -p 8889:8889 localhost/otel-aiops-edge:v1 �
 ```
 The traces, metrics & logs exporters are configured to debug and otlp to allow for local and remote introspection of the telemetry data.
 
-- build your centralized telemtery collection point via (otel-lgtm) (central folder)
+- build your centralized telemtery collection point otel-lgtm
+```
+git pull https://github.com/grafana/docker-otel-lgtm
+cd docker
+podman build -t otel-lgtm:latest .
+podman images #to see if your image is indeed present
+
+podman run -d \                                                                         ─╯
+  -p 3000:3000 \      
+  -p 4317:4317 \
+  -p 4318:4318 \
+  -p 9091:9090 \
+  -p 9093:9093 \
+  -p 3100:3100 \
+  -p 4100:4100 \
+  -p 6831:6831/udp \
+  -p 6832:6832/udp \
+  --name otel-lgtm-instance \
+  otel-lgtm:latest
+```
 
