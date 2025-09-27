@@ -105,7 +105,7 @@ started with no errors
 
 A built-in Swagger UI is provided so you can interact with the API directly from your browser.
 
-Open your browser and go to the Swagger API URL (for example: http://localhost:8000/docs).
+Open your browser and go to the Swagger API URL (for example: http://localhost:8001/docs).
 
 Use the provided endpoints to trigger synthetic CPU/Memory anomaly data.
 
