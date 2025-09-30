@@ -40,8 +40,8 @@ def generate_observability_event_data(num_samples):
         entry = {
             # "cluster_name": f"cluster_{random.randint(1, 10)}",
             "servicename": f"order-srv-{random.randint(1, 50)}",
-            "cpuusage": round(random.uniform(0, 100), 2),
-            "memoryusage": round(random.uniform(100, 2048), 2),
+            "cpu_usage": round(random.uniform(0, 100), 2),
+            "memory_usage": round(random.uniform(100, 2048), 2),
             "createdtime": (base_time - timedelta(minutes=random.randint(0, 1000))).isoformat()
         }
         data.append(entry)
