@@ -388,6 +388,7 @@ async def test():
 
 def convert_to_anomaly_model_format(observability_event: dict) -> dict:
     def safe_get(key, default=None):
+        print("keys",key)
         return observability_event.get(key, default)
 
     def safe_float(val):
@@ -398,13 +399,15 @@ def convert_to_anomaly_model_format(observability_event: dict) -> dict:
     # cpu_limit in cores
     def convert_cpu_to_percent(val, cpu_limit=1.0):  
         try:
+            print("cpu format",val)
             return round((float(val) / cpu_limit) * 100, 2)
         except (TypeError, ValueError, ZeroDivisionError):
             return 0.0
 
     def convert_bytes_to_mb(val):
         try:
-            return round(float(val) / (1024 ** 2), 2)
+            print("memory format",round(float(val) / (1024 ** 2), 2))
+            return val
         except (TypeError, ValueError):
             return 0.0
 
@@ -419,8 +422,8 @@ def convert_to_anomaly_model_format(observability_event: dict) -> dict:
         "cluster_name": safe_get("clusterName", "unknown-cluster"),
         "pod_name": safe_get("podName", "unknown-pod"),
         "app_name": safe_get("serviceName", "unknown-app"),
-        "cpu_usage": convert_cpu_to_percent(safe_get("cpuUsage"), cpu_limit=1.0),
-        "memory_usage": convert_bytes_to_mb(safe_get("memoryUsage")),
+        "cpu_usage": convert_cpu_to_percent(safe_get("cpu_usage"), cpu_limit=1.0),
+        "memory_usage": convert_bytes_to_mb(safe_get("memory_usage")),
         "timestamp": safe_timestamp(safe_get("createdtime"))
     }
 
@@ -464,12 +467,14 @@ async def redis_subscriber():
                     # print(f"Inserted {anomaly} records into Redis.")
                     
                     for single_event in events:
+                        print("singles",single_event)
                         formatted = convert_to_anomaly_model_format(single_event)
                         
                         print(f" anomaly record from APM : {formatted}")
                         
                         # if data["cpu_usage"] > 0 and data["memory_usage"] > 0:
                         if formatted["cpu_usage"] > 0 and formatted["memory_usage"] > 0:
+                           
 
                             anomaly = json.dumps(formatted)
                             redis_client.rpush("anomaly_queue", anomaly)
