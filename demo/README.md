@@ -127,7 +127,7 @@ Open your browser and go to the Swagger API URL  http://localhost:8002/
 
 **(GET /generate-anomaly-data/{10}**
 
-You can verify  the anomaly detection and LLM content remedy from the docker console on your terminal 
+You can verify  the anomaly detection and LLM content remedy from the **docker console on your terminal **
 
 - First you can create new anomalies through the Swagger API:
 <img width="1447" height="1177" alt="image" src="https://github.com/user-attachments/assets/02ea0368-51c3-4788-8164-404a9f71748c" />
