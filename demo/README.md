@@ -115,6 +115,7 @@ The events will automatically flow through the pipeline:
 
 Simulation API → Redis Queue → Anomaly Consumer → Random Forest Model → Redis Queue → LLM Consumer → LLM-Faiss → Remedy Content.
 
+<<<<<<< HEAD
 To view Anomaly remedy content generated for the detected anomalies.
 
 Use the provided endpoints http://localhost:8002/get-processed-anomalies
@@ -124,3 +125,19 @@ or
 Open your browser and go to the Swagger API URL  http://localhost:8002/
 
 GET /generate-anomaly-data/{10}
+=======
+You can verify  the anomaly detection and LLM content remedy from the docker console on your terminal 
+- First you can create new anomalies through the Swagger API:
+<img width="1447" height="1177" alt="image" src="https://github.com/user-attachments/assets/02ea0368-51c3-4788-8164-404a9f71748c" />
+
+
+- Then you'll see the entries in the terminal window:
+
+<img width="1701" height="585" alt="image" src="https://github.com/user-attachments/assets/caa75a65-9733-4975-8938-d5733ec34ef5" />
+
+- And the recommended remidiation steps:
+<img width="1707" height="604" alt="image" src="https://github.com/user-attachments/assets/3670c597-c054-4aa8-a4c9-116aaeb3156c" />
+
+
+
+>>>>>>> 0bda3ddab6d779cf2e6faf4fd00f81d7b144d169
