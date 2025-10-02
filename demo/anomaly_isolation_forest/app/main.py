@@ -20,6 +20,7 @@ from httpx import AsyncClient,Timeout, ReadTimeout
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.db import models, crud
 from app.db.schemas import AnomalyRequest, BulkAnomalyRequest
+from fastapi.responses import HTMLResponse
 
 import asyncio
 
@@ -88,136 +89,25 @@ redis_client = Redis(host=redis_host, port=redis_port, decode_responses=True)
 
 scheduler = AsyncIOScheduler()
 
+# # Health check endpoint
+# @app.get("/")
+# async def root():
+#     return {"message": "Isolation Forest Anomaly Detection API is running."}
 
-@app.post("/persistAnomalies/")
-def insert_anomaly(anomaly: AnomalyRequest, db: Session = Depends(get_db)):
-    return crud.create_anomaly(db, anomaly)
-
-@app.get("/allAnomalies/")
-def list_anomalies(db: Session = Depends(get_db)):
-    return crud.get_all_anomalies(db)
-
-@app.get("/anomalies/")
-def list_anomalies(db: Session = Depends(get_db)):
-    return crud.get_all_anomalies_sorted(db)
-
-
-# @app.get("/anomalies/date-range")
-# def list_anomalies_between_dates(
-#     start_date: datetime = Query(..., description="Start datetime (ISO format)"),
-#     end_date: datetime = Query(..., description="End datetime (ISO format)"),
-#     skip: int = 0,
-#     limit: int = 100,
-#     db: Session = Depends(get_db)
-# ):
-#     return crud.get_anomalies_between_dates(db, start_date, end_date, skip, limit)
-
-@app.get("/anomalies/date-range")
-def list_anomalies_between_dates(
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
-    minutes: Optional[int] = Query(None, description="Window in minutes before now"),
-    cluster_name: Optional[str] = Query(None),
-    pod_name: Optional[str] = Query(None),
-    app_name: Optional[str] = Query(None),
-    skip: int = 0,
-    limit: int = 100,
-    db: Session = Depends(get_db)
-):
-    now = datetime.utcnow()
-
-    if start_date is not None and end_date is not None:
-        # Use full days for start and end date
-        start_dt = datetime.combine(start_date, time.min)
-        end_dt = datetime.combine(end_date, time.max)
-    elif minutes is not None:
-        # Ignore start_date and end_date, use now and now - minutes
-        start_dt = now - timedelta(minutes=minutes)
-        end_dt = now
-    else:
-        # Default behavior - no filters or some default range
-        start_dt = None
-        end_dt = None
-
-    print(f"Querying anomalies from {start_dt} to {end_dt}")
-
-    return crud.get_anomalies_filtered(
-        db=db,
-        start_date=start_dt,
-        end_date=end_dt,
-        cluster_name=cluster_name,
-        pod_name=pod_name,
-        app_name=app_name,
-        skip=skip,
-        limit=limit
-    )
-
-
-@app.post("/train_model")
-def start_training(background_tasks: BackgroundTasks):
-    global training_in_progress
-
-    if training_in_progress:
-        return {"status": "training already in progress"}
-
-    training_in_progress = True
-
-    def run_training():
-        global model, training_in_progress
-        try:
-            train_anomaly_model()
-            model = joblib.load(MODEL_PATH)
-        finally:
-            training_in_progress = False
-
-    background_tasks.add_task(run_training)
-    return {"status": "training started"}
-
-@app.get("/training_status")
-def get_training_status():
-    return {"training": training_in_progress}
-
-@app.get("/anomalies/filter")
-def filter_anomalies(
-    start_date: datetime = Query(..., description="Start of date range"),
-    end_date: datetime = Query(..., description="End of date range"),
-    cluster_name: Optional[str] = None,
-    pod_name: Optional[str] = None,
-    app_name: Optional[str] = None,
-    skip: int = 0,
-    limit: int = 100,
-    db: Session = Depends(get_db)
-):
-    return crud.get_anomalies_filtered(
-        db=db,
-        start_date=start_date,
-        end_date=end_date,
-        cluster_name=cluster_name,
-        pod_name=pod_name,
-        app_name=app_name,
-        skip=skip,
-        limit=limit
-    )
-
-
-# Health check endpoint
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    return {"message": "Isolation Forest Anomaly Detection API is running."}
+    return """
+    <html>
+        <head>
+            <title>API Health Check</title>
+        </head>
+        <body>
+            <h2>Isolation Forest Anomaly Detection API is running </h2>
+            <p>Go to <a href="/docs" target="_blank">Swagger UI</a> to see the API documentation.</p>
+        </body>
+    </html>
+    """
 
-# Prediction endpoint
-@app.post("/predict")
-async def predict(request: AnomalyRequest):
-    result = predict_anomaly(model, request)
-    logger.info(f"Single anomaly prediction processed for pod: {request.pod_name}")
-    return result
-
-# Bulk prediction endpoint
-@app.post("/predict/bulk")
-async def predict_bulk(requests: BulkAnomalyRequest):
-    results = predict_bulk_anomalies(model, requests.data)
-    logger.info(f"Bulk anomaly prediction processed for {len(results)} entries.")
-    return {"results": results}
 
 def process_scheduled_anomaly(anomaly_data):
     db = SessionLocal()
@@ -280,25 +170,13 @@ async def process_redis_data() -> None:
             for key, value in default_values.items():
                 res.setdefault(key, value)
         
-
-
-        # if results:
-        #     logger.info("entering into rpocess")
-        #     tasks = [call_anomaly_api(data) for data in results]
-
-        #     responses = await asyncio.gather(*tasks, return_exceptions=True)
-            
-        #     for inp, out in zip(results, responses):
-        #         if isinstance(out, Exception):
-        #             logger.error("Error for %s: %s", inp, out)
-        #         else:
-        #             logger.info("Success for %s: %s", inp, out)
         if results:
             logger.info("Publishing anomaly data to Redis queue")
             for data in results:
                 try:
                     redis_client.rpush("llm_inference_queue", json.dumps(data))
-                    redis_client.publish("anomaly_catalog_topic", json.dumps(data))
+                    redis_client.rpush("anomaly_audit", json.dumps(data))
+                    # redis_client.publish("anomaly_catalog_topic", json.dumps(data))
                     logger.info("Pushed to Redis queue: %s", data)
                 except Exception as e:
                     logger.error("Redis push failed for %s: %s", data, e)
@@ -331,6 +209,33 @@ def generate_data(num_samples: int):
     data = generate_observability_event_data(num_samples)
     insert_data_to_observability_event_redis(data , redis_client)
     return data
+
+@app.get("/get-anomalies")
+def get_anomalies():
+    """
+    Fetch all anomalies from Redis queue without removing them.
+    Returns total count and anomaly data.
+    """
+    anomalies = []
+
+    # Get total count
+    total_count = redis_client.llen('anomaly_audit')
+
+    # Fetch all items
+    items = redis_client.lrange('anomaly_audit', 0, -1)  # -1 = all elements
+
+    for raw_value in items:
+        try:
+            anomalies.append(json.loads(raw_value))
+        except json.JSONDecodeError:
+            logger.error("Invalid JSON in Redis: %s", raw_value)
+            anomalies.append({"error": "Invalid JSON", "raw": raw_value})
+
+    return {
+        "total_count": total_count,
+        "anomalies": anomalies
+    }
+
 
 
 async def call_anomaly_api(anomaly_data):
@@ -380,11 +285,6 @@ async def start_scheduler():
     scheduler.add_job(process_redis_data, "interval", seconds=5)
     scheduler.start()
     print("Scheduler started:", scheduler.running)
-
-# Test endpoint for validation
-@app.get("/test")
-async def test():
-    return {"message": "Test endpoint is working."}
 
 def convert_to_anomaly_model_format(observability_event: dict) -> dict:
     def safe_get(key, default=None):
