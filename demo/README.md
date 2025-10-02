@@ -109,6 +109,8 @@ Open your browser and go to the Swagger API URL (for example: http://localhost:8
 
 ## How to trigger Anomaly :
 
+Open your browser and go to the Swagger API URL  http://localhost:8002/
+
 Use the provided endpoints to trigger synthetic CPU/Memory anomaly data which triggers anomaly inference 
 
 **GET /generate-anomaly-data/{10}**
@@ -116,16 +118,6 @@ Use the provided endpoints to trigger synthetic CPU/Memory anomaly data which tr
 The events generaged from synthetic event will automatically flow through the pipeline:
 
 Simulation API → Redis Queue → Anomaly Consumer → Random Forest Model → Redis Queue → LLM Consumer → LLM-Faiss → Remedy Content.
-
-**To view Anomaly remedy content generated for the detected anomalies.**
-
-Use the provided endpoints **http://localhost:8002/get-processed-anomalies**
-
-or 
-
-Open your browser and go to the Swagger API URL  http://localhost:8002/
-
-**(GET /generate-anomaly-data/{10}**
 
 You can verify  the anomaly detection and LLM content remedy from the **docker console on your terminal **
 
@@ -139,4 +131,14 @@ You can verify  the anomaly detection and LLM content remedy from the **docker c
 
 - And the recommended remidiation steps:
 <img width="1707" height="604" alt="image" src="https://github.com/user-attachments/assets/3670c597-c054-4aa8-a4c9-116aaeb3156c" />
+
+
+
+**To view Anomaly remedy content generated for the detected anomalies.**
+
+Use the provided endpoints **http://localhost:8002/get-processed-anomalies**
+
+<img width="1912" height="1422" alt="image" src="https://github.com/user-attachments/assets/67473426-6a15-491f-a71e-09c638541fd2" />
+
+
 
