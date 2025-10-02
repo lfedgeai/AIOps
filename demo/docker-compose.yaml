@@ -20,6 +20,12 @@ services:
       - POSTGRESQL_DATABASE=anomaly-db
       - POSTGRESQL_PASSWORD=anomaly123$
       - POSTGRESQL_USER=anomaly
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anomaly -d anomaly-db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
     networks:
       - anomaly-network
   llm-faiss:
@@ -57,8 +63,13 @@ services:
     # volumes:
     #   - ${PWD}/anomaly_isolation_forest:/app
     depends_on:
-      - redis
-      - llm-faiss
+      anomaly-db:
+        condition: service_healthy
+      redis: 
+        condition: service_started                  
+      llm-faiss: 
+        condition: service_started 
+    
     # command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --workers 2
     networks:
       - anomaly-network
