@@ -78,7 +78,19 @@ jobs:
           echo " Containers:"
           podman ps -a
 
-      # Step 9: Stop and clean up containers (always runs)
+     # Step 9: Show container logs
+      - name: Show Container Logs
+        working-directory: demo
+        run: |
+          echo "Fetching logs from running containers..."
+          podman ps --format "{{.Names}}" | while read -r container; do
+            echo "------------------------------------------"
+            echo " Logs for container: $container"
+            echo "------------------------------------------"
+            podman logs "$container" || echo "No logs available for $container"
+          done
+
+      # Step 10: Stop and clean up containers (always runs)
       - name: Stop and Clean Up
         if: always()
         working-directory: demo
