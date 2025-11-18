@@ -10,101 +10,99 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout code
+      # Step 1: Checkout repository
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Free up disk space
-      - name: Free up disk space
-        run: |
-          echo "Cleaning up disk space..."
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
-          sudo apt-get clean
-          df -h
-
-      # Step 3: Install Podman and Podman Compose
+      # Step 2: Install Podman & podman-compose
       - name: Install Podman
         run: |
           sudo apt-get update -y
           sudo apt-get install -y podman python3-pip
           pip install podman-compose
+          echo "Podman version:"
           podman --version
-          podman-compose --version
 
-      # Step 4: Configure Podman storage
+      # Step 3: Configure Podman storage correctly
       - name: Configure Podman storage
         run: |
-          echo "Reconfiguring Podman storage to use /home/runner/work/_containers"
-          sudo mkdir -p /home/runner/work/_containers
+          echo "Configuring Podman storage..."
+          
+          # Podman default storage root under runner home
+          STORAGE_ROOT="/home/runner/work/_containers"
+          
+          sudo mkdir -p $STORAGE_ROOT
           sudo mkdir -p /etc/containers
 
-          # If storage.conf doesn't exist, create a minimal one
+          # Create storage.conf if missing
           if [ ! -f /etc/containers/storage.conf ]; then
-            echo "Creating new /etc/containers/storage.conf"
-            echo '[storage]' | sudo tee /etc/containers/storage.conf
+            echo "[storage]" | sudo tee /etc/containers/storage.conf
           fi
 
-          # Remove any existing graphroot entry and add the new one
+          # Apply correct graphroot path
           sudo sed -i '/graphroot/d' /etc/containers/storage.conf
-          echo 'graphroot="/home/runner/work/_containers"' | sudo tee -a /etc/containers/storage.conf
-
+          echo "graphroot=\"$STORAGE_ROOT\"" | sudo tee -a /etc/containers/storage.conf
+          
           echo "Final /etc/containers/storage.conf:"
           cat /etc/containers/storage.conf
+          
+          # Initialize storage
+          podman system migrate
 
-
-      # Step 5: Ensure Podman network exists
-      - name: Ensure network exists
+      # Step 4: Ensure Podman network exists
+      - name: Ensure Podman network
         run: |
           NETWORK_NAME="anomaly-network"
           if ! podman network exists "$NETWORK_NAME"; then
-            echo "Creating network $NETWORK_NAME"
+            echo "Creating network $NETWORK_NAME..."
             podman network create "$NETWORK_NAME"
           else
-            echo "Network $NETWORK_NAME already exists"
+            echo "Network $NETWORK_NAME already exists."
           fi
 
-      # Step 6: Build images
+      # Step 5: Build images using Podman Compose
       - name: Build Podman images
         working-directory: demo
         run: |
-          echo "Building images..."
+          echo "Building images using podman-compose..."
           podman-compose -f docker-compose.yaml build
-          echo "✅ Build completed."
+          echo "Build completed."
 
-      # Step 7: Start containers
+      # Step 6: Start containers
       - name: Run Podman Compose
         working-directory: demo
         run: |
-          echo "Starting containers..."
+          echo "Starting Podman Compose containers..."
           podman-compose -f docker-compose.yaml up -d
-          echo "Containers started."
+          echo "Containers running."
           podman ps
 
-      # Step 8: Show network and container status
+      # Step 7: Verify Podman environment
       - name: Verify Podman environment
         run: |
           echo "Networks:"
           podman network ls
+          
           echo "Containers:"
           podman ps -a
 
-      # Step 9: Show container logs
+      # Step 8: Show logs of each container
       - name: Show Container Logs
         working-directory: demo
         run: |
-          echo "Fetching logs from running containers..."
-          podman ps --format "{{.Names}}" | while read -r container; do
-            echo "------------------------------------------"
-            echo " Logs for container: $container"
-            echo "------------------------------------------"
-            podman logs "$container" || echo "No logs available for $container"
+          echo "Displaying logs for all containers..."
+          podman ps --format "{{.Names}}" | while read -r c; do
+            echo "----------------------------"
+            echo "Logs for: $c"
+            echo "----------------------------"
+            podman logs "$c" || echo "No logs for $c"
           done
 
-      # Step 10: Stop & clean up
+      # Step 9: Cleanup (always runs)
       - name: Stop and Clean Up
         if: always()
         working-directory: demo
         run: |
-          echo "Cleaning up..."
+          echo "Stopping Podman Compose..."
           podman-compose -f docker-compose.yaml down
-          echo " Cleanup completed."
+          echo "Cleanup completed."
