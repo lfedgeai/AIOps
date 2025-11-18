@@ -2,29 +2,27 @@ name: Run Podman Compose (Build & Deploy)
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   pull_request:
 
 jobs:
   podman-compose:
-    #  Use this for GitHub-hosted runners
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repository
+      # Step 1: Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Free up disk space on GitHub runner
+      # Step 2: Free up disk space
       - name: Free up disk space
         run: |
-          echo " Cleaning up disk space..."
+          echo "Cleaning up disk space..."
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
           sudo apt-get clean
           df -h
 
-      # Step 3: Install Podman and podman-compose
+      # Step 3: Install Podman and Podman Compose
       - name: Install Podman
         run: |
           sudo apt-get update -y
@@ -33,13 +31,26 @@ jobs:
           podman --version
           podman-compose --version
 
-      # Step 4: Configure Podman storage to use a larger path
+      # Step 4: Configure Podman storage
       - name: Configure Podman storage
         run: |
-          echo " Reconfiguring Podman storage to use /home/runner/work/_containers"
+          echo "Reconfiguring Podman storage to use /home/runner/work/_containers"
           sudo mkdir -p /home/runner/work/_containers
-          sudo bash -c 'echo "graphroot=\"/home/runner/work/_containers\"" >> /etc/containers/storage.conf'
-          df -h
+          sudo mkdir -p /etc/containers
+
+          # If storage.conf doesn't exist, create a minimal one
+          if [ ! -f /etc/containers/storage.conf ]; then
+            echo "Creating new /etc/containers/storage.conf"
+            echo '[storage]' | sudo tee /etc/containers/storage.conf
+          fi
+
+          # Remove any existing graphroot entry and add the new one
+          sudo sed -i '/graphroot/d' /etc/containers/storage.conf
+          echo 'graphroot="/home/runner/work/_containers"' | sudo tee -a /etc/containers/storage.conf
+
+          echo "Final /etc/containers/storage.conf:"
+          cat /etc/containers/storage.conf
+
 
       # Step 5: Ensure Podman network exists
       - name: Ensure network exists
@@ -52,33 +63,32 @@ jobs:
             echo "Network $NETWORK_NAME already exists"
           fi
 
-      # Step 6: Build Podman images
+      # Step 6: Build images
       - name: Build Podman images
         working-directory: demo
         run: |
-          echo " Building images..."
+          echo "Building images..."
           podman-compose -f docker-compose.yaml build
-          echo " Build completed."
+          echo "✅ Build completed."
 
-      # Step 7: Run containers
+      # Step 7: Start containers
       - name: Run Podman Compose
         working-directory: demo
         run: |
-          echo " Starting containers..."
+          echo "Starting containers..."
           podman-compose -f docker-compose.yaml up -d
-          echo " Containers started."
-          echo " Running containers:"
+          echo "Containers started."
           podman ps
 
-      # Step 8: Verify network and container health
+      # Step 8: Show network and container status
       - name: Verify Podman environment
         run: |
-          echo " Networks:"
+          echo "Networks:"
           podman network ls
-          echo " Containers:"
+          echo "Containers:"
           podman ps -a
 
-     # Step 9: Show container logs
+      # Step 9: Show container logs
       - name: Show Container Logs
         working-directory: demo
         run: |
@@ -90,11 +100,11 @@ jobs:
             podman logs "$container" || echo "No logs available for $container"
           done
 
-      # Step 10: Stop and clean up containers (always runs)
+      # Step 10: Stop & clean up
       - name: Stop and Clean Up
         if: always()
         working-directory: demo
         run: |
           echo "Cleaning up..."
           podman-compose -f docker-compose.yaml down
-          echo "Cleanup completed."
+          echo " Cleanup completed."
