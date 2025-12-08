@@ -37,7 +37,7 @@ jobs:
       # Step 4: Ensure Podman network exists
       - name: Ensure Podman network
         run: |
-          NETWORK_NAME="anomaly-network"
+          NETWORK_NAME="edge-network"
           if ! podman network exists "$NETWORK_NAME"; then
             podman network create "$NETWORK_NAME"
           fi
