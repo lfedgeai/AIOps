@@ -1,0 +1,100 @@
+services:
+  edge-exporter:
+    build:
+      context: ./exporter/edge-exporter
+      dockerfile: Dockerfile
+      pull: false
+
+    container_name: edge-exporter
+    ports:
+      - "50051:50051"  # gRPC
+      - "8000:8000"  # gRPC
+    environment:
+      ICEBERG_WAREHOUSE: "s3://warehouse"
+      S3_ACCESS_KEY: "minioAdmin"
+      S3_SECRET_KEY: "minio1234"
+      S3_PATH_STYLE: "true"
+      S3_REGION: "us-east-1"
+      S3_ENDPOINT: "http://minio:9000"
+      ICEBERG_REST_URI: "http://iceberg-catalog:8181"
+    # depends_on:
+    #   - postgres
+    #   - minio
+    #   - mc
+      # - iceberg-catalog
+    networks:
+      edge-network:
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    # network_mode: "host"
+    volumes:
+    - ./otel-collector/etc/otel-config.yaml:/etc/otel-config.yaml:Z
+    - /proc:/host/proc:ro
+    - /sys:/host/sys:ro
+    - /:/host:ro # mount the entire host FS so /proc etc. are visible for mac
+    command: [ "--config", "/etc/otel-config.yaml" ]
+    ports:
+    - "9464:9464" # Prometheus exporter
+    depends_on:
+      - edge-exporter
+    networks:
+      edge-network:
+
+  otel-aggregator:
+    
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-aggregator
+    volumes:
+      - ./gateway/otel-aggregator/etc/otel-config.yaml:/etc/otel-config.yaml:Z
+    command: [ "--config", "/etc/otel-config.yaml" ]
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      edge-network:
+    depends_on:
+      - otel-collector
+      - edge-exporter
+
+
+  otel-testapp:
+    build:
+        context: ./otel-testapp
+        dockerfile: Dockerfile
+    container_name: otel-testapp
+    ports:
+      - "8001:8001"  # gRPC
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-aggregator:4318/v1/metrics"
+      # OTEL_EXPORTER_OTLP_PROTOCOL: "http"
+      OTEL_SERVICE_NAME: "otel-testapp"
+      OTEL_LOG_LEVEL: "debug"
+      OTEL_PYTHON_LOG_LEVEL: "debug"
+      OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED: "true"
+      OTEL_PYTHON_LOG_CORRELATION: "true"
+      # OTEL_PYTHON_LOG_FORMAT: "%(msg)s [span_id=%(span_id)s]"
+      OTEL_PYTHON_LOG_FORMAT: "%(message)s"
+      OTEL_METRICS_EXPORTER: "otlp"
+      OTEL_TRACES_EXPORTER: "otlp"
+      OTEL_LOGS_EXPORTER: "otlp"
+      OTEL_METRICS_EXPORT_INTERVAL: "5000"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      
+
+    networks:
+      edge-network:
+    depends_on:
+      - otel-collector
+      - edge-exporter
+
+      
+# volumes:
+#   pgdata:
+
+networks:
+  edge-network:
+    external: true
+
+

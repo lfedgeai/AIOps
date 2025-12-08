@@ -12,10 +12,13 @@ processors:
 exporters:
   debug:
     verbosity: detailed
-
+  otlp:
+    endpoint: "http://edge-exporter:50051"
+    tls:
+      insecure: true
 service:
   pipelines:
     metrics:
       receivers: [ otlp ]
       processors: [ batch ]
-      exporters: [ debug ] # persistance exporter needs to added to store edge metrics to S3 storage
+      exporters: [ debug, otlp ] # persistance exporter needs to added to store edge metrics to S3 storage
