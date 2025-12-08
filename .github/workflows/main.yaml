@@ -62,7 +62,7 @@ jobs:
 
       # Step 5: Build images using Podman Compose
       - name: Build Podman images
-        working-directory: demo
+        working-directory: demo-2-otel
         run: |
           echo "Building images using podman-compose..."
           podman-compose -f docker-compose.yaml build
