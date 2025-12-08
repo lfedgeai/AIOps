@@ -1,0 +1,151 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: iceberg_user
+      POSTGRES_PASSWORD: iceberg_pass
+      POSTGRES_DB: iceberg_metadata
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iceberg_user"]
+      interval: 5s
+      retries: 10
+      timeout: 3s
+    # volumes:
+    #   - pgdata:/var/lib/postgresql/data
+    networks:
+      edge-network:
+
+  minio:
+    image: minio/minio
+    container_name: minio1
+    environment:
+      MINIO_ROOT_USER: minioAdmin
+      MINIO_ROOT_PASSWORD: minio1234
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+      - "9002:9002"
+    command: ["server", "/data", "--console-address", ":9002"]
+    networks:
+      edge-network:
+        aliases:
+          - warehouse.minio
+
+  mc:
+    depends_on:
+      - minio
+    image: minio/mc
+    container_name: mc
+    entrypoint: >
+      /bin/sh -c "
+      sleep 10 &&
+      mc alias set minio http://minio:9000 minioAdmin minio1234 &&
+      mc mb minio/warehouse || echo 'source Bucket already exists' &&
+      mc mb minio/edge || echo 'source Bucket already exists';
+      "
+    networks:
+      edge-network:
+
+  iceberg-catalog:
+    build:
+      context: ./storage/iceberg
+      dockerfile: Dockerfile
+      pull: false
+    container_name: iceberg-catalog
+    environment:
+      AWS_ACCESS_KEY_ID: minioAdmin
+      AWS_SECRET_ACCESS_KEY: minio1234
+      AWS_REGION: us-east-1
+      CATALOG_WAREHOUSE: s3://warehouse
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
+      CATALOG_URI: "jdbc:postgresql://postgres:5432/iceberg_metadata"
+      CATALOG_JDBC_USER: iceberg_user
+      CATALOG_JDBC_PASSWORD: iceberg_pass
+      CATALOG_JDBC_DRIVER: org.postgresql.Driver
+      REST_PORT: 8181
+    ports:
+      - "8181:8181"
+    depends_on:
+      - postgres
+      - minio
+      - mc
+    networks:
+      edge-network:
+        # aliases:
+        #   - iceberg-catalog
+        #   - iceberg
+  # edge-exporter:
+  #   build:
+  #     context: ./exporter/edge-exporter
+  #     dockerfile: Dockerfile
+  #     pull: false
+
+  #   container_name: edge-exporter
+  #   ports:
+  #     - "50051:50051"  # gRPC
+  #     - "8000:8000"  # gRPC
+  #   environment:
+  #     ICEBERG_WAREHOUSE: "s3://warehouse"
+  #     S3_ACCESS_KEY: "minioAdmin"
+  #     S3_SECRET_KEY: "minio1234"
+  #     S3_PATH_STYLE: "true"
+  #     S3_REGION: "us-east-1"
+  #     S3_ENDPOINT: "http://minio:9000"
+  #     ICEBERG_REST_URI: "http://iceberg-catalog:8181"
+  #   depends_on:
+  #     - postgres
+  #     - minio
+  #     - mc
+  #     - iceberg-catalog
+  #   networks:
+  #     edge-network:
+
+  # otel-collector:
+  #   build:
+  #     context: ./collectors/otel-collector
+  #     dockerfile: Dockerfile
+  #     pull: false
+  #   image: aiops-otel-collector:latest
+  #   container_name: otel-collector
+    
+  #   volumes:
+  #   - /proc:/host/proc:ro
+  #   - /sys:/host/sys:ro
+  #   - /:/host:ro # mount the entire host FS so /proc etc. are visible for mac
+  #   # volumes:
+  #   #   - ./etc/otel-config.yaml:/etc/otelcol/config.yaml:Z
+  #   # command: [ "--config", "/etc/otelcol/config.yaml" ]
+  #   ports:
+  #     - "9464:9464"
+  #   networks:
+  #     edge-network:
+
+  # otel-aggregator:
+  #   build:
+  #     context: ./gateway/otel-aggregator
+  #     dockerfile: Dockerfile
+  #     pull: false
+  #   image: aiops-otel-aggregator:latest
+  #   container_name: otel-aggregator
+  #   # volumes:
+  #   #   - ./etc/otel-config.yaml:/etc/otelcol/config.yaml:Z
+  #   # command: [ "--config", "/etc/otelcol/config.yaml" ]
+  #   ports:
+  #     - "4317:4317"
+  #     - "4318:4318"
+  #   networks:
+  #     edge-network:
+  #   depends_on:
+  #     - otel-collector
+
+# volumes:
+#   pgdata:
+
+networks:
+  edge-network:
+    external: true
+
