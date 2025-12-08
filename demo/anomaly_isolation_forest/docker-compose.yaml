@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: anomaly-detection
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PROCESS_ANOMALY_URL=http://fastapi-app:8001/process-anomaly
+      - REDIS_OBS_HOST=redis
+      - REDIS_OBS_PORT=6379
+      - DATABASE_URL=postgresql://anomaly:anomaly123$@anomaly-db:5432/anomaly-db
+    volumes:
+      - ${PWD}:/app
+    depends_on:
+      - redis
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - anomaly-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: anomaly-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+        - anomaly-network
+  anomaly-db:
+    image: quay.io/osclimate/postgresql-13:1-101
+    container_name: anomaly-db
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRESQL_ADMIN_PASSWORD=admin123$
+      - POSTGRESQL_DATABASE=anomaly-db
+      - POSTGRESQL_PASSWORD=anomaly123$
+      - POSTGRESQL_USER=anomaly
+    networks:
+      - anomaly-network
+
+volumes:
+  redis_data:
+
+networks:
+  anomaly-network:
+    external: true

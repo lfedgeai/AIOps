@@ -1,0 +1,80 @@
+version: "3.9"
+
+services:
+  
+  redis:
+    image: redis:7-alpine
+    container_name: anomaly-redis
+    ports:
+      - "6379:6379"
+    
+    networks:
+        - anomaly-network
+  anomaly-db:
+    image: quay.io/osclimate/postgresql-13:1-101
+    container_name: anomaly-db
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRESQL_ADMIN_PASSWORD=admin123$
+      - POSTGRESQL_DATABASE=anomaly-db
+      - POSTGRESQL_PASSWORD=anomaly123$
+      - POSTGRESQL_USER=anomaly
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anomaly -d anomaly-db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+    networks:
+      - anomaly-network
+  llm-faiss:
+    build: ./anomaly-llm-faiss
+    container_name: llm-faiss
+    ports:
+      - "8002:8002"
+    # command: uvicorn app.main:app --host 0.0.0.0 --port 8002 --workers 2
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - ACTION_REQ=N
+      - LLM_INFERENCE_QUEUE=llm_inference_queue
+    depends_on:
+      - redis
+    networks:
+      - anomaly-network
+
+  anomaly-detection:
+    build:
+      context: ./anomaly_isolation_forest
+      dockerfile: Dockerfile
+    container_name: anomaly-detection
+    ports:
+      - "8001:8001"
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PROCESS_ANOMALY_URL=http://llm-faiss:8002/process-anomaly
+      - REDIS_OBS_HOST=redis
+      - REDIS_OBS_PORT=6379
+      - DATABASE_URL=postgresql://anomaly:anomaly123$@anomaly-db:5432/anomaly-db
+    # volumes:
+    #   - ${PWD}/anomaly_isolation_forest:/app
+    depends_on:
+      anomaly-db:
+        condition: service_healthy
+      redis: 
+        condition: service_started                  
+      llm-faiss: 
+        condition: service_started 
+    
+    # command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --workers 2
+    networks:
+      - anomaly-network
+
+
+networks:
+  anomaly-network:
+    external: true
