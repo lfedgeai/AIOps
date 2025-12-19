@@ -1,6 +1,17 @@
 # AIOps - for distributed environments and edge
 
-The aim of this AIOps workstream under the LFEdge umbrella is to deliver AI supported operations for heterogeneous and complex distributed environments such as edge.
+The aim of this AIOps project under the LFEdge umbrella is to help deliver AI supported operations for heterogeneous and complex distributed environments such as edge.
+
+There are three workstreams on the highest level:
+
+## Research
+The motto inside this folder is "Anything AIOps Goes". Here's the home for your wildest ideas to try out, code, test and report back on. Ideally everything built on open source technology or at least freely available software or models. Examples are  evaluating different algorithms or models for anomaly detection, trying different agentic architectures like agents for logs, metrics, traces VS agents for each system component or layer of the technology stack.
+
+## Test Harness
+The test harness is where we assemble different components of AIOps solutions to test and benchmark against each other. This can be sub-component test harnesses like for anomaly-detection or a full end-to-end AIOps solution cycle from data/signal collection, signal correlation, anomaly detection, root cause analysis, and remediation.
+
+## Demo
+The demo is where the contributors assemble working demos and products to showcase.
 
 ## AIOps workflow and high level component overview
 ![Alt text](AIOpsOverview.png)
