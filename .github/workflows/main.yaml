@@ -20,75 +20,61 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y podman python3-pip
           pip install podman-compose
-          echo "Podman version:"
           podman --version
 
       # Step 3: Configure Podman storage correctly
       - name: Configure Podman storage
         run: |
-          echo "Configuring Podman storage..."
-          
-          # Podman default storage root under runner home
           STORAGE_ROOT="/home/runner/work/_containers"
-          
           sudo mkdir -p $STORAGE_ROOT
           sudo mkdir -p /etc/containers
 
-          # Create storage.conf if missing
-          if [ ! -f /etc/containers/storage.conf ]; then
-            echo "[storage]" | sudo tee /etc/containers/storage.conf
-          fi
-
-          # Apply correct graphroot path
-          sudo sed -i '/graphroot/d' /etc/containers/storage.conf
+          echo "[storage]" | sudo tee /etc/containers/storage.conf
           echo "graphroot=\"$STORAGE_ROOT\"" | sudo tee -a /etc/containers/storage.conf
-          
-          echo "Final /etc/containers/storage.conf:"
-          cat /etc/containers/storage.conf
-          
-          # Initialize storage
+
           podman system migrate
 
       # Step 4: Ensure Podman network exists
       - name: Ensure Podman network
         run: |
-          NETWORK_NAME="anomaly-network"
+          NETWORK_NAME="edge-network"
           if ! podman network exists "$NETWORK_NAME"; then
-            echo "Creating network $NETWORK_NAME..."
             podman network create "$NETWORK_NAME"
-          else
-            echo "Network $NETWORK_NAME already exists."
           fi
 
-      # Step 5: Build images using Podman Compose
+      # Step 5: Build images (docker-compose.yml)
       - name: Build Podman images
-        working-directory: demo
+        working-directory: demo/demo-2-otel
         run: |
-          echo "Building images using podman-compose..."
-          podman-compose -f docker-compose.yaml build
+          echo "Building images..."
+          podman-compose -f docker-compose.yml build
           echo "Build completed."
 
-      # Step 6: Start containers
-      - name: Run Podman Compose
-        working-directory: demo
+      # Step 6: Run first compose - core stack
+      - name: Run Podman Compose (Core services)
+        working-directory: demo/demo-2-otel
         run: |
-          echo "Starting Podman Compose containers..."
-          podman-compose -f docker-compose.yaml up -d
-          echo "Containers running."
+          echo "Starting core services (docker-compose.yml)..."
+          podman-compose -f docker-compose.yml up -d
           podman ps
 
-      # Step 7: Verify Podman environment
+      # Step 7: Run second compose - persistence stack
+      - name: Run Podman Compose (Persistence services)
+        working-directory: demo/demo-2-otel
+        run: |
+          echo "Starting persistence services (docker-compose-persistance.yml)..."
+          podman-compose -f docker-compose-persistance.yml up -d
+          podman ps
+
+      # Step 8: Show Podman environment
       - name: Verify Podman environment
         run: |
-          echo "Networks:"
           podman network ls
-          
-          echo "Containers:"
           podman ps -a
 
-      # Step 8: Show logs of each container
+      # Step 9: Show logs for each container
       - name: Show Container Logs
-        working-directory: demo
+        working-directory: demo/demo-2-otel
         run: |
           echo "Displaying logs for all containers..."
           podman ps --format "{{.Names}}" | while read -r c; do
@@ -98,11 +84,11 @@ jobs:
             podman logs "$c" || echo "No logs for $c"
           done
 
-      # Step 9: Cleanup (always runs)
+      # Step 10: Cleanup always
       - name: Stop and Clean Up
         if: always()
-        working-directory: demo
+        working-directory: demo/demo-2-otel
         run: |
-          echo "Stopping Podman Compose..."
-          podman-compose -f docker-compose.yaml down
+          podman-compose -f docker-compose.yml down
+          podman-compose -f docker-compose-persistance.yml down
           echo "Cleanup completed."
