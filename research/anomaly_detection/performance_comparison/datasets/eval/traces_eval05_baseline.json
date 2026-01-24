@@ -1,0 +1,982 @@
+[
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "RE-nQ5sBmc08HMcQ30Xo",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "client.address": "::ffff:172.22.0.12",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.request.method": "GET",
+        "http.response.status_code": 200,
+        "network.peer.address": "::ffff:172.22.0.12",
+        "network.peer.port": 50302,
+        "network.protocol.version": "1.1",
+        "server.address": "localhost",
+        "server.port": 8080,
+        "url.path": "/live/longpoll",
+        "url.query": "_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fjs%2Fapp-bfbcc471bc314daa4f94a55c88d5e19a.js%3Fvsn%3Dd&_mounts=0&_mount_attempts=0&_live_referer=undefined&vsn=2.0.0&token=SFMyNTY.g2gDaAR3AnYxbQAAABZQNUJZeXNucmJLM3lKS1JVTVVTSE1nWHcVZmxhZ2RfdWlAMTM4YjMzNjQwZjcyAAAOsgAAAABpR5wmbQAAACxwaHg6bHA6YVdDNGVrUzRBK3Q4UG91b0JHTXd4QT09MTc2NjM1NjY4MjcyMG4GAOEHEEObAWIAEnUA.vsDYiHMxefh9caXrXe9cKfj145Gy4oVImN4Sa1CQNy8",
+        "url.scheme": "http",
+        "user_agent.original": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:53.111692919Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry_bandit",
+        "schemaUrl": "",
+        "version": "0.3.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "a369dabdb5530974",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "process.executable.name": "flagd_ui",
+        "process.runtime.description": "Erlang/OTP 28 erts-16.0.2",
+        "process.runtime.name": "BEAM",
+        "process.runtime.version": "16.0.2",
+        "service.instance.id": "flagd_ui@138b33640f72",
+        "service.name": "flagd-ui",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "erlang",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.7.0"
+      },
+      "spanId": "7d4a5e5bf47f338f",
+      "startTime": "2025-12-22T01:23:43.109627506Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "282348de3de767b1a815aeb1f4c6f460",
+      "traceState": ""
+    },
+    "sort": [
+      1766366633111
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "R0-nQ5sBmc08HMcQ50XO",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "peer.address": "172.22.0.6:4000",
+        "response_flags": "-",
+        "upstream_address": "172.22.0.6:4000",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:53.11194Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Client",
+      "name": "router flagd-ui egress",
+      "parentSpanId": "1951de744f37df9f",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "a369dabdb5530974",
+      "startTime": "2025-12-22T01:23:43.108867Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "282348de3de767b1a815aeb1f4c6f460",
+      "traceState": ""
+    },
+    "sort": [
+      1766366633111
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "SE-nQ5sBmc08HMcQ50XO",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "downstream_cluster": "-",
+        "guid:x-request-id": "b63c4463-436b-958c-ae44-f6ba9f11dd50",
+        "http.method": "GET",
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "http.url": "http://localhost:8080/featurelive/longpoll?_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flo",
+        "node_id": "",
+        "peer.address": "172.22.0.1",
+        "request_size": "0",
+        "response_flags": "-",
+        "response_size": "254",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui",
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        "zone": ""
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:53.111994Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Server",
+      "name": "ingress",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "1951de744f37df9f",
+      "startTime": "2025-12-22T01:23:43.108604Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "282348de3de767b1a815aeb1f4c6f460",
+      "traceState": ""
+    },
+    "sort": [
+      1766366633111
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "Qk-nQ5sBmc08HMcQ2UX4",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.method": "GET",
+        "http.request_content_length": 0,
+        "http.response_content_length": 100,
+        "http.route": "/status",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.target": "/status",
+        "http.user_agent": "Go-http-client/1.1",
+        "net.host.name": "_",
+        "net.host.port": 8081,
+        "net.sock.peer.addr": "172.22.0.27",
+        "net.sock.peer.port": 55298
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:50.533Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "nginx",
+        "schemaUrl": "",
+        "version": "1.29.0"
+      },
+      "kind": "Server",
+      "name": "image-provider",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "image-provider"
+      },
+      "spanId": "34ef0005215a6d8d",
+      "startTime": "2025-12-22T01:23:50.533Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "32de1c08019b5cc32680154bed456ed3",
+      "traceState": ""
+    },
+    "sort": [
+      1766366630533
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "Pk-nQ5sBmc08HMcQwEW_",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "peer.address": "172.22.0.6:4000",
+        "response_flags": "-",
+        "upstream_address": "172.22.0.6:4000",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:43.099018Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Client",
+      "name": "router flagd-ui egress",
+      "parentSpanId": "9fb12bb7814a38db",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "dc645951d0f6c416",
+      "startTime": "2025-12-22T01:23:33.096196Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "f52653fb99df7f40597c47c99a780c26",
+      "traceState": ""
+    },
+    "sort": [
+      1766366623099
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "P0-nQ5sBmc08HMcQwEW_",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "downstream_cluster": "-",
+        "guid:x-request-id": "8ff05955-4029-9e85-8d4c-f58b56653b15",
+        "http.method": "GET",
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "http.url": "http://localhost:8080/featurelive/longpoll?_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flo",
+        "node_id": "",
+        "peer.address": "172.22.0.1",
+        "request_size": "0",
+        "response_flags": "-",
+        "response_size": "254",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui",
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        "zone": ""
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:43.099081Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Server",
+      "name": "ingress",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "9fb12bb7814a38db",
+      "startTime": "2025-12-22T01:23:33.095957Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "f52653fb99df7f40597c47c99a780c26",
+      "traceState": ""
+    },
+    "sort": [
+      1766366623099
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "O0-nQ5sBmc08HMcQuEXW",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "client.address": "::ffff:172.22.0.12",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.request.method": "GET",
+        "http.response.status_code": 200,
+        "network.peer.address": "::ffff:172.22.0.12",
+        "network.peer.port": 50302,
+        "network.protocol.version": "1.1",
+        "server.address": "localhost",
+        "server.port": 8080,
+        "url.path": "/live/longpoll",
+        "url.query": "_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fjs%2Fapp-bfbcc471bc314daa4f94a55c88d5e19a.js%3Fvsn%3Dd&_mounts=0&_mount_attempts=0&_live_referer=undefined&vsn=2.0.0&token=SFMyNTY.g2gDaAR3AnYxbQAAABZQNUJZeXNucmJLM3lKS1JVTVVTSE1nWHcVZmxhZ2RfdWlAMTM4YjMzNjQwZjcyAAAOsgAAAABpR5wmbQAAACxwaHg6bHA6YVdDNGVrUzRBK3Q4UG91b0JHTXd4QT09MTc2NjM1NjY4MjcyMG4GAOEHEEObAWIAEnUA.vsDYiHMxefh9caXrXe9cKfj145Gy4oVImN4Sa1CQNy8",
+        "url.scheme": "http",
+        "user_agent.original": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:43.098759795Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry_bandit",
+        "schemaUrl": "",
+        "version": "0.3.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "dc645951d0f6c416",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "process.executable.name": "flagd_ui",
+        "process.runtime.description": "Erlang/OTP 28 erts-16.0.2",
+        "process.runtime.name": "BEAM",
+        "process.runtime.version": "16.0.2",
+        "service.instance.id": "flagd_ui@138b33640f72",
+        "service.name": "flagd-ui",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "erlang",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.7.0"
+      },
+      "spanId": "67780e44beee2f05",
+      "startTime": "2025-12-22T01:23:33.096897411Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "f52653fb99df7f40597c47c99a780c26",
+      "traceState": ""
+    },
+    "sort": [
+      1766366623098
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "OE-nQ5sBmc08HMcQskXk",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.method": "GET",
+        "http.request_content_length": 0,
+        "http.response_content_length": 100,
+        "http.route": "/status",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.target": "/status",
+        "http.user_agent": "Go-http-client/1.1",
+        "net.host.name": "_",
+        "net.host.port": 8081,
+        "net.sock.peer.addr": "172.22.0.27",
+        "net.sock.peer.port": 55298
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:40.533Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "nginx",
+        "schemaUrl": "",
+        "version": "1.29.0"
+      },
+      "kind": "Server",
+      "name": "image-provider",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "image-provider"
+      },
+      "spanId": "6ca6bc970fbfba67",
+      "startTime": "2025-12-22T01:23:40.533Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8d573943b479b7f3682418dc55e64b79",
+      "traceState": ""
+    },
+    "sort": [
+      1766366620533
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "NE-nQ5sBmc08HMcQmUWs",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "peer.address": "172.22.0.6:4000",
+        "response_flags": "-",
+        "upstream_address": "172.22.0.6:4000",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:33.087257Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Client",
+      "name": "router flagd-ui egress",
+      "parentSpanId": "0f12b9e8c79803ff",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "e93c0c37db9172cc",
+      "startTime": "2025-12-22T01:23:23.084722Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "f1259f73493d127784acf77f07946c24",
+      "traceState": ""
+    },
+    "sort": [
+      1766366613087
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "NU-nQ5sBmc08HMcQmUWs",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "downstream_cluster": "-",
+        "guid:x-request-id": "ee45c97b-5965-9751-8854-b75354c31561",
+        "http.method": "GET",
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "http.url": "http://localhost:8080/featurelive/longpoll?_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flo",
+        "node_id": "",
+        "peer.address": "172.22.0.1",
+        "request_size": "0",
+        "response_flags": "-",
+        "response_size": "254",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui",
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        "zone": ""
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:33.087349Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Server",
+      "name": "ingress",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "0f12b9e8c79803ff",
+      "startTime": "2025-12-22T01:23:23.084507Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "f1259f73493d127784acf77f07946c24",
+      "traceState": ""
+    },
+    "sort": [
+      1766366613087
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "MU-nQ5sBmc08HMcQkUXD",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "client.address": "::ffff:172.22.0.12",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.request.method": "GET",
+        "http.response.status_code": 200,
+        "network.peer.address": "::ffff:172.22.0.12",
+        "network.peer.port": 50302,
+        "network.protocol.version": "1.1",
+        "server.address": "localhost",
+        "server.port": 8080,
+        "url.path": "/live/longpoll",
+        "url.query": "_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fjs%2Fapp-bfbcc471bc314daa4f94a55c88d5e19a.js%3Fvsn%3Dd&_mounts=0&_mount_attempts=0&_live_referer=undefined&vsn=2.0.0&token=SFMyNTY.g2gDaAR3AnYxbQAAABZQNUJZeXNucmJLM3lKS1JVTVVTSE1nWHcVZmxhZ2RfdWlAMTM4YjMzNjQwZjcyAAAOsgAAAABpR5wmbQAAACxwaHg6bHA6YVdDNGVrUzRBK3Q4UG91b0JHTXd4QT09MTc2NjM1NjY4MjcyMG4GAOEHEEObAWIAEnUA.vsDYiHMxefh9caXrXe9cKfj145Gy4oVImN4Sa1CQNy8",
+        "url.scheme": "http",
+        "user_agent.original": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:33.086987955Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry_bandit",
+        "schemaUrl": "",
+        "version": "0.3.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "e93c0c37db9172cc",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "process.executable.name": "flagd_ui",
+        "process.runtime.description": "Erlang/OTP 28 erts-16.0.2",
+        "process.runtime.name": "BEAM",
+        "process.runtime.version": "16.0.2",
+        "service.instance.id": "flagd_ui@138b33640f72",
+        "service.name": "flagd-ui",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "erlang",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.7.0"
+      },
+      "spanId": "78a09b7f6d0d0977",
+      "startTime": "2025-12-22T01:23:23.085313153Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "f1259f73493d127784acf77f07946c24",
+      "traceState": ""
+    },
+    "sort": [
+      1766366613086
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "LU-nQ5sBmc08HMcQi0XK",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.method": "GET",
+        "http.request_content_length": 0,
+        "http.response_content_length": 100,
+        "http.route": "/status",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.target": "/status",
+        "http.user_agent": "Go-http-client/1.1",
+        "net.host.name": "_",
+        "net.host.port": 8081,
+        "net.sock.peer.addr": "172.22.0.27",
+        "net.sock.peer.port": 55298
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:30.533Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "nginx",
+        "schemaUrl": "",
+        "version": "1.29.0"
+      },
+      "kind": "Server",
+      "name": "image-provider",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "image-provider"
+      },
+      "spanId": "a299ccfe48beec2d",
+      "startTime": "2025-12-22T01:23:30.533Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "5742961bd385bd6a3e746506d53ab8b2",
+      "traceState": ""
+    },
+    "sort": [
+      1766366610533
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "B0-nQ5sBmc08HMcQakWv",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "client.address": "::ffff:172.22.0.12",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.request.method": "GET",
+        "http.response.status_code": 200,
+        "network.peer.address": "::ffff:172.22.0.12",
+        "network.peer.port": 50302,
+        "network.protocol.version": "1.1",
+        "server.address": "localhost",
+        "server.port": 8080,
+        "url.path": "/live/longpoll",
+        "url.query": "_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fjs%2Fapp-bfbcc471bc314daa4f94a55c88d5e19a.js%3Fvsn%3Dd&_mounts=0&_mount_attempts=0&_live_referer=undefined&vsn=2.0.0&token=SFMyNTY.g2gDaAR3AnYxbQAAABZQNUJZeXNucmJLM3lKS1JVTVVTSE1nWHcVZmxhZ2RfdWlAMTM4YjMzNjQwZjcyAAAOsgAAAABpR5wmbQAAACxwaHg6bHA6YVdDNGVrUzRBK3Q4UG91b0JHTXd4QT09MTc2NjM1NjY4MjcyMG4GAOEHEEObAWIAEnUA.vsDYiHMxefh9caXrXe9cKfj145Gy4oVImN4Sa1CQNy8",
+        "url.scheme": "http",
+        "user_agent.original": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:23.0764076Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry_bandit",
+        "schemaUrl": "",
+        "version": "0.3.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "e203124651ca53ba",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "process.executable.name": "flagd_ui",
+        "process.runtime.description": "Erlang/OTP 28 erts-16.0.2",
+        "process.runtime.name": "BEAM",
+        "process.runtime.version": "16.0.2",
+        "service.instance.id": "flagd_ui@138b33640f72",
+        "service.name": "flagd-ui",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "erlang",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.7.0"
+      },
+      "spanId": "9a5427a5e5e251bd",
+      "startTime": "2025-12-22T01:23:13.075144788Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8cf59485b8f3d40e32fbad7b3e56d43c",
+      "traceState": ""
+    },
+    "sort": [
+      1766366603076
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "C0-nQ5sBmc08HMcQckWh",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "peer.address": "172.22.0.6:4000",
+        "response_flags": "-",
+        "upstream_address": "172.22.0.6:4000",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:23.07667Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Client",
+      "name": "router flagd-ui egress",
+      "parentSpanId": "1ee748f1cba6cdde",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "e203124651ca53ba",
+      "startTime": "2025-12-22T01:23:13.07452Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8cf59485b8f3d40e32fbad7b3e56d43c",
+      "traceState": ""
+    },
+    "sort": [
+      1766366603076
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "DE-nQ5sBmc08HMcQckWh",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "downstream_cluster": "-",
+        "guid:x-request-id": "f367aa7f-f9ac-9f9a-8534-eaa30c26900e",
+        "http.method": "GET",
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "http.url": "http://localhost:8080/featurelive/longpoll?_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flo",
+        "node_id": "",
+        "peer.address": "172.22.0.1",
+        "request_size": "0",
+        "response_flags": "-",
+        "response_size": "254",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui",
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        "zone": ""
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:23.076719Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Server",
+      "name": "ingress",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "1ee748f1cba6cdde",
+      "startTime": "2025-12-22T01:23:13.074265Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8cf59485b8f3d40e32fbad7b3e56d43c",
+      "traceState": ""
+    },
+    "sort": [
+      1766366603076
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "BU-nQ5sBmc08HMcQZEWx",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.method": "GET",
+        "http.request_content_length": 0,
+        "http.response_content_length": 100,
+        "http.route": "/status",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.target": "/status",
+        "http.user_agent": "Go-http-client/1.1",
+        "net.host.name": "_",
+        "net.host.port": 8081,
+        "net.sock.peer.addr": "172.22.0.27",
+        "net.sock.peer.port": 55298
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T01:23:20.533Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "nginx",
+        "schemaUrl": "",
+        "version": "1.29.0"
+      },
+      "kind": "Server",
+      "name": "image-provider",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "image-provider"
+      },
+      "spanId": "83ecd6f26c018ff9",
+      "startTime": "2025-12-22T01:23:20.533Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "806a0dcd80a2f229e2fa7a334f1118e4",
+      "traceState": ""
+    },
+    "sort": [
+      1766366600533
+    ]
+  }
+]

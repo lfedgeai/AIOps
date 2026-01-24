@@ -1,0 +1,4431 @@
+[
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "P0_KQ5sBmc08HMcQNVbH",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.method": "GET",
+        "http.request_content_length": 0,
+        "http.response_content_length": 100,
+        "http.route": "/status",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.target": "/status",
+        "http.user_agent": "Go-http-client/1.1",
+        "net.host.name": "_",
+        "net.host.port": 8081,
+        "net.sock.peer.addr": "172.22.0.27",
+        "net.sock.peer.port": 52728
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:20.533Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "nginx",
+        "schemaUrl": "",
+        "version": "1.29.0"
+      },
+      "kind": "Server",
+      "name": "image-provider",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "image-provider"
+      },
+      "spanId": "f83fb86502ea56f6",
+      "startTime": "2025-12-22T02:01:20.533Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "cf195acbee8b559bf4788e47bc8f3698",
+      "traceState": ""
+    },
+    "sort": [
+      1766368880533
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "OE_KQ5sBmc08HMcQFlYj",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "peer.address": "172.22.0.6:4000",
+        "response_flags": "-",
+        "upstream_address": "172.22.0.6:4000",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:15.324108Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Client",
+      "name": "router flagd-ui egress",
+      "parentSpanId": "da74cb182ed129e4",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "9a0fb7be9644de94",
+      "startTime": "2025-12-22T02:01:05.321485Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "add832711f49cc685fe3996c795fccaf",
+      "traceState": ""
+    },
+    "sort": [
+      1766368875324
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "OU_KQ5sBmc08HMcQFlYj",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "downstream_cluster": "-",
+        "guid:x-request-id": "5558a0c7-2276-99b7-9efe-aff024eff807",
+        "http.method": "GET",
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "http.url": "http://localhost:8080/featurelive/longpoll?_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flo",
+        "node_id": "",
+        "peer.address": "172.22.0.1",
+        "request_size": "0",
+        "response_flags": "-",
+        "response_size": "254",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui",
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        "zone": ""
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:15.324173Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Server",
+      "name": "ingress",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "da74cb182ed129e4",
+      "startTime": "2025-12-22T02:01:05.321261Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "add832711f49cc685fe3996c795fccaf",
+      "traceState": ""
+    },
+    "sort": [
+      1766368875324
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "PE_KQ5sBmc08HMcQJFZy",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "client.address": "::ffff:172.22.0.12",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.request.method": "GET",
+        "http.response.status_code": 200,
+        "network.peer.address": "::ffff:172.22.0.12",
+        "network.peer.port": 50302,
+        "network.protocol.version": "1.1",
+        "server.address": "localhost",
+        "server.port": 8080,
+        "url.path": "/live/longpoll",
+        "url.query": "_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fjs%2Fapp-bfbcc471bc314daa4f94a55c88d5e19a.js%3Fvsn%3Dd&_mounts=0&_mount_attempts=0&_live_referer=undefined&vsn=2.0.0&token=SFMyNTY.g2gDaAR3AnYxbQAAABZQNUJZeXNucmJLM3lKS1JVTVVTSE1nWHcVZmxhZ2RfdWlAMTM4YjMzNjQwZjcyAAAOsgAAAABpR5wmbQAAACxwaHg6bHA6YVdDNGVrUzRBK3Q4UG91b0JHTXd4QT09MTc2NjM1NjY4MjcyMG4GAOEHEEObAWIAEnUA.vsDYiHMxefh9caXrXe9cKfj145Gy4oVImN4Sa1CQNy8",
+        "url.scheme": "http",
+        "user_agent.original": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:15.323852589Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry_bandit",
+        "schemaUrl": "",
+        "version": "0.3.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "9a0fb7be9644de94",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "process.executable.name": "flagd_ui",
+        "process.runtime.description": "Erlang/OTP 28 erts-16.0.2",
+        "process.runtime.name": "BEAM",
+        "process.runtime.version": "16.0.2",
+        "service.instance.id": "flagd_ui@138b33640f72",
+        "service.name": "flagd-ui",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "erlang",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.7.0"
+      },
+      "spanId": "18ca40e4682709fa",
+      "startTime": "2025-12-22T02:01:05.322114879Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "add832711f49cc685fe3996c795fccaf",
+      "traceState": ""
+    },
+    "sort": [
+      1766368875323
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "NE_KQ5sBmc08HMcQDlav",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.method": "GET",
+        "http.request_content_length": 0,
+        "http.response_content_length": 100,
+        "http.route": "/status",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.target": "/status",
+        "http.user_agent": "Go-http-client/1.1",
+        "net.host.name": "_",
+        "net.host.port": 8081,
+        "net.sock.peer.addr": "172.22.0.27",
+        "net.sock.peer.port": 52728
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:10.533Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "nginx",
+        "schemaUrl": "",
+        "version": "1.29.0"
+      },
+      "kind": "Server",
+      "name": "image-provider",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "image-provider"
+      },
+      "spanId": "a722c260695e4fb7",
+      "startTime": "2025-12-22T02:01:10.533Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "4809ed55c41f0ca4e83dff68c33f263d",
+      "traceState": ""
+    },
+    "sort": [
+      1766368870533
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "ME_JQ5sBmc08HMcQ71YT",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "downstream_cluster": "-",
+        "guid:x-request-id": "e515e4ec-15aa-9a42-85b1-570043dd36b9",
+        "http.method": "GET",
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "http.url": "http://localhost:8080/featurelive/longpoll?_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flo",
+        "node_id": "",
+        "peer.address": "172.22.0.1",
+        "request_size": "0",
+        "response_flags": "-",
+        "response_size": "254",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui",
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        "zone": ""
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:05.312001Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Server",
+      "name": "ingress",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "7594b7ea60e75bc5",
+      "startTime": "2025-12-22T02:00:55.308877Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "bd2d42a96415ff302f886a091a71a672",
+      "traceState": ""
+    },
+    "sort": [
+      1766368865312
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "L0_JQ5sBmc08HMcQ71YT",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "peer.address": "172.22.0.6:4000",
+        "response_flags": "-",
+        "upstream_address": "172.22.0.6:4000",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:05.311939Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Client",
+      "name": "router flagd-ui egress",
+      "parentSpanId": "7594b7ea60e75bc5",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "6b4dc1be417ec1a2",
+      "startTime": "2025-12-22T02:00:55.309147Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "bd2d42a96415ff302f886a091a71a672",
+      "traceState": ""
+    },
+    "sort": [
+      1766368865311
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "MU_JQ5sBmc08HMcQ_VZe",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "client.address": "::ffff:172.22.0.12",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.request.method": "GET",
+        "http.response.status_code": 200,
+        "network.peer.address": "::ffff:172.22.0.12",
+        "network.peer.port": 50302,
+        "network.protocol.version": "1.1",
+        "server.address": "localhost",
+        "server.port": 8080,
+        "url.path": "/live/longpoll",
+        "url.query": "_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fjs%2Fapp-bfbcc471bc314daa4f94a55c88d5e19a.js%3Fvsn%3Dd&_mounts=0&_mount_attempts=0&_live_referer=undefined&vsn=2.0.0&token=SFMyNTY.g2gDaAR3AnYxbQAAABZQNUJZeXNucmJLM3lKS1JVTVVTSE1nWHcVZmxhZ2RfdWlAMTM4YjMzNjQwZjcyAAAOsgAAAABpR5wmbQAAACxwaHg6bHA6YVdDNGVrUzRBK3Q4UG91b0JHTXd4QT09MTc2NjM1NjY4MjcyMG4GAOEHEEObAWIAEnUA.vsDYiHMxefh9caXrXe9cKfj145Gy4oVImN4Sa1CQNy8",
+        "url.scheme": "http",
+        "user_agent.original": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:05.311752569Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry_bandit",
+        "schemaUrl": "",
+        "version": "0.3.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "6b4dc1be417ec1a2",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "process.executable.name": "flagd_ui",
+        "process.runtime.description": "Erlang/OTP 28 erts-16.0.2",
+        "process.runtime.name": "BEAM",
+        "process.runtime.version": "16.0.2",
+        "service.instance.id": "flagd_ui@138b33640f72",
+        "service.name": "flagd-ui",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "erlang",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.7.0"
+      },
+      "spanId": "c25c52dcfd79bc59",
+      "startTime": "2025-12-22T02:00:55.309782157Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "bd2d42a96415ff302f886a091a71a672",
+      "traceState": ""
+    },
+    "sort": [
+      1766368865311
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "H0_JQ5sBmc08HMcQ21Zn",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "peer.address": "172.22.0.9:8080",
+        "response_flags": "-",
+        "upstream_address": "172.22.0.9:8080",
+        "upstream_cluster": "frontend",
+        "upstream_cluster.name": "frontend"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:00.539481Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Client",
+      "name": "router frontend egress",
+      "parentSpanId": "0b6f7a24b6494fab",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "e087f58c7799f782",
+      "startTime": "2025-12-22T02:01:00.533424Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "53810e1775f21c03c3142a0657821666",
+      "traceState": ""
+    },
+    "sort": [
+      1766368860539
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "IE_JQ5sBmc08HMcQ21Zn",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "downstream_cluster": "-",
+        "guid:x-request-id": "7b846974-fc94-97e9-85f9-50e77bf2969f",
+        "http.method": "GET",
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "http.url": "http://frontend-proxy:8080/",
+        "node_id": "",
+        "peer.address": "172.22.0.27",
+        "request_size": "0",
+        "response_flags": "-",
+        "response_size": "3405",
+        "upstream_cluster": "frontend",
+        "upstream_cluster.name": "frontend",
+        "user_agent": "Go-http-client/1.1",
+        "zone": ""
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:00.539516Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Server",
+      "name": "ingress",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "0b6f7a24b6494fab",
+      "startTime": "2025-12-22T02:01:00.533294Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "53810e1775f21c03c3142a0657821666",
+      "traceState": ""
+    },
+    "sort": [
+      1766368860539
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "LU_JQ5sBmc08HMcQ7VYB",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.host": "frontend-proxy:8080",
+        "http.method": "GET",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.status_text": "OK",
+        "http.target": "/",
+        "http.url": "http://frontend-proxy:8080/",
+        "http.user_agent": "Go-http-client/1.1",
+        "net.host.ip": "172.22.0.9",
+        "net.host.name": "frontend-proxy",
+        "net.host.port": 8080,
+        "net.peer.ip": "172.22.0.12",
+        "net.peer.port": 33096,
+        "net.transport": "ip_tcp"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:00.539303771Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-http",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "e087f58c7799f782",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "2507b1eb54d02182",
+      "startTime": "2025-12-22T02:01:00.534Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "53810e1775f21c03c3142a0657821666",
+      "traceState": ""
+    },
+    "sort": [
+      1766368860539
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "LE_JQ5sBmc08HMcQ7VYB",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.route": "/",
+        "http.status_code": 200,
+        "http.target": "/",
+        "next.route": "/",
+        "next.rsc": false,
+        "next.span_name": "GET /",
+        "next.span_type": "BaseServer.handleRequest"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:00.537770286Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Server",
+      "name": "GET /",
+      "parentSpanId": "2507b1eb54d02182",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "a64c8baf62b44b20",
+      "startTime": "2025-12-22T02:01:00.534Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "53810e1775f21c03c3142a0657821666",
+      "traceState": ""
+    },
+    "sort": [
+      1766368860537
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "K0_JQ5sBmc08HMcQ7VYB",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "next.route": "/",
+        "next.span_name": "render route (pages) /",
+        "next.span_type": "Render.renderDocument"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:00.53691637Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Internal",
+      "name": "render route (pages) /",
+      "parentSpanId": "a64c8baf62b44b20",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "c78040c9931a985d",
+      "startTime": "2025-12-22T02:01:00.535Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "53810e1775f21c03c3142a0657821666",
+      "traceState": ""
+    },
+    "sort": [
+      1766368860536
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "Kk_JQ5sBmc08HMcQ7VYB",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "next.route": "/",
+        "next.span_name": "resolve page components",
+        "next.span_type": "NextNodeServer.findPageComponents"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:00.534110374Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Internal",
+      "name": "resolve page components",
+      "parentSpanId": "a64c8baf62b44b20",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "d96baa3b7a742983",
+      "startTime": "2025-12-22T02:01:00.534Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "53810e1775f21c03c3142a0657821666",
+      "traceState": ""
+    },
+    "sort": [
+      1766368860534
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "JU_JQ5sBmc08HMcQ51aW",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.method": "GET",
+        "http.request_content_length": 0,
+        "http.response_content_length": 100,
+        "http.route": "/status",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.target": "/status",
+        "http.user_agent": "Go-http-client/1.1",
+        "net.host.name": "_",
+        "net.host.port": 8081,
+        "net.sock.peer.addr": "172.22.0.27",
+        "net.sock.peer.port": 52728
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:01:00.533Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "nginx",
+        "schemaUrl": "",
+        "version": "1.29.0"
+      },
+      "kind": "Server",
+      "name": "image-provider",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "image-provider"
+      },
+      "spanId": "7e77973a58588012",
+      "startTime": "2025-12-22T02:01:00.533Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "dcc68e16fedd5b0d603ca1161db1e820",
+      "traceState": ""
+    },
+    "sort": [
+      1766368860533
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "IU_JQ5sBmc08HMcQ3Fb1",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "network.peer.address": "172.22.0.20",
+        "network.peer.port": 8013,
+        "network.type": "ipv4",
+        "rpc.grpc.status_code": 4,
+        "rpc.method": "EventStream",
+        "rpc.service": "flagd.evaluation.v1.Service",
+        "rpc.system": "grpc",
+        "server.address": "flagd",
+        "server.port": 8013,
+        "thread.id": 35,
+        "thread.name": "Thread-2"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:58.799363604Z",
+      "events": [
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "SENT"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:58.796833898Z"
+        },
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:58.801130118Z"
+        },
+        {
+          "attributes": {
+            "message.id": 2,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:18.800822408Z"
+        },
+        {
+          "attributes": {
+            "message.id": 3,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:38.801524717Z"
+        },
+        {
+          "attributes": {
+            "message.id": 4,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:58.803779537Z"
+        },
+        {
+          "attributes": {
+            "message.id": 5,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:18.804413518Z"
+        },
+        {
+          "attributes": {
+            "message.id": 6,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:38.805445649Z"
+        },
+        {
+          "attributes": {
+            "message.id": 7,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:58.80669421Z"
+        },
+        {
+          "attributes": {
+            "message.id": 8,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:18.807473533Z"
+        },
+        {
+          "attributes": {
+            "message.id": 9,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:38.808645826Z"
+        },
+        {
+          "attributes": {
+            "message.id": 10,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:58.809297138Z"
+        },
+        {
+          "attributes": {
+            "message.id": 11,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:18.810659788Z"
+        },
+        {
+          "attributes": {
+            "message.id": 12,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:38.811044098Z"
+        },
+        {
+          "attributes": {
+            "message.id": 13,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:58.812305426Z"
+        },
+        {
+          "attributes": {
+            "message.id": 14,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:18.81300371Z"
+        },
+        {
+          "attributes": {
+            "message.id": 15,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:38.813539629Z"
+        },
+        {
+          "attributes": {
+            "message.id": 16,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:58.814714636Z"
+        },
+        {
+          "attributes": {
+            "message.id": 17,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:18.816311795Z"
+        },
+        {
+          "attributes": {
+            "message.id": 18,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:38.81690348Z"
+        },
+        {
+          "attributes": {
+            "message.id": 19,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:58.817842259Z"
+        },
+        {
+          "attributes": {
+            "message.id": 20,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:18.818682349Z"
+        },
+        {
+          "attributes": {
+            "message.id": 21,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:38.820034249Z"
+        },
+        {
+          "attributes": {
+            "message.id": 22,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:58.82117403Z"
+        },
+        {
+          "attributes": {
+            "message.id": 23,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:18.822909566Z"
+        },
+        {
+          "attributes": {
+            "message.id": 24,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:38.824026439Z"
+        },
+        {
+          "attributes": {
+            "message.id": 25,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:58.824792725Z"
+        },
+        {
+          "attributes": {
+            "message.id": 26,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:18.825622152Z"
+        },
+        {
+          "attributes": {
+            "message.id": 27,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:38.82590388Z"
+        },
+        {
+          "attributes": {
+            "message.id": 28,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:58.827434189Z"
+        },
+        {
+          "attributes": {
+            "message.id": 29,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:18.828715729Z"
+        },
+        {
+          "attributes": {
+            "message.id": 30,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:38.82913709Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "io.opentelemetry.grpc-1.6",
+        "schemaUrl": "",
+        "version": "2.21.0-alpha"
+      },
+      "kind": "Client",
+      "name": "flagd.evaluation.v1.Service/EventStream",
+      "parentSpanId": "",
+      "resource": {
+        "container.id": "84cbdd33da9d37a9fa2deb873404d13a3f636e7a2887a06ca75b8adcc3c6fd6e",
+        "host.arch": "amd64",
+        "host.name": "d2d8144cbe33",
+        "os.description": "Linux 6.16.8-200.fc42.x86_64",
+        "os.type": "linux",
+        "process.command_args": "[\"/usr/lib/jvm/java-17-openjdk-amd64/bin/java\",\"-jar\",\"fraud-detection-1.0-all.jar\"]",
+        "process.executable.path": "/usr/lib/jvm/java-17-openjdk-amd64/bin/java",
+        "process.pid": "1",
+        "process.runtime.description": "Debian OpenJDK 64-Bit Server VM 17.0.17+10-Debian-1deb12u1",
+        "process.runtime.name": "OpenJDK Runtime Environment",
+        "process.runtime.version": "17.0.17+10-Debian-1deb12u1",
+        "service.instance.id": "7bd456e7-e862-4604-9995-be12d8d0deb0",
+        "service.name": "fraud-detection",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.distro.name": "opentelemetry-java-instrumentation",
+        "telemetry.distro.version": "2.21.0",
+        "telemetry.sdk.language": "java",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.55.0"
+      },
+      "spanId": "31ebfa2fcf18e43e",
+      "startTime": "2025-12-22T01:50:58.795162517Z",
+      "status": {
+        "code": "Error",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "c17668277b804b6a005acc3e29c0d651",
+      "traceState": ""
+    },
+    "sort": [
+      1766368858799
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "HE_JQ5sBmc08HMcQ0lbF",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "172.22.0.15",
+        "net.peer.port": 56078,
+        "rpc.grpc.status_code": 4,
+        "rpc.method": "EventStream",
+        "rpc.service": "flagd.evaluation.v1.Service",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:58.797451285Z",
+      "events": [
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "RECEIVED",
+            "message.uncompressed_size": 0
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:58.798582987Z"
+        },
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "SENT",
+            "message.uncompressed_size": 18
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:58.799005878Z"
+        },
+        {
+          "attributes": {
+            "message.id": 2,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:18.800125507Z"
+        },
+        {
+          "attributes": {
+            "message.id": 3,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:38.801229113Z"
+        },
+        {
+          "attributes": {
+            "message.id": 4,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:58.802792396Z"
+        },
+        {
+          "attributes": {
+            "message.id": 5,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:18.80348298Z"
+        },
+        {
+          "attributes": {
+            "message.id": 6,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:38.804727879Z"
+        },
+        {
+          "attributes": {
+            "message.id": 7,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:58.805920224Z"
+        },
+        {
+          "attributes": {
+            "message.id": 8,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:18.806889424Z"
+        },
+        {
+          "attributes": {
+            "message.id": 9,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:38.808018407Z"
+        },
+        {
+          "attributes": {
+            "message.id": 10,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:58.808518953Z"
+        },
+        {
+          "attributes": {
+            "message.id": 11,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:18.809933366Z"
+        },
+        {
+          "attributes": {
+            "message.id": 12,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:38.810364965Z"
+        },
+        {
+          "attributes": {
+            "message.id": 13,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:58.811645982Z"
+        },
+        {
+          "attributes": {
+            "message.id": 14,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:18.812450573Z"
+        },
+        {
+          "attributes": {
+            "message.id": 15,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:38.812983287Z"
+        },
+        {
+          "attributes": {
+            "message.id": 16,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:58.814061471Z"
+        },
+        {
+          "attributes": {
+            "message.id": 17,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:18.815465231Z"
+        },
+        {
+          "attributes": {
+            "message.id": 18,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:38.816579105Z"
+        },
+        {
+          "attributes": {
+            "message.id": 19,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:58.817275345Z"
+        },
+        {
+          "attributes": {
+            "message.id": 20,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:18.818312305Z"
+        },
+        {
+          "attributes": {
+            "message.id": 21,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:38.819543852Z"
+        },
+        {
+          "attributes": {
+            "message.id": 22,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:58.820582572Z"
+        },
+        {
+          "attributes": {
+            "message.id": 23,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:18.822169623Z"
+        },
+        {
+          "attributes": {
+            "message.id": 24,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:38.82340834Z"
+        },
+        {
+          "attributes": {
+            "message.id": 25,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:58.824278102Z"
+        },
+        {
+          "attributes": {
+            "message.id": 26,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:18.824936466Z"
+        },
+        {
+          "attributes": {
+            "message.id": 27,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:38.825454483Z"
+        },
+        {
+          "attributes": {
+            "message.id": 28,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:58.826726089Z"
+        },
+        {
+          "attributes": {
+            "message.id": 29,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:18.827965174Z"
+        },
+        {
+          "attributes": {
+            "message.id": 30,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:38.828570135Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "connectrpc.com/otelconnect",
+        "schemaUrl": "",
+        "version": "semver:0.6.0-dev"
+      },
+      "kind": "Server",
+      "name": "flagd.evaluation.v1.Service/EventStream",
+      "parentSpanId": "31ebfa2fcf18e43e",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux 360cb6ecd529 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.runtime.version": "go1.24.5",
+        "service.name": "flagd",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "v0.12.9",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.37.0"
+      },
+      "spanId": "e2c360e7952204ab",
+      "startTime": "2025-12-22T01:50:58.798533449Z",
+      "status": {
+        "code": "Error",
+        "message": "stream closed due to server-side timeout"
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "c17668277b804b6a005acc3e29c0d651",
+      "traceState": ""
+    },
+    "sort": [
+      1766368858797
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "Ik_JQ5sBmc08HMcQ3VaP",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "network.peer.address": "172.22.0.20",
+        "network.peer.port": 8013,
+        "network.type": "ipv4",
+        "rpc.grpc.status_code": 4,
+        "rpc.method": "EventStream",
+        "rpc.service": "flagd.evaluation.v1.Service",
+        "rpc.system": "grpc",
+        "server.address": "flagd",
+        "server.port": 8013,
+        "thread.id": 39,
+        "thread.name": "Thread-2"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:57.95202897Z",
+      "events": [
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "SENT"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:57.946397047Z"
+        },
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:57.952887472Z"
+        },
+        {
+          "attributes": {
+            "message.id": 2,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:17.953954756Z"
+        },
+        {
+          "attributes": {
+            "message.id": 3,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:37.954815327Z"
+        },
+        {
+          "attributes": {
+            "message.id": 4,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:57.955762177Z"
+        },
+        {
+          "attributes": {
+            "message.id": 5,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:17.9571032Z"
+        },
+        {
+          "attributes": {
+            "message.id": 6,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:37.957428509Z"
+        },
+        {
+          "attributes": {
+            "message.id": 7,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:57.958172875Z"
+        },
+        {
+          "attributes": {
+            "message.id": 8,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:17.958961314Z"
+        },
+        {
+          "attributes": {
+            "message.id": 9,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:37.959636665Z"
+        },
+        {
+          "attributes": {
+            "message.id": 10,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:57.96066132Z"
+        },
+        {
+          "attributes": {
+            "message.id": 11,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:17.961404883Z"
+        },
+        {
+          "attributes": {
+            "message.id": 12,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:37.962178755Z"
+        },
+        {
+          "attributes": {
+            "message.id": 13,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:57.962608208Z"
+        },
+        {
+          "attributes": {
+            "message.id": 14,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:17.963795601Z"
+        },
+        {
+          "attributes": {
+            "message.id": 15,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:37.965575518Z"
+        },
+        {
+          "attributes": {
+            "message.id": 16,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:57.966335371Z"
+        },
+        {
+          "attributes": {
+            "message.id": 17,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:17.966821155Z"
+        },
+        {
+          "attributes": {
+            "message.id": 18,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:37.967687039Z"
+        },
+        {
+          "attributes": {
+            "message.id": 19,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:57.968785631Z"
+        },
+        {
+          "attributes": {
+            "message.id": 20,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:17.97003044Z"
+        },
+        {
+          "attributes": {
+            "message.id": 21,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:37.970749024Z"
+        },
+        {
+          "attributes": {
+            "message.id": 22,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:57.971766134Z"
+        },
+        {
+          "attributes": {
+            "message.id": 23,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:17.973468355Z"
+        },
+        {
+          "attributes": {
+            "message.id": 24,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:37.974012065Z"
+        },
+        {
+          "attributes": {
+            "message.id": 25,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:57.974461938Z"
+        },
+        {
+          "attributes": {
+            "message.id": 26,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:17.976093536Z"
+        },
+        {
+          "attributes": {
+            "message.id": 27,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:37.976826151Z"
+        },
+        {
+          "attributes": {
+            "message.id": 28,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:57.977603501Z"
+        },
+        {
+          "attributes": {
+            "message.id": 29,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:17.978219971Z"
+        },
+        {
+          "attributes": {
+            "message.id": 30,
+            "message.type": "RECEIVED"
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:37.979264874Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "io.opentelemetry.grpc-1.6",
+        "schemaUrl": "",
+        "version": "2.21.0-alpha"
+      },
+      "kind": "Client",
+      "name": "flagd.evaluation.v1.Service/EventStream",
+      "parentSpanId": "",
+      "resource": {
+        "container.id": "158b65dc74e4f22ee880ae048876ddf62e7d6af7d6453fc61953a38ec48057f1",
+        "host.arch": "amd64",
+        "host.name": "d2d8144cbe33",
+        "os.description": "Linux 6.16.8-200.fc42.x86_64",
+        "os.type": "linux",
+        "process.command_line": "/opt/java/openjdk/bin/java -javaagent:/usr/src/app/opentelemetry-javaagent.jar oteldemo.AdService",
+        "process.executable.path": "/opt/java/openjdk/bin/java",
+        "process.pid": "1",
+        "process.runtime.description": "Eclipse Adoptium OpenJDK 64-Bit Server VM 21.0.9+10-LTS",
+        "process.runtime.name": "OpenJDK Runtime Environment",
+        "process.runtime.version": "21.0.9+10-LTS",
+        "service.instance.id": "af9c4b33-a484-471c-9753-f7e02cbbe470",
+        "service.name": "ad",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.distro.name": "opentelemetry-java-instrumentation",
+        "telemetry.distro.version": "2.21.0",
+        "telemetry.sdk.language": "java",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.55.0"
+      },
+      "spanId": "3a1d03aa494030a4",
+      "startTime": "2025-12-22T01:50:57.945367402Z",
+      "status": {
+        "code": "Error",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "d3859b2c9ab90000cb47757378c81377",
+      "traceState": ""
+    },
+    "sort": [
+      1766368857952
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "G0_JQ5sBmc08HMcQ0lbF",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "172.22.0.23",
+        "net.peer.port": 39232,
+        "rpc.grpc.status_code": 4,
+        "rpc.method": "EventStream",
+        "rpc.service": "flagd.evaluation.v1.Service",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:57.9504516Z",
+      "events": [
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "RECEIVED",
+            "message.uncompressed_size": 0
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:57.951344475Z"
+        },
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "SENT",
+            "message.uncompressed_size": 18
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:57.951702367Z"
+        },
+        {
+          "attributes": {
+            "message.id": 2,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:17.953171129Z"
+        },
+        {
+          "attributes": {
+            "message.id": 3,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:37.953993353Z"
+        },
+        {
+          "attributes": {
+            "message.id": 4,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:57.955131688Z"
+        },
+        {
+          "attributes": {
+            "message.id": 5,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:17.956065101Z"
+        },
+        {
+          "attributes": {
+            "message.id": 6,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:37.956632228Z"
+        },
+        {
+          "attributes": {
+            "message.id": 7,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:57.957318657Z"
+        },
+        {
+          "attributes": {
+            "message.id": 8,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:17.95819771Z"
+        },
+        {
+          "attributes": {
+            "message.id": 9,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:37.959050259Z"
+        },
+        {
+          "attributes": {
+            "message.id": 10,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:57.960074044Z"
+        },
+        {
+          "attributes": {
+            "message.id": 11,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:17.960617812Z"
+        },
+        {
+          "attributes": {
+            "message.id": 12,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:37.961256962Z"
+        },
+        {
+          "attributes": {
+            "message.id": 13,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:57.962018178Z"
+        },
+        {
+          "attributes": {
+            "message.id": 14,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:17.962917683Z"
+        },
+        {
+          "attributes": {
+            "message.id": 15,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:37.964634593Z"
+        },
+        {
+          "attributes": {
+            "message.id": 16,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:57.96538039Z"
+        },
+        {
+          "attributes": {
+            "message.id": 17,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:17.966053869Z"
+        },
+        {
+          "attributes": {
+            "message.id": 18,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:37.967156321Z"
+        },
+        {
+          "attributes": {
+            "message.id": 19,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:57.968058502Z"
+        },
+        {
+          "attributes": {
+            "message.id": 20,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:17.969159103Z"
+        },
+        {
+          "attributes": {
+            "message.id": 21,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:37.969895816Z"
+        },
+        {
+          "attributes": {
+            "message.id": 22,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:57.971112904Z"
+        },
+        {
+          "attributes": {
+            "message.id": 23,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:17.972664636Z"
+        },
+        {
+          "attributes": {
+            "message.id": 24,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:37.97324678Z"
+        },
+        {
+          "attributes": {
+            "message.id": 25,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:57.973961963Z"
+        },
+        {
+          "attributes": {
+            "message.id": 26,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:17.975315254Z"
+        },
+        {
+          "attributes": {
+            "message.id": 27,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:37.976125386Z"
+        },
+        {
+          "attributes": {
+            "message.id": 28,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:57.976967892Z"
+        },
+        {
+          "attributes": {
+            "message.id": 29,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:17.977437714Z"
+        },
+        {
+          "attributes": {
+            "message.id": 30,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:37.97830906Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "connectrpc.com/otelconnect",
+        "schemaUrl": "",
+        "version": "semver:0.6.0-dev"
+      },
+      "kind": "Server",
+      "name": "flagd.evaluation.v1.Service/EventStream",
+      "parentSpanId": "3a1d03aa494030a4",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux 360cb6ecd529 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.runtime.version": "go1.24.5",
+        "service.name": "flagd",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "v0.12.9",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.37.0"
+      },
+      "spanId": "030bb41b1f724773",
+      "startTime": "2025-12-22T01:50:57.951319021Z",
+      "status": {
+        "code": "Error",
+        "message": "stream closed due to server-side timeout"
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "d3859b2c9ab90000cb47757378c81377",
+      "traceState": ""
+    },
+    "sort": [
+      1766368857950
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "Fk_JQ5sBmc08HMcQyFZX",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 4,
+        "rpc.method": "EventStream",
+        "rpc.service": "flagd.evaluation.v1.Service",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:55.899614954Z",
+      "events": [
+        {
+          "attributes": {
+            "exception.escaped": "False",
+            "exception.message": "<_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.DEADLINE_EXCEEDED\n\tdetails = \"Deadline Exceeded\"\n\tdebug_error_string = \"UNKNOWN:Error received from peer  {grpc_message:\"Deadline Exceeded\", grpc_status:4}\"\n>",
+            "exception.stacktrace": "Traceback (most recent call last):\n  File \"/venv/lib/python3.12/site-packages/opentelemetry/trace/__init__.py\", line 589, in use_span\n    yield span\n  File \"/venv/lib/python3.12/site-packages/opentelemetry/sdk/trace/__init__.py\", line 1105, in start_as_current_span\n    yield span\n  File \"/venv/lib/python3.12/site-packages/opentelemetry/instrumentation/grpc/_client.py\", line 220, in _intercept_server_stream\n    raise err\n  File \"/venv/lib/python3.12/site-packages/opentelemetry/instrumentation/grpc/_client.py\", line 216, in _intercept_server_stream\n    yield from invoker(request_or_iterator, metadata)\n  File \"/venv/lib/python3.12/site-packages/grpc/_channel.py\", line 538, in __next__\n    return self._next()\n           ^^^^^^^^^^^^\n  File \"/venv/lib/python3.12/site-packages/grpc/_channel.py\", line 962, in _next\n    raise self\ngrpc._channel._MultiThreadedRendezvous: <_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.DEADLINE_EXCEEDED\n\tdetails = \"Deadline Exceeded\"\n\tdebug_error_string = \"UNKNOWN:Error received from peer  {grpc_message:\"Deadline Exceeded\", grpc_status:4}\"\n>\n",
+            "exception.type": "grpc._channel._MultiThreadedRendezvous"
+          },
+          "droppedAttributesCount": 0,
+          "name": "exception",
+          "@timestamp": "2025-12-22T02:00:55.899596105Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.grpc",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Client",
+      "name": "/flagd.evaluation.v1.Service/EventStream",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "product-reviews",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.auto.version": "0.59b0",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "1c0bc310238df896",
+      "startTime": "2025-12-22T01:50:55.896122863Z",
+      "status": {
+        "code": "Error",
+        "message": "_MultiThreadedRendezvous: <_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.DEADLINE_EXCEEDED\n\tdetails = \"Deadline Exceeded\"\n\tdebug_error_string = \"UNKNOWN:Error received from peer  {grpc_message:\"Deadline Exceeded\", grpc_status:4}\"\n>"
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "1d384b85fea335498ad4e78336c33073",
+      "traceState": ""
+    },
+    "sort": [
+      1766368855899
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "Gk_JQ5sBmc08HMcQ0lbF",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "172.22.0.13",
+        "net.peer.port": 32772,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "EventStream",
+        "rpc.service": "flagd.evaluation.v1.Service",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:55.898572148Z",
+      "events": [
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "RECEIVED",
+            "message.uncompressed_size": 0
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:55.896574069Z"
+        },
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "SENT",
+            "message.uncompressed_size": 18
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:55.896700897Z"
+        },
+        {
+          "attributes": {
+            "message.id": 2,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:15.897592308Z"
+        },
+        {
+          "attributes": {
+            "message.id": 3,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:35.897984922Z"
+        },
+        {
+          "attributes": {
+            "message.id": 4,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:55.898946898Z"
+        },
+        {
+          "attributes": {
+            "message.id": 5,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:15.899707198Z"
+        },
+        {
+          "attributes": {
+            "message.id": 6,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:35.90012125Z"
+        },
+        {
+          "attributes": {
+            "message.id": 7,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:55.901301045Z"
+        },
+        {
+          "attributes": {
+            "message.id": 8,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:15.90223091Z"
+        },
+        {
+          "attributes": {
+            "message.id": 9,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:35.90316989Z"
+        },
+        {
+          "attributes": {
+            "message.id": 10,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:55.904074062Z"
+        },
+        {
+          "attributes": {
+            "message.id": 11,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:15.904631394Z"
+        },
+        {
+          "attributes": {
+            "message.id": 12,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:35.905203792Z"
+        },
+        {
+          "attributes": {
+            "message.id": 13,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:55.905944337Z"
+        },
+        {
+          "attributes": {
+            "message.id": 14,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:15.906760724Z"
+        },
+        {
+          "attributes": {
+            "message.id": 15,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:35.907629887Z"
+        },
+        {
+          "attributes": {
+            "message.id": 16,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:55.90800645Z"
+        },
+        {
+          "attributes": {
+            "message.id": 17,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:15.908417949Z"
+        },
+        {
+          "attributes": {
+            "message.id": 18,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:35.909602913Z"
+        },
+        {
+          "attributes": {
+            "message.id": 19,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:55.910858011Z"
+        },
+        {
+          "attributes": {
+            "message.id": 20,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:15.911512721Z"
+        },
+        {
+          "attributes": {
+            "message.id": 21,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:35.912532006Z"
+        },
+        {
+          "attributes": {
+            "message.id": 22,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:55.913543765Z"
+        },
+        {
+          "attributes": {
+            "message.id": 23,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:15.914635707Z"
+        },
+        {
+          "attributes": {
+            "message.id": 24,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:35.91504805Z"
+        },
+        {
+          "attributes": {
+            "message.id": 25,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:55.916306161Z"
+        },
+        {
+          "attributes": {
+            "message.id": 26,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:15.917007617Z"
+        },
+        {
+          "attributes": {
+            "message.id": 27,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:35.917450825Z"
+        },
+        {
+          "attributes": {
+            "message.id": 28,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:55.917765829Z"
+        },
+        {
+          "attributes": {
+            "message.id": 29,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:15.918302547Z"
+        },
+        {
+          "attributes": {
+            "message.id": 30,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:35.919597405Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "connectrpc.com/otelconnect",
+        "schemaUrl": "",
+        "version": "semver:0.6.0-dev"
+      },
+      "kind": "Server",
+      "name": "flagd.evaluation.v1.Service/EventStream",
+      "parentSpanId": "1c0bc310238df896",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux 360cb6ecd529 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.runtime.version": "go1.24.5",
+        "service.name": "flagd",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "v0.12.9",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.37.0"
+      },
+      "spanId": "572266052c43479c",
+      "startTime": "2025-12-22T01:50:55.8965628Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "1d384b85fea335498ad4e78336c33073",
+      "traceState": ""
+    },
+    "sort": [
+      1766368855898
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "GU_JQ5sBmc08HMcQ0lbF",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "172.22.0.5",
+        "net.peer.port": 41054,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "EventStream",
+        "rpc.service": "flagd.evaluation.v1.Service",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:55.40818668Z",
+      "events": [
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "RECEIVED",
+            "message.uncompressed_size": 0
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:55.406645475Z"
+        },
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "SENT",
+            "message.uncompressed_size": 18
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:55.406784494Z"
+        },
+        {
+          "attributes": {
+            "message.id": 2,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:15.407832571Z"
+        },
+        {
+          "attributes": {
+            "message.id": 3,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:35.408473144Z"
+        },
+        {
+          "attributes": {
+            "message.id": 4,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:55.40918538Z"
+        },
+        {
+          "attributes": {
+            "message.id": 5,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:15.410193978Z"
+        },
+        {
+          "attributes": {
+            "message.id": 6,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:35.411307617Z"
+        },
+        {
+          "attributes": {
+            "message.id": 7,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:55.411913028Z"
+        },
+        {
+          "attributes": {
+            "message.id": 8,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:15.413254198Z"
+        },
+        {
+          "attributes": {
+            "message.id": 9,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:35.414243306Z"
+        },
+        {
+          "attributes": {
+            "message.id": 10,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:55.414878749Z"
+        },
+        {
+          "attributes": {
+            "message.id": 11,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:15.416127294Z"
+        },
+        {
+          "attributes": {
+            "message.id": 12,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:35.41763478Z"
+        },
+        {
+          "attributes": {
+            "message.id": 13,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:55.418217215Z"
+        },
+        {
+          "attributes": {
+            "message.id": 14,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:15.418538443Z"
+        },
+        {
+          "attributes": {
+            "message.id": 15,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:35.419225799Z"
+        },
+        {
+          "attributes": {
+            "message.id": 16,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:55.419911046Z"
+        },
+        {
+          "attributes": {
+            "message.id": 17,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:15.420840914Z"
+        },
+        {
+          "attributes": {
+            "message.id": 18,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:35.422130063Z"
+        },
+        {
+          "attributes": {
+            "message.id": 19,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:55.422851591Z"
+        },
+        {
+          "attributes": {
+            "message.id": 20,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:15.424211483Z"
+        },
+        {
+          "attributes": {
+            "message.id": 21,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:35.425122055Z"
+        },
+        {
+          "attributes": {
+            "message.id": 22,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:55.426522952Z"
+        },
+        {
+          "attributes": {
+            "message.id": 23,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:15.426888322Z"
+        },
+        {
+          "attributes": {
+            "message.id": 24,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:35.427568685Z"
+        },
+        {
+          "attributes": {
+            "message.id": 25,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:55.428788099Z"
+        },
+        {
+          "attributes": {
+            "message.id": 26,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:15.429454018Z"
+        },
+        {
+          "attributes": {
+            "message.id": 27,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:35.429981348Z"
+        },
+        {
+          "attributes": {
+            "message.id": 28,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:55.430589645Z"
+        },
+        {
+          "attributes": {
+            "message.id": 29,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:15.431354074Z"
+        },
+        {
+          "attributes": {
+            "message.id": 30,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:35.432233032Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "connectrpc.com/otelconnect",
+        "schemaUrl": "",
+        "version": "semver:0.6.0-dev"
+      },
+      "kind": "Server",
+      "name": "flagd.evaluation.v1.Service/EventStream",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux 360cb6ecd529 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.runtime.version": "go1.24.5",
+        "service.name": "flagd",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "v0.12.9",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.37.0"
+      },
+      "spanId": "0272b1417e23ac8b",
+      "startTime": "2025-12-22T01:50:55.406635855Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "0f81aaa64493f2b42fb8d8201064f119",
+      "traceState": ""
+    },
+    "sort": [
+      1766368855408
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "E0_JQ5sBmc08HMcQyFYD",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "peer.address": "172.22.0.6:4000",
+        "response_flags": "-",
+        "upstream_address": "172.22.0.6:4000",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:55.304326Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Client",
+      "name": "router flagd-ui egress",
+      "parentSpanId": "3a8d491e15a95e44",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "743f3d3886e8c98c",
+      "startTime": "2025-12-22T02:00:45.302351Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "a2da0d244d18c9a197a4cbeedd7e8be1",
+      "traceState": ""
+    },
+    "sort": [
+      1766368855304
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "FE_JQ5sBmc08HMcQyFYD",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "downstream_cluster": "-",
+        "guid:x-request-id": "5b74ec3e-1ad5-9b47-981c-a99594b07fc8",
+        "http.method": "GET",
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "http.url": "http://localhost:8080/featurelive/longpoll?_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flo",
+        "node_id": "",
+        "peer.address": "172.22.0.1",
+        "request_size": "0",
+        "response_flags": "-",
+        "response_size": "254",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui",
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        "zone": ""
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:55.304356Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Server",
+      "name": "ingress",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "3a8d491e15a95e44",
+      "startTime": "2025-12-22T02:00:45.302131Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "a2da0d244d18c9a197a4cbeedd7e8be1",
+      "traceState": ""
+    },
+    "sort": [
+      1766368855304
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "HU_JQ5sBmc08HMcQ1lZL",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "client.address": "::ffff:172.22.0.12",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.request.method": "GET",
+        "http.response.status_code": 200,
+        "network.peer.address": "::ffff:172.22.0.12",
+        "network.peer.port": 50302,
+        "network.protocol.version": "1.1",
+        "server.address": "localhost",
+        "server.port": 8080,
+        "url.path": "/live/longpoll",
+        "url.query": "_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fjs%2Fapp-bfbcc471bc314daa4f94a55c88d5e19a.js%3Fvsn%3Dd&_mounts=0&_mount_attempts=0&_live_referer=undefined&vsn=2.0.0&token=SFMyNTY.g2gDaAR3AnYxbQAAABZQNUJZeXNucmJLM3lKS1JVTVVTSE1nWHcVZmxhZ2RfdWlAMTM4YjMzNjQwZjcyAAAOsgAAAABpR5wmbQAAACxwaHg6bHA6YVdDNGVrUzRBK3Q4UG91b0JHTXd4QT09MTc2NjM1NjY4MjcyMG4GAOEHEEObAWIAEnUA.vsDYiHMxefh9caXrXe9cKfj145Gy4oVImN4Sa1CQNy8",
+        "url.scheme": "http",
+        "user_agent.original": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:55.304173335Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry_bandit",
+        "schemaUrl": "",
+        "version": "0.3.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "743f3d3886e8c98c",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "process.executable.name": "flagd_ui",
+        "process.runtime.description": "Erlang/OTP 28 erts-16.0.2",
+        "process.runtime.name": "BEAM",
+        "process.runtime.version": "16.0.2",
+        "service.instance.id": "flagd_ui@138b33640f72",
+        "service.name": "flagd-ui",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "erlang",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.7.0"
+      },
+      "spanId": "ad18fb599267f031",
+      "startTime": "2025-12-22T02:00:45.302907234Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "a2da0d244d18c9a197a4cbeedd7e8be1",
+      "traceState": ""
+    },
+    "sort": [
+      1766368855304
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "FU_JQ5sBmc08HMcQyFYr",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 4,
+        "rpc.method": "EventStream",
+        "rpc.service": "flagd.evaluation.v1.Service",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:54.790964091Z",
+      "events": [
+        {
+          "attributes": {
+            "exception.escaped": "False",
+            "exception.message": "<_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.DEADLINE_EXCEEDED\n\tdetails = \"Deadline Exceeded\"\n\tdebug_error_string = \"UNKNOWN:Error received from peer  {grpc_message:\"Deadline Exceeded\", grpc_status:4}\"\n>",
+            "exception.stacktrace": "Traceback (most recent call last):\n  File \"/venv/lib/python3.12/site-packages/opentelemetry/trace/__init__.py\", line 589, in use_span\n    yield span\n  File \"/venv/lib/python3.12/site-packages/opentelemetry/sdk/trace/__init__.py\", line 1105, in start_as_current_span\n    yield span\n  File \"/venv/lib/python3.12/site-packages/opentelemetry/instrumentation/grpc/_client.py\", line 220, in _intercept_server_stream\n    raise err\n  File \"/venv/lib/python3.12/site-packages/opentelemetry/instrumentation/grpc/_client.py\", line 216, in _intercept_server_stream\n    yield from invoker(request_or_iterator, metadata)\n  File \"/venv/lib/python3.12/site-packages/grpc/_channel.py\", line 538, in __next__\n    return self._next()\n           ^^^^^^^^^^^^\n  File \"/venv/lib/python3.12/site-packages/grpc/_channel.py\", line 962, in _next\n    raise self\ngrpc._channel._MultiThreadedRendezvous: <_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.DEADLINE_EXCEEDED\n\tdetails = \"Deadline Exceeded\"\n\tdebug_error_string = \"UNKNOWN:Error received from peer  {grpc_message:\"Deadline Exceeded\", grpc_status:4}\"\n>\n",
+            "exception.type": "grpc._channel._MultiThreadedRendezvous"
+          },
+          "droppedAttributesCount": 0,
+          "name": "exception",
+          "@timestamp": "2025-12-22T02:00:54.790939142Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.grpc",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Client",
+      "name": "/flagd.evaluation.v1.Service/EventStream",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "recommendation",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.auto.version": "0.59b0",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "10fd261c79c01c7c",
+      "startTime": "2025-12-22T01:50:54.787186408Z",
+      "status": {
+        "code": "Error",
+        "message": "_MultiThreadedRendezvous: <_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.DEADLINE_EXCEEDED\n\tdetails = \"Deadline Exceeded\"\n\tdebug_error_string = \"UNKNOWN:Error received from peer  {grpc_message:\"Deadline Exceeded\", grpc_status:4}\"\n>"
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "ffd8802b289fe7f3ad00aa67b5d55ac2",
+      "traceState": ""
+    },
+    "sort": [
+      1766368854790
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "GE_JQ5sBmc08HMcQ0lbF",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "172.22.0.10",
+        "net.peer.port": 34812,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "EventStream",
+        "rpc.service": "flagd.evaluation.v1.Service",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:54.789873569Z",
+      "events": [
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "RECEIVED",
+            "message.uncompressed_size": 0
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:54.787530888Z"
+        },
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "SENT",
+            "message.uncompressed_size": 18
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:54.787693878Z"
+        },
+        {
+          "attributes": {
+            "message.id": 2,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:14.788412156Z"
+        },
+        {
+          "attributes": {
+            "message.id": 3,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:34.788861913Z"
+        },
+        {
+          "attributes": {
+            "message.id": 4,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:54.790034193Z"
+        },
+        {
+          "attributes": {
+            "message.id": 5,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:14.791369615Z"
+        },
+        {
+          "attributes": {
+            "message.id": 6,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:34.792012664Z"
+        },
+        {
+          "attributes": {
+            "message.id": 7,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:54.792908325Z"
+        },
+        {
+          "attributes": {
+            "message.id": 8,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:14.79397354Z"
+        },
+        {
+          "attributes": {
+            "message.id": 9,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:34.795111266Z"
+        },
+        {
+          "attributes": {
+            "message.id": 10,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:54.795960557Z"
+        },
+        {
+          "attributes": {
+            "message.id": 11,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:14.79685822Z"
+        },
+        {
+          "attributes": {
+            "message.id": 12,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:34.797864824Z"
+        },
+        {
+          "attributes": {
+            "message.id": 13,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:54.798647797Z"
+        },
+        {
+          "attributes": {
+            "message.id": 14,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:14.800192587Z"
+        },
+        {
+          "attributes": {
+            "message.id": 15,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:34.801966448Z"
+        },
+        {
+          "attributes": {
+            "message.id": 16,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:54.802913226Z"
+        },
+        {
+          "attributes": {
+            "message.id": 17,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:14.804180207Z"
+        },
+        {
+          "attributes": {
+            "message.id": 18,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:34.80523225Z"
+        },
+        {
+          "attributes": {
+            "message.id": 19,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:54.805517771Z"
+        },
+        {
+          "attributes": {
+            "message.id": 20,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:14.80688067Z"
+        },
+        {
+          "attributes": {
+            "message.id": 21,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:34.807634313Z"
+        },
+        {
+          "attributes": {
+            "message.id": 22,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:54.808821725Z"
+        },
+        {
+          "attributes": {
+            "message.id": 23,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:14.809452719Z"
+        },
+        {
+          "attributes": {
+            "message.id": 24,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:34.809787531Z"
+        },
+        {
+          "attributes": {
+            "message.id": 25,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:54.811025731Z"
+        },
+        {
+          "attributes": {
+            "message.id": 26,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:14.812580629Z"
+        },
+        {
+          "attributes": {
+            "message.id": 27,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:34.813198572Z"
+        },
+        {
+          "attributes": {
+            "message.id": 28,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:54.813988678Z"
+        },
+        {
+          "attributes": {
+            "message.id": 29,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:14.814808733Z"
+        },
+        {
+          "attributes": {
+            "message.id": 30,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:34.816240842Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "connectrpc.com/otelconnect",
+        "schemaUrl": "",
+        "version": "semver:0.6.0-dev"
+      },
+      "kind": "Server",
+      "name": "flagd.evaluation.v1.Service/EventStream",
+      "parentSpanId": "10fd261c79c01c7c",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux 360cb6ecd529 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.runtime.version": "go1.24.5",
+        "service.name": "flagd",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "v0.12.9",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.37.0"
+      },
+      "spanId": "f38eb3ce3f4e00ec",
+      "startTime": "2025-12-22T01:50:54.787517614Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "ffd8802b289fe7f3ad00aa67b5d55ac2",
+      "traceState": ""
+    },
+    "sort": [
+      1766368854789
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "F0_JQ5sBmc08HMcQ0lbF",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "172.22.0.5",
+        "net.peer.port": 41042,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "EventStream",
+        "rpc.service": "flagd.evaluation.v1.Service",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:54.211314143Z",
+      "events": [
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "RECEIVED",
+            "message.uncompressed_size": 0
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:54.2097247Z"
+        },
+        {
+          "attributes": {
+            "message.id": 1,
+            "message.type": "SENT",
+            "message.uncompressed_size": 18
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:50:54.20989517Z"
+        },
+        {
+          "attributes": {
+            "message.id": 2,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:14.210724717Z"
+        },
+        {
+          "attributes": {
+            "message.id": 3,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:34.211439945Z"
+        },
+        {
+          "attributes": {
+            "message.id": 4,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:51:54.211912085Z"
+        },
+        {
+          "attributes": {
+            "message.id": 5,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:14.212275995Z"
+        },
+        {
+          "attributes": {
+            "message.id": 6,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:34.21391429Z"
+        },
+        {
+          "attributes": {
+            "message.id": 7,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:52:54.214138256Z"
+        },
+        {
+          "attributes": {
+            "message.id": 8,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:14.21550108Z"
+        },
+        {
+          "attributes": {
+            "message.id": 9,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:34.217411279Z"
+        },
+        {
+          "attributes": {
+            "message.id": 10,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:53:54.217725739Z"
+        },
+        {
+          "attributes": {
+            "message.id": 11,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:14.218502059Z"
+        },
+        {
+          "attributes": {
+            "message.id": 12,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:34.219765096Z"
+        },
+        {
+          "attributes": {
+            "message.id": 13,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:54:54.220558202Z"
+        },
+        {
+          "attributes": {
+            "message.id": 14,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:14.221391645Z"
+        },
+        {
+          "attributes": {
+            "message.id": 15,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:34.222874407Z"
+        },
+        {
+          "attributes": {
+            "message.id": 16,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:55:54.223571941Z"
+        },
+        {
+          "attributes": {
+            "message.id": 17,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:14.224350775Z"
+        },
+        {
+          "attributes": {
+            "message.id": 18,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:34.225431038Z"
+        },
+        {
+          "attributes": {
+            "message.id": 19,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:56:54.226292728Z"
+        },
+        {
+          "attributes": {
+            "message.id": 20,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:14.227206035Z"
+        },
+        {
+          "attributes": {
+            "message.id": 21,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:34.228270381Z"
+        },
+        {
+          "attributes": {
+            "message.id": 22,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:57:54.229559207Z"
+        },
+        {
+          "attributes": {
+            "message.id": 23,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:14.229976669Z"
+        },
+        {
+          "attributes": {
+            "message.id": 24,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:34.23119793Z"
+        },
+        {
+          "attributes": {
+            "message.id": 25,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:58:54.231694656Z"
+        },
+        {
+          "attributes": {
+            "message.id": 26,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:14.232611464Z"
+        },
+        {
+          "attributes": {
+            "message.id": 27,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:34.233342995Z"
+        },
+        {
+          "attributes": {
+            "message.id": 28,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T01:59:54.234414084Z"
+        },
+        {
+          "attributes": {
+            "message.id": 29,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:14.235169842Z"
+        },
+        {
+          "attributes": {
+            "message.id": 30,
+            "message.type": "SENT",
+            "message.uncompressed_size": 12
+          },
+          "droppedAttributesCount": 0,
+          "name": "message",
+          "@timestamp": "2025-12-22T02:00:34.236873183Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "connectrpc.com/otelconnect",
+        "schemaUrl": "",
+        "version": "semver:0.6.0-dev"
+      },
+      "kind": "Server",
+      "name": "flagd.evaluation.v1.Service/EventStream",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux 360cb6ecd529 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.runtime.version": "go1.24.5",
+        "service.name": "flagd",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "v0.12.9",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.37.0"
+      },
+      "spanId": "10e02a34d9ee5d15",
+      "startTime": "2025-12-22T01:50:54.209690999Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "aa23ce3c81ccd214587d010f399f6710",
+      "traceState": ""
+    },
+    "sort": [
+      1766368854211
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "D0_JQ5sBmc08HMcQwFaA",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.method": "GET",
+        "http.request_content_length": 0,
+        "http.response_content_length": 100,
+        "http.route": "/status",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.target": "/status",
+        "http.user_agent": "Go-http-client/1.1",
+        "net.host.name": "_",
+        "net.host.port": 8081,
+        "net.sock.peer.addr": "172.22.0.27",
+        "net.sock.peer.port": 52728
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:50.534Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "nginx",
+        "schemaUrl": "",
+        "version": "1.29.0"
+      },
+      "kind": "Server",
+      "name": "image-provider",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "image-provider"
+      },
+      "spanId": "c761fedbbd3f5d0b",
+      "startTime": "2025-12-22T02:00:50.534Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "6806e909bd6c178631ebf5229c55f42f",
+      "traceState": ""
+    },
+    "sort": [
+      1766368850534
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "DU_JQ5sBmc08HMcQr1Y2",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "client.address": "::ffff:172.22.0.12",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.request.method": "GET",
+        "http.response.status_code": 200,
+        "network.peer.address": "::ffff:172.22.0.12",
+        "network.peer.port": 50302,
+        "network.protocol.version": "1.1",
+        "server.address": "localhost",
+        "server.port": 8080,
+        "url.path": "/live/longpoll",
+        "url.query": "_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fjs%2Fapp-bfbcc471bc314daa4f94a55c88d5e19a.js%3Fvsn%3Dd&_mounts=0&_mount_attempts=0&_live_referer=undefined&vsn=2.0.0&token=SFMyNTY.g2gDaAR3AnYxbQAAABZQNUJZeXNucmJLM3lKS1JVTVVTSE1nWHcVZmxhZ2RfdWlAMTM4YjMzNjQwZjcyAAAOsgAAAABpR5wmbQAAACxwaHg6bHA6YVdDNGVrUzRBK3Q4UG91b0JHTXd4QT09MTc2NjM1NjY4MjcyMG4GAOEHEEObAWIAEnUA.vsDYiHMxefh9caXrXe9cKfj145Gy4oVImN4Sa1CQNy8",
+        "url.scheme": "http",
+        "user_agent.original": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:45.294612845Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry_bandit",
+        "schemaUrl": "",
+        "version": "0.3.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "ba5f4093f76cd4e6",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "process.executable.name": "flagd_ui",
+        "process.runtime.description": "Erlang/OTP 28 erts-16.0.2",
+        "process.runtime.name": "BEAM",
+        "process.runtime.version": "16.0.2",
+        "service.instance.id": "flagd_ui@138b33640f72",
+        "service.name": "flagd-ui",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "erlang",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.7.0"
+      },
+      "spanId": "b1aa94937264267e",
+      "startTime": "2025-12-22T02:00:35.293365685Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "aaf445417db0a79b4f3dd5000bf36258",
+      "traceState": ""
+    },
+    "sort": [
+      1766368845294
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "CU_JQ5sBmc08HMcQoFbz",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "peer.address": "172.22.0.6:4000",
+        "response_flags": "-",
+        "upstream_address": "172.22.0.6:4000",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:45.294835Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Client",
+      "name": "router flagd-ui egress",
+      "parentSpanId": "0b08d358b1afe42e",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "ba5f4093f76cd4e6",
+      "startTime": "2025-12-22T02:00:35.292691Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "aaf445417db0a79b4f3dd5000bf36258",
+      "traceState": ""
+    },
+    "sort": [
+      1766368845294
+    ]
+  },
+  {
+    "_index": "otel-traces-2025-12-22",
+    "_id": "Ck_JQ5sBmc08HMcQoFbz",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "component": "proxy",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "downstream_cluster": "-",
+        "guid:x-request-id": "125645d8-b425-9f67-87fd-ae5014a1097e",
+        "http.method": "GET",
+        "http.protocol": "HTTP/1.1",
+        "http.status_code": "200",
+        "http.url": "http://localhost:8080/featurelive/longpoll?_csrf_token=fDgHJjZ2YQUzNGFKRC4JZ0JoIksbXTk58kQbqEWTXkV-wFyQ4YprllSr&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flo",
+        "node_id": "",
+        "peer.address": "172.22.0.1",
+        "request_size": "0",
+        "response_flags": "-",
+        "response_size": "254",
+        "upstream_cluster": "flagd-ui",
+        "upstream_cluster.name": "flagd-ui",
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        "zone": ""
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2025-12-22T02:00:45.294887Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "envoy",
+        "schemaUrl": "",
+        "version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "kind": "Server",
+      "name": "ingress",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "d2d8144cbe33",
+        "os.type": "linux",
+        "service.name": "frontend-proxy",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "cpp",
+        "telemetry.sdk.name": "envoy",
+        "telemetry.sdk.version": "6aa1dcf8663b46421a2b73b8c357c20769600e53/1.34.10/Clean/RELEASE/BoringSSL"
+      },
+      "spanId": "0b08d358b1afe42e",
+      "startTime": "2025-12-22T02:00:35.292448Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "aaf445417db0a79b4f3dd5000bf36258",
+      "traceState": ""
+    },
+    "sort": [
+      1766368845294
+    ]
+  }
+]
