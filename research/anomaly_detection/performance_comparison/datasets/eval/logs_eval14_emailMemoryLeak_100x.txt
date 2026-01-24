@@ -1,0 +1,519 @@
+payment  | {
+payment  |   resource: {
+payment  |     attributes: {
+payment  |       'process.pid': 1,
+payment  |       'process.executable.name': '/nodejs/bin/node',
+payment  |       'process.executable.path': '/nodejs/bin/node',
+payment  |       'process.command_args': [
+payment  |         '/nodejs/bin/node',
+payment  |         '--require=./opentelemetry.js',
+payment  |         '/usr/src/app/node_modules/thread-stream/lib/worker.js'
+payment  |       ],
+payment  |       'process.runtime.version': '22.21.1',
+payment  |       'process.runtime.name': 'nodejs',
+payment  |       'process.runtime.description': 'Node.js',
+payment  |       'process.command': '/usr/src/app/node_modules/thread-stream/lib/worker.js',
+payment  |       'process.owner': 'nonroot',
+payment  |       'os.type': 'linux',
+payment  |       'os.version': '6.16.8-200.fc42.x86_64',
+payment  |       'host.name': '76cddf2e36e9',
+payment  |       'host.arch': 'amd64',
+payment  |       'service.namespace': 'opentelemetry-demo',
+payment  |       'service.version': '2.1.3',
+payment  |       'service.name': 'payment'
+payment  |     }
+payment  |   },
+payment  |   instrumentationScope: { name: 'payment-logger', version: '1.0.0', schemaUrl: undefined },
+payment  |   timestamp: 1765460477568000,
+payment  |   traceId: 'c2ba5b530efd4e6ca93d60f9ed773dfd',
+payment  |   spanId: 'f22223a866e99c30',
+payment  |   traceFlags: '01',
+payment  |   severityText: 'info',
+payment  |   severityNumber: 9,
+payment  |   body: 'Charge request received.',
+payment  |   attributes: {
+payment  |     request: {
+payment  |       amount: { currencyCode: 'CAD', units: [Object], nanos: 216067220 },
+payment  |       creditCard: {
+payment  |         creditCardNumber: '4763-1844-9699-8031',
+payment  |         creditCardCvv: 488,
+payment  |         creditCardExpirationYear: 2039,
+payment  |         creditCardExpirationMonth: 7
+payment  |       }
+payment  |     }
+payment  |   }
+payment  | }
+payment  | {
+payment  |   resource: {
+payment  |     attributes: {
+payment  |       'process.pid': 1,
+payment  |       'process.executable.name': '/nodejs/bin/node',
+payment  |       'process.executable.path': '/nodejs/bin/node',
+payment  |       'process.command_args': [
+payment  |         '/nodejs/bin/node',
+payment  |         '--require=./opentelemetry.js',
+payment  |         '/usr/src/app/node_modules/thread-stream/lib/worker.js'
+payment  |       ],
+payment  |       'process.runtime.version': '22.21.1',
+payment  |       'process.runtime.name': 'nodejs',
+payment  |       'process.runtime.description': 'Node.js',
+payment  |       'process.command': '/usr/src/app/node_modules/thread-stream/lib/worker.js',
+payment  |       'process.owner': 'nonroot',
+payment  |       'os.type': 'linux',
+payment  |       'os.version': '6.16.8-200.fc42.x86_64',
+payment  |       'host.name': '76cddf2e36e9',
+payment  |       'host.arch': 'amd64',
+payment  |       'service.namespace': 'opentelemetry-demo',
+payment  |       'service.version': '2.1.3',
+payment  |       'service.name': 'payment'
+payment  |     }
+payment  |   },
+payment  |   instrumentationScope: { name: 'payment-logger', version: '1.0.0', schemaUrl: undefined },
+payment  |   timestamp: 1765460477568000,
+payment  |   traceId: 'c2ba5b530efd4e6ca93d60f9ed773dfd',
+payment  |   spanId: 'f22223a866e99c30',
+payment  |   traceFlags: '01',
+payment  |   severityText: 'info',
+payment  |   severityNumber: 9,
+payment  |   body: 'Transaction complete.',
+payment  |   attributes: {
+payment  |     transactionId: '3aa0b025-f933-4711-bd24-bb83112719ee',
+payment  |     cardType: 'visa',
+payment  |     lastFourDigits: '8031',
+payment  |     amount: {
+payment  |       units: { low: 1672, high: 0, unsigned: false },
+payment  |       nanos: 216067220,
+payment  |       currencyCode: 'CAD'
+payment  |     },
+payment  |     loyalty_level: 'silver'
+payment  |   }
+payment  | }
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       AddItemAsync called with userId=0ded63c8-d697-11f0-bbfa-aa5e433963aa, productId=2ZYFJ3GM2N, quantity=10
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=0ded63c8-d697-11f0-bbfa-aa5e433963aa
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       AddItemAsync called with userId=0ded63c8-d697-11f0-bbfa-aa5e433963aa, productId=OLJCESPC7Z, quantity=5
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=0ded63c8-d697-11f0-bbfa-aa5e433963aa
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       AddItemAsync called with userId=0ded63c8-d697-11f0-bbfa-aa5e433963aa, productId=0PUK6V6EV0, quantity=4
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=0ded63c8-d697-11f0-bbfa-aa5e433963aa
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       AddItemAsync called with userId=0ded63c8-d697-11f0-bbfa-aa5e433963aa, productId=HQTGWGPNH4, quantity=1
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=0ded63c8-d697-11f0-bbfa-aa5e433963aa
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=0ded63c8-d697-11f0-bbfa-aa5e433963aa
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       AddItemAsync called with userId=106807ac-d697-11f0-bbfa-aa5e433963aa, productId=HQTGWGPNH4, quantity=4
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=106807ac-d697-11f0-bbfa-aa5e433963aa
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       AddItemAsync called with userId=106807ac-d697-11f0-bbfa-aa5e433963aa, productId=LS4PSXUNUM, quantity=5
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=106807ac-d697-11f0-bbfa-aa5e433963aa
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       AddItemAsync called with userId=106807ac-d697-11f0-bbfa-aa5e433963aa, productId=2ZYFJ3GM2N, quantity=4
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=106807ac-d697-11f0-bbfa-aa5e433963aa
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=106807ac-d697-11f0-bbfa-aa5e433963aa
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       EmptyCartAsync called with userId=106807ac-d697-11f0-bbfa-aa5e433963aa
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       AddItemAsync called with userId=13d88768-d697-11f0-bbfa-aa5e433963aa, productId=1YMWWN1N4O, quantity=10
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=13d88768-d697-11f0-bbfa-aa5e433963aa
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       AddItemAsync called with userId=1b8a1cec-d697-11f0-bbfa-aa5e433963aa, productId=9SIQT8TOJO, quantity=5
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=1b8a1cec-d697-11f0-bbfa-aa5e433963aa
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       AddItemAsync called with userId=1da3ea08-d697-11f0-bbfa-aa5e433963aa, productId=HQTGWGPNH4, quantity=2
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=1da3ea08-d697-11f0-bbfa-aa5e433963aa
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=
+cart     | info: cart.cartstore.ValkeyCartStore[0]
+cart     |       GetCartAsync called with userId=
+frontend  | Error: 13 INTERNAL: Error: Product Catalog Fail Feature Flag Enabled
+frontend  |     at <unknown> (.next/server/chunks/[root-of-the-server]__c1ae8beb._.js:1:989)
+frontend  |     at new Promise (<anonymous>) {
+frontend  |   code: 13,
+frontend  |   details: 'Error: Product Catalog Fail Feature Flag Enabled',
+frontend  |   metadata: [Metadata]
+frontend  | }
+frontend  | Error: 13 INTERNAL: Error: Product Catalog Fail Feature Flag Enabled
+frontend  |     at <unknown> (.next/server/chunks/[root-of-the-server]__c1ae8beb._.js:1:989)
+frontend  |     at new Promise (<anonymous>) {
+frontend  |   code: 13,
+frontend  |   details: 'Error: Product Catalog Fail Feature Flag Enabled',
+frontend  |   metadata: [Metadata]
+frontend  | }
+frontend  | Error: 13 INTERNAL: failed to prepare order: failed to get product #"OLJCESPC7Z"
+frontend  |     at <unknown> (.next/server/chunks/[root-of-the-server]__a8da8030._.js:1:1836)
+frontend  |     at new Promise (<anonymous>) {
+frontend  |   code: 13,
+frontend  |   details: 'failed to prepare order: failed to get product #"OLJCESPC7Z"',
+frontend  |   metadata: [Metadata]
+frontend  | }
+frontend  | Error: 14 UNAVAILABLE: 
+frontend  |     at <unknown> (.next/server/chunks/[root-of-the-server]__9240420f._.js:1:463)
+frontend  |     at new Promise (<anonymous>) {
+frontend  |   code: 14,
+frontend  |   details: '',
+frontend  |   metadata: [Metadata]
+frontend  | }
+frontend  | Error: 13 INTERNAL: Error: Product Catalog Fail Feature Flag Enabled
+frontend  |     at <unknown> (.next/server/chunks/[root-of-the-server]__c1ae8beb._.js:1:989)
+frontend  |     at new Promise (<anonymous>) {
+frontend  |   code: 13,
+frontend  |   details: 'Error: Product Catalog Fail Feature Flag Enabled',
+frontend  |   metadata: [Metadata]
+frontend  | }
+email     | Order confirmation email sent to: tobias@example.com
+email     | 172.22.0.26 - - [11/Dec/2025:13:41:17 +0000] "POST /send_order_confirmation HTTP/1.1" 200 - 0.0040
+grafana   | logger=ngalert.sender.router rule_uid=des78nlna99tsf org_id=1 t=2025-12-11T13:41:20.008165925Z level=info msg="Sending alerts to local notifier" count=1
+quote     | [2025-12-11 13:41:17+00:00] "POST /getquote HTTP/1.1" 200 6 
+kafka     | [2025-12-11 13:41:14,522] INFO [LocalLog partition=__cluster_metadata-0, dir=/tmp/kafka-logs] Rolled new log segment at offset 1236468 in 2 ms. (kafka.log.LocalLog)
+kafka     | [2025-12-11 13:41:14,522] INFO [ProducerStateManager partition=__cluster_metadata-0] Wrote producer snapshot at offset 1236468 with 0 producer ids in 0 ms. (org.apache.kafka.storage.internals.log.ProducerStateManager)
+kafka     | [2025-12-11 13:41:17,021] INFO [SnapshotGenerator id=1] Creating new KRaft snapshot file snapshot 00000000000001236474-0000000005 because we have replayed at least 2800 bytes. (org.apache.kafka.image.publisher.SnapshotGenerator)
+kafka     | [2025-12-11 13:41:17,024] INFO [SnapshotEmitter id=1] Successfully wrote snapshot 00000000000001236474-0000000005 (org.apache.kafka.image.publisher.SnapshotEmitter)
+kafka     | [2025-12-11 13:41:29,526] INFO [LocalLog partition=__cluster_metadata-0, dir=/tmp/kafka-logs] Rolled new log segment at offset 1236498 in 2 ms. (kafka.log.LocalLog)
+kafka     | [2025-12-11 13:41:29,527] INFO [ProducerStateManager partition=__cluster_metadata-0] Wrote producer snapshot at offset 1236498 with 0 producer ids in 0 ms. (org.apache.kafka.storage.internals.log.ProducerStateManager)
+kafka     | [2025-12-11 13:41:33,670] INFO [UnifiedLog partition=__cluster_metadata-0, dir=/tmp/kafka-logs] Incremented log start offset to 1236318 due to snapshot generated (kafka.log.UnifiedLog)
+kafka     | [2025-12-11 13:41:33,671] INFO [UnifiedLog partition=__cluster_metadata-0, dir=/tmp/kafka-logs] Deleting segments due to log start offset 1236318 breach: LogSegment(baseOffset=1236258, size=2160, lastModifiedTime=1765460384000, largestRecordTimestamp=1765460383977),LogSegment(baseOffset=1236288, size=2160, lastModifiedTime=1765460399003, largestRecordTimestamp=1765460398980) (kafka.log.UnifiedLog)
+kafka     | [2025-12-11 13:41:33,671] INFO [MetadataLog partition=__cluster_metadata-0, nodeId=1] Marking snapshot OffsetAndEpoch(offset=1236279, epoch=5) for deletion because its timestamp (1765460379475) is now (1765460493670) older than the
+kafka     | retention (60000) (kafka.raft.KafkaMetadataLog)
+kafka     | [2025-12-11 13:41:33,671] INFO [UnifiedLog partition=__cluster_metadata-0, dir=/tmp/kafka-logs] Incremented log start offset to 1236357 due to snapshot generated (kafka.log.UnifiedLog)
+kafka     | [2025-12-11 13:41:33,679] INFO [LocalLog partition=__cluster_metadata-0, dir=/tmp/kafka-logs] Deleting segment files LogSegment(baseOffset=1236138, size=2160, lastModifiedTime=1765460323986, largestRecordTimestamp=1765460323962),LogSegment(baseOffset=1236168, size=2160, lastModifiedTime=1765460338990, largestRecordTimestamp=1765460338966) (kafka.log.LocalLog$)
+kafka     | [2025-12-11 13:41:33,679] INFO Deleted log /tmp/kafka-logs/__cluster_metadata-0/00000000000001236138.log.deleted. (org.apache.kafka.storage.internals.log.LogSegment)
+kafka     | [2025-12-11 13:41:33,679] INFO [UnifiedLog partition=__cluster_metadata-0, dir=/tmp/kafka-logs] Deleting segments due to log start offset 1236357 breach: LogSegment(baseOffset=1236318, size=2160, lastModifiedTime=1765460414007, largestRecordTimestamp=1765460413983) (kafka.log.UnifiedLog)
+kafka     | [2025-12-11 13:41:33,679] INFO Deleted offset index /tmp/kafka-logs/__cluster_metadata-0/00000000000001236138.index.deleted. (org.apache.kafka.storage.internals.log.LogSegment)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted time index /tmp/kafka-logs/__cluster_metadata-0/00000000000001236138.timeindex.deleted. (org.apache.kafka.storage.internals.log.LogSegment)
+kafka     | [2025-12-11 13:41:33,680] INFO [MetadataLog partition=__cluster_metadata-0, nodeId=1] Marking snapshot OffsetAndEpoch(offset=1236318, epoch=5) for deletion because its timestamp (1765460398980) is now (1765460493671) older than the
+kafka     | retention (60000) (kafka.raft.KafkaMetadataLog)
+kafka     | [2025-12-11 13:41:33,680] INFO [UnifiedLog partition=__cluster_metadata-0, dir=/tmp/kafka-logs] Incremented log start offset to 1236396 due to snapshot generated (kafka.log.UnifiedLog)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted log /tmp/kafka-logs/__cluster_metadata-0/00000000000001236168.log.deleted. (org.apache.kafka.storage.internals.log.LogSegment)
+kafka     | [2025-12-11 13:41:33,680] INFO [UnifiedLog partition=__cluster_metadata-0, dir=/tmp/kafka-logs] Deleting segments due to log start offset 1236396 breach: LogSegment(baseOffset=1236348, size=2160, lastModifiedTime=1765460429010, largestRecordTimestamp=1765460428986) (kafka.log.UnifiedLog)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted offset index /tmp/kafka-logs/__cluster_metadata-0/00000000000001236168.index.deleted. (org.apache.kafka.storage.internals.log.LogSegment)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted time index /tmp/kafka-logs/__cluster_metadata-0/00000000000001236168.timeindex.deleted. (org.apache.kafka.storage.internals.log.LogSegment)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted producer state snapshot /tmp/kafka-logs/__cluster_metadata-0/00000000000001236138.snapshot.deleted (org.apache.kafka.storage.internals.log.SnapshotFile)
+kafka     | [2025-12-11 13:41:33,680] INFO [MetadataLog partition=__cluster_metadata-0, nodeId=1] Marking snapshot OffsetAndEpoch(offset=1236357, epoch=5) for deletion because its timestamp (1765460418484) is now (1765460493680) older than the
+kafka     | retention (60000) (kafka.raft.KafkaMetadataLog)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted producer state snapshot /tmp/kafka-logs/__cluster_metadata-0/00000000000001236168.snapshot.deleted (org.apache.kafka.storage.internals.log.SnapshotFile)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted snapshot files for snapshot OffsetAndEpoch(offset=1236162, epoch=5). (org.apache.kafka.snapshot.Snapshots)
+kafka     | [2025-12-11 13:41:33,680] INFO [LocalLog partition=__cluster_metadata-0, dir=/tmp/kafka-logs] Deleting segment files LogSegment(baseOffset=1236198, size=2160, lastModifiedTime=1765460353993, largestRecordTimestamp=1765460353969) (kafka.log.LocalLog$)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted log /tmp/kafka-logs/__cluster_metadata-0/00000000000001236198.log.deleted. (org.apache.kafka.storage.internals.log.LogSegment)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted offset index /tmp/kafka-logs/__cluster_metadata-0/00000000000001236198.index.deleted. (org.apache.kafka.storage.internals.log.LogSegment)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted time index /tmp/kafka-logs/__cluster_metadata-0/00000000000001236198.timeindex.deleted. (org.apache.kafka.storage.internals.log.LogSegment)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted producer state snapshot /tmp/kafka-logs/__cluster_metadata-0/00000000000001236198.snapshot.deleted (org.apache.kafka.storage.internals.log.SnapshotFile)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted snapshot files for snapshot OffsetAndEpoch(offset=1236201, epoch=5). (org.apache.kafka.snapshot.Snapshots)
+kafka     | [2025-12-11 13:41:33,680] INFO [LocalLog partition=__cluster_metadata-0, dir=/tmp/kafka-logs] Deleting segment files LogSegment(baseOffset=1236228, size=2160, lastModifiedTime=1765460368997, largestRecordTimestamp=1765460368973) (kafka.log.LocalLog$)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted log /tmp/kafka-logs/__cluster_metadata-0/00000000000001236228.log.deleted. (org.apache.kafka.storage.internals.log.LogSegment)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted offset index /tmp/kafka-logs/__cluster_metadata-0/00000000000001236228.index.deleted. (org.apache.kafka.storage.internals.log.LogSegment)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted time index /tmp/kafka-logs/__cluster_metadata-0/00000000000001236228.timeindex.deleted. (org.apache.kafka.storage.internals.log.LogSegment)
+kafka     | [2025-12-11 13:41:33,680] INFO Deleted producer state snapshot /tmp/kafka-logs/__cluster_metadata-0/00000000000001236228.snapshot.deleted (org.apache.kafka.storage.internals.log.SnapshotFile)
+kafka     | [2025-12-11 13:41:33,681] INFO Deleted snapshot files for snapshot OffsetAndEpoch(offset=1236240, epoch=5). (org.apache.kafka.snapshot.Snapshots)
+kafka     | [2025-12-11 13:41:36,526] INFO [SnapshotGenerator id=1] Creating new KRaft snapshot file snapshot 00000000000001236513-0000000005 because we have replayed at least 2800 bytes. (org.apache.kafka.image.publisher.SnapshotGenerator)
+kafka     | [2025-12-11 13:41:36,529] INFO [SnapshotEmitter id=1] Successfully wrote snapshot 00000000000001236513-0000000005 (org.apache.kafka.image.publisher.SnapshotEmitter)
+kafka     | [2025-12-11 13:41:44,530] INFO [LocalLog partition=__cluster_metadata-0, dir=/tmp/kafka-logs] Rolled new log segment at offset 1236528 in 2 ms. (kafka.log.LocalLog)
+kafka     | [2025-12-11 13:41:44,530] INFO [ProducerStateManager partition=__cluster_metadata-0] Wrote producer snapshot at offset 1236528 with 0 producer ids in 0 ms. (org.apache.kafka.storage.internals.log.ProducerStateManager)
+kafka     | [2025-12-11 13:41:56,031] INFO [SnapshotGenerator id=1] Creating new KRaft snapshot file snapshot 00000000000001236552-0000000005 because we have replayed at least 2800 bytes. (org.apache.kafka.image.publisher.SnapshotGenerator)
+kafka     | [2025-12-11 13:41:56,033] INFO [SnapshotEmitter id=1] Successfully wrote snapshot 00000000000001236552-0000000005 (org.apache.kafka.image.publisher.SnapshotEmitter)
+kafka     | [2025-12-11 13:41:59,533] INFO [LocalLog partition=__cluster_metadata-0, dir=/tmp/kafka-logs] Rolled new log segment at offset 1236558 in 2 ms. (kafka.log.LocalLog)
+kafka     | [2025-12-11 13:41:59,534] INFO [ProducerStateManager partition=__cluster_metadata-0] Wrote producer snapshot at offset 1236558 with 0 producer ids in 1 ms. (org.apache.kafka.storage.internals.log.ProducerStateManager)
+ad        | 2025-12-11 13:41:01 - oteldemo.problempattern.GarbageCollectionTrigger - The artificially triggered GCs took: 580 ms trace_id=636fbf6ed980de614ab7e981eebf6113 span_id=a6258e491324cc0b trace_flags=01 
+ad        | 2025-12-11 13:41:19 - oteldemo.AdService - no baggage found in context trace_id=bb5fa4da6bb2d5524dc03f961048fb61 span_id=280177c746d091dd trace_flags=01 
+ad        | 2025-12-11 13:41:19 - oteldemo.problempattern.CPULoad - High CPU-Load problempattern enabled trace_id=bb5fa4da6bb2d5524dc03f961048fb61 span_id=280177c746d091dd trace_flags=01 
+ad        | 2025-12-11 13:41:19 - oteldemo.AdService - Targeted ad request received for [telescopes] trace_id=bb5fa4da6bb2d5524dc03f961048fb61 span_id=280177c746d091dd trace_flags=01 
+ad        | 2025-12-11 13:41:19 - oteldemo.AdService - Feature Flag adManualGc enabled, performing a manual gc now trace_id=bb5fa4da6bb2d5524dc03f961048fb61 span_id=280177c746d091dd trace_flags=01 
+ad        | 2025-12-11 13:41:19 - oteldemo.problempattern.GarbageCollectionTrigger - Triggering a manual garbage collection, next one in 10 seconds. trace_id=bb5fa4da6bb2d5524dc03f961048fb61 span_id=280177c746d091dd trace_flags=01 
+ad        | 2025-12-11 13:41:19 - oteldemo.problempattern.GarbageCollectionTrigger - The artificially triggered GCs took: 611 ms trace_id=bb5fa4da6bb2d5524dc03f961048fb61 span_id=280177c746d091dd trace_flags=01 
+ad        | 2025-12-11 13:41:29 - oteldemo.AdService - no baggage found in context trace_id=ae3d106f7b31eed74b5cbb1fde7aa765 span_id=c98fa50e3b9a43ab trace_flags=01 
+ad        | 2025-12-11 13:41:29 - oteldemo.problempattern.CPULoad - High CPU-Load problempattern enabled trace_id=ae3d106f7b31eed74b5cbb1fde7aa765 span_id=c98fa50e3b9a43ab trace_flags=01 
+ad        | 2025-12-11 13:41:29 - oteldemo.AdService - Targeted ad request received for [telescopes] trace_id=ae3d106f7b31eed74b5cbb1fde7aa765 span_id=c98fa50e3b9a43ab trace_flags=01 
+ad        | 2025-12-11 13:41:29 - oteldemo.AdService - GetAds Failed with status Status{code=UNAVAILABLE, description=null, cause=null} trace_id=ae3d106f7b31eed74b5cbb1fde7aa765 span_id=c98fa50e3b9a43ab trace_flags=01 
+ad        | 2025-12-11 13:41:34 - oteldemo.AdService - no baggage found in context trace_id=a149ee152f4ce019006a618f049e4383 span_id=76723d8d964aef85 trace_flags=01 
+ad        | 2025-12-11 13:41:34 - oteldemo.problempattern.CPULoad - High CPU-Load problempattern enabled trace_id=a149ee152f4ce019006a618f049e4383 span_id=76723d8d964aef85 trace_flags=01 
+ad        | 2025-12-11 13:41:34 - oteldemo.AdService - Targeted ad request received for [travel] trace_id=a149ee152f4ce019006a618f049e4383 span_id=76723d8d964aef85 trace_flags=01 
+ad        | 2025-12-11 13:41:34 - oteldemo.AdService - Feature Flag adManualGc enabled, performing a manual gc now trace_id=a149ee152f4ce019006a618f049e4383 span_id=76723d8d964aef85 trace_flags=01 
+ad        | 2025-12-11 13:41:34 - oteldemo.problempattern.GarbageCollectionTrigger - Triggering a manual garbage collection, next one in 10 seconds. trace_id=a149ee152f4ce019006a618f049e4383 span_id=76723d8d964aef85 trace_flags=01 
+ad        | 2025-12-11 13:41:34 - oteldemo.problempattern.GarbageCollectionTrigger - The artificially triggered GCs took: 617 ms trace_id=a149ee152f4ce019006a618f049e4383 span_id=76723d8d964aef85 trace_flags=01 
+ad        | 2025-12-11 13:41:48 - oteldemo.AdService - no baggage found in context trace_id=4a16b9b078cea33d63b9d7854beb8cbc span_id=c65159f402288a7c trace_flags=01 
+ad        | 2025-12-11 13:41:48 - oteldemo.problempattern.CPULoad - High CPU-Load problempattern enabled trace_id=4a16b9b078cea33d63b9d7854beb8cbc span_id=c65159f402288a7c trace_flags=01 
+ad        | 2025-12-11 13:41:48 - oteldemo.AdService - Targeted ad request received for [books] trace_id=4a16b9b078cea33d63b9d7854beb8cbc span_id=c65159f402288a7c trace_flags=01 
+ad        | 2025-12-11 13:41:48 - oteldemo.AdService - Feature Flag adManualGc enabled, performing a manual gc now trace_id=4a16b9b078cea33d63b9d7854beb8cbc span_id=c65159f402288a7c trace_flags=01 
+ad        | 2025-12-11 13:41:48 - oteldemo.problempattern.GarbageCollectionTrigger - Triggering a manual garbage collection, next one in 10 seconds. trace_id=4a16b9b078cea33d63b9d7854beb8cbc span_id=c65159f402288a7c trace_flags=01 
+ad        | 2025-12-11 13:41:49 - oteldemo.problempattern.GarbageCollectionTrigger - The artificially triggered GCs took: 582 ms trace_id=4a16b9b078cea33d63b9d7854beb8cbc span_id=c65159f402288a7c trace_flags=01 
+fraud-detection  | 2025-12-11 13:41:17 - fraud-detection - Consumed record with orderId: 111092cc-d697-11f0-bb1d-ee5f6b35c4a6, and updated total count to: 3308 trace_id=1cb99ee79ac086e7e88d5eb20e6b9f42 span_id=818769e4130a0e96 trace_flags=01 
+recommendation   | 2025-12-11 13:41:06,611 INFO [main] [recommendation_server.py:47] [trace_id=568720eb2910f77b5046b4f48ca37777 span_id=742c5412bdfaca83 resource.service.name=recommendation trace_sampled=True] - Receive ListRecommendations for product ids:['OLJCESPC7Z', 'L9ECAV7KIM', '1YMWWN1N4O', '6E92ZMYYFZ', '9SIQT8TOJO']
+recommendation   | 2025-12-11 13:41:58,475 INFO [main] [recommendation_server.py:47] [trace_id=a18e5e2c2e6e546ccf5e9c2f5226d0d3 span_id=c96eb9926634c366 resource.service.name=recommendation trace_sampled=True] - Receive ListRecommendations for product ids:['1YMWWN1N4O', 'L9ECAV7KIM', '6E92ZMYYFZ', 'OLJCESPC7Z', '66VCHSJNUP']
+otel-collector   | 2025-12-11T13:41:01.630Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 6}
+otel-collector   | 2025-12-11T13:41:02.184Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:02.425Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:03.474Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 32, "data points": 443}
+otel-collector   | 2025-12-11T13:41:04.256Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 4}
+otel-collector   | 2025-12-11T13:41:04.857Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 36, "data points": 467}
+otel-collector   | 2025-12-11T13:41:05.676Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 4, "data points": 7}
+otel-collector   | 2025-12-11T13:41:05.677Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 29, "data points": 34}
+otel-collector   | 2025-12-11T13:41:05.690Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 12, "metrics": 63, "data points": 110}
+otel-collector   | 2025-12-11T13:41:05.697Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:05.843Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 5}
+otel-collector   | 2025-12-11T13:41:05.936Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:06.182Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:06.337Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 3}
+otel-collector   | 2025-12-11T13:41:06.352Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:06.786Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:06.945Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:07.435Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 3}
+otel-collector   | 2025-12-11T13:41:07.960Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:08.043Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:08.965Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:09.123Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 3}
+otel-collector   | 2025-12-11T13:41:09.171Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:09.185Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:09.563Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 25, "data points": 55}
+otel-collector   | 2025-12-11T13:41:09.589Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:09.672Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 54, "data points": 182}
+otel-collector   | 2025-12-11T13:41:09.946Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 32, "data points": 450}
+otel-collector   | 2025-12-11T13:41:10.304Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:10.700Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:12.686Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 5}
+otel-collector   | 2025-12-11T13:41:13.077Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 5}
+otel-collector   | 2025-12-11T13:41:13.481Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:14.256Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 3}
+otel-collector   | 2025-12-11T13:41:14.571Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 6}
+otel-collector   | 2025-12-11T13:41:14.670Z	info	memorylimiter@v0.139.0/memorylimiter.go:202	Memory usage is above soft limit. Forcing a GC.	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.kind": "processor", "cur_mem_mib": 110}
+otel-collector   | 2025-12-11T13:41:14.673Z	info	memorylimiter@v0.139.0/memorylimiter.go:168	Memory usage after GC.	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.kind": "processor", "cur_mem_mib": 51}
+otel-collector   | 2025-12-11T13:41:14.823Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 26}
+otel-collector   | 2025-12-11T13:41:15.677Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 4, "data points": 7}
+otel-collector   | 2025-12-11T13:41:15.677Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 29, "data points": 34}
+otel-collector   | 2025-12-11T13:41:15.689Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 12, "metrics": 63, "data points": 110}
+otel-collector   | 2025-12-11T13:41:15.706Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 7}
+otel-collector   | 2025-12-11T13:41:15.788Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 5}
+otel-collector   | 2025-12-11T13:41:15.894Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 6}
+otel-collector   | 2025-12-11T13:41:16.043Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 4}
+otel-collector   | 2025-12-11T13:41:16.184Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 6}
+otel-collector   | 2025-12-11T13:41:16.310Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 5}
+otel-collector   | 2025-12-11T13:41:16.539Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 3}
+otel-collector   | 2025-12-11T13:41:16.728Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:16.802Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:16.945Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:17.042Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:17.150Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:17.421Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:17.560Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:19.054Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 40, "data points": 62}
+otel-collector   | 2025-12-11T13:41:19.487Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 36, "data points": 52}
+otel-collector   | 2025-12-11T13:41:19.564Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 25, "data points": 55}
+otel-collector   | 2025-12-11T13:41:19.603Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 5, "data points": 49}
+otel-collector   | 2025-12-11T13:41:19.607Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 16, "data points": 62}
+otel-collector   | 2025-12-11T13:41:19.672Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 54, "data points": 182}
+otel-collector   | 2025-12-11T13:41:19.820Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 13, "data points": 22}
+otel-collector   | 2025-12-11T13:41:22.960Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:24.256Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:24.558Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:24.824Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 21}
+otel-collector   | 2025-12-11T13:41:25.677Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 4, "data points": 7}
+otel-collector   | 2025-12-11T13:41:25.677Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 29, "data points": 34}
+otel-collector   | 2025-12-11T13:41:25.691Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 12, "metrics": 63, "data points": 110}
+otel-collector   | 2025-12-11T13:41:25.713Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:26.365Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:26.947Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:28.729Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 20, "data points": 49}
+otel-collector   | 2025-12-11T13:41:28.966Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:29.186Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:29.210Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:29.256Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:29.299Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 36, "data points": 78}
+otel-collector   | 2025-12-11T13:41:29.564Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 25, "data points": 55}
+otel-collector   | 2025-12-11T13:41:29.672Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 21, "metrics": 42, "data points": 314}
+otel-collector   | 2025-12-11T13:41:29.672Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 54, "data points": 182}
+otel-collector   | 2025-12-11T13:41:29.790Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:29.826Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:29.910Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 4}
+otel-collector   | 2025-12-11T13:41:30.045Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:30.295Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:30.717Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:31.356Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 4}
+otel-collector   | 2025-12-11T13:41:32.960Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 4}
+otel-collector   | 2025-12-11T13:41:33.301Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:33.683Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 9}
+otel-collector   | 2025-12-11T13:41:33.792Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 31}
+otel-collector   | 2025-12-11T13:41:34.255Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:34.557Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:34.827Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 3}
+otel-collector   | 2025-12-11T13:41:35.678Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 4, "data points": 7}
+otel-collector   | 2025-12-11T13:41:35.678Z	error	internal/base_exporter.go:114	Exporting failed. Rejecting data.	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "error": "sending queue is full", "rejected_items": 34}
+otel-collector   | go.opentelemetry.io/collector/exporter/exporterhelper/internal.(*BaseExporter).Send
+otel-collector   | 	go.opentelemetry.io/collector/exporter/exporterhelper@v0.139.0/internal/base_exporter.go:114
+otel-collector   | go.opentelemetry.io/collector/exporter/exporterhelper/internal.NewMetricsRequest.newConsumeMetrics.func1
+otel-collector   | 	go.opentelemetry.io/collector/exporter/exporterhelper@v0.139.0/internal/new_request.go:176
+otel-collector   | go.opentelemetry.io/collector/consumer.ConsumeMetricsFunc.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/consumer@v1.45.0/metrics.go:27
+otel-collector   | go.opentelemetry.io/collector/service/internal/refconsumer.refMetrics.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/service@v0.139.0/internal/refconsumer/metrics.go:29
+otel-collector   | go.opentelemetry.io/collector/internal/fanoutconsumer.(*metricsConsumer).ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/internal/fanoutconsumer@v0.139.0/metrics.go:71
+otel-collector   | go.opentelemetry.io/collector/processor/processorhelper.NewMetrics.func1
+otel-collector   | 	go.opentelemetry.io/collector/processor/processorhelper@v0.139.0/metrics.go:71
+otel-collector   | go.opentelemetry.io/collector/consumer.ConsumeMetricsFunc.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/consumer@v1.45.0/metrics.go:27
+otel-collector   | go.opentelemetry.io/collector/service/internal/refconsumer.refMetrics.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/service@v0.139.0/internal/refconsumer/metrics.go:29
+otel-collector   | go.opentelemetry.io/collector/processor/processorhelper.NewMetrics.func1
+otel-collector   | 	go.opentelemetry.io/collector/processor/processorhelper@v0.139.0/metrics.go:71
+otel-collector   | go.opentelemetry.io/collector/consumer.ConsumeMetricsFunc.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/consumer@v1.45.0/metrics.go:27
+otel-collector   | go.opentelemetry.io/collector/service/internal/refconsumer.refMetrics.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/service@v0.139.0/internal/refconsumer/metrics.go:29
+otel-collector   | go.opentelemetry.io/collector/consumer.ConsumeMetricsFunc.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/consumer@v1.45.0/metrics.go:27
+otel-collector   | go.opentelemetry.io/collector/internal/fanoutconsumer.(*metricsConsumer).ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/internal/fanoutconsumer@v0.139.0/metrics.go:60
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.scrapeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/controller.go:265
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.NewMetricsController.func1
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/controller.go:228
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.(*controller[...]).startScraping.func1
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/controller.go:175
+otel-collector   | 2025-12-11T13:41:35.683Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 2, "data points": 6}
+otel-collector   | 2025-12-11T13:41:35.691Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 12, "metrics": 63, "data points": 110}
+otel-collector   | 2025-12-11T13:41:35.699Z	error	scraperhelper@v0.139.0/obs_metrics.go:61	Error scraping metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "hostmetrics", "otelcol.component.kind": "receiver", "otelcol.signal": "metrics", "error": "error reading process name for pid 1454: open /hostfs/proc/1454/status: permission denied; error reading process name for pid 1601: open /hostfs/proc/1601/status: permission denied; error reading process name for pid 1609: open /hostfs/proc/1609/status: permission denied; error reading process name for pid 4805: open /hostfs/proc/4805/status: permission denied; error reading process name for pid 7680: open /hostfs/proc/7680/status: permission denied; error reading process name for pid 7698: open /hostfs/proc/7698/status: permission denied; error reading process name for pid 7737: open /hostfs/proc/7737/status: permission denied; error reading process name for pid 7747: open /hostfs/proc/7747/status: permission denied; error reading process name for pid 7806: open /hostfs/proc/7806/status: permission denied; error reading process name for pid 7948: open /hostfs/proc/7948/status: permission denied; error reading process name for pid 8018: open /hostfs/proc/8018/status: permission denied; error reading process name for pid 8272: open /hostfs/proc/8272/status: permission denied; error reading process name for pid 8512: open /hostfs/proc/8512/status: permission denied; error reading process name for pid 8542: open /hostfs/proc/8542/status: permission denied; error reading process name for pid 8543: open /hostfs/proc/8543/status: permission denied; error reading process name for pid 8584: open /hostfs/proc/8584/status: permission denied; error reading process name for pid 8613: open /hostfs/proc/8613/status: permission denied; error reading process name for pid 8742: open /hostfs/proc/8742/status: permission denied; error reading process name for pid 8743: open /hostfs/proc/8743/status: permission denied; error reading process name for pid 8765: open /hostfs/proc/8765/status: permission denied; error reading process name for pid 8766: open /hostfs/proc/8766/status: permission denied; error reading process name for pid 8794: open /hostfs/proc/8794/status: permission denied; error reading process name for pid 8795: open /hostfs/proc/8795/status: permission denied; error reading process name for pid 8798: open /hostfs/proc/8798/status: permission denied; error reading process name for pid 8839: open /hostfs/proc/8839/status: permission denied; error reading process name for pid 8849: open /hostfs/proc/8849/status: permission denied; error reading process name for pid 9493: open /hostfs/proc/9493/status: permission denied; error reading process name for pid 9948: open /hostfs/proc/9948/status: permission denied; error reading process name for pid 9949: open /hostfs/proc/9949/status: permission denied; error reading process name for pid 10026: open /hostfs/proc/10026/status: permission denied; error reading process name for pid 10028: open /hostfs/proc/10028/status: permission denied; error reading process name for pid 10029: open /hostfs/proc/10029/status: permission denied; error reading process name for pid 10224: open /hostfs/proc/10224/status: permission denied; error reading process name for pid 11105: open /hostfs/proc/11105/status: permission denied; error reading process name for pid 11172: open /hostfs/proc/11172/status: permission denied; error reading process name for pid 11254: open /hostfs/proc/11254/status: permission denied; error reading process name for pid 11278: open /hostfs/proc/11278/status: permission denied; error reading process name for pid 11282: open /hostfs/proc/11282/status: permission denied; error reading process name for pid 11331: open /hostfs/proc/11331/status: permission denied; error reading process name for pid 11333: open /hostfs/proc/11333/status: permission denied; error reading process name for pid 11338: open /hostfs/proc/11338/status: permission denied; error reading process name for pid 11689: open /hostfs/proc/11689/status: permission denied; error reading process name for pid 11815: open /hostfs/proc/11815/status: permission denied; error reading process name for pid 11817: open /hostfs/proc/11817/status: permission denied; error reading process name for pid 11819: open /hostfs/proc/11819/status: permission denied; error reading process name for pid 11840: open /hostfs/proc/11840/status: permission denied; error reading process name for pid 11842: open /hostfs/proc/11842/status: permission denied; error reading process name for pid 11843: open /hostfs/proc/11843/status: permission denied; error reading process name for pid 12116: open /hostfs/proc/12116/status: permission denied; error reading process name for pid 12233: open /hostfs/proc/12233/status: permission denied; error reading process name for pid 12239: open /hostfs/proc/12239/status: permission denied; error reading process name for pid 12242: open /hostfs/proc/12242/status: permission denied; error reading process name for pid 12273: open /hostfs/proc/12273/status: permission denied; error reading process name for pid 12282: open /hostfs/proc/12282/status: permission denied; error reading process name for pid 12296: open /hostfs/proc/12296/status: permission denied; error reading process name for pid 21123: open /hostfs/proc/21123/status: permission denied; error reading process name for pid 21202: open /hostfs/proc/21202/status: permission denied; error reading process name for pid 21292: open /hostfs/proc/21292/status: permission denied; error reading process name for pid 21525: open /hostfs/proc/21525/status: permission denied; error reading process name for pid 253724: open /hostfs/proc/253724/status: permission denied; error reading process name for pid 253881: open /hostfs/proc/253881/status: permission denied; error reading process name for pid 253882: open /hostfs/proc/253882/status: permission denied; error reading process name for pid 253886: open /hostfs/proc/253886/status: permission denied; error reading process name for pid 254325: open /hostfs/proc/254325/status: permission denied; error reading process name for pid 254326: open /hostfs/proc/254326/status: permission denied; error reading process name for pid 489310: open /hostfs/proc/489310/status: permission denied; error reading process name for pid 714543: open /hostfs/proc/714543/status: permission denied; error reading process name for pid 715254: open /hostfs/proc/715254/status: permission denied; error reading process name for pid 721913: open /hostfs/proc/721913/status: permission denied; error reading process name for pid 3035583: open /hostfs/proc/3035583/status: permission denied; error reading process name for pid 3910777: open /hostfs/proc/3910777/status: permission denied; error reading process name for pid 4154811: open /hostfs/proc/4154811/status: permission denied; error reading process name for pid 4154812: open /hostfs/proc/4154812/status: permission denied; error reading process name for pid 4154818: open /hostfs/proc/4154818/status: permission denied"}
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.wrapObsMetrics.func1
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/obs_metrics.go:61
+otel-collector   | go.opentelemetry.io/collector/scraper.ScrapeMetricsFunc.ScrapeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/scraper@v0.139.0/metrics.go:24
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.scrapeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/controller.go:256
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.NewMetricsController.func1
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/controller.go:228
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.(*controller[...]).startScraping.func1
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/controller.go:175
+otel-collector   | 2025-12-11T13:41:35.700Z	error	scraperhelper@v0.139.0/obs_metrics.go:61	Error scraping metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "hostmetrics", "otelcol.component.kind": "receiver", "otelcol.signal": "metrics", "error": "failed to read usage at /hostfs/hostfs: no such file or directory; failed to read usage at /hostfs/hostfs/boot: no such file or directory; failed to read usage at /hostfs/hostfs/boot/efi: no such file or directory; failed to read usage at /hostfs/hostfs/home: no such file or directory; failed to read usage at /hostfs/etc/otelcol-config.yml: no such file or directory; failed to read usage at /hostfs/etc/otelcol-config-extras.yml: no such file or directory"}
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.wrapObsMetrics.func1
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/obs_metrics.go:61
+otel-collector   | go.opentelemetry.io/collector/scraper.ScrapeMetricsFunc.ScrapeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/scraper@v0.139.0/metrics.go:24
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.scrapeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/controller.go:256
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.NewMetricsController.func1
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/controller.go:228
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.(*controller[...]).startScraping.func1
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/controller.go:175
+otel-collector   | 2025-12-11T13:41:35.713Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 99, "metrics": 300, "data points": 1268}
+otel-collector   | 2025-12-11T13:41:35.721Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:36.361Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 5}
+otel-collector   | 2025-12-11T13:41:36.371Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:36.440Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:36.793Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:36.948Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:37.430Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:37.834Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:37.960Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 4}
+otel-collector   | 2025-12-11T13:41:38.187Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:38.302Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 4}
+otel-collector   | 2025-12-11T13:41:38.411Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:39.563Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 25, "data points": 55}
+otel-collector   | 2025-12-11T13:41:39.672Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 54, "data points": 182}
+otel-collector   | 2025-12-11T13:41:40.045Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:40.363Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:40.727Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:42.961Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:44.256Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:44.670Z	info	memorylimiter@v0.139.0/memorylimiter.go:202	Memory usage is above soft limit. Forcing a GC.	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.kind": "processor", "cur_mem_mib": 112}
+otel-collector   | 2025-12-11T13:41:44.673Z	info	memorylimiter@v0.139.0/memorylimiter.go:168	Memory usage after GC.	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.kind": "processor", "cur_mem_mib": 51}
+otel-collector   | 2025-12-11T13:41:44.692Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:44.829Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 12}
+otel-collector   | 2025-12-11T13:41:44.870Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 12}
+accounting       | info: Accounting.Consumer[174880625]
+accounting       |       Order details: { "orderId": "111092cc-d697-11f0-bb1d-ee5f6b35c4a6", "shippingTrackingId": "d05d09f3-1e62-4963-a74c-aa4cc5f85119", "shippingCost": { "currencyCode": "CAD", "units": "156", "nanos": 391805395 }, "shippingAddress": { "streetAddress": "150 Elgin St", "city": "Ottawa", "state": "ON", "country": "Canada", "zipCode": "K2P1L4" }, "items": [ { "item": { "productId": "HQTGWGPNH4", "quantity": 4 }, "cost": { "currencyCode": "CAD", "units": "1", "nanos": 324787262 } }, { "item": { "productId": "LS4PSXUNUM", "quantity": 5 }, "cost": { "currencyCode": "CAD", "units": "77", "nanos": 346165413 } }, { "item": { "productId": "2ZYFJ3GM2N", "quantity": 4 }, "cost": { "currencyCode": "CAD", "units": "280", "nanos": 948571428 } } ] }.
+otel-collector   | 2025-12-11T13:41:45.677Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 4, "data points": 7}
+otel-collector   | 2025-12-11T13:41:45.677Z	error	internal/base_exporter.go:114	Exporting failed. Rejecting data.	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "error": "sending queue is full", "rejected_items": 34}
+otel-collector   | go.opentelemetry.io/collector/exporter/exporterhelper/internal.(*BaseExporter).Send
+otel-collector   | 	go.opentelemetry.io/collector/exporter/exporterhelper@v0.139.0/internal/base_exporter.go:114
+otel-collector   | go.opentelemetry.io/collector/exporter/exporterhelper/internal.NewMetricsRequest.newConsumeMetrics.func1
+otel-collector   | 	go.opentelemetry.io/collector/exporter/exporterhelper@v0.139.0/internal/new_request.go:176
+otel-collector   | go.opentelemetry.io/collector/consumer.ConsumeMetricsFunc.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/consumer@v1.45.0/metrics.go:27
+otel-collector   | go.opentelemetry.io/collector/service/internal/refconsumer.refMetrics.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/service@v0.139.0/internal/refconsumer/metrics.go:29
+otel-collector   | go.opentelemetry.io/collector/internal/fanoutconsumer.(*metricsConsumer).ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/internal/fanoutconsumer@v0.139.0/metrics.go:71
+otel-collector   | go.opentelemetry.io/collector/processor/processorhelper.NewMetrics.func1
+otel-collector   | 	go.opentelemetry.io/collector/processor/processorhelper@v0.139.0/metrics.go:71
+otel-collector   | go.opentelemetry.io/collector/consumer.ConsumeMetricsFunc.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/consumer@v1.45.0/metrics.go:27
+otel-collector   | go.opentelemetry.io/collector/service/internal/refconsumer.refMetrics.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/service@v0.139.0/internal/refconsumer/metrics.go:29
+otel-collector   | go.opentelemetry.io/collector/processor/processorhelper.NewMetrics.func1
+otel-collector   | 	go.opentelemetry.io/collector/processor/processorhelper@v0.139.0/metrics.go:71
+otel-collector   | go.opentelemetry.io/collector/consumer.ConsumeMetricsFunc.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/consumer@v1.45.0/metrics.go:27
+otel-collector   | go.opentelemetry.io/collector/service/internal/refconsumer.refMetrics.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/service@v0.139.0/internal/refconsumer/metrics.go:29
+otel-collector   | go.opentelemetry.io/collector/consumer.ConsumeMetricsFunc.ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/consumer@v1.45.0/metrics.go:27
+otel-collector   | go.opentelemetry.io/collector/internal/fanoutconsumer.(*metricsConsumer).ConsumeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/internal/fanoutconsumer@v0.139.0/metrics.go:60
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.scrapeMetrics
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/controller.go:265
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.NewMetricsController.func1
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/controller.go:228
+otel-collector   | go.opentelemetry.io/collector/scraper/scraperhelper.(*controller[...]).startScraping.func1
+otel-collector   | 	go.opentelemetry.io/collector/scraper/scraperhelper@v0.139.0/controller.go:175
+otel-collector   | 2025-12-11T13:41:45.691Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 12, "metrics": 63, "data points": 110}
+otel-collector   | 2025-12-11T13:41:45.730Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:46.371Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 4}
+otel-collector   | 2025-12-11T13:41:46.376Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:46.949Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:47.960Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:48.187Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:48.304Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:48.967Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:49.045Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:49.194Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 5}
+otel-collector   | 2025-12-11T13:41:49.215Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:49.563Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 25, "data points": 55}
+otel-collector   | 2025-12-11T13:41:49.671Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 54, "data points": 182}
+otel-collector   | 2025-12-11T13:41:50.046Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:50.195Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:50.367Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:50.734Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:52.961Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 4}
+otel-collector   | 2025-12-11T13:41:54.256Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:54.609Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:54.830Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:55.677Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 4, "data points": 7}
+otel-collector   | 2025-12-11T13:41:55.677Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 29, "data points": 34}
+otel-collector   | 2025-12-11T13:41:55.691Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 12, "metrics": 63, "data points": 110}
+otel-collector   | 2025-12-11T13:41:55.737Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:56.192Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:56.378Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:56.382Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:56.799Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:41:56.951Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:41:58.967Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 2}
+otel-collector   | 2025-12-11T13:41:59.127Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 3}
+otel-collector   | 2025-12-11T13:41:59.204Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 101, "data points": 152}
+otel-collector   | 2025-12-11T13:41:59.217Z	info	Traces	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "traces", "resource spans": 1, "spans": 1}
+otel-collector   | 2025-12-11T13:41:59.563Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 25, "data points": 55}
+otel-collector   | 2025-12-11T13:41:59.646Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 3}
+otel-collector   | 2025-12-11T13:41:59.671Z	info	Metrics	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "metrics", "resource metrics": 1, "metrics": 54, "data points": 182}
+otel-collector   | 2025-12-11T13:41:59.800Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:42:00.047Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:42:00.631Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:42:00.739Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 2}
+otel-collector   | 2025-12-11T13:42:01.187Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+otel-collector   | 2025-12-11T13:42:01.320Z	info	Logs	{"resource": {"service.instance.id": "9bd66ef7-d09c-4fc9-a336-34a25b88e3e2", "service.name": "otelcol-contrib", "service.version": "0.139.0"}, "otelcol.component.id": "debug", "otelcol.component.kind": "exporter", "otelcol.signal": "logs", "resource logs": 1, "log records": 1}
+jaeger           | 2025-12-11T13:41:21.382Z	warn	grpc@v1.75.0/clientconn.go:1407	[core] [Channel #1 SubChannel #7]grpc: addrConn.createTransport failed to connect to {Addr: "127.0.0.1:4317", ServerName: "localhost:4317", }. Err: connection error: desc = "transport: Error while dialing: dial tcp 127.0.0.1:4317: connect: connection refused"	{"resource": {"service.instance.id": "4de3bbb1-f194-4401-9bbe-a327961db84d", "service.name": "jaeger-query", "service.version": "v2.11.0"}, "grpc_log": true}
+jaeger           | 2025-12-11T13:41:58.069Z	warn	grpc@v1.75.0/clientconn.go:1407	[core] [Channel #1 SubChannel #8]grpc: addrConn.createTransport failed to connect to {Addr: "[::1]:4317", ServerName: "localhost:4317", }. Err: connection error: desc = "transport: Error while dialing: dial tcp [::1]:4317: connect: connection refused"	{"resource": {"service.instance.id": "4de3bbb1-f194-4401-9bbe-a327961db84d", "service.name": "jaeger-query", "service.version": "v2.11.0"}, "grpc_log": true}
