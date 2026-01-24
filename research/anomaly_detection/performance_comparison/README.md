@@ -104,6 +104,25 @@ By default, artifacts are written under:
 - `research/anomaly_detection/otel-demo/otel_ground_truth_data/` (latest/current)
 - or symlinked runs under `research/anomaly_detection/otel-demo/otel_ground_truth_runs/run-*/`
 
+#### Recommended settings and tips for new collections
+
+- Baselines for training: collect at least 5–10 baseline windows.
+- Window sizing: use `--duration 60–90` seconds and `--cooldown >= duration` to avoid overlap.
+- Load generator: ensure the demo’s load generator is running (so telemetry is not empty).
+- Backend health: verify Prometheus, OpenSearch, and OTEL Collector are up before starting.
+- Stability: avoid restarting services mid-run; keep system load stable to reduce noise.
+- Storage: each run writes logs/traces/metrics per window; plan for hundreds of MB across full suites.
+
+Examples:
+
+```bash
+# 10 clean baselines, 60s cooldown + 60s window
+python3 run.py collect-baselines --windows 10 --cooldown 60 --duration 60
+
+# Full suite with injected faults + baselines (takes longer)
+python3 run.py suite
+```
+
 3) Use collected data in the pipeline
 
 Option A: point the pipeline directly at the collected folder:
@@ -122,6 +141,44 @@ ln -s research/anomaly_detection/otel-demo/otel_ground_truth_runs/run-YYYYMMDDHH
 make features DATASET=myrun
 make compare
 ```
+
+## From ground truth to train/eval/test (curation guide)
+
+Ground truth windows are timestamped and live-collected. Curating creates stable, versionable splits you can reuse.
+
+1) Identify baselines vs faults from each window’s `metadata_*.json`:
+- Baseline: `ground_truth_root_cause == "none"` and `variant == "off"`
+- Fault: `ground_truth_root_cause != "none"` (usually `variant == "on"`)
+
+2) Create curated folders:
+```bash
+mkdir -p datasets/train datasets/eval datasets/test
+```
+
+3) Put baselines into `datasets/train/` and label them `train##_baseline` (names matter for training detection). You can copy or symlink:
+```bash
+# Copy a baseline window
+cp path/to/run/metadata_train01_baseline.json datasets/train/
+cp path/to/run/logs_train01_baseline.txt     datasets/train/
+cp path/to/run/traces_train01_baseline.json  datasets/train/
+cp path/to/run/metrics_train01_baseline.json datasets/train/
+
+# Or symlink instead of copying
+ln -s ../../otel-demo/otel_ground_truth_runs/run-YYYY.../metadata_train01_baseline.json datasets/train/
+ln -s ../../otel-demo/otel_ground_truth_runs/run-YYYY.../logs_train01_baseline.txt     datasets/train/
+```
+
+4) Put a mix of baselines and faults into `datasets/eval/` and `datasets/test/` (e.g., earlier runs → eval, later runs → test). Use labels like `eval##_...` and `test##_...`.
+
+5) Verify:
+```bash
+make features DATASET=.   # combines train+eval+test
+make compare
+```
+
+Notes:
+- Training rows are determined by both baseline status and the label starting with `train`; everything else (including non-train baselines) is evaluated.
+- Symlinks work the same as copies for the pipeline and avoid duplication.
 
 ### ASCII diagrams
 
@@ -180,6 +237,66 @@ How training vs evaluation is determined:
            - Calibrate threshold (e.g., 0.995)       - Thresholded metrics (Precision/Recall/F1/Accuracy/FPR/TNR)
                                                      - Curves and AUCs (PR-AUC, ROC-AUC)
 ```
+
+## Reports and how they’re generated
+
+There are two primary HTML reports:
+
+- IsolationForest report (single-detector), produced by `feature_pipeline.py`:
+  - Inputs: features built from the selected `DATASET`, training rows detected from metadata.
+  - Steps:
+    1) Fit IsolationForest on TRAIN baseline rows.
+    2) Calibrate a threshold from train scores at `THRESHOLD_QUANTILE` (default `0.995`).
+    3) Score EVAL rows; compute:
+       - Confusion matrix and operating-point metrics at the calibrated threshold: Precision, Recall, F1, Accuracy, FPR, TNR.
+       - PR and ROC curves and their AUCs using continuous anomaly scores.
+  - Outputs (under `out/`):
+    - `features_*.csv` (all rows and feature columns)
+    - `report_isoforest_*.json` (metrics, curves, threshold, feature columns)
+    - `report_isoforest_*.html` (if you run `make visualize`)
+
+- Detector comparison report, produced by `comparison/compare_detectors.py` (via `make compare`):
+  - Inputs: the latest `features_*.csv` and `report_isoforest_*.json` (for column order).
+  - For each detector:
+    1) Train on TRAIN rows (baselines).
+    2) Calibrate threshold from TRAIN scores at the same quantile.
+    3) Score EVAL rows; compute operating-point metrics and PR/ROC AUCs.
+  - Output: `out/ad_compare_<ts>/ad_compare.html` and `ad_compare.json` (+ model artifacts).
+
+### Feature set (high level)
+Extracted from logs/traces/metrics per window (examples):
+- Traces: total spans, 5xx spans, unique services/span names
+- Logs: total lines, error counts per service, error ratio
+- Metrics: series counts, simple scalar sums (e.g., request rate)
+
+## Anomaly detection algorithms included
+
+- IsolationForest (sklearn)
+  - Unsupervised, tree-based isolation of anomalies.
+  - Scores are `-decision_function(X)` so higher means “more anomalous”.
+  - Used as the baseline model; model file saved to `out/IsolationForestModel_<ts>.pkl`.
+
+- Extended Isolation Forest (isotree)
+  - If `isotree` is installed, uses `isotree.IsolationForest`; otherwise falls back to sklearn IF.
+  - Uses `predict_scores(X)` where higher means “more anomalous”.
+
+- COPOD (pyod)
+  - Uses empirical copulas and outlier degrees.
+  - Higher `decision_function` values indicate more anomalous points.
+
+- RRCF (Robust Random Cut Forest)
+  - Forest of random cut trees; anomaly score is CoDisp (average displacement), higher is more anomalous.
+  - This implementation normalizes features (median/MAD), builds trees on train, and scores by temporary insertions.
+
+All detectors:
+- Train only on TRAIN baseline rows.
+- Calibrate threshold at a quantile of TRAIN scores (default `0.995`).
+- Evaluate on EVAL rows (baselines + faults) for metrics and curves.
+
+### Configuration knobs
+- `THRESHOLD_QUANTILE` (env): operating-point sensitivity (default `0.995`).
+- `TRAIN_LOG_ERROR_MAX` (env): tolerates some noisy baselines when few clean samples exist (default `3`).
+- `DATASET` (Make): which dataset subtree to scan (`eval`, `test`, `train`, or `.`).
 
 ## Tuning and troubleshooting
 
