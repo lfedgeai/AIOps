@@ -1,94 +1,128 @@
-name: Run Podman Compose (Build & Deploy)
+name: Run Podman Compose demos
 
 on:
   push:
     branches: [ main ]
+    paths:
+      - '.github/workflows/**'
+      - 'demo/demo-1-basics/**'
+      - 'demo/demo-2-otel/**'
   pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'demo/demo-1-basics/**'
+      - 'demo/demo-2-otel/**'
+  workflow_dispatch:
 
 jobs:
   podman-compose:
     runs-on: ubuntu-latest
 
+    env:
+      XDG_RUNTIME_DIR: ${{ github.workspace }}/podman-runtime
+      TMPDIR: ${{ github.workspace }}/podman-tmp
+      PODMAN_STORAGE: ${{ github.workspace }}/podman-storage
+
     steps:
-      # Step 1: Checkout repository
-      - name: Checkout code
-        uses: actions/checkout@v4
+    # --------------------------------------------------
+    # 1️⃣ Checkout
+    # --------------------------------------------------
+    - uses: actions/checkout@v4
 
-      # Step 2: Install Podman & podman-compose
-      - name: Install Podman
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y podman python3-pip
-          pip install podman-compose
-          podman --version
+    # --------------------------------------------------
+    # 2️⃣ Free disk space
+    # --------------------------------------------------
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo docker image prune -a -f || true
+        df -h
 
-      # Step 3: Configure Podman storage correctly
-      - name: Configure Podman storage
-        run: |
-          STORAGE_ROOT="/home/runner/work/_containers"
-          sudo mkdir -p $STORAGE_ROOT
-          sudo mkdir -p /etc/containers
+    # --------------------------------------------------
+    # 3️⃣ Install Podman
+    # --------------------------------------------------
+    - name: Install Podman & podman-compose
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y podman uidmap python3-pip
+        pip install podman-compose
 
-          echo "[storage]" | sudo tee /etc/containers/storage.conf
-          echo "graphroot=\"$STORAGE_ROOT\"" | sudo tee -a /etc/containers/storage.conf
+    # --------------------------------------------------
+    # 4️⃣ Silence Podman warnings
+    # --------------------------------------------------
+    - name: Configure Podman runtime
+      run: |
+        mkdir -p ~/.config/containers
+        cat <<EOF > ~/.config/containers/containers.conf
+        [engine]
+        cgroup_manager = "cgroupfs"
+        runtime = "crun"
+        events_logger = "file"
+        systemd = false
+        log_level = "error"
+        EOF
 
-          podman system migrate
+    # --------------------------------------------------
+    # 5️⃣ Storage
+    # --------------------------------------------------
+    - name: Configure Podman storage
+      run: |
+        mkdir -p "$XDG_RUNTIME_DIR" "$TMPDIR" "$PODMAN_STORAGE"
+        chmod 700 "$XDG_RUNTIME_DIR"
+        chmod 777 "$TMPDIR" "$PODMAN_STORAGE"
 
-      # Step 4: Ensure Podman network exists
-      - name: Ensure Podman network
-        run: |
-          NETWORK_NAME="edge-network"
-          if ! podman network exists "$NETWORK_NAME"; then
-            podman network create "$NETWORK_NAME"
-          fi
+        cat <<EOF > ~/.config/containers/storage.conf
+        [storage]
+        driver = "overlay"
+        graphroot = "$PODMAN_STORAGE"
+        runroot = "$XDG_RUNTIME_DIR/runroot"
+        EOF
 
-      # Step 5: Build images (docker-compose.yml)
-      - name: Build Podman images
-        working-directory: demo/demo-2-otel
-        run: |
-          echo "Building images..."
-          podman-compose -f docker-compose.yml build
-          echo "Build completed."
+        podman system migrate
 
-      # Step 6: Run first compose - core stack
-      - name: Run Podman Compose (Core services)
-        working-directory: demo/demo-2-otel
-        run: |
-          echo "Starting core services (docker-compose.yml)..."
-          podman-compose -f docker-compose.yml up -d
-          podman ps
+    # --------------------------------------------------
+    # 6️⃣ Hard cleanup
+    # --------------------------------------------------
+    - name: Cleanup
+      run: podman system prune -a -f
 
-      # Step 7: Run second compose - persistence stack
-      - name: Run Podman Compose (Persistence services)
-        working-directory: demo/demo-2-otel
-        run: |
-          echo "Starting persistence services (docker-compose-persistance.yml)..."
-          podman-compose -f docker-compose-persistance.yml up -d
-          podman ps
+    # ==================================================
+    # 🔹 DEMO 1 — BASICS
+    # ==================================================
+    - name: Create anomaly-network
+      run: podman network create anomaly-network || true
 
-      # Step 8: Show Podman environment
-      - name: Verify Podman environment
-        run: |
-          podman network ls
-          podman ps -a
+    - name: Run demo-1-basics
+      working-directory: demo/demo-1-basics
+      run: |
+        podman-compose build --no-cache 2>/dev/null
+        podman-compose up -d 2>/dev/null
 
-      # Step 9: Show logs for each container
-      - name: Show Container Logs
-        working-directory: demo/demo-2-otel
-        run: |
-          echo "Displaying logs for all containers..."
-          podman ps --format "{{.Names}}" | while read -r c; do
-            echo "----------------------------"
-            echo "Logs for: $c"
-            echo "----------------------------"
-            podman logs "$c" || echo "No logs for $c"
-          done
+        echo "✅ demo-1-basics running containers:"
+        podman ps --format "table {{.Names}}\t{{.Status}}"
 
-      # Step 10: Cleanup always
-      - name: Stop and Clean Up
-        if: always()
-        working-directory: demo/demo-2-otel
-        run: |
-          podman-compose -f docker-compose.yml down
-          podman-compose -f docker-compose-persistance.yml down
-          echo "Cleanup completed."
+        podman-compose down -v 2>/dev/null
+
+    - run: podman system prune -a -f
+
+    # ==================================================
+    # 🔹 DEMO 2 — OTEL
+    # ==================================================
+    - name: Create edge-network
+      run: podman network create edge-network || true
+
+    - name: Run demo-2-otel
+      working-directory: demo/demo-2-otel
+      run: |
+        podman-compose build --no-cache 2>/dev/null
+        podman-compose up -d 2>/dev/null
+
+        echo "✅ demo-2-otel running containers:"
+        podman ps --format "table {{.Names}}\t{{.Status}}"
+
+    # --------------------------------------------------
+    # 7️⃣ Final cleanup
+    # --------------------------------------------------
+    - name: Final cleanup
+      if: always()
+      run: podman system prune -a -f
