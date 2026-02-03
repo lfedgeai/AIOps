@@ -5,17 +5,17 @@ The aim of this AIOps project under the LFEdge umbrella is to help deliver AI su
 #Team Meetings
 ## Timings
 AIOps Sync Call - weekly
-Every Tuesday, · 13:30 – 14:10 - Time zone: Australia/Sydney (Summer)
-Every Tuesday, · 9am – 9:40 - Time zone: India
-Every Monday, · 4:30pm – 5:10pm - US/WestCoast/LA (Winter)
-Every Monday, · 9:30pm – 10:10pm - US/EastCoast/NY (Winter)
+- Every Tuesday, · 13:30 – 14:10 - Time zone: Australia/Sydney (Summer)
+- Every Tuesday, · 9am – 9:40 - Time zone: India
+- Every Monday, · 4:30pm – 5:10pm - US/WestCoast/LA (Winter)
+- Every Monday, · 9:30pm – 10:10pm - US/EastCoast/NY (Winter)
 
 ## Google Meet joining info
 
-Video call link: https://meet.google.com/hps-nrkm-esn
-Or dial: ‪(AU) +61 3 8594 7760‬ PIN: ‪478 062 271‬#
-More phone numbers: https://tel.meet/hps-nrkm-esn?pin=1051369562855
-Or join via SIP: sip:1051369562855@gmeet.redhat.com
+- Video call link: https://meet.google.com/hps-nrkm-esn
+- Dial: ‪(AU) +61 3 8594 7760‬ PIN: ‪478 062 271‬#
+- More phone numbers: https://tel.meet/hps-nrkm-esn?pin=1051369562855
+- Or join via SIP: sip:1051369562855@gmeet.redhat.com
 
 ## Backlog | WIP | Roadmap
 Please check out the Project folder:
