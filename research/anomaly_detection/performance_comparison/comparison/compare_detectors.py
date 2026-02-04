@@ -79,6 +79,7 @@ def compute_metrics(y_true: np.ndarray, scores_eval: np.ndarray, threshold: floa
     tp = int(((y_true == 1) & (preds == 1)).sum())
     fp = int(((y_true == 0) & (preds == 1)).sum())
     fn = int(((y_true == 1) & (preds == 0)).sum())
+    tn = int(((y_true == 0) & (preds == 0)).sum())
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
     f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
@@ -203,10 +204,19 @@ def _svg_polyline(xs: List[float], ys: List[float], w: int = 360, h: int = 240, 
     return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}">{axes}{poly}</svg>'
 
 
-def write_report(out_dir: Path, results: List[DetectorResult]) -> None:
+def write_report(out_dir: Path, results: List[DetectorResult], per_flag_map: Optional[Dict[str, List[Dict[str, object]]]] = None, threshold_quantile: Optional[float] = None) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
+    validation: Optional[dict] = None
+    try:
+        val_path = out_dir / "dataset_validation.json"
+        if val_path.exists():
+            validation = json.loads(val_path.read_text())
+    except Exception:
+        validation = None
     data = {
         "generated_at": datetime.now().isoformat(),
+        "dataset_validation": validation,
+        "threshold_quantile": threshold_quantile,
         "results": [
             {
                 "detector": r.name,
@@ -218,6 +228,7 @@ def write_report(out_dir: Path, results: List[DetectorResult]) -> None:
                 "threshold": r.threshold,
                 "pr_curve": {"recall": r.pr_curve[0], "precision": r.pr_curve[1]} if r.pr_curve else None,
                 "roc_curve": {"fpr": r.roc_curve[0], "tpr": r.roc_curve[1]} if r.roc_curve else None,
+                "by_flag": (per_flag_map or {}).get(r.name),
             }
             for r in results
         ],
@@ -247,6 +258,28 @@ def write_report(out_dir: Path, results: List[DetectorResult]) -> None:
             xs = [max(0.0, min(1.0, float(x))) for x in r.roc_curve[0]]
             ys = [max(0.0, min(1.0, float(y))) for y in r.roc_curve[1]]
             roc_svg = _svg_polyline(xs, ys, stroke="#16a34a")
+        # Per-flag table if provided
+        pf_rows_html = ""
+        if per_flag_map and r.name in per_flag_map and per_flag_map[r.name]:
+            pf_rows = []
+            for it in per_flag_map[r.name]:
+                try:
+                    pf_rows.append(
+                        f"<tr><td>{str(it.get('flag',''))}</td>"
+                        f"<td>{it.get('support_pos','')}</td>"
+                        f"<td>{it.get('precision',0):.4f}</td>"
+                        f"<td>{it.get('recall',0):.4f}</td>"
+                        f"<td>{it.get('f1',0):.4f}</td></tr>"
+                    )
+                except Exception:
+                    continue
+            if pf_rows:
+                pf_rows_html = f"""
+        <div style="margin:6px 0 4px 0">Per-flag metrics (positives only):</div>
+        <table>
+          <tr><th>flag</th><th>support(+)</th><th>P</th><th>R</th><th>F1</th></tr>
+          {"".join(pf_rows)}
+        </table>"""
         sections.append(f"""
         <h3>{r.name}</h3>
         <div>precision={r.precision:.4f} &nbsp; recall={r.recall:.4f} &nbsp; f1={r.f1:.4f} &nbsp;
@@ -257,13 +290,74 @@ def write_report(out_dir: Path, results: List[DetectorResult]) -> None:
           <div><h4>Precision–Recall</h4>{(pr_svg or '<div style=\"color:#666\">n/a</div>')}</div>
           <div><h4>ROC</h4>{(roc_svg or '<div style=\"color:#666\">n/a</div>')}</div>
         </div>
+        {pf_rows_html}
         """)
+
+    # Optional validation summary (HTML)
+    val_html = ""
+    if validation:
+        mv = validation.get("missing_files", {}) if isinstance(validation, dict) else {}
+        ev = validation.get("empties", {}) if isinstance(validation, dict) else {}
+        val_html = f"""
+  <div style="margin:10px 0 16px 0;padding:10px;border:1px solid #e5e7eb;border-radius:6px;">
+    <h2 style="margin:0 0 8px 0;font-size:16px;">Dataset validation</h2>
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(160px,1fr));gap:8px;">
+      <div>Total samples: <b>{validation.get('total_samples','n/a')}</b></div>
+      <div>Train rows: <b>{validation.get('num_train','n/a')}</b></div>
+      <div>Eval rows: <b>{validation.get('num_eval','n/a')}</b></div>
+      <div>Missing logs: <b>{mv.get('logs','n/a')}</b></div>
+      <div>Missing traces: <b>{mv.get('traces','n/a')}</b></div>
+      <div>Missing metrics: <b>{mv.get('metrics','n/a')}</b></div>
+      <div>Zero-line logs: <b>{ev.get('logs_zero_lines','n/a')}</b></div>
+      <div>Zero-count traces: <b>{ev.get('traces_zero_count','n/a')}</b></div>
+    </div>
+  </div>"""
+
+    detectors_html = """
+  <div style="margin:10px 0 16px 0;padding:10px;border:1px solid #e5e7eb;border-radius:6px;">
+    <h2 style="margin:0 0 8px 0;font-size:16px;">Detectors in this report</h2>
+    <ul style="margin:0 0 0 18px;">
+      <li><b>IsolationForest (sklearn)</b>: tree-based isolation; higher score ⇒ more anomalous.</li>
+      <li><b>Extended IsolationForest (isotree)</b>: enhanced IF (if installed); higher score ⇒ more anomalous.</li>
+      <li><b>COPOD (pyod)</b>: copula-based outlier degree; higher score ⇒ more anomalous.</li>
+      <li><b>RRCF (rrcf)</b>: random cut forest; CoDisp score; higher score ⇒ more anomalous.</li>
+    </ul>
+  </div>"""
+
+    intro_html = """
+  <div style="margin:10px 0 16px 0;padding:10px;border:1px solid #e5e7eb;border-radius:6px;">
+    <h2 style="margin:0 0 8px 0;font-size:16px;">What this report shows</h2>
+    <div>This compares anomaly detectors on the selected dataset. Training uses baseline windows (train* labels). Evaluation uses all other windows (baselines not marked train + faults). Thresholds are calibrated on train scores at a fixed quantile; metrics (precision/recall/F1) are at that operating point, and PR/ROC AUCs are computed from continuous scores.</div>
+  </div>"""
+
+    quantile_html = f"""
+  <div style="margin:10px 0 16px 0;padding:10px;border:1px solid #e5e7eb;border-radius:6px;">
+    <h2 style="margin:0 0 8px 0;font-size:16px;">Threshold quantile</h2>
+    <div><b>THRESHOLD_QUANTILE</b> = <b>{'n/a' if threshold_quantile is None else f'{threshold_quantile:.4f}'}</b>. We set the anomaly threshold so that this fraction of baseline (train) scores fall below it. Lowering it (e.g., 0.980 → 0.970) typically increases recall at the cost of precision.</div>
+  </div>"""
+
+    metrics_html = """
+  <div style="margin:10px 0 16px 0;padding:10px;border:1px solid #e5e7eb;border-radius:6px;">
+    <h2 style="margin:0 0 8px 0;font-size:16px;">Metric definitions</h2>
+    <ul style="margin:0 0 0 18px;">
+      <li><b>Precision</b>: TP / (TP + FP) — of predicted anomalies, how many are true faults.</li>
+      <li><b>Recall</b>: TP / (TP + FN) — of true faults, how many were detected.</li>
+      <li><b>F1</b>: harmonic mean of precision and recall — balances both.</li>
+      <li><b>PR-AUC</b>: area under Precision–Recall curve — ranking quality for the positive class.</li>
+      <li><b>ROC-AUC</b>: area under ROC curve — overall separability between classes.</li>
+    </ul>
+  </div>"""
 
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Anomaly Detector Comparison</title>
 <style>table{{border-collapse:collapse}}td,th{{border:1px solid #ccc;padding:6px 10px;text-align:center}}</style>
 </head><body>
   <h1>Anomaly Detector Comparison</h1>
+  {intro_html}
+  {quantile_html}
+  {metrics_html}
+  {val_html}
+  {detectors_html}
   <table>
     <tr><th>detector</th><th>precision</th><th>recall</th><th>f1</th><th>PR-AUC</th><th>ROC-AUC</th><th>threshold</th></tr>
     {"".join(rows)}
@@ -291,7 +385,28 @@ def main() -> int:
     df, feature_cols = load_data(args.features, args.report)
     if not feature_cols:
         raise SystemExit("[ERROR] could not determine feature columns")
-    X_train, X_eval, y_eval = split_train_eval(df, feature_cols)
+    # Build train/eval DataFrames with noisy baseline filtering for training
+    if "in_training" not in df.columns:
+        df["in_training"] = False
+    train_df = df[df["in_training"] == True].copy()  # noqa: E712
+    # Keep only true baselines in train, and drop noisy baselines
+    try:
+        train_df = train_df[(train_df.get("is_baseline", True) == True)]  # noqa: E712
+    except Exception:
+        pass
+    try:
+        max_err = int(os.getenv("TRAIN_LOG_ERROR_MAX", "3"))
+        if "log_error_count" in train_df.columns:
+            train_df = train_df[train_df["log_error_count"].astype(int) <= max_err]
+    except Exception:
+        pass
+    eval_df = df[df["in_training"] == False].copy()  # noqa: E712
+    # Arrays for models
+    X_train = train_df[feature_cols].to_numpy()
+    X_eval = eval_df[feature_cols].to_numpy()
+    y_eval = (eval_df["root_cause"] != "none").astype(int).to_numpy()
+    # Metadata for eval split
+    eval_flags: np.ndarray = eval_df.get("flag", pd.Series([], dtype=str)).astype(str).to_numpy()
     if len(X_train) < 5 or len(X_eval) < 2:
         raise SystemExit("[ERROR] insufficient data: need >=5 train and >=2 eval")
 
@@ -326,6 +441,35 @@ def main() -> int:
     mp = _save_model(mdl, name)
     if mp:
         model_files[name] = str(mp)
+    # Per-flag breakdown at the operating point
+    def per_flag_breakdown(flags_arr: np.ndarray, y_true_arr: np.ndarray, preds_arr: np.ndarray) -> List[Dict[str, object]]:
+        out: List[Dict[str, object]] = []
+        try:
+            uniq = pd.Series(flags_arr).fillna("").astype(str).unique()
+        except Exception:
+            uniq = np.unique(flags_arr)
+        for fflag in uniq:
+            mask = flags_arr == fflag
+            if mask.sum() == 0:
+                continue
+            yt = y_true_arr[mask]
+            pr = preds_arr[mask]
+            tp = int(((yt == 1) & (pr == 1)).sum())
+            fp = int(((yt == 0) & (pr == 1)).sum())
+            fn = int(((yt == 1) & (pr == 0)).sum())
+            precision_f = tp / (tp + fp) if (tp + fp) else 0.0
+            recall_f = tp / (tp + fn) if (tp + fn) else 0.0
+            f1_f = (2 * precision_f * recall_f / (precision_f + recall_f)) if (precision_f + recall_f) else 0.0
+            support_pos = int((yt == 1).sum())
+            out.append({"flag": str(fflag), "precision": precision_f, "recall": recall_f, "f1": f1_f, "support_pos": support_pos})
+        # Sort by flag name for stability
+        try:
+            out.sort(key=lambda x: x["flag"])
+        except Exception:
+            pass
+        return out
+    preds_if = (s_ev > thr).astype(int)
+    by_flag_if = per_flag_breakdown(eval_flags, y_eval, preds_if)
 
     # COPOD
     try:
@@ -336,8 +480,11 @@ def main() -> int:
         mp = _save_model(mdl, name)
         if mp:
             model_files[name] = str(mp)
+        preds_copod = (s_ev > thr).astype(int)
+        by_flag_copod = per_flag_breakdown(eval_flags, y_eval, preds_copod)
     except Exception as e:
         print(f"[WARN] COPOD failed: {e}")
+        by_flag_copod = []
 
     # RRCF
     try:
@@ -348,10 +495,28 @@ def main() -> int:
         mp = _save_model(mdl, name)
         if mp:
             model_files[name] = str(mp)
+        preds_rrcf = (s_ev > thr).astype(int)
+        by_flag_rrcf = per_flag_breakdown(eval_flags, y_eval, preds_rrcf)
     except Exception as e:
         print(f"[WARN] RRCF unavailable or failed: {e}")
+        by_flag_rrcf = []
 
-    write_report(out_dir, results)
+    # Extend JSON with per-flag breakdown alongside results
+    # Build map detector->by_flag
+    per_flag_map: Dict[str, List[Dict[str, object]]] = {}
+    try:
+        per_flag_map["IsolationForest(sklearn)"] = by_flag_if
+    except Exception:
+        pass
+    try:
+        per_flag_map["COPOD(pyod)"] = by_flag_copod
+    except Exception:
+        pass
+    try:
+        per_flag_map["RRCF(rrcf)"] = by_flag_rrcf
+    except Exception:
+        pass
+    write_report(out_dir, results, per_flag_map=per_flag_map, threshold_quantile=float(args.quantile))
     # Also record model file locations
     try:
         meta = {"model_files": model_files}
