@@ -37,7 +37,9 @@ visualize:
 .PHONY: compare
 compare:
 	@mkdir -p "$(OUT)"
-	LATEST_FEATURES="$$(ls -1t '$(OUT)'/features_*.csv | head -n 1)"; \
-	LATEST_REPORT="$$(ls -1t '$(OUT)'/report_isoforest_*.json | head -n 1)"; \
-	[ -n "$$LATEST_FEATURES" ] && [ -n "$$LATEST_REPORT" ] || { echo "No features/report found in $(OUT)"; exit 1; }; \
-	$(PY) $(HARNESS)/comparison/compare_detectors.py --features "$$LATEST_FEATURES" --report "$$LATEST_REPORT"
+	OUT_DIR="$(OUT)/ad_compare_$(TS)"; \
+	mkdir -p "$$OUT_DIR"; \
+	AIOPS_OUT_DIR="$$OUT_DIR" OTEL_DATASET_DIR="$(HARNESS)/datasets/$(DATASET)" OTEL_OUT_FEATURES_CSV="$$OUT_DIR/features.csv" $(PY) $(HARNESS)/feature_pipeline.py; \
+	$(PY) $(HARNESS)/comparison/compare_detectors.py --features "$$OUT_DIR/features.csv" --out "$$OUT_DIR"; \
+	$(PY) $(HARNESS)/aggregate_reports.py; \
+	echo "Bundled outputs in $$OUT_DIR"

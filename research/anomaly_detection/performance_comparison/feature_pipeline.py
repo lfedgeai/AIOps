@@ -9,10 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple, Set
 from datetime import datetime
-from joblib import dump
-
 import pandas as pd
-from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve, roc_curve
+ 
 
 # Defaults: local harness paths
 HARNESS_DIR = Path(__file__).resolve().parent
@@ -22,11 +20,34 @@ DEFAULT_DATASETS_DIR = HARNESS_DIR / "datasets"
 BASE_DIR = Path(os.getenv("AIOPS_OUT_DIR", str(DEFAULT_OUT_DIR)))
 DATA_DIR = Path(os.getenv("OTEL_DATASET_DIR", str(DEFAULT_DATASETS_DIR)))
 OUT_FEATURES_CSV = Path(os.getenv("OTEL_OUT_FEATURES_CSV", str(BASE_DIR / "features.csv")))
-OUT_REPORT_JSON = Path(os.getenv("OTEL_OUT_REPORT_JSON", str(BASE_DIR / "report_isoforest.json")))
 
-# Allow slight noise in training baselines when clean data is scarce
-TRAIN_LOG_ERROR_MAX = int(os.getenv("TRAIN_LOG_ERROR_MAX", "3"))
-THRESHOLD_QUANTILE = float(os.getenv("THRESHOLD_QUANTILE", "0.995"))
+def _compute_dataset_hash() -> str:
+    import hashlib
+    try:
+        # Hash dataset path + metadata files list + mtimes
+        h = hashlib.sha256()
+        h.update(str(DATA_DIR.resolve()).encode())
+        metas: List[Path] = []
+        for p in DATA_DIR.rglob("metadata_*.json"):
+            metas.append(p)
+        metas.sort()
+        for p in metas:
+            try:
+                st = p.stat()
+                h.update(str(p.resolve()).encode())
+                h.update(str(int(st.st_mtime)).encode())
+                h.update(str(int(st.st_size)).encode())
+            except Exception:
+                continue
+        # Include this script mtime to invalidate on code changes
+        try:
+            st_self = Path(__file__).resolve().stat()
+            h.update(str(int(st_self.st_mtime)).encode())
+        except Exception:
+            pass
+        return h.hexdigest()
+    except Exception:
+        return ""
 
 
 @dataclass
@@ -286,171 +307,82 @@ def build_features(samples: List[Sample]) -> pd.DataFrame:
     return df
 
 
-def train_and_evaluate(df: pd.DataFrame) -> Dict[str, object]:
-    if "in_training" not in df.columns:
-        df["in_training"] = False
-    train_df = df[df["in_training"] == True].copy()  # noqa: E712
-    if {"is_baseline", "log_error_count"}.issubset(train_df.columns):
-        train_df = train_df[
-            (train_df["is_baseline"] == True)  # noqa: E712
-            & (train_df["log_error_count"].astype(int) <= TRAIN_LOG_ERROR_MAX)
-        ]
-    eval_df = df[df["in_training"] == False].copy()  # noqa: E712
-
-    if {"is_baseline", "log_error_count"}.issubset(eval_df.columns):
-        mask_bad = (eval_df["is_baseline"] == True) & (eval_df["log_error_count"].astype(int) > 3)  # noqa: E712
-        eval_df = eval_df[~mask_bad]
-
-    if len(train_df) < 5:
-        return {
-            "ok": False,
-            "error": f"Not enough baseline samples for training: {len(train_df)} (need >=5)",
-        }
-
-    feature_cols = [
-        "trace_count",
-        "trace_total_spans",
-        "trace_http_5xx_spans",
-        "trace_unique_services",
-        "trace_unique_span_names",
-        "log_error_count",
-        "log_total_lines",
-        "log_error_ratio",
-        "frontend_error_count",
-        "checkout_error_count",
-        "recommendation_error_count",
-        "product_catalog_error_count",
-        "payment_error_count",
-        "metrics_series_len",
-        "req_rate_sum",
-    ]
-
+def validate_dataset(samples: List[Sample], df: pd.DataFrame) -> Dict[str, object]:
+    total = len(samples)
+    num_train = int(df["in_training"].sum()) if "in_training" in df.columns else 0
+    num_eval = int(total - num_train)
+    missing_logs = 0
+    missing_traces = 0
+    missing_metrics = 0
+    empty_logs = 0
+    zero_traces = 0
+    for s in samples:
+        lp, tp, mp = s.paths["logs"], s.paths["traces"], s.paths["metrics"]
+        if not lp.exists():
+            missing_logs += 1
+        if not tp.exists():
+            missing_traces += 1
+        if not mp.exists():
+            missing_metrics += 1
+        # Empty/zero content checks using existing counters
     try:
-        from sklearn.ensemble import IsolationForest
-    except ImportError:
-        return {
-            "ok": False,
-            "error": "scikit-learn not installed. Please run: pip3 install --user scikit-learn",
-        }
-
-    model = IsolationForest(
-        n_estimators=200,
-        contamination="auto",
-        random_state=42,
-    )
-    model.fit(train_df[feature_cols])
-
-    BASE_DIR.mkdir(parents=True, exist_ok=True)
-    dump(model, str(BASE_DIR / f"IsolationForestModel_{datetime.now().strftime('%Y%m%d%H%M%S')}.pkl"))
-
-    eval_df = eval_df.copy()
-    eval_df["pred"] = model.predict(eval_df[feature_cols])  # +1 normal, -1 anomaly
-    eval_df["anomaly_score"] = -model.decision_function(eval_df[feature_cols])
-    # Threshold calibrated on train baselines (common operating point)
-    scores_train = -model.decision_function(train_df[feature_cols])
-    threshold = float(pd.Series(scores_train).quantile(THRESHOLD_QUANTILE))
-
-    y_true = (eval_df["root_cause"] != "none").astype(int)
-    y_pred = (eval_df["pred"] == -1).astype(int)
-    y_pred_thresh = (eval_df["anomaly_score"] > threshold).astype(int)
-
-    scores = eval_df["anomaly_score"].astype(float)
-    roc_auc = None
-    pr_auc = None
-    curves: Dict[str, Dict[str, List[float]]] = {}
-    try:
-        if y_true.nunique() == 2:
-            roc_auc = float(roc_auc_score(y_true, scores))
-            pr_auc = float(average_precision_score(y_true, scores))
-            prec, rec, _ = precision_recall_curve(y_true, scores)
-            fpr, tpr, _ = roc_curve(y_true, scores)
-            curves = {
-                "pr": {"precision": list(map(float, prec)), "recall": list(map(float, rec))},
-                "roc": {"fpr": list(map(float, fpr)), "tpr": list(map(float, tpr))},
-            }
+        empty_logs = int((df.get("log_total_lines", 0) == 0).sum())
     except Exception:
-        pass
-
-    tp = int(((y_true == 1) & (y_pred == 1)).sum())
-    fp = int(((y_true == 0) & (y_pred == 1)).sum())
-    tn = int(((y_true == 0) & (y_pred == 0)).sum())
-    fn = int(((y_true == 1) & (y_pred == 0)).sum())
-
-    precision_internal = tp / (tp + fp) if (tp + fp) else 0.0
-    recall_internal = tp / (tp + fn) if (tp + fn) else 0.0
-    f1_internal = (2 * precision_internal * recall_internal / (precision_internal + recall_internal)) if (precision_internal + recall_internal) else 0.0
-    fpr_internal = fp / (fp + tn) if (fp + tn) else 0.0
-    tnr_internal = tn / (tn + fp) if (tn + fp) else 0.0
-    accuracy_internal = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) else 0.0
-
-    # Metrics at common operating point (threshold)
-    tp_t = int(((y_true == 1) & (y_pred_thresh == 1)).sum())
-    fp_t = int(((y_true == 0) & (y_pred_thresh == 1)).sum())
-    tn_t = int(((y_true == 0) & (y_pred_thresh == 0)).sum())
-    fn_t = int(((y_true == 1) & (y_pred_thresh == 0)).sum())
-    precision = tp_t / (tp_t + fp_t) if (tp_t + fp_t) else 0.0
-    recall = tp_t / (tp_t + fn_t) if (tp_t + fn_t) else 0.0
-    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
-    fpr = fp_t / (fp_t + tn_t) if (fp_t + tn_t) else 0.0
-    tnr = tn_t / (tn_t + fp_t) if (tn_t + fp_t) else 0.0
-    accuracy = (tp_t + tn_t) / (tp_t + tn_t + fp_t + fn_t) if (tp_t + tn_t + fp_t + fn_t) else 0.0
-
-    # Persist features
-    df.to_csv(OUT_FEATURES_CSV, index=False)
-
-    report = {
-        "ok": True,
-        "num_train": int(len(train_df)),
-        "num_eval": int(len(eval_df)),
-        # Confusion at threshold operating point
-        "confusion_matrix": {"tp": tp_t, "fp": fp_t, "tn": tn_t, "fn": fn_t},
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
-        "false_positive_rate": fpr,
-        "true_negative_rate": tnr,
-        "accuracy": accuracy,
-        "roc_auc": roc_auc,
-        "pr_auc": pr_auc,
-        "curves": curves,
-        "threshold": threshold,
-        "threshold_quantile": THRESHOLD_QUANTILE,
-        "metrics_at_internal": {
-            "precision": precision_internal,
-            "recall": recall_internal,
-            "f1": f1_internal,
-            "false_positive_rate": fpr_internal,
-            "true_negative_rate": tnr_internal,
-            "accuracy": accuracy_internal,
-            "confusion_matrix": {"tp": tp, "fp": fp, "tn": tn, "fn": fn},
+        empty_logs = 0
+    try:
+        zero_traces = int((df.get("trace_count", 0) == 0).sum())
+    except Exception:
+        zero_traces = 0
+    return {
+        "total_samples": int(total),
+        "num_train": int(num_train),
+        "num_eval": int(num_eval),
+        "missing_files": {
+            "logs": int(missing_logs),
+            "traces": int(missing_traces),
+            "metrics": int(missing_metrics),
         },
-        "feature_cols": feature_cols,
-        "feature_importances": None,
-        "feature_importances_ranked": None,
-        "features_csv": str(OUT_FEATURES_CSV),
+        "empties": {
+            "logs_zero_lines": int(empty_logs),
+            "traces_zero_count": int(zero_traces),
+        },
     }
-    with open(OUT_REPORT_JSON, "w") as f:
-        json.dump(report, f, indent=2)
-    return report
 
 
 def main() -> int:
     samples = discover_experiment_samples()
+    # Caching: skip rebuild if dataset+config unchanged and features.csv exists
+    cache_path = BASE_DIR / "features.cache.json"
+    cache_key = _compute_dataset_hash()
+    try:
+        if OUT_FEATURES_CSV.exists() and cache_path.exists():
+            import json as _json
+            cached = _json.loads(cache_path.read_text())
+            if cached.get("key") == cache_key:
+                print(f"[cache] features up-to-date → {OUT_FEATURES_CSV}")
+                return 0
+    except Exception:
+        pass
     df = build_features(samples)
-    report = train_and_evaluate(df)
-    if not report.get("ok", False):
-        print(f"[ERROR] {report.get('error')}")
+    try:
+        BASE_DIR.mkdir(parents=True, exist_ok=True)
+        df.to_csv(OUT_FEATURES_CSV, index=False)
+        # Write validation summary for downstream reports
         try:
-            df.to_csv(OUT_FEATURES_CSV, index=False)
-            print(f"Features saved → {OUT_FEATURES_CSV}")
+            (BASE_DIR / "dataset_validation.json").write_text(json.dumps(validate_dataset(samples, df), indent=2))
         except Exception:
             pass
+        # Update cache
+        try:
+            import json as _json
+            cache_path.write_text(_json.dumps({"key": cache_key, "features_csv": str(OUT_FEATURES_CSV)}, indent=2))
+        except Exception:
+            pass
+        print(f"Features saved → {OUT_FEATURES_CSV}")
+        return 0
+    except Exception as e:
+        print(f"[ERROR] failed to write features: {e}")
         return 1
-    print("IsolationForest report:")
-    print(json.dumps(report, indent=2))
-    print(f"Features saved → {OUT_FEATURES_CSV}")
-    print(f"Report saved   → {OUT_REPORT_JSON}")
-    return 0
 
 
 if __name__ == "__main__":
