@@ -275,9 +275,9 @@ def write_report(out_dir: Path, results: List[DetectorResult], per_flag_map: Opt
                     continue
             if pf_rows:
                 pf_rows_html = f"""
-        <div style="margin:6px 0 4px 0">Per-flag metrics (positives only):</div>
+        <div style="margin:6px 0 4px 0">Per-flag metrics (injected faults only):</div>
         <table>
-          <tr><th>flag</th><th>support(+)</th><th>P</th><th>R</th><th>F1</th></tr>
+          <tr><th>flag</th><th>injected faults</th><th>P</th><th>R</th><th>F1</th></tr>
           {"".join(pf_rows)}
         </table>"""
         sections.append(f"""
