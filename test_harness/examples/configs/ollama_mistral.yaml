@@ -1,0 +1,35 @@
+experiment:
+  name: aiops-ollama-mistral
+  tags:
+    team: sre
+    env: local
+
+provider:
+  type: ollama
+  params:
+    base_url: ${OLLAMA_BASE_URL}
+    default_model: mistral
+
+pipeline:
+  correlation:
+    prompt_template: |
+      Given the following logs, metrics, and traces, group related items that likely belong to the same incident.
+      Identify the incident scope and provide a brief summary.
+    max_candidates: 100
+  rca:
+    prompt_template: |
+      Based on the correlated context, identify the most probable root cause and a confidence score.
+  remediation:
+    prompt_template: |
+      Based on the root cause, propose safe remediation steps and a rollback plan.
+    max_steps: 5
+  executor:
+    type: noop
+    params: {}
+
+dataset:
+  logs_file: logs.jsonl
+  metrics_file: metrics.jsonl
+  traces_file: traces.jsonl
+  incidents_file: incidents.jsonl
+

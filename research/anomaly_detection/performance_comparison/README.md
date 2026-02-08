@@ -12,7 +12,7 @@ A lightweight harness to build features from OTEL demo telemetry, train an anoma
 - `feature_pipeline.py` — discover samples, build features, train/evaluate IsolationForest
 - `comparison/compare_detectors.py` — compare detectors (IsolationForest/EIF, COPOD, RRCF)
 - `Makefile` — common tasks
-- `run.py` — CLI to collect data from an OTEL demo and run decoupled pipelines
+- `chaos_engineering/chaos_orchestrator.py` — CLI to collect data from an OTEL demo and run decoupled pipelines (fault injection, suite orchestration)
 - `datasets/` — curated snapshots for offline runs:
   - `train/` — baseline windows (labels like `train##_baseline`)
   - `eval/` — mixed baselines and injected faults (labels `eval##_*`)
@@ -94,15 +94,15 @@ Run from this directory:
 
 ```bash
 # Collect non-deleting baseline windows (defaults: cooldown 60s, duration 60s)
-python3 run.py collect-baselines --windows 5
+python3 chaos_engineering/chaos_orchestrator.py collect-baselines --windows 5
 
 # Or run the full suite (baselines + faults) driven by flagd
-python3 run.py suite
+python3 chaos_engineering/chaos_orchestrator.py suite
 ```
 
 By default, artifacts are written under:
-- `research/anomaly_detection/otel-demo/otel_ground_truth_data/` (latest/current)
-- or symlinked runs under `research/anomaly_detection/otel-demo/otel_ground_truth_runs/run-*/`
+- `research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo/otel_ground_truth_data/` (latest/current)
+- or symlinked runs under `research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo/otel_ground_truth_runs/run-*/`
 
 #### Recommended settings and tips for new collections
 
@@ -117,10 +117,10 @@ Examples:
 
 ```bash
 # 10 clean baselines, 60s cooldown + 60s window
-python3 run.py collect-baselines --windows 10 --cooldown 60 --duration 60
+python3 chaos_engineering/chaos_orchestrator.py collect-baselines --windows 10 --cooldown 60 --duration 60
 
 # Full suite with injected faults + baselines (takes longer)
-python3 run.py suite
+python3 chaos_engineering/chaos_orchestrator.py suite
 ```
 
 3) Use collected data in the pipeline
@@ -128,7 +128,7 @@ python3 run.py suite
 Option A: point the pipeline directly at the collected folder:
 
 ```bash
-OTEL_DATASET_DIR="research/anomaly_detection/otel-demo/otel_ground_truth_data" \
+OTEL_DATASET_DIR="research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo/otel_ground_truth_data" \
 OTEL_OUT_FEATURES_CSV="out/features_$(date +%Y%m%d%H%M%S).csv" \
 OTEL_OUT_REPORT_JSON="out/report_isoforest_$(date +%Y%m%d%H%M%S).json" \
 python3 feature_pipeline.py
@@ -137,7 +137,7 @@ python3 feature_pipeline.py
 Option B: symlink a collected run into `datasets/` for repeatability:
 
 ```bash
-ln -s research/anomaly_detection/otel-demo/otel_ground_truth_runs/run-YYYYMMDDHHMMSS datasets/myrun
+ln -s research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo/otel_ground_truth_runs/run-YYYYMMDDHHMMSS datasets/myrun
 make features DATASET=myrun
 make compare
 ```
@@ -192,7 +192,7 @@ End-to-end data collection and usage:
             |                         queries to demo     |
             | logs / traces / metrics                      |
             v                                              v
-   research/anomaly_detection/otel-demo/          research/anomaly_detection/otel-demo/
+   research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo/          research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo/
    otel_ground_truth_runs/run-YYYYMMDDHHMMSS  ->  otel_ground_truth_data (symlink to latest)
                       (raw ground truth: logs_*.txt, traces_*.json, metrics_*.json, metadata_*.json)
 
@@ -275,18 +275,31 @@ Extracted from logs/traces/metrics per window (examples):
   - Unsupervised, tree-based isolation of anomalies.
   - Scores are `-decision_function(X)` so higher means “more anomalous”.
   - Used as the baseline model; model file saved to `out/IsolationForestModel_<ts>.pkl`.
+  - Intuition: random splits isolate rare points in fewer splits (shorter path length ⇒ more anomalous).
+  - Complexity: roughly O(n_estimators · n_samples · log n_samples) for training.
+  - Strengths: simple, fast, robust for tabular data; few hyperparameters.
+  - Limitations: axis-aligned splits can underperform when anomalies lie along oblique directions.
 
 - Extended Isolation Forest (isotree)
   - If `isotree` is installed, uses `isotree.IsolationForest`; otherwise falls back to sklearn IF.
   - Uses `predict_scores(X)` where higher means “more anomalous”.
+  - Difference vs IF: uses extended (oblique) hyperplanes, often improving separability on correlated features.
+  - Strengths: better geometry for high-dimensional or correlated features; strong default behavior.
+  - Consider when: sklearn IF misses anomalies that are not axis-aligned.
 
 - COPOD (pyod)
   - Uses empirical copulas and outlier degrees.
   - Higher `decision_function` values indicate more anomalous points.
+  - Intuition: models each feature’s empirical distribution and tail behavior, combining via copulas.
+  - Strengths: parameter-light, nonparametric; can work well when feature scales/distributions differ.
+  - Consider when: you prefer distribution-free methods with minimal tuning.
 
 - RRCF (Robust Random Cut Forest)
   - Forest of random cut trees; anomaly score is CoDisp (average displacement), higher is more anomalous.
   - This implementation normalizes features (median/MAD), builds trees on train, and scores by temporary insertions.
+  - Strengths: supports streaming variants; good at capturing sudden changes and point-level anomalies.
+  - Limitations: batch scoring can be slower; sensitive to feature scaling (we apply robust scaling).
+  - Consider when: you value streaming friendliness or want a different tree-based perspective than IF.
 
 All detectors:
 - Train only on TRAIN baseline rows.
