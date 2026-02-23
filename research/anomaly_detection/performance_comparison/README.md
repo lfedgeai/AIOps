@@ -25,29 +25,30 @@ For all your approved research tasks, please use the below template in the top-l
 
 ## 🛠 Methodology & Framework
 *Describe the technical approach and the "How" behind the research.*
+I am using the OTEL demo app to generate data, train models, develop different feature sets and compare different algorithms and AI models (predictive) comparing the results calculating precision, recall, F1 score and Area Under the Curve (AUC).
 
-* **Approach:** [e.g., Qualitative Analysis, Random Forest Regression, Double-Blind Study].
-* **Core Logic:**
-    $$L = \frac{1}{n} \sum_{i=1}^{n} (y_i - \hat{y}_i)^2$$
-* **Tech Stack:** `Python (Pandas/NumPy)`, `R`, `LaTeX`, `Docker`.
+* **Approach:** collect ground truth data to train model and algortihm, then evaluate performance with a separate data set
+* **Core Logic:** ./comparison/compare_detectors.py
+* **Tech Stack:** OTEL Demo App, Python (Pandas/NumPy), Docker/Podman, Pytorch, Make
 
 ---
 
 ## 📊 Data Management & Transparency
-1.  **Source:** [Link to original data source or citation].
-2.  **Processing:** How was the data cleaned? (See `/scripts` or `/notebooks` for details).
-3.  **Ethical Considerations:** Details on anonymization and licensing restrictions.
+1.  **Source:** OTEL Demo App logs, metrics & traces
+2.  **Processing:** How was the data cleaned? /chaos_engineering/collect* scripts
+3.  **Ethical Considerations:** OTEL demo app data allows for repeatible, ethical, copyright free data collection.
 
 ---
 
 ## 📂 Repository Structure
 ```text
-├── data/               # Raw and processed datasets
-├── code/               # code incl Jupyter or RMarkdown files for EDA
-├── scripts/            # Reproducible scripts for training/analysis runs eg make files
-├── results/            # Graphs, Tables, and Model Outputs
-├── docs/               # In-depth documentation and literature review
-└── README.md           # This file
+├── chaos_engineering/    # collect data and inject faults
+├── copmarison/           # copmares different algorithms and models
+├── datasets/             # previously collected datasets (static)
+├── results/              # Graphs, Tables, and Model Outputs
+├── out/                  # reports and rolling reports, models, and other artefacts created or updated during each run.
+└── README.md             # This file
+└── Makefile              # A makefile for ease of orchestrating runs
 
 
 
