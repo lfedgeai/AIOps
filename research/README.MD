@@ -3,7 +3,7 @@
 ## Anomaly_detection
 The home for all things AIOps reserach requires you to use the below template as a README.MD file in the top level directory in your research folder
 
-# Performance Comparison
+# Template
 Please copy/paste your template
 
 # 🔬 Project Title: [Enter Your Research Name]
