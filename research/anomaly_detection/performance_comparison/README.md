@@ -50,7 +50,7 @@ I am using the OTEL demo app to generate data, train models, develop different f
 └── README.md             # This file
 └── Makefile              # A makefile for ease of orchestrating runs
 
-
+```
 
 #Project Details
 ## AIOps Performance Comparison
