@@ -1,7 +1,8 @@
 # This is the home for all AIOps research initiatives.
 
-## Anomaly_detection
-The home for all things AIOps reserach requires you to use the below template as a README.MD file in the top level directory in your research folder
+## Description
+The approach is pretty simple:
+The home for all things AIOps research requires you to use the below template as a README.MD file in the top level directory in your research folder.
 
 # Template
 Please copy/paste your template
