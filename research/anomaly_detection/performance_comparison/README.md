@@ -52,7 +52,8 @@ I am using the OTEL demo app to generate data, train models, develop different f
 
 ```
 
-#Project Details
+
+# Project Details
 ## AIOps Performance Comparison
 
 A lightweight harness to build features from OTEL demo telemetry, train an anomaly detector, and compare detectors on curated or freshly collected data.
