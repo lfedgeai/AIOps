@@ -1,3 +1,57 @@
+# 🔬 Project Title: Performance comparison of Anomaly Detection approaches
+
+> **Executive Summary:** A one-sentence pitch of what this research solves and why it matters to the world.
+
+---
+For all your approved research tasks, please use the below template in the top-level directory of your research project.
+
+
+## 📌 Research Overview
+* **Status:** `🏗️ In-Progress` 
+* **Domain:** Anomaly Detection
+* **Core Question:** What is the best approach for anomaly detection in distributed and evolving environments?
+
+---
+
+## 🎯 Desired Outcomes
+* **Primary Objective:** to prove out that the winning approach is best suitable in F1 score across evolving distributed system landscapes
+* **Key Deliverables:**
+    - [ ] **Trained Weights:** Optimized model files for deployment.
+    - [X] **Cleaned Dataset:** Normalized data ready for replication.
+    - [X] **Blog Post:** Formal documentation of findings.
+    - [X] **Visual Dashboard:** Interactive UI for results visualisation.
+
+---
+
+## 🛠 Methodology & Framework
+*Describe the technical approach and the "How" behind the research.*
+
+* **Approach:** [e.g., Qualitative Analysis, Random Forest Regression, Double-Blind Study].
+* **Core Logic:**
+    $$L = \frac{1}{n} \sum_{i=1}^{n} (y_i - \hat{y}_i)^2$$
+* **Tech Stack:** `Python (Pandas/NumPy)`, `R`, `LaTeX`, `Docker`.
+
+---
+
+## 📊 Data Management & Transparency
+1.  **Source:** [Link to original data source or citation].
+2.  **Processing:** How was the data cleaned? (See `/scripts` or `/notebooks` for details).
+3.  **Ethical Considerations:** Details on anonymization and licensing restrictions.
+
+---
+
+## 📂 Repository Structure
+```text
+├── data/               # Raw and processed datasets
+├── code/               # code incl Jupyter or RMarkdown files for EDA
+├── scripts/            # Reproducible scripts for training/analysis runs eg make files
+├── results/            # Graphs, Tables, and Model Outputs
+├── docs/               # In-depth documentation and literature review
+└── README.md           # This file
+
+
+
+#Project Details
 ## AIOps Performance Comparison
 
 A lightweight harness to build features from OTEL demo telemetry, train an anomaly detector, and compare detectors on curated or freshly collected data.
