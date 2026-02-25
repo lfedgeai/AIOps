@@ -1,3 +1,59 @@
+# 🔬 Project Title: Performance comparison of Anomaly Detection approaches
+
+> **Executive Summary:** A one-sentence pitch of what this research solves and why it matters to the world.
+
+---
+For all your approved research tasks, please use the below template in the top-level directory of your research project.
+
+
+## 📌 Research Overview
+* **Status:** `🏗️ In-Progress` 
+* **Domain:** Anomaly Detection
+* **Core Question:** What is the best approach for anomaly detection in distributed and evolving environments?
+
+---
+
+## 🎯 Desired Outcomes
+* **Primary Objective:** to prove out that the winning approach is best suitable in F1 score across evolving distributed system landscapes
+* **Key Deliverables:**
+    - [ ] **Trained Weights:** Optimized model files for deployment.
+    - [X] **Cleaned Dataset:** Normalized data ready for replication.
+    - [X] **Blog Post:** Formal documentation of findings.
+    - [X] **Visual Dashboard:** Interactive UI for results visualisation.
+
+---
+
+## 🛠 Methodology & Framework
+*Describe the technical approach and the "How" behind the research.*
+I am using the OTEL demo app to generate data, train models, develop different feature sets and compare different algorithms and AI models (predictive) comparing the results calculating precision, recall, F1 score and Area Under the Curve (AUC).
+
+* **Approach:** collect ground truth data to train model and algortihm, then evaluate performance with a separate data set
+* **Core Logic:** ./comparison/compare_detectors.py
+* **Tech Stack:** OTEL Demo App, Python (Pandas/NumPy), Docker/Podman, Pytorch, Make
+
+---
+
+## 📊 Data Management & Transparency
+1.  **Source:** OTEL Demo App logs, metrics & traces
+2.  **Processing:** How was the data cleaned? /chaos_engineering/collect* scripts
+3.  **Ethical Considerations:** OTEL demo app data allows for repeatible, ethical, copyright free data collection.
+
+---
+
+## 📂 Repository Structure
+```text
+├── chaos_engineering/    # collect data and inject faults
+├── copmarison/           # copmares different algorithms and models
+├── datasets/             # previously collected datasets (static)
+├── results/              # Graphs, Tables, and Model Outputs
+├── out/                  # reports and rolling reports, models, and other artefacts created or updated during each run.
+└── README.md             # This file
+└── Makefile              # A makefile for ease of orchestrating runs
+
+```
+
+
+# Project Details
 ## AIOps Performance Comparison
 
 A lightweight harness to build features from OTEL demo telemetry, train an anomaly detector, and compare detectors on curated or freshly collected data.
