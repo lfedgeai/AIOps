@@ -55,6 +55,56 @@ def load_data(features_csv: Path, isoforest_report_json: Optional[Path]) -> Tupl
     return df, feature_cols
 
 
+def split_modalities(feature_cols: List[str]) -> Dict[str, List[str]]:
+    """
+    Heuristically split feature columns into modalities: logs, traces, metrics.
+    Rules:
+      - traces: columns starting with 'trace_'
+      - logs: starting with 'log_' or ending with '_error_count'/'_error_ratio'
+      - metrics: starting with 'metrics_' or common metric prefixes like 'req_', 'cpu_', 'memory_', 'latency_'
+    """
+    logs: List[str] = []
+    traces: List[str] = []
+    metrics: List[str] = []
+    for c in feature_cols:
+        lc = c.lower()
+        if lc.startswith("trace_"):
+            traces.append(c)
+            continue
+        if lc.startswith("log_") or lc.endswith("_error_count") or lc.endswith("_error_ratio"):
+            logs.append(c)
+            continue
+        if lc.startswith("metrics_") or lc.startswith("metric_") or lc.startswith("req_") or lc.startswith("cpu_") or lc.startswith("memory_") or lc.startswith("latency_"):
+            metrics.append(c)
+            continue
+    return {"logs": logs, "traces": traces, "metrics": metrics}
+
+
+def split_modalities(feature_cols: List[str]) -> Dict[str, List[str]]:
+    """
+    Heuristically split feature columns into modalities: logs, traces, metrics.
+    Rules:
+      - traces: columns starting with 'trace_'
+      - logs: starting with 'log_' or ending with '_error_count'/'_error_ratio'
+      - metrics: starting with 'metrics_' or common metric prefixes like 'req_', 'cpu_', 'memory_', 'latency_'
+    """
+    logs: List[str] = []
+    traces: List[str] = []
+    metrics: List[str] = []
+    for c in feature_cols:
+        lc = c.lower()
+        if lc.startswith("trace_"):
+            traces.append(c)
+            continue
+        if lc.startswith("log_") or lc.endswith("_error_count") or lc.endswith("_error_ratio"):
+            logs.append(c)
+            continue
+        if lc.startswith("metrics_") or lc.startswith("metric_") or lc.startswith("req_") or lc.startswith("cpu_") or lc.startswith("memory_") or lc.startswith("latency_"):
+            metrics.append(c)
+            continue
+    return {"logs": logs, "traces": traces, "metrics": metrics}
+
+
 def split_train_eval(df: pd.DataFrame, feature_cols: List[str]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     # Train on baseline windows marked for training
     if "in_training" not in df.columns:
@@ -348,6 +398,34 @@ def write_report(out_dir: Path, results: List[DetectorResult], per_flag_map: Opt
     </ul>
   </div>"""
 
+    # Combined vs standalone (F1) table
+    def _comp_table(rs: List[DetectorResult]) -> str:
+        fams = {
+            "IsolationForest": {"combined": "IsolationForest(sklearn)", "logs": "IsolationForest(logs)", "traces": "IsolationForest(traces)", "metrics": "IsolationForest(metrics)"},
+            "COPOD": {"combined": "COPOD(pyod)", "logs": "COPOD(logs)", "traces": "COPOD(traces)", "metrics": "COPOD(metrics)"},
+            "RRCF": {"combined": "RRCF(rrcf)", "logs": "RRCF(logs)", "traces": "RRCF(traces)", "metrics": "RRCF(metrics)"},
+        }
+        f1map = {r.name: r.f1 for r in rs}
+        head = "<tr><th>Algorithm</th><th>Combined F1</th><th>Logs F1</th><th>Traces F1</th><th>Metrics F1</th></tr>"
+        rows_h = []
+        for fam, names in fams.items():
+            rows_h.append(
+                f"<tr><td>{fam}</td>"
+                f"<td>{f1map.get(names['combined'], float('nan')):.4f}</td>"
+                f"<td>{f1map.get(names['logs'], float('nan')):.4f}</td>"
+                f"<td>{f1map.get(names['traces'], float('nan')):.4f}</td>"
+                f"<td>{f1map.get(names['metrics'], float('nan')):.4f}</td></tr>"
+            )
+        return f"""
+  <div style="margin:10px 0 16px 0;padding:10px;border:1px solid #e5e7eb;border-radius:6px;">
+    <h2 style="margin:0 0 8px 0;font-size:16px;">Combined vs standalone (F1)</h2>
+    <table>
+      {head}
+      {''.join(rows_h)}
+    </table>
+  </div>"""
+    comp_html = _comp_table(results)
+
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Anomaly Detector Comparison</title>
 <style>table{{border-collapse:collapse}}td,th{{border:1px solid #ccc;padding:6px 10px;text-align:center}}</style>
@@ -357,6 +435,7 @@ def write_report(out_dir: Path, results: List[DetectorResult], per_flag_map: Opt
   {quantile_html}
   {metrics_html}
   {val_html}
+  {comp_html}
   {detectors_html}
   <table>
     <tr><th>detector</th><th>precision</th><th>recall</th><th>f1</th><th>PR-AUC</th><th>ROC-AUC</th><th>threshold</th></tr>
@@ -441,6 +520,58 @@ def main() -> int:
     mp = _save_model(mdl, name)
     if mp:
         model_files[name] = str(mp)
+    # Modality-specific IsolationForest models (logs-only, traces-only, metrics-only)
+    def _run_if_for_cols(mod_name: str, cols: List[str]) -> None:
+        if not cols:
+            return
+        try:
+            X_tr_m = train_df[cols].to_numpy()
+            X_ev_m = eval_df[cols].to_numpy()
+            if X_tr_m.shape[1] == 0 or X_ev_m.shape[1] == 0:
+                return
+            s_tr_m, s_ev_m, _, mdl_m = run_iforest_ext(X_tr_m, X_ev_m)
+            thr_m = calibrate_threshold(s_tr_m, args.quantile)
+            p_m, r_m, f1_m, pr_auc_m, roc_auc_m, pr_pts_m, roc_pts_m = compute_metrics(y_eval, s_ev_m, thr_m, higher_is_anomalous=True)
+            det_name = f"IsolationForest({mod_name})"
+            results.append(DetectorResult(det_name, p_m, r_m, f1_m, pr_auc_m, roc_auc_m, thr_m, pr_pts_m, roc_pts_m))
+            mp_m = _save_model(mdl_m, det_name)
+            if mp_m:
+                model_files[det_name] = str(mp_m)
+        except Exception:
+            pass
+    try:
+        mods = split_modalities(feature_cols)
+        _run_if_for_cols("logs", mods.get("logs", []))
+        _run_if_for_cols("traces", mods.get("traces", []))
+        _run_if_for_cols("metrics", mods.get("metrics", []))
+    except Exception:
+        pass
+    # Modality-specific IsolationForest models (logs-only, traces-only, metrics-only)
+    def _run_if_for_cols(mod_name: str, cols: List[str]) -> None:
+        if not cols:
+            return
+        try:
+            X_tr_m = train_df[cols].to_numpy()
+            X_ev_m = eval_df[cols].to_numpy()
+            if X_tr_m.shape[1] == 0 or X_ev_m.shape[1] == 0:
+                return
+            s_tr_m, s_ev_m, _, mdl_m = run_iforest_ext(X_tr_m, X_ev_m)
+            thr_m = calibrate_threshold(s_tr_m, args.quantile)
+            p_m, r_m, f1_m, pr_auc_m, roc_auc_m, pr_pts_m, roc_pts_m = compute_metrics(y_eval, s_ev_m, thr_m, higher_is_anomalous=True)
+            det_name = f"IsolationForest({mod_name})"
+            results.append(DetectorResult(det_name, p_m, r_m, f1_m, pr_auc_m, roc_auc_m, thr_m, pr_pts_m, roc_pts_m))
+            mp_m = _save_model(mdl_m, det_name)
+            if mp_m:
+                model_files[det_name] = str(mp_m)
+        except Exception:
+            pass
+    try:
+        mods = split_modalities(feature_cols)
+        _run_if_for_cols("logs", mods.get("logs", []))
+        _run_if_for_cols("traces", mods.get("traces", []))
+        _run_if_for_cols("metrics", mods.get("metrics", []))
+    except Exception:
+        pass
     # Per-flag breakdown at the operating point
     def per_flag_breakdown(flags_arr: np.ndarray, y_true_arr: np.ndarray, preds_arr: np.ndarray) -> List[Dict[str, object]]:
         out: List[Dict[str, object]] = []
@@ -486,6 +617,36 @@ def main() -> int:
         print(f"[WARN] COPOD failed: {e}")
         by_flag_copod = []
 
+    # COPOD per-modality
+    try:
+        def _run_copod_for_cols(mod_name: str, cols: List[str]) -> None:
+            if not cols:
+                return
+            try:
+                X_tr_m = train_df[cols].to_numpy()
+                X_ev_m = eval_df[cols].to_numpy()
+                if X_tr_m.shape[1] == 0 or X_ev_m.shape[1] == 0:
+                    return
+                s_tr_m, s_ev_m, _, mdl_m = run_copod(X_tr_m, X_ev_m)
+                thr_m = calibrate_threshold(s_tr_m, args.quantile)
+                p_m, r_m, f1_m, pr_auc_m, roc_auc_m, pr_pts_m, roc_pts_m = compute_metrics(y_eval, s_ev_m, thr_m, higher_is_anomalous=True)
+                det_name = f"COPOD({mod_name})"
+                results.append(DetectorResult(det_name, p_m, r_m, f1_m, pr_auc_m, roc_auc_m, thr_m, pr_pts_m, roc_pts_m))
+                mp_m = _save_model(mdl_m, det_name)
+                if mp_m:
+                    model_files[det_name] = str(mp_m)
+            except Exception:
+                pass
+        try:
+            mods = split_modalities(feature_cols)
+            _run_copod_for_cols("logs", mods.get("logs", []))
+            _run_copod_for_cols("traces", mods.get("traces", []))
+            _run_copod_for_cols("metrics", mods.get("metrics", []))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
     # RRCF
     try:
         s_tr, s_ev, name, mdl = run_rrcf(X_train, X_eval)
@@ -497,6 +658,31 @@ def main() -> int:
             model_files[name] = str(mp)
         preds_rrcf = (s_ev > thr).astype(int)
         by_flag_rrcf = per_flag_breakdown(eval_flags, y_eval, preds_rrcf)
+        # Modality-specific RRCF
+        def _run_rrcf_for_cols(mod_name: str, cols: List[str]) -> None:
+            if not cols:
+                return
+            try:
+                X_tr_m = train_df[cols].to_numpy()
+                X_ev_m = eval_df[cols].to_numpy()
+                if X_tr_m.shape[1] == 0 or X_ev_m.shape[1] == 0:
+                    return
+                s_tr_m, s_ev_m, _, mdl_m = run_rrcf(X_tr_m, X_ev_m)
+                thr_m = calibrate_threshold(s_tr_m, args.quantile)
+                p_m, r_m, f1_m, pr_auc_m, roc_auc_m, pr_pts_m, roc_pts_m = compute_metrics(y_eval, s_ev_m, thr_m, higher_is_anomalous=True)
+                det_name = f"RRCF({mod_name})"
+                results.append(DetectorResult(det_name, p_m, r_m, f1_m, pr_auc_m, roc_auc_m, thr_m, pr_pts_m, roc_pts_m))
+                mp_m = _save_model(mdl_m, det_name)
+                if mp_m:
+                    model_files[det_name] = str(mp_m)
+            except Exception:
+                pass
+        try:
+            _run_rrcf_for_cols("logs", mods.get("logs", []))
+            _run_rrcf_for_cols("traces", mods.get("traces", []))
+            _run_rrcf_for_cols("metrics", mods.get("metrics", []))
+        except Exception:
+            pass
     except Exception as e:
         print(f"[WARN] RRCF unavailable or failed: {e}")
         by_flag_rrcf = []
