@@ -1,0 +1,1 @@
+SELECT metric_name, toStartOfHour(ts) AS hour, count() AS cnt, avg(value) AS avg_val FROM telemetry.metrics WHERE ts>=now()-INTERVAL 7 DAY GROUP BY metric_name, toStartOfHour(ts) ORDER BY hour DESC, metric_name LIMIT 100

@@ -1,0 +1,5817 @@
+[
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "OwqANpwBQni_kOJFkMqv",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.status_code": 200,
+        "http.url": "http://frontend-proxy:8080/api/data/?contextKeys=assembly"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:37.778528728Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.requests",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Client",
+      "name": "GET",
+      "parentSpanId": "3a6db10d6d1dc16c",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "55e5a22fe4b6e446",
+      "startTime": "2026-02-07T05:08:37.766029039Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "ed595117848b0c8e3cc97eda35b033ac",
+      "traceState": ""
+    },
+    "sort": [
+      1770440917778
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "PQqANpwBQni_kOJFkMqv",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "category": "assembly",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        }
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:37.778624053Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "locustfile",
+        "schemaUrl": "",
+        "version": ""
+      },
+      "kind": "Internal",
+      "name": "user_get_ads",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "3a6db10d6d1dc16c",
+      "startTime": "2026-02-07T05:08:37.765168897Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "ed595117848b0c8e3cc97eda35b033ac",
+      "traceState": ""
+    },
+    "sort": [
+      1770440917778
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "KwqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.status_code": 200,
+        "next.span_name": "executing api route (pages) /api/data",
+        "next.span_type": "Node.runHandler"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:37.777110522Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Internal",
+      "name": "executing api route (pages) /api/data",
+      "parentSpanId": "bec473feae6b4ba8",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "77a9d8cecf22062d",
+      "startTime": "2026-02-07T05:08:37.771Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "ed595117848b0c8e3cc97eda35b033ac",
+      "traceState": ""
+    },
+    "sort": [
+      1770440917777
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "LAqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.route": "/api/data",
+        "http.status_code": 200,
+        "http.target": "/api/data?contextKeys=assembly",
+        "next.route": "/api/data",
+        "next.rsc": false,
+        "next.span_name": "GET /api/data",
+        "next.span_type": "BaseServer.handleRequest"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:37.777134133Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Server",
+      "name": "GET /api/data",
+      "parentSpanId": "85441d70c48909a0",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "bec473feae6b4ba8",
+      "startTime": "2026-02-07T05:08:37.77Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "ed595117848b0c8e3cc97eda35b033ac",
+      "traceState": ""
+    },
+    "sort": [
+      1770440917777
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "MAqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.host": "frontend-proxy:8080",
+        "http.method": "GET",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.status_text": "OK",
+        "http.target": "/api/data?contextKeys=assembly",
+        "http.url": "http://frontend-proxy:8080/api/data?contextKeys=assembly",
+        "http.user_agent": "python-requests/2.32.4",
+        "net.host.ip": "172.22.0.17",
+        "net.host.name": "frontend-proxy",
+        "net.host.port": 8080,
+        "net.peer.ip": "172.22.0.29",
+        "net.peer.port": 52114,
+        "net.transport": "ip_tcp"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:37.777589119Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-http",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "f3e787d3b1f8c4c0",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "85441d70c48909a0",
+      "startTime": "2026-02-07T05:08:37.77Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "ed595117848b0c8e3cc97eda35b033ac",
+      "traceState": ""
+    },
+    "sort": [
+      1770440917777
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "JgqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "ad",
+        "net.peer.port": 9555,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetAds",
+        "rpc.service": "oteldemo.AdService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:37.776490003Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.AdService/GetAds",
+      "parentSpanId": "77a9d8cecf22062d",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "81aa767264675a55",
+      "startTime": "2026-02-07T05:08:37.771Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "ed595117848b0c8e3cc97eda35b033ac",
+      "traceState": ""
+    },
+    "sort": [
+      1770440917776
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "MgqANpwBQni_kOJFi8qm",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.ads.category": "assembly",
+        "app.ads.count": 1,
+        "code.function": "getAdsByCategory",
+        "code.namespace": "oteldemo.AdService",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "thread.id": 42,
+        "thread.name": "grpc-default-executor-2"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:37.775690408Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "io.opentelemetry.opentelemetry-instrumentation-annotations-1.16",
+        "schemaUrl": "",
+        "version": "2.21.0-alpha"
+      },
+      "kind": "Internal",
+      "name": "getAdsByCategory",
+      "parentSpanId": "a0e7220f68cfe600",
+      "resource": {
+        "container.id": "158b65dc74e4f22ee880ae048876ddf62e7d6af7d6453fc61953a38ec48057f1",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.description": "Linux 6.16.8-200.fc42.x86_64",
+        "os.type": "linux",
+        "process.command_line": "/opt/java/openjdk/bin/java -javaagent:/usr/src/app/opentelemetry-javaagent.jar oteldemo.AdService",
+        "process.executable.path": "/opt/java/openjdk/bin/java",
+        "process.pid": "1",
+        "process.runtime.description": "Eclipse Adoptium OpenJDK 64-Bit Server VM 21.0.9+10-LTS",
+        "process.runtime.name": "OpenJDK Runtime Environment",
+        "process.runtime.version": "21.0.9+10-LTS",
+        "service.instance.id": "bd5ebcc7-ab76-4688-9818-e738f48efce9",
+        "service.name": "ad",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.distro.name": "opentelemetry-java-instrumentation",
+        "telemetry.distro.version": "2.21.0",
+        "telemetry.sdk.language": "java",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.55.0"
+      },
+      "spanId": "c09293d7f6b0945d",
+      "startTime": "2026-02-07T05:08:37.775643969Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "ed595117848b0c8e3cc97eda35b033ac",
+      "traceState": ""
+    },
+    "sort": [
+      1770440917775
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "LwqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.host": "frontend-proxy:8080",
+        "http.method": "GET",
+        "http.scheme": "http",
+        "http.status_code": 308,
+        "http.status_text": "PERMANENT REDIRECT",
+        "http.target": "/api/data/?contextKeys=assembly",
+        "http.url": "http://frontend-proxy:8080/api/data/?contextKeys=assembly",
+        "http.user_agent": "python-requests/2.32.4",
+        "net.host.ip": "172.22.0.17",
+        "net.host.name": "frontend-proxy",
+        "net.host.port": 8080,
+        "net.peer.ip": "172.22.0.29",
+        "net.peer.port": 52114,
+        "net.transport": "ip_tcp"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:37.76785754Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-http",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "b876cd561d63341d",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "acb6fa6091a78e0c",
+      "startTime": "2026-02-07T05:08:37.767Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "ed595117848b0c8e3cc97eda35b033ac",
+      "traceState": ""
+    },
+    "sort": [
+      1770440917767
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "OQqANpwBQni_kOJFjMpU",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.product.id": "2ZYFJ3GM2N",
+        "app.product.name": "Roof Binoculars",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc",
+        "server.address": "172.22.0.17",
+        "server.port": 48472
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:36.614265091Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Product Found",
+          "@timestamp": "2026-02-07T05:08:35.959632535Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+        "schemaUrl": "",
+        "version": "0.63.0"
+      },
+      "kind": "Server",
+      "name": "oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "cd559b6b9925bdd8",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux dd3829cf3c99 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.command_args": "[\"./product-catalog\"]",
+        "process.executable.name": "product-catalog",
+        "process.executable.path": "/usr/src/app/product-catalog",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "go version go1.24.10 linux/amd64",
+        "process.runtime.name": "go",
+        "process.runtime.version": "go1.24.10",
+        "service.name": "product-catalog",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "2d51be10895c5746",
+      "startTime": "2026-02-07T05:08:35.120428448Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440916614
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "OgqANpwBQni_kOJFkMqv",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.status_code": 200,
+        "http.url": "http://frontend-proxy:8080/api/recommendations?productIds=9SIQT8TOJO"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:36.604611373Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.requests",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Client",
+      "name": "GET",
+      "parentSpanId": "5f03901179b9a80c",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "7be2096481298f8e",
+      "startTime": "2026-02-07T05:08:33.649017042Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440916604
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "PAqANpwBQni_kOJFkMqv",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "product.id": "9SIQT8TOJO"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:36.604739447Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "locustfile",
+        "schemaUrl": "",
+        "version": ""
+      },
+      "kind": "Internal",
+      "name": "user_get_recommendations",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "5f03901179b9a80c",
+      "startTime": "2026-02-07T05:08:33.648210342Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440916604
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "JQqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "product-catalog",
+        "net.peer.port": 3550,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:36.602222002Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "6e7026db1c0d5361",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "cd559b6b9925bdd8",
+      "startTime": "2026-02-07T05:08:34.506Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440916602
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "KQqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.status_code": 200,
+        "next.span_name": "executing api route (pages) /api/recommendations",
+        "next.span_type": "Node.runHandler"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:36.602628647Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Internal",
+      "name": "executing api route (pages) /api/recommendations",
+      "parentSpanId": "c16a74fcc2b35839",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "6e7026db1c0d5361",
+      "startTime": "2026-02-07T05:08:33.653Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440916602
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "KgqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.route": "/api/recommendations",
+        "http.status_code": 200,
+        "http.target": "/api/recommendations?productIds=9SIQT8TOJO",
+        "next.route": "/api/recommendations",
+        "next.rsc": false,
+        "next.span_name": "GET /api/recommendations",
+        "next.span_type": "BaseServer.handleRequest"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:36.602805566Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Server",
+      "name": "GET /api/recommendations",
+      "parentSpanId": "a0420e291f40111a",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "c16a74fcc2b35839",
+      "startTime": "2026-02-07T05:08:33.651Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440916602
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "LgqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.host": "frontend-proxy:8080",
+        "http.method": "GET",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.status_text": "OK",
+        "http.target": "/api/recommendations?productIds=9SIQT8TOJO",
+        "http.url": "http://frontend-proxy:8080/api/recommendations?productIds=9SIQT8TOJO",
+        "http.user_agent": "python-requests/2.32.4",
+        "net.host.ip": "172.22.0.17",
+        "net.host.name": "frontend-proxy",
+        "net.host.port": 8080,
+        "net.peer.ip": "172.22.0.29",
+        "net.peer.port": 56242,
+        "net.transport": "ip_tcp"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:36.602964685Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-http",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "f88fb3521322023d",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "a0420e291f40111a",
+      "startTime": "2026-02-07T05:08:33.65Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440916602
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "OAqANpwBQni_kOJFjMpU",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.product.id": "66VCHSJNUP",
+        "app.product.name": "Starsense Explorer Refractor Telescope",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc",
+        "server.address": "172.22.0.17",
+        "server.port": 48472
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:36.462973386Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Product Found",
+          "@timestamp": "2026-02-07T05:08:35.959582863Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+        "schemaUrl": "",
+        "version": "0.63.0"
+      },
+      "kind": "Server",
+      "name": "oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "a7eebde73b04100b",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux dd3829cf3c99 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.command_args": "[\"./product-catalog\"]",
+        "process.executable.name": "product-catalog",
+        "process.executable.path": "/usr/src/app/product-catalog",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "go version go1.24.10 linux/amd64",
+        "process.runtime.name": "go",
+        "process.runtime.version": "go1.24.10",
+        "service.name": "product-catalog",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "70dd8082b96056ea",
+      "startTime": "2026-02-07T05:08:35.462903677Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440916462
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "JAqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "product-catalog",
+        "net.peer.port": 3550,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:36.450534691Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "6e7026db1c0d5361",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "a7eebde73b04100b",
+      "startTime": "2026-02-07T05:08:34.506Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440916450
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "IwqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "product-catalog",
+        "net.peer.port": 3550,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:36.168972206Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "6e7026db1c0d5361",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "c08bd69fb816a94e",
+      "startTime": "2026-02-07T05:08:34.506Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440916168
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "NwqANpwBQni_kOJFjMpU",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.product.id": "LS4PSXUNUM",
+        "app.product.name": "Red Flashlight",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc",
+        "server.address": "172.22.0.17",
+        "server.port": 48472
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:36.162834667Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Product Found",
+          "@timestamp": "2026-02-07T05:08:35.584781952Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+        "schemaUrl": "",
+        "version": "0.63.0"
+      },
+      "kind": "Server",
+      "name": "oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "c08bd69fb816a94e",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux dd3829cf3c99 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.command_args": "[\"./product-catalog\"]",
+        "process.executable.name": "product-catalog",
+        "process.executable.path": "/usr/src/app/product-catalog",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "go version go1.24.10 linux/amd64",
+        "process.runtime.name": "go",
+        "process.runtime.version": "go1.24.10",
+        "service.name": "product-catalog",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "448b245f6a04bfb4",
+      "startTime": "2026-02-07T05:08:35.073658428Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440916162
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "NgqANpwBQni_kOJFjMpU",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.product.id": "1YMWWN1N4O",
+        "app.product.name": "Eclipsmart Travel Refractor Telescope",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc",
+        "server.address": "172.22.0.17",
+        "server.port": 48472
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:36.156886806Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Product Found",
+          "@timestamp": "2026-02-07T05:08:35.58477102Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+        "schemaUrl": "",
+        "version": "0.63.0"
+      },
+      "kind": "Server",
+      "name": "oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "508180dddfb1c362",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux dd3829cf3c99 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.command_args": "[\"./product-catalog\"]",
+        "process.executable.name": "product-catalog",
+        "process.executable.path": "/usr/src/app/product-catalog",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "go version go1.24.10 linux/amd64",
+        "process.runtime.name": "go",
+        "process.runtime.version": "go1.24.10",
+        "service.name": "product-catalog",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "705f58be0c6e7eb6",
+      "startTime": "2026-02-07T05:08:34.679430391Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440916156
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "IgqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "product-catalog",
+        "net.peer.port": 3550,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:36.110379114Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "6e7026db1c0d5361",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "508180dddfb1c362",
+      "startTime": "2026-02-07T05:08:34.505Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440916110
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "DwqANpwBQni_kOJFhcpA",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.method": "GET",
+        "http.request_content_length": 0,
+        "http.response_content_length": 98,
+        "http.route": "/status",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.target": "/status",
+        "http.user_agent": "Go-http-client/1.1",
+        "net.host.name": "_",
+        "net.host.port": 8081,
+        "net.sock.peer.addr": "172.22.0.18",
+        "net.sock.peer.port": 49976
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:34.893Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "nginx",
+        "schemaUrl": "",
+        "version": "1.29.0"
+      },
+      "kind": "Server",
+      "name": "image-provider",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "image-provider"
+      },
+      "spanId": "b41740a956734fb1",
+      "startTime": "2026-02-07T05:08:34.893Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "d7c980ab3ee4160b7366f1b97b09c49c",
+      "traceState": ""
+    },
+    "sort": [
+      1770440914893
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "_wqANpwBQni_kOJFfckl",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.status_code": 200,
+        "http.url": "http://frontend-proxy:8080/api/products/L9ECAV7KIM"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:34.595228575Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.requests",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Client",
+      "name": "GET",
+      "parentSpanId": "1a2afa59b1ad2461",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "ba8942012f392946",
+      "startTime": "2026-02-07T05:08:33.950994673Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "5264b334c21a8faf4bc7ba5b41a7e4f8",
+      "traceState": ""
+    },
+    "sort": [
+      1770440914595
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "AAqANpwBQni_kOJFfcol",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "product.id": "L9ECAV7KIM"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:34.595383841Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "locustfile",
+        "schemaUrl": "",
+        "version": ""
+      },
+      "kind": "Internal",
+      "name": "user_browse_product",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "1a2afa59b1ad2461",
+      "startTime": "2026-02-07T05:08:33.950047239Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "5264b334c21a8faf4bc7ba5b41a7e4f8",
+      "traceState": ""
+    },
+    "sort": [
+      1770440914595
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "JwqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.status_code": 200,
+        "next.span_name": "executing api route (pages) /api/products/[productId]/index",
+        "next.span_type": "Node.runHandler"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:34.593756631Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Internal",
+      "name": "executing api route (pages) /api/products/[productId]/index",
+      "parentSpanId": "a8000f9808238bb0",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "1173e7fdedc45794",
+      "startTime": "2026-02-07T05:08:33.955Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "5264b334c21a8faf4bc7ba5b41a7e4f8",
+      "traceState": ""
+    },
+    "sort": [
+      1770440914593
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "KAqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.route": "/api/products/[productId]/index",
+        "http.status_code": 200,
+        "http.target": "/api/products/L9ECAV7KIM",
+        "next.route": "/api/products/[productId]/index",
+        "next.rsc": false,
+        "next.span_name": "GET /api/products/[productId]/index",
+        "next.span_type": "BaseServer.handleRequest"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:34.593704771Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Server",
+      "name": "GET /api/products/{productId}",
+      "parentSpanId": "1c2a137378773769",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "a8000f9808238bb0",
+      "startTime": "2026-02-07T05:08:33.953Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "5264b334c21a8faf4bc7ba5b41a7e4f8",
+      "traceState": ""
+    },
+    "sort": [
+      1770440914593
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "LQqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.host": "frontend-proxy:8080",
+        "http.method": "GET",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.status_text": "OK",
+        "http.target": "/api/products/L9ECAV7KIM",
+        "http.url": "http://frontend-proxy:8080/api/products/L9ECAV7KIM",
+        "http.user_agent": "python-requests/2.32.4",
+        "net.host.ip": "172.22.0.17",
+        "net.host.name": "frontend-proxy",
+        "net.host.port": 8080,
+        "net.peer.ip": "172.22.0.29",
+        "net.peer.port": 52114,
+        "net.transport": "ip_tcp"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:34.593335552Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-http",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "6c1b18c3a63b25d6",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "1c2a137378773769",
+      "startTime": "2026-02-07T05:08:33.952Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "5264b334c21a8faf4bc7ba5b41a7e4f8",
+      "traceState": ""
+    },
+    "sort": [
+      1770440914593
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "IQqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "product-catalog",
+        "net.peer.port": 3550,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:34.592724202Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "1173e7fdedc45794",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "002085f93e537ba7",
+      "startTime": "2026-02-07T05:08:33.955Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "5264b334c21a8faf4bc7ba5b41a7e4f8",
+      "traceState": ""
+    },
+    "sort": [
+      1770440914592
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "NQqANpwBQni_kOJFjMpU",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.product.id": "L9ECAV7KIM",
+        "app.product.name": "Lens Cleaning Kit",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc",
+        "server.address": "172.22.0.17",
+        "server.port": 48472
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:34.578897009Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Product Found",
+          "@timestamp": "2026-02-07T05:08:34.347932759Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+        "schemaUrl": "",
+        "version": "0.63.0"
+      },
+      "kind": "Server",
+      "name": "oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "002085f93e537ba7",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux dd3829cf3c99 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.command_args": "[\"./product-catalog\"]",
+        "process.executable.name": "product-catalog",
+        "process.executable.path": "/usr/src/app/product-catalog",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "go version go1.24.10 linux/amd64",
+        "process.runtime.name": "go",
+        "process.runtime.version": "go1.24.10",
+        "service.name": "product-catalog",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "f6511d7b30e0a17c",
+      "startTime": "2026-02-07T05:08:34.157006075Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "5264b334c21a8faf4bc7ba5b41a7e4f8",
+      "traceState": ""
+    },
+    "sort": [
+      1770440914578
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "FAqANpwBQni_kOJFh8rG",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.products_recommended.count": 5,
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.ip": "172.22.0.17",
+        "net.peer.port": "52156",
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "ListRecommendations",
+        "rpc.service": "oteldemo.RecommendationService",
+        "rpc.system": "grpc",
+        "rpc.user_agent": "grpc-node-js/1.12.6"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:34.504483488Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.grpc",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Server",
+      "name": "/oteldemo.RecommendationService/ListRecommendations",
+      "parentSpanId": "7510b60ed0ddb973",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "recommendation",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.auto.version": "0.59b0",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "fcaad1caa0602b1b",
+      "startTime": "2026-02-07T05:08:33.655313695Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440914504
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "IAqANpwBQni_kOJFicrY",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "recommendation",
+        "net.peer.port": 9001,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "ListRecommendations",
+        "rpc.service": "oteldemo.RecommendationService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:34.5049591Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.RecommendationService/ListRecommendations",
+      "parentSpanId": "6e7026db1c0d5361",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "7510b60ed0ddb973",
+      "startTime": "2026-02-07T05:08:33.653Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440914504
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "EwqANpwBQni_kOJFh8rG",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "ListProducts",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:34.50318249Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.grpc",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Client",
+      "name": "/oteldemo.ProductCatalogService/ListProducts",
+      "parentSpanId": "dbdf4c595b6844a0",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "recommendation",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.auto.version": "0.59b0",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "9d7b77fb7dd6b6db",
+      "startTime": "2026-02-07T05:08:33.655740524Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440914503
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "FQqANpwBQni_kOJFh8rG",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.filtered_products.count": 9,
+        "app.filtered_products.list": [
+          "1YMWWN1N4O",
+          "LS4PSXUNUM",
+          "2ZYFJ3GM2N",
+          "66VCHSJNUP",
+          "6E92ZMYYFZ"
+        ],
+        "app.products.count": 10,
+        "app.recommendation.cache_enabled": false,
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        }
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:34.503347575Z",
+      "events": [
+        {
+          "attributes": {
+            "feature_flag.key": "recommendationCacheFailure",
+            "feature_flag.provider_name": "FlagdProvider",
+            "feature_flag.variant": "off"
+          },
+          "droppedAttributesCount": 0,
+          "name": "feature_flag",
+          "@timestamp": "2026-02-07T05:08:33.655603197Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "recommendation",
+        "schemaUrl": "",
+        "version": ""
+      },
+      "kind": "Internal",
+      "name": "get_product_list",
+      "parentSpanId": "fcaad1caa0602b1b",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "recommendation",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.auto.version": "0.59b0",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "dbdf4c595b6844a0",
+      "startTime": "2026-02-07T05:08:33.655396935Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440914503
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "NAqANpwBQni_kOJFjMpU",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.products.count": 10,
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "ListProducts",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc",
+        "server.address": "172.22.0.7",
+        "server.port": 52812
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:34.491278256Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+        "schemaUrl": "",
+        "version": "0.63.0"
+      },
+      "kind": "Server",
+      "name": "oteldemo.ProductCatalogService/ListProducts",
+      "parentSpanId": "9d7b77fb7dd6b6db",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux dd3829cf3c99 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.command_args": "[\"./product-catalog\"]",
+        "process.executable.name": "product-catalog",
+        "process.executable.path": "/usr/src/app/product-catalog",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "go version go1.24.10 linux/amd64",
+        "process.runtime.name": "go",
+        "process.runtime.version": "go1.24.10",
+        "service.name": "product-catalog",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "1d6ce3365d89ebc6",
+      "startTime": "2026-02-07T05:08:34.059483152Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "8780189b79890cfb0e0dbec980594f5a",
+      "traceState": ""
+    },
+    "sort": [
+      1770440914491
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "EgqANpwBQni_kOJFhsrR",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "client.address": "::ffff:172.22.0.29",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.request.method": "GET",
+        "http.response.status_code": 200,
+        "network.peer.address": "::ffff:172.22.0.29",
+        "network.peer.port": 36260,
+        "network.protocol.version": "1.1",
+        "server.address": "localhost",
+        "server.port": 8080,
+        "url.path": "/live/longpoll",
+        "url.query": "_csrf_token=FSMzEjRZZwAmEwcjW1k-ZhNQBgwoXw8jQpeVsjQQML0Dh1NPeaT5_neh&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fjs%2Fapp-bfbcc471bc314daa4f94a55c88d5e19a.js%3Fvsn%3Dd&_mounts=0&_mount_attempts=0&_live_referer=undefined&vsn=2.0.0&token=SFMyNTY.g2gDaAR3AnYxbQAAABZ6VGFtaGd4U1VIalVaKzZJaG5TSjZRWHcVZmxhZ2RfdWlAYWZhODYwMmQxNmIwAAAJmAAAAABphsdMbQAAACxwaHg6bHA6ZGpjRHFQYVB2aFZpZzVlaXhDbUo3dz09MTc3MDQ0MDc3Mzc1N24GAH5QfjacAWIAEnUA.imvCPUJOPR8EoyyuvyCVkbxEaweRktptg6RaPCTfumg",
+        "url.scheme": "http",
+        "user_agent.original": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:33.890308732Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry_bandit",
+        "schemaUrl": "",
+        "version": "0.3.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "4f9ea6515042559d",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "process.executable.name": "flagd_ui",
+        "process.runtime.description": "Erlang/OTP 28 erts-16.0.2",
+        "process.runtime.name": "BEAM",
+        "process.runtime.version": "16.0.2",
+        "service.instance.id": "flagd_ui@afa8602d16b0",
+        "service.name": "flagd-ui",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "erlang",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.7.0"
+      },
+      "spanId": "64eb490ad68b86ae",
+      "startTime": "2026-02-07T05:08:23.889305949Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "48fb5477e447396601ed0903d5d933e6",
+      "traceState": ""
+    },
+    "sort": [
+      1770440913890
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "_gqANpwBQni_kOJFfckl",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "POST",
+        "http.status_code": 200,
+        "http.url": "http://flagd:8016/ofrep/v1/evaluate/flags/loadGeneratorFloodHomepage"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:32.13608384Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.requests",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Client",
+      "name": "POST",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "a8616abcc73edb3f",
+      "startTime": "2026-02-07T05:08:32.134813576Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b2533cfe056dd435d6601e1d8c4addbc",
+      "traceState": ""
+    },
+    "sort": [
+      1770440912136
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "6gqANpwBQni_kOJFdckL",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        }
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:32.135506482Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "jsonEvaluator",
+        "schemaUrl": "",
+        "version": ""
+      },
+      "kind": "Internal",
+      "name": "resolveAnyValue",
+      "parentSpanId": "450082d1b69016f4",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux 60cd9c13a5a1 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.runtime.version": "go1.24.5",
+        "service.name": "flagd",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "v0.12.9",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.37.0"
+      },
+      "spanId": "5b6682f78ec0546d",
+      "startTime": "2026-02-07T05:08:32.135496524Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b2533cfe056dd435d6601e1d8c4addbc",
+      "traceState": ""
+    },
+    "sort": [
+      1770440912135
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "6wqANpwBQni_kOJFdckL",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "client.address": "172.22.0.25",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.request.body.size": 15,
+        "http.request.method": "POST",
+        "http.response.body.size": 94,
+        "http.response.status_code": 200,
+        "network.peer.address": "172.22.0.25",
+        "network.peer.port": 54004,
+        "network.protocol.version": "1.1",
+        "server.address": "flagd",
+        "server.port": 8016,
+        "url.path": "/ofrep/v1/evaluate/flags/loadGeneratorFloodHomepage",
+        "url.scheme": "http",
+        "user_agent.original": "python-requests/2.32.4"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:32.135536103Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+        "schemaUrl": "",
+        "version": "0.62.0"
+      },
+      "kind": "Server",
+      "name": "flagd.ofrep",
+      "parentSpanId": "a8616abcc73edb3f",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux 60cd9c13a5a1 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.runtime.version": "go1.24.5",
+        "service.name": "flagd",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "v0.12.9",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.37.0"
+      },
+      "spanId": "450082d1b69016f4",
+      "startTime": "2026-02-07T05:08:32.135457928Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b2533cfe056dd435d6601e1d8c4addbc",
+      "traceState": ""
+    },
+    "sort": [
+      1770440912135
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "5QqANpwBQni_kOJFacmX",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "POST",
+        "http.status_code": 200,
+        "http.url": "http://frontend-proxy:8080/api/cart"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.288509308Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.requests",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Client",
+      "name": "POST",
+      "parentSpanId": "7fd476df96a416ed",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "df85b25f073878b7",
+      "startTime": "2026-02-07T05:08:29.275631481Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909288
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "5gqANpwBQni_kOJFacmX",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "product.id": "OLJCESPC7Z",
+        "quantity": 3,
+        "user.id": "0986de9e-03e3-11f1-a4c1-ee90a491921f"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.288659477Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "locustfile",
+        "schemaUrl": "",
+        "version": ""
+      },
+      "kind": "Internal",
+      "name": "user_add_to_cart",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "7fd476df96a416ed",
+      "startTime": "2026-02-07T05:08:27.749144137Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909288
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "8wqANpwBQni_kOJFdcmR",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.status_code": 200,
+        "next.span_name": "executing api route (pages) /api/cart",
+        "next.span_type": "Node.runHandler"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.286829783Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Internal",
+      "name": "executing api route (pages) /api/cart",
+      "parentSpanId": "3bb074a123218ed5",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "29e0b462879e1f1a",
+      "startTime": "2026-02-07T05:08:29.279Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909286
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "9AqANpwBQni_kOJFdcmR",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "POST",
+        "http.route": "/api/cart",
+        "http.status_code": 200,
+        "http.target": "/api/cart",
+        "next.route": "/api/cart",
+        "next.rsc": false,
+        "next.span_name": "POST /api/cart",
+        "next.span_type": "BaseServer.handleRequest"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.286012196Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Server",
+      "name": "POST /api/cart",
+      "parentSpanId": "1956a10f724b5df6",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "3bb074a123218ed5",
+      "startTime": "2026-02-07T05:08:29.277Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909286
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "9gqANpwBQni_kOJFdcmR",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.host": "frontend-proxy:8080",
+        "http.method": "POST",
+        "http.request_content_length_uncompressed": 102,
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.status_text": "OK",
+        "http.target": "/api/cart",
+        "http.url": "http://frontend-proxy:8080/api/cart",
+        "http.user_agent": "python-requests/2.32.4",
+        "net.host.ip": "172.22.0.17",
+        "net.host.name": "frontend-proxy",
+        "net.host.port": 8080,
+        "net.peer.ip": "172.22.0.29",
+        "net.peer.port": 56242,
+        "net.transport": "ip_tcp"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.286633207Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-http",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Server",
+      "name": "POST",
+      "parentSpanId": "511c923e2cb687e5",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "1956a10f724b5df6",
+      "startTime": "2026-02-07T05:08:29.277Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909286
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "7QqANpwBQni_kOJFdcmQ",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.cart.items.count": 3,
+        "app.user.id": "0986de9e-03e3-11f1-a4c1-ee90a491921f",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "grpc.method": "/oteldemo.CartService/GetCart",
+        "grpc.status_code": "0",
+        "http.request.method": "POST",
+        "http.response.status_code": 200,
+        "http.route": "/oteldemo.CartService/GetCart",
+        "network.protocol.version": "2",
+        "server.address": "cart",
+        "server.port": 7070,
+        "url.path": "/oteldemo.CartService/GetCart",
+        "url.scheme": "http",
+        "user_agent.original": "grpc-node-js/1.12.6"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.2857174Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Fetch cart",
+          "@timestamp": "2026-02-07T05:08:29.2849999Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "Microsoft.AspNetCore",
+        "schemaUrl": "",
+        "version": ""
+      },
+      "kind": "Server",
+      "name": "POST /oteldemo.CartService/GetCart",
+      "parentSpanId": "8680196932484ef4",
+      "resource": {
+        "container.id": "4b8e1ba9bc173bfd1e231c68a08e035d15abf559a67710125114988f04c215ae",
+        "host.arch": "x64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.instance.id": "41ff49c5-c1d1-4cf7-8d1e-3757f9010cd2",
+        "service.name": "cart",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "dotnet",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.14.0"
+      },
+      "spanId": "257681f46adb6b0d",
+      "startTime": "2026-02-07T05:08:29.2848648Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909285
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "8AqANpwBQni_kOJFdcmR",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "cart",
+        "net.peer.port": 7070,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetCart",
+        "rpc.service": "oteldemo.CartService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.28575199Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.CartService/GetCart",
+      "parentSpanId": "29e0b462879e1f1a",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "8680196932484ef4",
+      "startTime": "2026-02-07T05:08:29.283Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909285
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "GAqANpwBQni_kOJFiMrw",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "db.redis.database_index": 0,
+        "db.statement": "HGET 0986de9e-03e3-11f1-a4c1-ee90a491921f",
+        "db.system": "redis",
+        "server.address": "valkey-cart",
+        "server.port": 6379
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.285571Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Enqueued",
+          "@timestamp": "2026-02-07T05:08:29.285203Z"
+        },
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Sent",
+          "@timestamp": "2026-02-07T05:08:29.2852139Z"
+        },
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "ResponseReceived",
+          "@timestamp": "2026-02-07T05:08:29.2855703Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "OpenTelemetry.Instrumentation.StackExchangeRedis",
+        "schemaUrl": "",
+        "version": "1.14.0-beta.1"
+      },
+      "kind": "Client",
+      "name": "HGET",
+      "parentSpanId": "257681f46adb6b0d",
+      "resource": {
+        "container.id": "4b8e1ba9bc173bfd1e231c68a08e035d15abf559a67710125114988f04c215ae",
+        "host.arch": "x64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.instance.id": "41ff49c5-c1d1-4cf7-8d1e-3757f9010cd2",
+        "service.name": "cart",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "dotnet",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.14.0"
+      },
+      "spanId": "5531691bf7876c45",
+      "startTime": "2026-02-07T05:08:29.2851882Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909285
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "7wqANpwBQni_kOJFdcmR",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "cart",
+        "net.peer.port": 7070,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "AddItem",
+        "rpc.service": "oteldemo.CartService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.283073693Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.CartService/AddItem",
+      "parentSpanId": "29e0b462879e1f1a",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "fc8144a5ceff556b",
+      "startTime": "2026-02-07T05:08:29.279Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909283
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "7AqANpwBQni_kOJFdcmQ",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.product.id": "OLJCESPC7Z",
+        "app.product.quantity": 3,
+        "app.user.id": "0986de9e-03e3-11f1-a4c1-ee90a491921f",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "grpc.method": "/oteldemo.CartService/AddItem",
+        "grpc.status_code": "0",
+        "http.request.method": "POST",
+        "http.response.status_code": 200,
+        "http.route": "/oteldemo.CartService/AddItem",
+        "network.protocol.version": "2",
+        "server.address": "cart",
+        "server.port": 7070,
+        "url.path": "/oteldemo.CartService/AddItem",
+        "url.scheme": "http",
+        "user_agent.original": "grpc-node-js/1.12.6"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.282734Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "Microsoft.AspNetCore",
+        "schemaUrl": "",
+        "version": ""
+      },
+      "kind": "Server",
+      "name": "POST /oteldemo.CartService/AddItem",
+      "parentSpanId": "fc8144a5ceff556b",
+      "resource": {
+        "container.id": "4b8e1ba9bc173bfd1e231c68a08e035d15abf559a67710125114988f04c215ae",
+        "host.arch": "x64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.instance.id": "41ff49c5-c1d1-4cf7-8d1e-3757f9010cd2",
+        "service.name": "cart",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "dotnet",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.14.0"
+      },
+      "spanId": "21405235eb572374",
+      "startTime": "2026-02-07T05:08:29.2811196Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909282
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "GQqANpwBQni_kOJFiMrw",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "db.redis.database_index": 0,
+        "db.statement": "HGET 0986de9e-03e3-11f1-a4c1-ee90a491921f",
+        "db.system": "redis",
+        "server.address": "valkey-cart",
+        "server.port": 6379
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.2821722Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Enqueued",
+          "@timestamp": "2026-02-07T05:08:29.2818071Z"
+        },
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Sent",
+          "@timestamp": "2026-02-07T05:08:29.2818272Z"
+        },
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "ResponseReceived",
+          "@timestamp": "2026-02-07T05:08:29.2821719Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "OpenTelemetry.Instrumentation.StackExchangeRedis",
+        "schemaUrl": "",
+        "version": "1.14.0-beta.1"
+      },
+      "kind": "Client",
+      "name": "HGET",
+      "parentSpanId": "21405235eb572374",
+      "resource": {
+        "container.id": "4b8e1ba9bc173bfd1e231c68a08e035d15abf559a67710125114988f04c215ae",
+        "host.arch": "x64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.instance.id": "41ff49c5-c1d1-4cf7-8d1e-3757f9010cd2",
+        "service.name": "cart",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "dotnet",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.14.0"
+      },
+      "spanId": "2b4df16303751335",
+      "startTime": "2026-02-07T05:08:29.2817913Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909282
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "GgqANpwBQni_kOJFiMrw",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "db.redis.database_index": 0,
+        "db.statement": "HMSET 0986de9e-03e3-11f1-a4c1-ee90a491921f",
+        "db.system": "redis",
+        "server.address": "valkey-cart",
+        "server.port": 6379
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.2824383Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Enqueued",
+          "@timestamp": "2026-02-07T05:08:29.2822051Z"
+        },
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Sent",
+          "@timestamp": "2026-02-07T05:08:29.2822161Z"
+        },
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "ResponseReceived",
+          "@timestamp": "2026-02-07T05:08:29.2824373Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "OpenTelemetry.Instrumentation.StackExchangeRedis",
+        "schemaUrl": "",
+        "version": "1.14.0-beta.1"
+      },
+      "kind": "Client",
+      "name": "HMSET",
+      "parentSpanId": "21405235eb572374",
+      "resource": {
+        "container.id": "4b8e1ba9bc173bfd1e231c68a08e035d15abf559a67710125114988f04c215ae",
+        "host.arch": "x64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.instance.id": "41ff49c5-c1d1-4cf7-8d1e-3757f9010cd2",
+        "service.name": "cart",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "dotnet",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.14.0"
+      },
+      "spanId": "9186d104a5f0c948",
+      "startTime": "2026-02-07T05:08:29.2821974Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909282
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "GwqANpwBQni_kOJFiMrw",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "db.redis.database_index": 0,
+        "db.statement": "EXPIRE 0986de9e-03e3-11f1-a4c1-ee90a491921f",
+        "db.system": "redis",
+        "server.address": "valkey-cart",
+        "server.port": 6379
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.2826406Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Enqueued",
+          "@timestamp": "2026-02-07T05:08:29.2824569Z"
+        },
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Sent",
+          "@timestamp": "2026-02-07T05:08:29.2824658Z"
+        },
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "ResponseReceived",
+          "@timestamp": "2026-02-07T05:08:29.2826399Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "OpenTelemetry.Instrumentation.StackExchangeRedis",
+        "schemaUrl": "",
+        "version": "1.14.0-beta.1"
+      },
+      "kind": "Client",
+      "name": "EXPIRE",
+      "parentSpanId": "21405235eb572374",
+      "resource": {
+        "container.id": "4b8e1ba9bc173bfd1e231c68a08e035d15abf559a67710125114988f04c215ae",
+        "host.arch": "x64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.instance.id": "41ff49c5-c1d1-4cf7-8d1e-3757f9010cd2",
+        "service.name": "cart",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "dotnet",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.14.0"
+      },
+      "spanId": "a85f4c4fb7d63e87",
+      "startTime": "2026-02-07T05:08:29.2824494Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909282
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "5AqANpwBQni_kOJFacmX",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.status_code": 200,
+        "http.url": "http://frontend-proxy:8080/api/products/OLJCESPC7Z"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.27479458Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.requests",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Client",
+      "name": "GET",
+      "parentSpanId": "7fd476df96a416ed",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "5d0f539ac9dbe5c5",
+      "startTime": "2026-02-07T05:08:27.749883643Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909274
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "9QqANpwBQni_kOJFdcmR",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.host": "frontend-proxy:8080",
+        "http.method": "GET",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.status_text": "OK",
+        "http.target": "/api/products/OLJCESPC7Z",
+        "http.url": "http://frontend-proxy:8080/api/products/OLJCESPC7Z",
+        "http.user_agent": "python-requests/2.32.4",
+        "net.host.ip": "172.22.0.17",
+        "net.host.name": "frontend-proxy",
+        "net.host.port": 8080,
+        "net.peer.ip": "172.22.0.29",
+        "net.peer.port": 56242,
+        "net.transport": "ip_tcp"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.273373594Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-http",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "4720b414a37ec496",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "662d351faaeec83a",
+      "startTime": "2026-02-07T05:08:27.751Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909273
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "7gqANpwBQni_kOJFdcmR",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "product-catalog",
+        "net.peer.port": 3550,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.272045417Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "754b8a742210cfe2",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "0e871ab390612179",
+      "startTime": "2026-02-07T05:08:27.752Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909272
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "8QqANpwBQni_kOJFdcmR",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.status_code": 200,
+        "next.span_name": "executing api route (pages) /api/products/[productId]/index",
+        "next.span_type": "Node.runHandler"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.272851152Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Internal",
+      "name": "executing api route (pages) /api/products/[productId]/index",
+      "parentSpanId": "e94fe04ba63bdfcb",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "754b8a742210cfe2",
+      "startTime": "2026-02-07T05:08:27.752Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909272
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "8gqANpwBQni_kOJFdcmR",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.route": "/api/products/[productId]/index",
+        "http.status_code": 200,
+        "http.target": "/api/products/OLJCESPC7Z",
+        "next.route": "/api/products/[productId]/index",
+        "next.rsc": false,
+        "next.span_name": "GET /api/products/[productId]/index",
+        "next.span_type": "BaseServer.handleRequest"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.272798298Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Server",
+      "name": "GET /api/products/{productId}",
+      "parentSpanId": "662d351faaeec83a",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "e94fe04ba63bdfcb",
+      "startTime": "2026-02-07T05:08:27.751Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909272
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "4wqANpwBQni_kOJFZskI",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.product.id": "OLJCESPC7Z",
+        "app.product.name": "National Park Foundation Explorascope",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc",
+        "server.address": "172.22.0.17",
+        "server.port": 48472
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:29.270532714Z",
+      "events": [
+        {
+          "attributes": {
+            "feature_flag.key": "productCatalogFailure",
+            "feature_flag.provider.name": "flagd",
+            "feature_flag.result.variant": "off"
+          },
+          "droppedAttributesCount": 0,
+          "name": "feature_flag.evaluation",
+          "@timestamp": "2026-02-07T05:08:28.70469Z"
+        },
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Product Found",
+          "@timestamp": "2026-02-07T05:08:28.704731357Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+        "schemaUrl": "",
+        "version": "0.63.0"
+      },
+      "kind": "Server",
+      "name": "oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "0e871ab390612179",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux dd3829cf3c99 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.command_args": "[\"./product-catalog\"]",
+        "process.executable.name": "product-catalog",
+        "process.executable.path": "/usr/src/app/product-catalog",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "go version go1.24.10 linux/amd64",
+        "process.runtime.name": "go",
+        "process.runtime.version": "go1.24.10",
+        "service.name": "product-catalog",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "38295b510ee07915",
+      "startTime": "2026-02-07T05:08:28.167810721Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "b6a24d37bb40b6c5b28114d93395e2b3",
+      "traceState": ""
+    },
+    "sort": [
+      1770440909270
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "4gqANpwBQni_kOJFZskI",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.product.id": "0PUK6V6EV0",
+        "app.product.name": "Solar System Color Imager",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc",
+        "server.address": "172.22.0.17",
+        "server.port": 48472
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:24.96668477Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Product Found",
+          "@timestamp": "2026-02-07T05:08:24.19746864Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+        "schemaUrl": "",
+        "version": "0.63.0"
+      },
+      "kind": "Server",
+      "name": "oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "38769e89d1be1144",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux dd3829cf3c99 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.command_args": "[\"./product-catalog\"]",
+        "process.executable.name": "product-catalog",
+        "process.executable.path": "/usr/src/app/product-catalog",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "go version go1.24.10 linux/amd64",
+        "process.runtime.name": "go",
+        "process.runtime.version": "go1.24.10",
+        "service.name": "product-catalog",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "dcfe77ad57bd6027",
+      "startTime": "2026-02-07T05:08:23.688897565Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "e43689ee08c05e8b889b4662e215c266",
+      "traceState": ""
+    },
+    "sort": [
+      1770440904966
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "yAqANpwBQni_kOJFVskL",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.status_code": 200,
+        "http.url": "http://frontend-proxy:8080/api/products/0PUK6V6EV0"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:24.90339945Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.requests",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Client",
+      "name": "GET",
+      "parentSpanId": "297c941fe3e083e5",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "d677fcea90ce1cda",
+      "startTime": "2026-02-07T05:08:23.053919439Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "e43689ee08c05e8b889b4662e215c266",
+      "traceState": ""
+    },
+    "sort": [
+      1770440904903
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "ygqANpwBQni_kOJFVskL",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "product.id": "0PUK6V6EV0"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:24.90360861Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "locustfile",
+        "schemaUrl": "",
+        "version": ""
+      },
+      "kind": "Internal",
+      "name": "user_browse_product",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "297c941fe3e083e5",
+      "startTime": "2026-02-07T05:08:23.052967611Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "e43689ee08c05e8b889b4662e215c266",
+      "traceState": ""
+    },
+    "sort": [
+      1770440904903
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "0gqANpwBQni_kOJFWMm_",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.route": "/api/products/[productId]/index",
+        "http.status_code": 200,
+        "http.target": "/api/products/0PUK6V6EV0",
+        "next.route": "/api/products/[productId]/index",
+        "next.rsc": false,
+        "next.span_name": "GET /api/products/[productId]/index",
+        "next.span_type": "BaseServer.handleRequest"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:24.901386144Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Server",
+      "name": "GET /api/products/{productId}",
+      "parentSpanId": "96809da4fc841159",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "7b3bfe228535bc05",
+      "startTime": "2026-02-07T05:08:23.057Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "e43689ee08c05e8b889b4662e215c266",
+      "traceState": ""
+    },
+    "sort": [
+      1770440904901
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "1AqANpwBQni_kOJFWMm_",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.host": "frontend-proxy:8080",
+        "http.method": "GET",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.status_text": "OK",
+        "http.target": "/api/products/0PUK6V6EV0",
+        "http.url": "http://frontend-proxy:8080/api/products/0PUK6V6EV0",
+        "http.user_agent": "python-requests/2.32.4",
+        "net.host.ip": "172.22.0.17",
+        "net.host.name": "frontend-proxy",
+        "net.host.port": 8080,
+        "net.peer.ip": "172.22.0.29",
+        "net.peer.port": 56246,
+        "net.transport": "ip_tcp"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:24.901436665Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-http",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "72acc0fcafd9c23e",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "96809da4fc841159",
+      "startTime": "2026-02-07T05:08:23.056Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "e43689ee08c05e8b889b4662e215c266",
+      "traceState": ""
+    },
+    "sort": [
+      1770440904901
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "zgqANpwBQni_kOJFWMm_",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "product-catalog",
+        "net.peer.port": 3550,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:24.900738884Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "37071d924bc10bf3",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "38769e89d1be1144",
+      "startTime": "2026-02-07T05:08:23.059Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "e43689ee08c05e8b889b4662e215c266",
+      "traceState": ""
+    },
+    "sort": [
+      1770440904900
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "0QqANpwBQni_kOJFWMm_",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.status_code": 200,
+        "next.span_name": "executing api route (pages) /api/products/[productId]/index",
+        "next.span_type": "Node.runHandler"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:24.900751585Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Internal",
+      "name": "executing api route (pages) /api/products/[productId]/index",
+      "parentSpanId": "7b3bfe228535bc05",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "37071d924bc10bf3",
+      "startTime": "2026-02-07T05:08:23.058Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "e43689ee08c05e8b889b4662e215c266",
+      "traceState": ""
+    },
+    "sort": [
+      1770440904900
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "1QqANpwBQni_kOJFXskr",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.method": "GET",
+        "http.request_content_length": 0,
+        "http.response_content_length": 98,
+        "http.route": "/status",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.target": "/status",
+        "http.user_agent": "Go-http-client/1.1",
+        "net.host.name": "_",
+        "net.host.port": 8081,
+        "net.sock.peer.addr": "172.22.0.18",
+        "net.sock.peer.port": 49976
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:24.892Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "nginx",
+        "schemaUrl": "",
+        "version": "1.29.0"
+      },
+      "kind": "Server",
+      "name": "image-provider",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "image-provider"
+      },
+      "spanId": "e1b053bd097d75d3",
+      "startTime": "2026-02-07T05:08:24.892Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "6556ab5e7254aa64e7211425a5b5f06e",
+      "traceState": ""
+    },
+    "sort": [
+      1770440904892
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "1gqANpwBQni_kOJFX8m_",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "client.address": "::ffff:172.22.0.29",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.request.method": "GET",
+        "http.response.status_code": 200,
+        "network.peer.address": "::ffff:172.22.0.29",
+        "network.peer.port": 36260,
+        "network.protocol.version": "1.1",
+        "server.address": "localhost",
+        "server.port": 8080,
+        "url.path": "/live/longpoll",
+        "url.query": "_csrf_token=FSMzEjRZZwAmEwcjW1k-ZhNQBgwoXw8jQpeVsjQQML0Dh1NPeaT5_neh&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fjs%2Fapp-bfbcc471bc314daa4f94a55c88d5e19a.js%3Fvsn%3Dd&_mounts=0&_mount_attempts=0&_live_referer=undefined&vsn=2.0.0&token=SFMyNTY.g2gDaAR3AnYxbQAAABZ6VGFtaGd4U1VIalVaKzZJaG5TSjZRWHcVZmxhZ2RfdWlAYWZhODYwMmQxNmIwAAAJmAAAAABphsdMbQAAACxwaHg6bHA6ZGpjRHFQYVB2aFZpZzVlaXhDbUo3dz09MTc3MDQ0MDc3Mzc1N24GAH5QfjacAWIAEnUA.imvCPUJOPR8EoyyuvyCVkbxEaweRktptg6RaPCTfumg",
+        "url.scheme": "http",
+        "user_agent.original": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:23.880268193Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry_bandit",
+        "schemaUrl": "",
+        "version": "0.3.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "12a2de38088f5c02",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "process.executable.name": "flagd_ui",
+        "process.runtime.description": "Erlang/OTP 28 erts-16.0.2",
+        "process.runtime.name": "BEAM",
+        "process.runtime.version": "16.0.2",
+        "service.instance.id": "flagd_ui@afa8602d16b0",
+        "service.name": "flagd-ui",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "erlang",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.7.0"
+      },
+      "spanId": "74af2f3ba88efe0d",
+      "startTime": "2026-02-07T05:08:13.878813034Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "90f004e9e6c62a4df814d54386b15536",
+      "traceState": ""
+    },
+    "sort": [
+      1770440903880
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "xgqANpwBQni_kOJFUsnh",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.product.id": "0PUK6V6EV0",
+        "app.product.name": "Solar System Color Imager",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc",
+        "server.address": "172.22.0.17",
+        "server.port": 48472
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:21.993542953Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Product Found",
+          "@timestamp": "2026-02-07T05:08:21.348743767Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+        "schemaUrl": "",
+        "version": "0.63.0"
+      },
+      "kind": "Server",
+      "name": "oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "820f2ed9c6dbe2da",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux dd3829cf3c99 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.command_args": "[\"./product-catalog\"]",
+        "process.executable.name": "product-catalog",
+        "process.executable.path": "/usr/src/app/product-catalog",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "go version go1.24.10 linux/amd64",
+        "process.runtime.name": "go",
+        "process.runtime.version": "go1.24.10",
+        "service.name": "product-catalog",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "23c6a6d3a9db3c65",
+      "startTime": "2026-02-07T05:08:21.138246388Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "71a7bf7bea55ee33222162b4b548de3e",
+      "traceState": ""
+    },
+    "sort": [
+      1770440901993
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "yQqANpwBQni_kOJFVskL",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "product.id": "0PUK6V6EV0"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:21.941142273Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "locustfile",
+        "schemaUrl": "",
+        "version": ""
+      },
+      "kind": "Internal",
+      "name": "user_browse_product",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "f50d3aeb3f1e8702",
+      "startTime": "2026-02-07T05:08:20.730898435Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "71a7bf7bea55ee33222162b4b548de3e",
+      "traceState": ""
+    },
+    "sort": [
+      1770440901941
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "xwqANpwBQni_kOJFVskL",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.status_code": 200,
+        "http.url": "http://frontend-proxy:8080/api/products/0PUK6V6EV0"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:21.940942861Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.requests",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Client",
+      "name": "GET",
+      "parentSpanId": "f50d3aeb3f1e8702",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "1f34de523bcee573",
+      "startTime": "2026-02-07T05:08:20.731556666Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "71a7bf7bea55ee33222162b4b548de3e",
+      "traceState": ""
+    },
+    "sort": [
+      1770440901940
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "0AqANpwBQni_kOJFWMm_",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.route": "/api/products/[productId]/index",
+        "http.status_code": 200,
+        "http.target": "/api/products/0PUK6V6EV0",
+        "next.route": "/api/products/[productId]/index",
+        "next.rsc": false,
+        "next.span_name": "GET /api/products/[productId]/index",
+        "next.span_type": "BaseServer.handleRequest"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:21.939232516Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Server",
+      "name": "GET /api/products/{productId}",
+      "parentSpanId": "68e1ba531db50746",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "cfcec375ee229c78",
+      "startTime": "2026-02-07T05:08:20.734Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "71a7bf7bea55ee33222162b4b548de3e",
+      "traceState": ""
+    },
+    "sort": [
+      1770440901939
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "0wqANpwBQni_kOJFWMm_",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.host": "frontend-proxy:8080",
+        "http.method": "GET",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.status_text": "OK",
+        "http.target": "/api/products/0PUK6V6EV0",
+        "http.url": "http://frontend-proxy:8080/api/products/0PUK6V6EV0",
+        "http.user_agent": "python-requests/2.32.4",
+        "net.host.ip": "172.22.0.17",
+        "net.host.name": "frontend-proxy",
+        "net.host.port": 8080,
+        "net.peer.ip": "172.22.0.29",
+        "net.peer.port": 56242,
+        "net.transport": "ip_tcp"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:21.939147284Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-http",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "188e57ad9f5298be",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "68e1ba531db50746",
+      "startTime": "2026-02-07T05:08:20.733Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "71a7bf7bea55ee33222162b4b548de3e",
+      "traceState": ""
+    },
+    "sort": [
+      1770440901939
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "zwqANpwBQni_kOJFWMm_",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.status_code": 200,
+        "next.span_name": "executing api route (pages) /api/products/[productId]/index",
+        "next.span_type": "Node.runHandler"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:21.9387041Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Internal",
+      "name": "executing api route (pages) /api/products/[productId]/index",
+      "parentSpanId": "cfcec375ee229c78",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "c750d9cd29856201",
+      "startTime": "2026-02-07T05:08:20.735Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "71a7bf7bea55ee33222162b4b548de3e",
+      "traceState": ""
+    },
+    "sort": [
+      1770440901938
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "zQqANpwBQni_kOJFWMm_",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "product-catalog",
+        "net.peer.port": 3550,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:21.937637271Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "c750d9cd29856201",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "820f2ed9c6dbe2da",
+      "startTime": "2026-02-07T05:08:20.735Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "71a7bf7bea55ee33222162b4b548de3e",
+      "traceState": ""
+    },
+    "sort": [
+      1770440901937
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "uAqANpwBQni_kOJFP8kZ",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.product.id": "HQTGWGPNH4",
+        "app.product.name": "The Comet Book",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc",
+        "server.address": "172.22.0.17",
+        "server.port": 48472
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:15.393936844Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Product Found",
+          "@timestamp": "2026-02-07T05:08:14.737582295Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+        "schemaUrl": "",
+        "version": "0.63.0"
+      },
+      "kind": "Server",
+      "name": "oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "974172add66ac0f7",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux dd3829cf3c99 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.command_args": "[\"./product-catalog\"]",
+        "process.executable.name": "product-catalog",
+        "process.executable.path": "/usr/src/app/product-catalog",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "go version go1.24.10 linux/amd64",
+        "process.runtime.name": "go",
+        "process.runtime.version": "go1.24.10",
+        "service.name": "product-catalog",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "a06c26817794c402",
+      "startTime": "2026-02-07T05:08:13.993385594Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "d3fcaff35329c495bae0cb81c81b4c88",
+      "traceState": ""
+    },
+    "sort": [
+      1770440895393
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "sQqANpwBQni_kOJFLsnz",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "product.id": "HQTGWGPNH4"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:15.329091219Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "locustfile",
+        "schemaUrl": "",
+        "version": ""
+      },
+      "kind": "Internal",
+      "name": "user_browse_product",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "49b2a16ca10ea3af",
+      "startTime": "2026-02-07T05:08:13.410192372Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "d3fcaff35329c495bae0cb81c81b4c88",
+      "traceState": ""
+    },
+    "sort": [
+      1770440895329
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "rwqANpwBQni_kOJFLsnz",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.status_code": 200,
+        "http.url": "http://frontend-proxy:8080/api/products/HQTGWGPNH4"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:15.328884883Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.requests",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Client",
+      "name": "GET",
+      "parentSpanId": "49b2a16ca10ea3af",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "e4d34e9e5f7b7856",
+      "startTime": "2026-02-07T05:08:13.411043605Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "d3fcaff35329c495bae0cb81c81b4c88",
+      "traceState": ""
+    },
+    "sort": [
+      1770440895328
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "pwqANpwBQni_kOJFLckN",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.status_code": 200,
+        "next.span_name": "executing api route (pages) /api/products/[productId]/index",
+        "next.span_type": "Node.runHandler"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:15.32364854Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Internal",
+      "name": "executing api route (pages) /api/products/[productId]/index",
+      "parentSpanId": "c2669caf4c6f3690",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "fb3f38ea3af3671b",
+      "startTime": "2026-02-07T05:08:13.414Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "d3fcaff35329c495bae0cb81c81b4c88",
+      "traceState": ""
+    },
+    "sort": [
+      1770440895323
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "qAqANpwBQni_kOJFLckN",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.route": "/api/products/[productId]/index",
+        "http.status_code": 200,
+        "http.target": "/api/products/HQTGWGPNH4",
+        "next.route": "/api/products/[productId]/index",
+        "next.rsc": false,
+        "next.span_name": "GET /api/products/[productId]/index",
+        "next.span_type": "BaseServer.handleRequest"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:15.323996339Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Server",
+      "name": "GET /api/products/{productId}",
+      "parentSpanId": "53f7477ec6589332",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "c2669caf4c6f3690",
+      "startTime": "2026-02-07T05:08:13.413Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "d3fcaff35329c495bae0cb81c81b4c88",
+      "traceState": ""
+    },
+    "sort": [
+      1770440895323
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "qwqANpwBQni_kOJFLckN",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.host": "frontend-proxy:8080",
+        "http.method": "GET",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.status_text": "OK",
+        "http.target": "/api/products/HQTGWGPNH4",
+        "http.url": "http://frontend-proxy:8080/api/products/HQTGWGPNH4",
+        "http.user_agent": "python-requests/2.32.4",
+        "net.host.ip": "172.22.0.17",
+        "net.host.name": "frontend-proxy",
+        "net.host.port": 8080,
+        "net.peer.ip": "172.22.0.29",
+        "net.peer.port": 50190,
+        "net.transport": "ip_tcp"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:15.323759838Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-http",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "83741ca6c2cdfca1",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "53f7477ec6589332",
+      "startTime": "2026-02-07T05:08:13.412Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "d3fcaff35329c495bae0cb81c81b4c88",
+      "traceState": ""
+    },
+    "sort": [
+      1770440895323
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "ogqANpwBQni_kOJFLckN",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "product-catalog",
+        "net.peer.port": 3550,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:15.322786733Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "fb3f38ea3af3671b",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "974172add66ac0f7",
+      "startTime": "2026-02-07T05:08:13.414Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "d3fcaff35329c495bae0cb81c81b4c88",
+      "traceState": ""
+    },
+    "sort": [
+      1770440895322
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "swqANpwBQni_kOJFN8kQ",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.method": "GET",
+        "http.request_content_length": 0,
+        "http.response_content_length": 98,
+        "http.route": "/status",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.target": "/status",
+        "http.user_agent": "Go-http-client/1.1",
+        "net.host.name": "_",
+        "net.host.port": 8081,
+        "net.sock.peer.addr": "172.22.0.18",
+        "net.sock.peer.port": 49976
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:14.893Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "nginx",
+        "schemaUrl": "",
+        "version": "1.29.0"
+      },
+      "kind": "Server",
+      "name": "image-provider",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "image-provider"
+      },
+      "spanId": "fe674b5daaf6e968",
+      "startTime": "2026-02-07T05:08:14.893Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "752ed6ac12196edaf32204f436a2b9b9",
+      "traceState": ""
+    },
+    "sort": [
+      1770440894893
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "tAqANpwBQni_kOJFOMmr",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "client.address": "::ffff:172.22.0.29",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.request.method": "GET",
+        "http.response.status_code": 200,
+        "network.peer.address": "::ffff:172.22.0.29",
+        "network.peer.port": 36260,
+        "network.protocol.version": "1.1",
+        "server.address": "localhost",
+        "server.port": 8080,
+        "url.path": "/live/longpoll",
+        "url.query": "_csrf_token=FSMzEjRZZwAmEwcjW1k-ZhNQBgwoXw8jQpeVsjQQML0Dh1NPeaT5_neh&_track_static%5B0%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fcss%2Fapp-6f5d86242cf5220b8531adc7351da8bc.css%3Fvsn%3Dd&_track_static%5B1%5D=http%3A%2F%2Flocalhost%3A8080%2Ffeature%2Fassets%2Fjs%2Fapp-bfbcc471bc314daa4f94a55c88d5e19a.js%3Fvsn%3Dd&_mounts=0&_mount_attempts=0&_live_referer=undefined&vsn=2.0.0&token=SFMyNTY.g2gDaAR3AnYxbQAAABZ6VGFtaGd4U1VIalVaKzZJaG5TSjZRWHcVZmxhZ2RfdWlAYWZhODYwMmQxNmIwAAAJmAAAAABphsdMbQAAACxwaHg6bHA6ZGpjRHFQYVB2aFZpZzVlaXhDbUo3dz09MTc3MDQ0MDc3Mzc1N24GAH5QfjacAWIAEnUA.imvCPUJOPR8EoyyuvyCVkbxEaweRktptg6RaPCTfumg",
+        "url.scheme": "http",
+        "user_agent.original": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:13.871304109Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry_bandit",
+        "schemaUrl": "",
+        "version": "0.3.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "9e49d6ede6f9361b",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "process.executable.name": "flagd_ui",
+        "process.runtime.description": "Erlang/OTP 28 erts-16.0.2",
+        "process.runtime.name": "BEAM",
+        "process.runtime.version": "16.0.2",
+        "service.instance.id": "flagd_ui@afa8602d16b0",
+        "service.name": "flagd-ui",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "erlang",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.7.0"
+      },
+      "spanId": "ce58fc84afa10e79",
+      "startTime": "2026-02-07T05:08:03.86961393Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "33f6965853ae0bdba261f3608c9fec40",
+      "traceState": ""
+    },
+    "sort": [
+      1770440893871
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "rgqANpwBQni_kOJFLsnz",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.status_code": 200,
+        "http.url": "http://frontend-proxy:8080/api/products/66VCHSJNUP"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:12.559435393Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "opentelemetry.instrumentation.requests",
+        "schemaUrl": "https://opentelemetry.io/schemas/1.11.0",
+        "version": "0.59b0"
+      },
+      "kind": "Client",
+      "name": "GET",
+      "parentSpanId": "04d6f3af0b1abc0b",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "252acafad588d9b3",
+      "startTime": "2026-02-07T05:08:11.208357254Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "a5ddfb1b6d9eacc94dbf84a732253d17",
+      "traceState": ""
+    },
+    "sort": [
+      1770440892559
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "sAqANpwBQni_kOJFLsnz",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "product.id": "66VCHSJNUP"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:12.559570004Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "locustfile",
+        "schemaUrl": "",
+        "version": ""
+      },
+      "kind": "Internal",
+      "name": "user_browse_product",
+      "parentSpanId": "",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "service.name": "load-generator",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "04d6f3af0b1abc0b",
+      "startTime": "2026-02-07T05:08:11.207236152Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "a5ddfb1b6d9eacc94dbf84a732253d17",
+      "traceState": ""
+    },
+    "sort": [
+      1770440892559
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "oQqANpwBQni_kOJFLckN",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "net.peer.name": "product-catalog",
+        "net.peer.port": 3550,
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:12.557365906Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-grpc",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Client",
+      "name": "grpc.oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "eda126780e4fe062",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "e05e30070cec3dc5",
+      "startTime": "2026-02-07T05:08:11.214Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "a5ddfb1b6d9eacc94dbf84a732253d17",
+      "traceState": ""
+    },
+    "sort": [
+      1770440892557
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "pQqANpwBQni_kOJFLckN",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.status_code": 200,
+        "next.span_name": "executing api route (pages) /api/products/[productId]/index",
+        "next.span_type": "Node.runHandler"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:12.557337879Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Internal",
+      "name": "executing api route (pages) /api/products/[productId]/index",
+      "parentSpanId": "0322574dd2b35796",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "eda126780e4fe062",
+      "startTime": "2026-02-07T05:08:11.213Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "a5ddfb1b6d9eacc94dbf84a732253d17",
+      "traceState": ""
+    },
+    "sort": [
+      1770440892557
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "pgqANpwBQni_kOJFLckN",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.method": "GET",
+        "http.route": "/api/products/[productId]/index",
+        "http.status_code": 200,
+        "http.target": "/api/products/66VCHSJNUP",
+        "next.route": "/api/products/[productId]/index",
+        "next.rsc": false,
+        "next.span_name": "GET /api/products/[productId]/index",
+        "next.span_type": "BaseServer.handleRequest"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:12.557325197Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "next.js",
+        "schemaUrl": "",
+        "version": "0.0.1"
+      },
+      "kind": "Server",
+      "name": "GET /api/products/{productId}",
+      "parentSpanId": "bf1764f31aa83fa3",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "0322574dd2b35796",
+      "startTime": "2026-02-07T05:08:11.211Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "a5ddfb1b6d9eacc94dbf84a732253d17",
+      "traceState": ""
+    },
+    "sort": [
+      1770440892557
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "qgqANpwBQni_kOJFLckN",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "http.flavor": "1.1",
+        "http.host": "frontend-proxy:8080",
+        "http.method": "GET",
+        "http.scheme": "http",
+        "http.status_code": 200,
+        "http.status_text": "OK",
+        "http.target": "/api/products/66VCHSJNUP",
+        "http.url": "http://frontend-proxy:8080/api/products/66VCHSJNUP",
+        "http.user_agent": "python-requests/2.32.4",
+        "net.host.ip": "172.22.0.17",
+        "net.host.name": "frontend-proxy",
+        "net.host.port": 8080,
+        "net.peer.ip": "172.22.0.29",
+        "net.peer.port": 35842,
+        "net.transport": "ip_tcp"
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:12.557494205Z",
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "@opentelemetry/instrumentation-http",
+        "schemaUrl": "",
+        "version": "0.208.0"
+      },
+      "kind": "Server",
+      "name": "GET",
+      "parentSpanId": "f009674b240517ad",
+      "resource": {
+        "container.id": "3ebbccd05a5382f82b42a769072756e87404c557984b59e03d2628d438956f0f",
+        "host.arch": "amd64",
+        "host.name": "262f53319fbe",
+        "os.type": "linux",
+        "os.version": "6.16.8-200.fc42.x86_64",
+        "process.command": "/app/server.js",
+        "process.command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+        "process.executable.name": "/nodejs/bin/node",
+        "process.executable.path": "/nodejs/bin/node",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "Node.js",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "22.21.1",
+        "service.name": "frontend",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "nodejs",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "2.2.0"
+      },
+      "spanId": "bf1764f31aa83fa3",
+      "startTime": "2026-02-07T05:08:11.21Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "a5ddfb1b6d9eacc94dbf84a732253d17",
+      "traceState": ""
+    },
+    "sort": [
+      1770440892557
+    ]
+  },
+  {
+    "_index": "otel-traces-2026-02-07",
+    "_id": "nQqANpwBQni_kOJFKsn_",
+    "_score": null,
+    "_source": {
+      "attributes": {
+        "app.product.id": "66VCHSJNUP",
+        "app.product.name": "Starsense Explorer Refractor Telescope",
+        "data_stream": {
+          "dataset": "default",
+          "namespace": "namespace",
+          "type": "span"
+        },
+        "rpc.grpc.status_code": 0,
+        "rpc.method": "GetProduct",
+        "rpc.service": "oteldemo.ProductCatalogService",
+        "rpc.system": "grpc",
+        "server.address": "172.22.0.17",
+        "server.port": 48472
+      },
+      "droppedAttributesCount": 0,
+      "droppedEventsCount": 0,
+      "droppedLinksCount": 0,
+      "endTime": "2026-02-07T05:08:12.496280745Z",
+      "events": [
+        {
+          "attributes": {},
+          "droppedAttributesCount": 0,
+          "name": "Product Found",
+          "@timestamp": "2026-02-07T05:08:11.999189432Z"
+        }
+      ],
+      "instrumentationScope": {
+        "droppedAttributesCount": 0,
+        "name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+        "schemaUrl": "",
+        "version": "0.63.0"
+      },
+      "kind": "Server",
+      "name": "oteldemo.ProductCatalogService/GetProduct",
+      "parentSpanId": "e05e30070cec3dc5",
+      "resource": {
+        "host.name": "262f53319fbe",
+        "os.description": "Debian GNU/Linux Debian GNU/Linux 12 (bookworm) (Linux dd3829cf3c99 6.16.8-200.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 19 17:47:18 UTC 2025 x86_64)",
+        "os.type": "linux",
+        "process.command_args": "[\"./product-catalog\"]",
+        "process.executable.name": "product-catalog",
+        "process.executable.path": "/usr/src/app/product-catalog",
+        "process.owner": "nonroot",
+        "process.pid": "1",
+        "process.runtime.description": "go version go1.24.10 linux/amd64",
+        "process.runtime.name": "go",
+        "process.runtime.version": "go1.24.10",
+        "service.name": "product-catalog",
+        "service.namespace": "opentelemetry-demo",
+        "service.version": "2.1.3",
+        "telemetry.sdk.language": "go",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.38.0"
+      },
+      "spanId": "e5f2a5c6221b20e2",
+      "startTime": "2026-02-07T05:08:11.641976877Z",
+      "status": {
+        "code": "Unset",
+        "message": ""
+      },
+      "@timestamp": "0001-01-01T00:00:00Z",
+      "traceId": "a5ddfb1b6d9eacc94dbf84a732253d17",
+      "traceState": ""
+    },
+    "sort": [
+      1770440892496
+    ]
+  }
+]

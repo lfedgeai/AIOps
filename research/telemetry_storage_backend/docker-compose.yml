@@ -1,0 +1,41 @@
+services:
+  doris:
+    image: apache/doris:3.0.8-all
+    container_name: tsb-doris
+    ports:
+      - "8030:8030"   # FE HTTP (Stream Load, REST)
+      - "9030:9030"   # FE MySQL protocol
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "curl -sf http://localhost:8030/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: tsb-clickhouse
+    environment:
+      - CLICKHOUSE_PASSWORD=changeme
+    ports:
+      - "8123:8123"   # HTTP
+      - "9000:9000"   # Native
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+networks:
+  default:
+    name: tsb-net
+    driver: bridge
