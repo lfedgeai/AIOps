@@ -4,7 +4,12 @@ The aim of this AIOps project under the LFEdge umbrella is to help deliver AI su
 
 #Team Meetings
 ## Timings
-AIOps Sync Call - weekly
+<a target="_blank" href="https://calendar.google.com/calendar/event?action=TEMPLATE&amp;tmeid=N2gybG8yanNrZXVhOGh0MTNoMHN1bnUwNDNfMjAyNjAzMDNUMDIzMDAwWiBhc3Bhbm5lckByZWRoYXQuY29t&amp;tmsrc=aspanner%40redhat.com&amp;scp=ALL"><img border="0" src="https://calendar.google.com/calendar/images/ext/gc_button1_en.gif" alt="Google Calendar"></a>
+
+Calendar Link
+https://calendar.google.com/calendar/event?action=TEMPLATE&tmeid=N2gybG8yanNrZXVhOGh0MTNoMHN1bnUwNDNfMjAyNjAzMDNUMDIzMDAwWiBhc3Bhbm5lckByZWRoYXQuY29t&tmsrc=aspanner%40redhat.com&scp=ALL
+
+AIOps Sync Call - weekl timings
 - Every Tuesday, · 13:30 – 14:10 - Time zone: Australia/Sydney (Summer)
 - Every Tuesday, · 9am – 9:40 - Time zone: India
 - Every Monday, · 4:30pm – 5:10pm - US/WestCoast/LA (Winter)
