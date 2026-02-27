@@ -25,9 +25,14 @@ jobs:
 
     steps:
     # --------------------------------------------------
-    # 1️⃣ Checkout
+    # 1️⃣ Checkout (SUBMODULES DISABLED ✅)
     # --------------------------------------------------
-    - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: false
+        fetch-depth: 1
+        clean: true
 
     # --------------------------------------------------
     # 2️⃣ Free disk space
@@ -48,7 +53,7 @@ jobs:
         pip install podman-compose
 
     # --------------------------------------------------
-    # 4️⃣ Silence Podman warnings
+    # 4️⃣ Configure Podman runtime
     # --------------------------------------------------
     - name: Configure Podman runtime
       run: |
@@ -63,7 +68,7 @@ jobs:
         EOF
 
     # --------------------------------------------------
-    # 5️⃣ Storage
+    # 5️⃣ Configure Podman storage
     # --------------------------------------------------
     - name: Configure Podman storage
       run: |
@@ -81,7 +86,7 @@ jobs:
         podman system migrate
 
     # --------------------------------------------------
-    # 6️⃣ Hard cleanup
+    # 6️⃣ Cleanup
     # --------------------------------------------------
     - name: Cleanup
       run: podman system prune -a -f
@@ -97,10 +102,8 @@ jobs:
       run: |
         podman-compose build --no-cache 2>/dev/null
         podman-compose up -d 2>/dev/null
-
         echo "✅ demo-1-basics running containers:"
         podman ps --format "table {{.Names}}\t{{.Status}}"
-
         podman-compose down -v 2>/dev/null
 
     - run: podman system prune -a -f
@@ -116,7 +119,6 @@ jobs:
       run: |
         podman-compose build --no-cache 2>/dev/null
         podman-compose up -d 2>/dev/null
-
         echo "✅ demo-2-otel running containers:"
         podman ps --format "table {{.Names}}\t{{.Status}}"
 
