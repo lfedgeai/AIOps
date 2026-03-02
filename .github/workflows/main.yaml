@@ -7,6 +7,11 @@ on:
       - '.github/workflows/main.yaml'
       - 'demo/demo-1-basics/**'
       - 'demo/demo-2-otel/**'
+      # FORCE IGNORE (The "!" must come AFTER the includes)
+      - '!README.md'
+      - '!README.MD'
+      - '!research/**'
+      - '!docs/**'
 
   pull_request:
     branches: [ main ]
@@ -14,6 +19,11 @@ on:
       - '.github/workflows/main.yaml'
       - 'demo/demo-1-basics/**'
       - 'demo/demo-2-otel/**'
+      # FORCE IGNORE (The "!" must come AFTER the includes)
+      - '!README.md'
+      - '!README.MD'
+      - '!research/**'
+      - '!docs/**'
 
   workflow_dispatch:
 
@@ -28,20 +38,17 @@ jobs:
       PODMAN_STORAGE: ${{ github.workspace }}/podman-storage
 
     steps:
+    
     # --------------------------------------------------
     # 1️⃣ Checkout (Fetch 2 commits for comparison)
     # --------------------------------------------------
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        
-        # FORCE submodules to stay away
-        submodules: false
-        # Turn off the "smart" submodule features that are crashing
-        set-safe-directory: false
-        # Fetch only the top level, no history
-        fetch-depth: 1
-        clean: true
+    - name: Manual Force Checkout
+      run: |
+        git init .
+        git remote add origin "https://github.com{{ github.repository }}"
+        git fetch --depth 1 origin ${{ github.sha }}
+        git checkout --force FETCH_HEAD
+        echo "Files checked out. Broken submodules ignored."
     
     # --------------------------------------------------
     # 1️⃣.1 Checkout (Fetch 2 commits for comparison)
