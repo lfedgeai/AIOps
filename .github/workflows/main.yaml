@@ -7,16 +7,23 @@ on:
       - '.github/workflows/**'
       - 'demo/demo-1-basics/**'
       - 'demo/demo-2-otel/**'
+      # Trigger if the workflow logic itself changes
+      - '.github/workflows/main.yaml'
+      # EXCLUDE everything else implicitly (No need for !README or !research)
       # --- Folders/Files to EXCLUDE ---
       - '!README.md'
       - '!README.MD'
       - '!docs/*.md'
       - '!research/**'
+
   pull_request:
     paths:
       - '.github/workflows/**'
       - 'demo/demo-1-basics/**'
       - 'demo/demo-2-otel/**'
+      # Trigger if the workflow logic itself changes
+      - '.github/workflows/main.yaml'
+      # EXCLUDE everything else implicitly (No need for !README or !research)
       # --- Folders/Files to EXCLUDE ---
       - '!README.md'
       - '!README.MD'
