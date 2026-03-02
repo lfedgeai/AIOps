@@ -34,8 +34,13 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
+        
+        # FORCE submodules to stay away
         submodules: false
-        fetch-depth: 0  # <--- Change this to 2 to see the "diff"
+        # Turn off the "smart" submodule features that are crashing
+        set-safe-directory: false
+        # Fetch only the top level, no history
+        fetch-depth: 1
         clean: true
     - name: Remove Phantom Submodule
       run: |
