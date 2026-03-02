@@ -42,20 +42,7 @@ jobs:
         # Fetch only the top level, no history
         fetch-depth: 1
         clean: true
-    - name: Remove Phantom Submodule
-      run: |
-        git config user.name "github-actions"
-        git config user.email "github-actions@github.com"
-        
-        # 1. Force remove the "gitlink" (the 160000 mode pointer)
-        git rm --cached -r research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo || true
-        
-        # 2. Add the files back as a regular directory
-        git add research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo
-        
-        # 3. Commit and push the fix back to main
-        git commit -m "Fix: converted phantom submodule to regular directory" || echo "No changes"
-        git push origin main
+    
     # --------------------------------------------------
     # 1️⃣.1 Checkout (Fetch 2 commits for comparison)
     # --------------------------------------------------
