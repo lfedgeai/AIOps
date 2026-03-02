@@ -17,6 +17,7 @@ on:
 
   workflow_dispatch:
 
+
 jobs:
   podman-compose:
     runs-on: ubuntu-latest
@@ -25,14 +26,18 @@ jobs:
       XDG_RUNTIME_DIR: ${{ github.workspace }}/podman-runtime
       TMPDIR: ${{ github.workspace }}/podman-tmp
       PODMAN_STORAGE: ${{ github.workspace }}/podman-storage
-      # Map the repository name here to avoid Line 35 errors
-      REPO_NAME: ${{ github.repository }}
-      COMMIT_SHA: ${{ github.sha }}
 
     steps:
     # --------------------------------------------------
-    # 1️⃣ DEBUG - Show Changed Files
+    # 1️⃣ Checkout (Fetch 2 commits for comparison)
     # --------------------------------------------------
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: false
+        fetch-depth: 2  # <--- Change this to 2 to see the "diff"
+        clean: true
+
     - name: 🔍 DEBUG - Show Changed Files
       run: |
         echo "The following files changed in this push:"
@@ -41,6 +46,7 @@ jobs:
         echo "----------------------------------------"
         echo "Checking if any match your inclusion paths:"
         git diff-tree --no-commit-id --name-only -r ${{ github.sha }} | grep -E '^(.github/workflows/|demo/demo-1-basics/|demo/demo-2-otel/)' || echo "NO MATCHES FOUND"
+
     # --------------------------------------------------
     # 2️⃣ Free disk space
     # --------------------------------------------------
