@@ -29,19 +29,19 @@ jobs:
 
     steps:
     # 1️⃣ FIX: Manual initialization to prevent the "Phantom Submodule" crash
-    - name: Pre-checkout Fix
+    - name: Manual Clean Checkout
       run: |
-        git init
-        # Added missing slash after github.com
-        git remote add origin https://github.com{{ github.repository }}
+        # 1. Initialize and fetch only the current commit
+        git init .
+        git remote add origin "https://github.com{{ github.repository }}"
         git fetch --depth 1 origin ${{ github.sha }}
-        git checkout ${{ github.sha }}
+        git checkout --force FETCH_HEAD
+
+        # 2. Kill the "Phantom Submodule" reference immediately
+        # This prevents any later steps from tripping over it
+        git rm --cached -r research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo || true
         
-        # Remove the phantom submodule reference from the index
-        if git ls-files --stage | grep -q "^160000"; then
-          echo "Found broken submodule link. Removing from index..."
-          git rm --cached -r research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo || true
-        fi
+        echo "✅ Repository initialized and broken metadata removed."
 
     # 2️⃣ NOW run the Debug (Now that .git exists)
     - name: 🔍 DEBUG - Show Changed Files
