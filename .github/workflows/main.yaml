@@ -3,6 +3,10 @@ name: Run Podman Compose demos
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - 'README.md'       # Ignores the README file in the root
+      - 'docs/*.md'       # (Optional) Ignores all markdown files in a docs folder
+
     paths:
       - '.github/workflows/**'
       - 'demo/demo-1-basics/**'
