@@ -31,10 +31,12 @@ jobs:
 
     steps:
     # --------------------------------------------------
-    # 1️⃣ MANUAL CHECKOUT (Bypasses Submodule Errors)
+    # 1️⃣ DEBUG - Show Changed Files
     # --------------------------------------------------
-   
-
+    - name: DEBUG - Show Changed Files
+      run: |
+        echo "Files changed in this push:"
+        git diff-tree --no-commit-id --name-only -r ${{ github.sha }}
     # --------------------------------------------------
     # 2️⃣ Free disk space
     # --------------------------------------------------
