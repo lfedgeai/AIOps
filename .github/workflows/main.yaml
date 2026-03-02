@@ -41,7 +41,7 @@ jobs:
         
         # Kill the phantom submodule link immediately to prevent crashes
         git rm --cached -r research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo || true
-        echo " Repo initialized and broken metadata removed."
+        echo "✅ Repo initialized and broken metadata removed."
 
     - name: 🔍 DEBUG - Show Changed Files
       run: |
@@ -108,7 +108,7 @@ jobs:
         podman network create anomaly-network || true
         podman-compose build --no-cache 2>/dev/null
         podman-compose up -d 2>/dev/null
-        echo " demo-1-basics running containers:"
+        echo "✅ demo-1-basics running containers:"
         podman ps --format "table {{.Names}}\t{{.Status}}"
         podman-compose down -v 2>/dev/null
 
@@ -123,7 +123,7 @@ jobs:
         podman network create edge-network || true
         podman-compose build --no-cache 2>/dev/null
         podman-compose up -d 2>/dev/null
-        echo " demo-2-otel running containers:"
+        echo "✅ demo-2-otel running containers:"
         podman ps --format "table {{.Names}}\t{{.Status}}"
 
     # --------------------------------------------------
@@ -132,4 +132,3 @@ jobs:
     - name: Final cleanup
       if: always()
       run: podman system prune -a -f
-
