@@ -7,7 +7,6 @@ on:
       - '.github/workflows/main.yaml'
       - 'demo/demo-1-basics/**'
       - 'demo/demo-2-otel/**'
-      # Implicitly ignores README.md and research/ because they aren't listed here.
 
   pull_request:
     branches: [ main ]
@@ -26,6 +25,9 @@ jobs:
       XDG_RUNTIME_DIR: ${{ github.workspace }}/podman-runtime
       TMPDIR: ${{ github.workspace }}/podman-tmp
       PODMAN_STORAGE: ${{ github.workspace }}/podman-storage
+      # Map the repository name here to avoid Line 35 errors
+      REPO_NAME: ${{ github.repository }}
+      COMMIT_SHA: ${{ github.sha }}
 
     steps:
     # --------------------------------------------------
@@ -34,19 +36,19 @@ jobs:
     - name: Manual Clean Checkout
       run: |
         git init .
-        # FIXED: Added the "/" and the "${{ }}" wrapper
-        git remote add origin "https://github.com{{ github.repository }}"
-        git fetch --depth 1 origin ${{ github.sha }}
+        # Use the environment variable mapped above
+        git remote add origin "https://github.com"
+        git fetch --depth 1 origin "$COMMIT_SHA"
         git checkout --force FETCH_HEAD
         
-        # Kill the phantom submodule link immediately to prevent crashes
+        # Kill the phantom submodule link immediately
         git rm --cached -r research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo || true
-        echo "✅ Repo initialized and broken metadata removed."
+        echo "✅ Repo initialized and metadata cleaned."
 
     - name: 🔍 DEBUG - Show Changed Files
       run: |
         echo "Files changed in this push:"
-        git diff-tree --no-commit-id --name-only -r ${{ github.sha }}
+        git diff-tree --no-commit-id --name-only -r "$COMMIT_SHA"
 
     # --------------------------------------------------
     # 2️⃣ Free disk space
@@ -93,42 +95,24 @@ jobs:
 
         podman system migrate
 
-    # --------------------------------------------------
-    # 5️⃣ Cleanup
-    # --------------------------------------------------
-    - name: Cleanup
-      run: podman system prune -a -f
-
     # ==================================================
-    # 🔹 DEMO 1 — BASICS
+    # 🔹 RUN DEMOS
     # ==================================================
     - name: Run demo-1-basics
       working-directory: demo/demo-1-basics
       run: |
         podman network create anomaly-network || true
-        podman-compose build --no-cache 2>/dev/null
-        podman-compose up -d 2>/dev/null
-        echo "✅ demo-1-basics running containers:"
-        podman ps --format "table {{.Names}}\t{{.Status}}"
-        podman-compose down -v 2>/dev/null
+        podman-compose up -d
+        podman ps
+        podman-compose down -v
 
-    - run: podman system prune -a -f
-
-    # ==================================================
-    # 🔹 DEMO 2 — OTEL
-    # ==================================================
     - name: Run demo-2-otel
       working-directory: demo/demo-2-otel
       run: |
         podman network create edge-network || true
-        podman-compose build --no-cache 2>/dev/null
-        podman-compose up -d 2>/dev/null
-        echo "✅ demo-2-otel running containers:"
-        podman ps --format "table {{.Names}}\t{{.Status}}"
+        podman-compose up -d
+        podman ps
 
-    # --------------------------------------------------
-    # 6️⃣ Final cleanup
-    # --------------------------------------------------
     - name: Final cleanup
       if: always()
       run: podman system prune -a -f
