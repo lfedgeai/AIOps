@@ -41,16 +41,6 @@ jobs:
       PODMAN_STORAGE: ${{ github.workspace }}/podman-storage
 
     steps:
-    # --------------------------------------------------
-    # 1️⃣ Checkout (Fetch 2 commits for comparison)
-    # --------------------------------------------------
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        submodules: false
-        fetch-depth: 2  # <--- Change this to 2 to see the "diff"
-        clean: true
-
     - name: 🔍 DEBUG - Show Changed Files
       run: |
         echo "The following files changed in this push:"
@@ -66,9 +56,14 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
+        # This tells the action NOT to try to handle submodules at all
         submodules: false
+        # This tells the action to fetch only the current commit, 
+        # which can sometimes bypass submodule metadata checks
         fetch-depth: 1
-        clean: true
+        # Set this to false to prevent the action from trying to 
+        # reconcile the submodule state during cleanup
+        set-safe-directory: true
 
     # --------------------------------------------------
     # 2️⃣ Free disk space
