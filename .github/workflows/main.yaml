@@ -35,9 +35,11 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: false
-        fetch-depth: 2  # <--- Change this to 2 to see the "diff"
+        fetch-depth: 1  # <--- Change this to 2 to see the "diff"
         clean: true
-
+    # --------------------------------------------------
+    # 1️⃣.1 Checkout (Fetch 2 commits for comparison)
+    # --------------------------------------------------
     - name: 🔍 DEBUG - Show Changed Files
       run: |
         echo "The following files changed in this push:"
