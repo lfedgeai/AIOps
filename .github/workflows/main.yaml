@@ -33,22 +33,7 @@ jobs:
     # --------------------------------------------------
     # 1️⃣ MANUAL CHECKOUT (Bypasses Submodule Errors)
     # --------------------------------------------------
-    - name: Manual Clean Checkout
-      run: |
-        git init .
-        # Use the environment variable mapped above
-        git remote add origin "https://github.com"
-        git fetch --depth 1 origin "$COMMIT_SHA"
-        git checkout --force FETCH_HEAD
-        
-        # Kill the phantom submodule link immediately
-        git rm --cached -r research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo || true
-        echo "✅ Repo initialized and metadata cleaned."
-
-    - name: 🔍 DEBUG - Show Changed Files
-      run: |
-        echo "Files changed in this push:"
-        git diff-tree --no-commit-id --name-only -r "$COMMIT_SHA"
+   
 
     # --------------------------------------------------
     # 2️⃣ Free disk space
