@@ -35,6 +35,25 @@ jobs:
 
     steps:
     # --------------------------------------------------
+    # 1️⃣ Checkout (Fetch 2 commits for comparison)
+    # --------------------------------------------------
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: false
+        fetch-depth: 2  # <--- Change this to 2 to see the "diff"
+        clean: true
+
+    - name: 🔍 DEBUG - Show Changed Files
+      run: |
+        echo "The following files changed in this push:"
+        git diff-tree --no-commit-id --name-only -r ${{ github.sha }}
+        
+        echo "----------------------------------------"
+        echo "Checking if any match your inclusion paths:"
+        git diff-tree --no-commit-id --name-only -r ${{ github.sha }} | grep -E '^(.github/workflows/|demo/demo-1-basics/|demo/demo-2-otel/)' || echo "NO MATCHES FOUND"
+
+    # --------------------------------------------------
     # 1️⃣ Checkout (SUBMODULES DISABLED ✅)
     # --------------------------------------------------
     - name: Checkout repository
