@@ -33,10 +33,14 @@ jobs:
     # --------------------------------------------------
     # 1️⃣ DEBUG - Show Changed Files
     # --------------------------------------------------
-    - name: DEBUG - Show Changed Files
+    - name: 🔍 DEBUG - Show Changed Files
       run: |
-        echo "Files changed in this push:"
+        echo "The following files changed in this push:"
         git diff-tree --no-commit-id --name-only -r ${{ github.sha }}
+        
+        echo "----------------------------------------"
+        echo "Checking if any match your inclusion paths:"
+        git diff-tree --no-commit-id --name-only -r ${{ github.sha }} | grep -E '^(.github/workflows/|demo/demo-1-basics/|demo/demo-2-otel/)' || echo "NO MATCHES FOUND"
     # --------------------------------------------------
     # 2️⃣ Free disk space
     # --------------------------------------------------
