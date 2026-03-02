@@ -53,3 +53,16 @@ Start both application components together.
 ```bash
    docker compose logs 
 ```
+**Step : 7**  check the list of containers 
+
+```bash
+   docker container list  
+```
+
+![alt text](<Screenshot 2026-03-02 151143.png>)
+Alt Text → Description of image
+
+You can access the Swagger UI documentation for the services at:
+
+- **Anomaly Detection Service**: http://localhost:8001/docs  
+- **LLM FAISS Service**: http://localhost:8002/docs
