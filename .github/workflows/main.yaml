@@ -50,8 +50,23 @@ jobs:
         echo "Checking if any match your inclusion paths:"
         git diff-tree --no-commit-id --name-only -r ${{ github.sha }} | grep -E '^(.github/workflows/|demo/demo-1-basics/|demo/demo-2-otel/)' || echo "NO MATCHES FOUND"
 
+    - name: Pre-checkout Fix (Remove Phantom Submodule)
+      run: |
+        # Initialize a temporary repo to allow git commands
+        git init
+        git remote add origin https://github.com{{ github.repository }}
+        # Fetch only the commit we need
+        git fetch --depth 1 origin ${{ github.sha }}
+        git checkout ${{ github.sha }}
+        
+        # Identify and remove the broken submodule link from the index
+        if git ls-files --stage | grep -q "^160000"; then
+          echo "Found broken submodule link. Removing..."
+          # This removes the "pointer" but keeps the files
+          git rm --cached -r research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo || true
+        fi
     # --------------------------------------------------
-    # 1️⃣ Checkout (SUBMODULES DISABLED ✅)
+    # Checkout (SUBMODULES DISABLED ✅)
     # --------------------------------------------------
     - name: Checkout repository
       uses: actions/checkout@v4
