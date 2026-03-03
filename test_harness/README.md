@@ -9,7 +9,7 @@
 
 ## 1. Overview
 
-As IT environments transition from static monitoring to **Autonomous Operations**, the industry faces a "Paradox of Choice." With hundreds of open-source and proprietary tools for ingestion, anomaly detection, root cause analysis (RCA), and remediation, there is no standardized way to determine which component combinations yield the highest reliability at the lowest cost—especially within the constraints of **edge computing**.
+As IT environments transition from static monitoring to **Autonomous Operations**, the industry faces a "Paradox of Choice." With hundreds of open-source and proprietary tools for ingestion, anomaly detection, root cause analysis (RCA), and remediation, there is no standardized way to determine which component combinations yield the highest reliability at the lowest cost—especially within the complexity of distributed computing from microservices architects to globally distributed edge computing infrastructure.
 
 The LF Edge organization is soliciting proposals for the design and development of the **AIOps Component Permutation & Benchmark Harness (ACPBH)**. This project aims to build a modular, "plug-and-play" testbed that can programmatically swap AIOps components to establish gold-standard architectural patterns for distributed environments.
 
