@@ -1,4 +1,4 @@
-name: Run Podman Compose demos
+name: Run Podman Compose Demos
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
       - '.github/workflows/main.yaml'
       - 'demo/demo-1-basics/**'
       - 'demo/demo-2-otel/**'
-      # FORCE IGNORE (The "!" must come AFTER the includes)
+      - 'demo/demo-3-mlflow/**'
       - '!README.md'
       - '!README.MD'
       - '!docs/**'
@@ -18,13 +18,12 @@ on:
       - '.github/workflows/main.yaml'
       - 'demo/demo-1-basics/**'
       - 'demo/demo-2-otel/**'
-      # FORCE IGNORE (The "!" must come AFTER the includes)
+      - 'demo/demo-3-mlflow/**'
       - '!README.md'
       - '!README.MD'
       - '!docs/**'
 
   workflow_dispatch:
-
 
 jobs:
   podman-compose:
@@ -36,36 +35,28 @@ jobs:
       PODMAN_STORAGE: ${{ github.workspace }}/podman-storage
 
     steps:
+
     # --------------------------------------------------
-    # 1️⃣ Checkout (Fetch 2 commits for comparison)
+    # 1️⃣ Checkout
     # --------------------------------------------------
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        
-        # FORCE submodules to stay away
         submodules: false
-        # Turn off the "smart" submodule features that are crashing
         set-safe-directory: false
-        # Fetch only the top level, no history
         fetch-depth: 1
         clean: true
-    
+
     # --------------------------------------------------
-    #  Checkout (Fetch 2 commits for comparison)
+    # 2️⃣ Debug changed files
     # --------------------------------------------------
     - name: 🔍 DEBUG - Show Changed Files
       run: |
-        echo "The following files changed in this push:"
+        echo "Changed files:"
         git diff-tree --no-commit-id --name-only -r ${{ github.sha }}
-        
-        echo "----------------------------------------"
-        echo "Checking if any match your inclusion paths:"
-        git diff-tree --no-commit-id --name-only -r ${{ github.sha }} | grep -E '^(.github/workflows/|demo/demo-1-basics/|demo/demo-2-otel/)' || echo "NO MATCHES FOUND"
-
 
     # --------------------------------------------------
-    # 2️⃣ Free disk space
+    # 3️⃣ Free disk space
     # --------------------------------------------------
     - name: Free disk space
       run: |
@@ -74,23 +65,23 @@ jobs:
         df -h
 
     # --------------------------------------------------
-    # 3️⃣ Install Podman & podman-compose
+    # 4️⃣ Install Podman
     # --------------------------------------------------
     - name: Install Podman & podman-compose
       run: |
         sudo apt-get update -y
-        sudo apt-get install -y podman uidmap python3-pip
+        sudo apt-get install -y podman uidmap python3-pip curl
         pip install podman-compose
 
     # --------------------------------------------------
-    # 4️⃣ Configure Podman runtime & storage
+    # 5️⃣ Configure Podman
     # --------------------------------------------------
     - name: Configure Podman
       run: |
         mkdir -p ~/.config/containers "$XDG_RUNTIME_DIR" "$TMPDIR" "$PODMAN_STORAGE"
         chmod 700 "$XDG_RUNTIME_DIR"
         chmod 777 "$TMPDIR" "$PODMAN_STORAGE"
-        
+
         cat <<EOF > ~/.config/containers/containers.conf
         [engine]
         cgroup_manager = "cgroupfs"
@@ -110,23 +101,67 @@ jobs:
         podman system migrate
 
     # ==================================================
-    # 🔹 RUN DEMOS
+    # 🔹 DEMO 1
     # ==================================================
     - name: Run demo-1-basics
       working-directory: demo/demo-1-basics
       run: |
         podman network create anomaly-network || true
-        podman-compose up -d
+        podman-compose up -d --build
+        sleep 10
         podman ps
         podman-compose down -v
 
+    # ==================================================
+    # 🔹 DEMO 2
+    # ==================================================
     - name: Run demo-2-otel
       working-directory: demo/demo-2-otel
       run: |
         podman network create edge-network || true
-        podman-compose up -d
+        podman-compose up -d --build
+        sleep 15
+        podman ps
+        podman-compose down -v
+
+    # ==================================================
+    # 🔹 DEMO 3 (MLflow Stack)
+    # ==================================================
+    - name: Run demo-3-mlflow
+      working-directory: demo/demo-3-mlflow
+      run: |
+        echo "Creating .env file"
+
+        cat <<EOF > .env
+        POSTGRES_DB=mlflowdb
+        POSTGRES_USER=mlflow
+        POSTGRES_PASSWORD=mlflow123
+        MINIO_ROOT_USER=minio
+        MINIO_ROOT_PASSWORD=minio123
+        MINIO_STORAGE_BUCKET=mlflow
+        MLFLOW_PORT=5000
+        EOF
+
+        podman network create mlflow-network || true
+
+        podman-compose up -d --build
+
+        echo "Waiting for services..."
+        sleep 30
+
+        echo "Running containers:"
         podman ps
 
+        echo "Testing MLflow endpoint..."
+        curl --fail http://localhost:5000 || exit 1
+
+        echo "Stopping demo-3"
+        podman-compose down -v
+
+    # --------------------------------------------------
+    # 6️⃣ Final Cleanup
+    # --------------------------------------------------
     - name: Final cleanup
       if: always()
-      run: podman system prune -a -f
+      run: |
+        podman system prune -a -f
