@@ -38,20 +38,23 @@ jobs:
       PODMAN_STORAGE: ${{ github.workspace }}/podman-storage
 
     steps:
-    
     # --------------------------------------------------
     # 1️⃣ Checkout (Fetch 2 commits for comparison)
     # --------------------------------------------------
-    - name: Manual Force Checkout
-      run: |
-        git init .
-        git remote add origin "https://github.com{{ github.repository }}"
-        git fetch --depth 1 origin ${{ github.sha }}
-        git checkout --force FETCH_HEAD
-        echo "Files checked out. Broken submodules ignored."
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        
+        # FORCE submodules to stay away
+        submodules: false
+        # Turn off the "smart" submodule features that are crashing
+        set-safe-directory: false
+        # Fetch only the top level, no history
+        fetch-depth: 1
+        clean: true
     
     # --------------------------------------------------
-    # 1️⃣.1 Checkout (Fetch 2 commits for comparison)
+    #  Checkout (Fetch 2 commits for comparison)
     # --------------------------------------------------
     - name: 🔍 DEBUG - Show Changed Files
       run: |
@@ -61,6 +64,7 @@ jobs:
         echo "----------------------------------------"
         echo "Checking if any match your inclusion paths:"
         git diff-tree --no-commit-id --name-only -r ${{ github.sha }} | grep -E '^(.github/workflows/|demo/demo-1-basics/|demo/demo-2-otel/)' || echo "NO MATCHES FOUND"
+
 
     # --------------------------------------------------
     # 2️⃣ Free disk space
