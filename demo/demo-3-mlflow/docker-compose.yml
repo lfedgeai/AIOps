@@ -1,0 +1,81 @@
+services:
+  db:
+    image: postgres:15
+    container_name: mlflow_db
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: mlflow_minio
+    restart: always
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9001"
+
+  create_bucket:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}) do echo 'Waiting for MinIO...' && sleep 1; done;
+      /usr/bin/mc mb local/${MINIO_STORAGE_BUCKET};
+      exit 0;
+      "
+
+  mlflow:
+    build: .
+    container_name: mlflow_server
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${MLFLOW_PORT}:5000"
+    environment:
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
+    # This 'server' is now the first argument passed to the 'mlflow' entrypoint
+    command: >
+      server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      --default-artifact-root s3://${MINIO_STORAGE_BUCKET}/
+
+
+  mlflow_client:
+      build:
+        context: .
+        dockerfile: Dockerfile.client
+      container_name: mlflow_client
+      deploy:
+        resources:
+          limits:
+            memory: 2G  # Adjust based on your available RAM
+          reservations:
+            memory: 1G
+      depends_on:
+        mlflow:
+          condition: service_started
+      environment:
+        - MLFLOW_TRACKING_URI=http://mlflow:5001
+        - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+        - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
+        - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
+      # This keeps the container from exiting immediately if you want to exec into it
+      tty: true 

@@ -1,0 +1,12 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install ML dependencies and MLflow drivers
+RUN pip install mlflow boto3 pandas scikit-learn
+
+# Copy your training script
+COPY train.py .
+
+# The client just needs to run the script
+CMD ["python", "train.py"]
