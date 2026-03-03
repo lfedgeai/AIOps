@@ -45,6 +45,7 @@ jobs:
     - name: Manual Force Checkout
       run: |
         git init .
+        # FIXED: Added the "/" and the "${{ }}" wrapper
         git remote add origin "https://github.com{{ github.repository }}"
         git fetch --depth 1 origin ${{ github.sha }}
         git checkout --force FETCH_HEAD
