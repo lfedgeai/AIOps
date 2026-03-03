@@ -1,4 +1,4 @@
-name: Run Podman Compose Demos
+name: Run Docker Compose Demos
 
 on:
   push:
@@ -26,15 +26,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  podman-compose:
+  docker-compose:
     runs-on: ubuntu-latest
-
-    env:
-      XDG_RUNTIME_DIR: ${{ github.workspace }}/podman-runtime
-      TMPDIR: ${{ github.workspace }}/podman-tmp
-      PODMAN_STORAGE: ${{ github.workspace }}/podman-storage
-      DBUS_SESSION_BUS_ADDRESS: /dev/null
-      PODMAN_IGNORE_CGROUPSV1_WARNING: 1
 
     steps:
 
@@ -54,44 +47,8 @@ jobs:
     - name: Free disk space
       run: |
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
-        sudo docker image prune -a -f || true
+        docker system prune -a -f || true
         df -h
-
-    # --------------------------------------------------
-    # 3️⃣ Install Podman
-    # --------------------------------------------------
-    - name: Install Podman & podman-compose
-      run: |
-        sudo apt-get update -y
-        sudo apt-get install -y podman uidmap python3-pip curl
-        pip install podman-compose
-
-    # --------------------------------------------------
-    # 4️⃣ Configure Podman (CI Safe)
-    # --------------------------------------------------
-    - name: Configure Podman
-      run: |
-        mkdir -p ~/.config/containers "$XDG_RUNTIME_DIR" "$TMPDIR" "$PODMAN_STORAGE"
-        chmod 700 "$XDG_RUNTIME_DIR"
-        chmod 777 "$TMPDIR" "$PODMAN_STORAGE"
-
-        cat <<EOF > ~/.config/containers/containers.conf
-        [engine]
-        cgroup_manager = "cgroupfs"
-        runtime = "crun"
-        events_logger = "file"
-        systemd = false
-        healthcheck_events = false
-        EOF
-
-        cat <<EOF > ~/.config/containers/storage.conf
-        [storage]
-        driver = "overlay"
-        graphroot = "$PODMAN_STORAGE"
-        runroot = "$XDG_RUNTIME_DIR/runroot"
-        EOF
-
-        podman info
 
     # ==================================================
     # 🔹 DEMO 1
@@ -99,11 +56,10 @@ jobs:
     - name: Run demo-1-basics
       working-directory: demo/demo-1-basics
       run: |
-        podman network create anomaly-network || true
-        podman-compose --no-ansi up -d --build
+        docker compose up -d --build
         sleep 10
-        podman ps
-        podman-compose down -v
+        docker ps
+        docker compose down -v
 
     # ==================================================
     # 🔹 DEMO 2
@@ -111,11 +67,10 @@ jobs:
     - name: Run demo-2-otel
       working-directory: demo/demo-2-otel
       run: |
-        podman network create edge-network || true
-        podman-compose --no-ansi up -d --build
+        docker compose up -d --build
         sleep 15
-        podman ps
-        podman-compose down -v
+        docker ps
+        docker compose down -v
 
     # ==================================================
     # 🔹 DEMO 3 (MLflow Stack)
@@ -135,24 +90,21 @@ jobs:
         MLFLOW_PORT=5000
         EOF
 
-        podman network create mlflow-network || true
-
-        podman-compose --no-ansi up -d --build
+        docker compose up -d --build
 
         echo "Waiting for MLflow stack..."
         sleep 40
 
-        podman ps
+        docker ps
 
         echo "Testing MLflow endpoint..."
         curl --fail http://localhost:5000 || exit 1
 
-        podman-compose down -v
+        docker compose down -v
 
     # --------------------------------------------------
-    # 6️⃣ Final Cleanup
+    # Final Cleanup
     # --------------------------------------------------
     - name: Final cleanup
       if: always()
-      run: |
-        podman system prune -a -f
+      run: docker system prune -a -f
