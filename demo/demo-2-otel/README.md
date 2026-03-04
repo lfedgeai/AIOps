@@ -60,7 +60,14 @@ otel-testapp compose file
  **Step :4** To Check Logs for both stoaage and edge 
 
 ```bash
-  docker compose -f docker-compose.persistance.yaml logs 
+  docker compose -f docker-compose-persistance.yaml logs 
   docker compose -f docker-compose.yml logs 
  ```
 
+
+ **Step :5** To view the container list 
+
+```bash
+  docker container list 
+ 
+ ```

@@ -1,4 +1,50 @@
-# Telemetry Storage Backend Benchmark
+# 🔬 Unified Telemetry storage backend comparison
+This initiative is comparing different open source storage backend project to evaluate support for AIOps approaches towards autonomous operations.
+
+## 📌 Research Overview
+Status: 🏗️ In-Progress, moving towards ✅ Complete & Peer-Reviewed
+Domain: Telemetry storage backedn architectures and solutions
+Core Question: What unified telemetry storage solutions provide best approaches for AIOps?
+
+## 🎯 Desired Outcomes
+Primary Objective: Evaluate storage solutions for performance across
+- data ingestion
+- model inference
+- genAI and predictive model requirements
+- logs, traces and metrics
+- long term (cold) and hot short term storage requirements.
+
+## Key Deliverables:
+Visual Dashboard: Comparison metrics and a UI for results exploration.
+
+## 🛠 Methodology & Framework
+Python based test logic, data ingestion
+telemetry gen OTLP and static file based data ingestion
+SQL based queries against the backends under evaluation
+
+## Approach: Empiric, qualitative analysis
+Core Logic: tbd.
+Tech Stack: Python (Pandas/NumPy), k8s
+
+## 📊 Data Management & Transparency
+1. **Source:** OTEL demo app and telemetrygen tool
+2. **Processing:** The data used comes from the OTEL demo app running on k8s applying chaos engineering principles as well as the telemetrygen tool.
+
+
+## 📂 Repository Structure
+```text
+├── loeaders/           # logic to load the data
+├── out/                # benchmark run test results
+├── queries/            # Queries to produce the performance benchmark
+├── runner/             # benchmark run logic
+├── docs/               # In-depth documentation and literature review
+├── schemas/            # backend storage chemas
+├── telemetry_data/     # static logs, metrics, traces and metadata
+└── README.md           # This file
+```
+
+
+# Implementation Details: Telemetry Storage Backend Benchmark
 
 This harness replays pre-collected OpenTelemetry-like ground-truth (`telemetry_data/`) into Apache Doris and/or ClickHouse, runs canonical queries for logs/traces/metrics, and produces reports.
 

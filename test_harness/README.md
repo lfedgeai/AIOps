@@ -1,121 +1,79 @@
-## AIOps Test Harness (LlamaStack + MLflow)
+# Linux Foundation Request for Proposals (RFP)  
+**Development of an AIOps Test Harness** 
 
-This harness lets you plug different LLMs (via a provider abstraction that includes LlamaStack) to perform:
-- Signal correlation across logs/metrics/traces
-- Root Cause Analysis (RCA)
-- Remediation step suggestions
-- Optional execution of remediation actions (safe/no-op by default)
+**RFP Number:** LF-EDGE-AIOPS-2026-001  
+**Project Umbrella:** LF Edge  
+**Issue Date:** March 4, 2026  
+**Submission Deadline:** May 1, 2026, 5:00 PM PT  
+**Contact:** proposals@lfedge.org
 
-All experiments are tracked in MLflow, including configuration parameters, prompts, outputs, and performance metrics such as MTTD, MMTD, and MTTR.
+## 1. Overview
 
-### Quick Start
-1) Python 3.10+
-2) Install:
+As IT environments transition from static monitoring to **Autonomous Operations**, the industry faces a "Paradox of Choice." With hundreds of open-source and proprietary tools for ingestion, anomaly detection, root cause analysis (RCA), and remediation, there is no standardized way to determine which component combinations yield the highest reliability at the lowest cost—especially within the complexity of distributed computing from microservices architectures to globally distributed edge computing infrastructure.
 
-```bash
-pip install -e .
-```
+The LF Edge organization is soliciting proposals for the design and development of the **AIOps Component Permutation & Benchmark Harness (ACPBH)**. This project aims to build a modular, "plug-and-play" testbed that can programmatically swap AIOps components to establish gold-standard architectural patterns for distributed environments. With components we mean AIOps capabilities from anomaly detection, signal correlation, root-cause-analysis and remediation.
 
-3) Start or point to an MLflow tracking server. Example (local):
+## 2. Project Objectives
 
-```bash
-mlflow ui --backend-store-uri 'sqlite:///mlruns.db' --host 0.0.0.0 --port 5000         ─╯
+The primary goal is to create a vendor-neutral framework that:
 
-export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
-```
+- **Permutates Components** — Automatically swaps modules (e.g., swapping  GPT-5 for a local Llama-4 model) within a live pipeline.
+- **Injects Deterministic Stress** — Uses chaos engineering to simulate multi-layered outages across the environment
+- **Evaluates Efficacy** — Measures the "Operational IQ" of a specific toolchain using standardized metrics.
+- **Identifies Pareto Frontiers** — Establishes which combinations offer the best balance between latency, accuracy, and infrastructure cost.
 
-4) Configure an LLM provider. For LlamaStack:
-```bash
-export LLAMA_STACK_BASE_URL=http://localhost:8080
-export LLAMA_STACK_API_KEY=your_token_if_required
-```
-For OpenAI-compatible endpoints:
-```bash
-export OPENAI_API_BASE=https://api.openai.com/v1
-export OPENAI_API_KEY=sk-...
-```
+## 3. Technical Scope: The "Four-Slot" Architecture
 
-5) Run an example:
-```bash
-aiops-harness run --config examples/configs/basic.yaml --dataset examples/data
-```
+The harness must support a modular architecture divided into four primary pluggable interfaces:
 
-This will:
-- Load dataset (logs/metrics/traces + incidents)
-- Use the configured LLM pipeline for correlation, RCA, remediation
-- Compute MTTD/MMTD/MTTR
-- Log parameters, metrics, prompts, and outputs to MLflow
+| Slot        | Description                              | Examples                              |
+|-------------|------------------------------------------|---------------------------------------|
+| Ingestion   | Data collection and normalization        | OpenTelemetry or others               |
+| Reasoning   | Analysis and Decision-making engine      | LLM Agents, Heuristics, ML Clustering |
+| Enrichment  | Contextual data providing "ground truth" | Vector DBs, Graph DBs, CMDBs          |
+| Action      | Execution of remediation steps           | Agentic Tools, Ansible, K8s Operators |
 
-### Local LLMs (Ollama)
-To run three local models (Llama 3.1, Mistral, Qwen2.5) via Ollama:
-```bash
-bash scripts/setup_local_llms.sh
-export OLLAMA_BASE_URL=http://127.0.0.1:11434
-```
-Then run per-model configs and compare results in MLflow:
-```bash
-aiops-harness run --config examples/configs/ollama_llama3.yaml --dataset examples/data
-aiops-harness run --config examples/configs/ollama_mistral.yaml --dataset examples/data
-aiops-harness run --config examples/configs/ollama_qwen.yaml --dataset examples/data
-```
-If a model isn’t available on your platform, pull an alternative in Ollama (e.g., `gemma2`) and change `default_model` in the config.
+### Benchmark Suite
 
-### Concepts
-- Providers: `LlamaStackProvider`, `OpenAICompatibleProvider`
-- Pipelines: `correlation`, `rca`, `remediation`, `executor`
-- Metrics:
-  - MTTD: Mean Time To Detect (incident_detected_ts - incident_start_ts)
-  - MMTD: Mean Model Time to Detect (model_detection_ts - earliest_related_signal_ts)
-  - MTTR: Mean Time To Resolve (incident_resolved_ts - incident_start_ts)
+The harness must output a standardized **AIOps Scorecard**:
 
-### Configuration
-See `examples/configs/basic.yaml` for a complete template. Key fields:
-- `experiment.name`, `experiment.tags`
-- `provider.type` (e.g., `llamastack` or `openai_compat`), `provider.params`
-- `pipeline` sections for `correlation`, `rca`, `remediation`, `executor`
-- `dataset` file names for logs, metrics, traces, incidents
+- **MTTD (Mean Time to Detect)**: Precision vs. Recall
+- **RCA Accuracy**: Percentage of correct "Root Cause" identifications
+- **Action Fidelity**: Success rate of automated remediations without human intervention
+- **Cost-to-Resolve**: Token usage and compute overhead per incident
 
-### Safety
-The default executor is a safe no-op that only logs suggested steps. You can implement and register a concrete executor for your environment, gated by approvals and RBAC.
+## 4. Submission Requirements
 
-### Extending
-- Add new providers under `aiops_harness/llm/`
-- Add new stages under `aiops_harness/pipeline/`
-- Register them in your config by name
+Submissions should be provided as a **PDF** or **Markdown** file (max 15 pages) and include:
 
+1. **Architecture Diagram** — Isolation strategies to prevent data cross-contamination
+2. **Integration Strategy** — Support for production deployment in brown and greenfield environments
+3. **Governance Model** — Proposed maintainer structure and open-source contribution plan
+4. **PoC (Optional)** — Link to a GitHub repository or video demonstration of the simulated/working approach
 
+## 5. Evaluation Criteria
 
-# What's included
-CLI: aiops_harness/cli.py with commands run and benchmark.
-Configs: YAML-driven setup (examples/configs/basic.yaml) defining provider, pipeline, and dataset.
-Providers:
-- LlamaStackProvider (aiops_harness/llm/llamastack.py)
-- OpenAICompatibleProvider (aiops_harness/llm/openai_compat.py)
+| Criteria         | Weight | Description                                                       |
+|------------------|--------|-------------------------------------------------------------------|
+| Modularity       | 35%    | Ease of adding new tool "slots" or interfaces                     |
+| Metric Robustness| 25%    | Statistical validity and depth of the benchmarking engine         |
+| Interoperability | 20%    | Alignment with MCP, OpenTelemetry, and other open source projects |
+| Feasibility      | 20%    | Realistic timeline, resource requirements, and project roadmap    |
 
-Data schema/loaders:
-- aiops_harness/data/schema.py
-- aiops_harness/data/loaders.py
-- Sample data in examples/data/ for logs, metrics, traces, incidents.
+## 6. Important Dates
 
-Pipeline stages:
-- Correlation: aiops_harness/pipeline/correlation.py
-- RCA: aiops_harness/pipeline/rca.py
-- Remediation: aiops_harness/pipeline/remediation.py
-- Safe executor (no-op): aiops_harness/pipeline/executor.py
+- **March 10 – March 20, 2026** — Q&A Period via LFEdge slack
+- **May 1, 2026 (5:00 PM PT)** — Submission Deadline
+- **May 20 – May 30, 2026** — Shortlist Interviews
+- **June 2026** — Winner Announcement (Live at first June LFEdge TAC Meeting)
 
-Metrics: aiops_harness/metrics.py computes MTTD, MTTR, and placeholder MMTD.
+## 7. Contact & Support
 
-Runner: aiops_harness/runner.py orchestrates stages and logs params, metrics, prompts, and outputs to MLflow.
+For clarification on requirements or technical constraints, please reach out to the LF Edge Program Office:
 
-Project metadata: pyproject.toml and README.md.
+- **Email:** proposals@lfedge.org
+- **Slack:** #aiops-th-rfp on the LF Edge Workspace
 
-# Notes
-MTTD/MTTR are computed from examples/data/incidents.jsonl. MMTD MMTD is scaffolded (placeholder) — the function exists but we currently pass None because we don’t yet record when the model “detects” an incident or when the earliest related signal occurred.
-The default executor is a safe no-op. You can implement a real executor and register it via config.
-- To make MMTD real, log per-incident:
-- model_detection_ts: timestamp when your correlation/RCA pipeline first flags the incident.
-- earliest_related_signal_ts: min timestamp across the signals the model grouped as related.
-Then pass those arrays into compute_mmtd(...) in runner.py.
+---
 
-To switch models/providers, edit examples/configs/basic.yaml (provider.type and params).
-Completed: project scaffold, provider abstraction (LlamaStack + OpenAI-compatible), loaders/schema, correlation/RCA/remediation modules, metrics with MLflow logging, YAML configs and example dataset, safe executor, and README.
+*Copyright © 2026 The Linux Foundation. All rights reserved.*
