@@ -29,7 +29,7 @@ def collect_baselines(windows: int, cooldown: int, duration: int, keep: bool) ->
     sys.path.append(str(GROUND))
     # Ensure we can import project modules (e.g., feature_pipeline) when invoked from this subfolder
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    import requests  # noqa
+    import requests  # noqaz
     import ground_truth_data_collector as gdc  # type: ignore
     from feature_pipeline import count_log_errors  # type: ignore
 
