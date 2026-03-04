@@ -15,12 +15,20 @@ The LF Edge organization is soliciting proposals for the design and development 
 
 ## 2. Project Objectives
 
+<<<<<<< Updated upstream
 The primary goal is to create a vendor-neutral framework that:
 
 - **Permutates Components** — Automatically swaps modules (e.g., swapping  GPT-5 for a local Llama-4 model) within a live pipeline.
 - **Injects Deterministic Stress** — Uses chaos engineering to simulate multi-layered outages across the environment
 - **Evaluates Efficacy** — Measures the "Operational IQ" of a specific toolchain using standardized metrics.
 - **Identifies Pareto Frontiers** — Establishes which combinations offer the best balance between latency, accuracy, and infrastructure cost.
+=======
+```bash
+mlflow ui --backend-store-uri 'sqlite:///mlruns.db' --host 0.0.0.0 --port 5252       ─╯
+
+export MLFLOW_TRACKING_URI=http://127.0.0.1:5252
+```
+>>>>>>> Stashed changes
 
 ## 3. Technical Scope: The "Four-Slot" Architecture
 
