@@ -5,7 +5,7 @@ Doris storage benchmark runner.
 This script orchestrates:
 - readiness checks for the Doris FE HTTP and MySQL ports
 - schema application using a transient mysql client container
-- ingestion via the Stream Load-based loader (loaders/replay.py)
+- ingestion via the Stream Load-based loader (loaders/replay_doris.py)
 - execution of canonical benchmark queries
 - writing a timestamped HTML summary and JSON artifacts
 
@@ -218,14 +218,14 @@ def main() -> int:
     assert wait_port("127.0.0.1", 9030, 180), "FE MySQL 9030 not ready"
 
     tsdir = args.out / f"storage_bench_doris_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    ingest = {"notes": "Stream Load via loaders/replay.py", "status": "skipped"}
+    ingest = {"notes": "Stream Load via loaders/replay_doris.py", "status": "skipped"}
     qres = {}
     if args.init or args.all:
         apply_schema()
     if args.all:
         # Run loader as a subprocess to keep separation of concerns
         subprocess.run([
-            "python3", str(ROOT / "loaders" / "replay.py"),
+            "python3", str(ROOT / "loaders" / "replay_doris.py"),
             "--data-dir", str(args.data_dir),
             "--table-prefix", "otel",
             "--batch", "5000",

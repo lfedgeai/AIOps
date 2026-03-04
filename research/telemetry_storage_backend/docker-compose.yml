@@ -2,8 +2,11 @@ services:
   doris:
     image: apache/doris:3.0.8-all
     container_name: tsb-doris
+    environment:
+      - SKIP_CHECK_ULIMIT=true
     ports:
       - "8030:8030"   # FE HTTP (Stream Load, REST)
+      - "8040:8040"   # BE HTTP (Stream Load redirect target)
       - "9030:9030"   # FE MySQL protocol
     ulimits:
       nofile:

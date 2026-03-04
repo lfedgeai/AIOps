@@ -56,22 +56,31 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Replay telemetry into ClickHouse")
     ap.add_argument("--data-dir", type=Path, required=True)
     ap.add_argument("--batch", type=int, default=5000)
+    ap.add_argument("--scale-to", type=int, default=None, help="Target row count per type (cycle data to reach it)")
+    ap.add_argument("--stats", type=Path, default=None, help="Write ingestion stats JSON to path")
     args = ap.parse_args()
     data_dir = args.data_dir
     assert data_dir.exists(), f"DATA_DIR not found: {data_dir}"
+    target = args.scale_to
+    stats = {"logs": 0, "spans": 0, "metrics": 0}
 
-    for log_rows in common.extract_log_rows(data_dir, args.batch):
+    for log_rows in common.extract_log_rows(data_dir, args.batch, target_rows=target):
+        stats["logs"] += len(log_rows)
         if not insert_jsonl("logs", log_rows):
             return 1
 
-    for span_rows in common.extract_span_rows(data_dir, args.batch):
+    for span_rows in common.extract_span_rows(data_dir, args.batch, target_rows=target):
+        stats["spans"] += len(span_rows)
         if not insert_jsonl("spans", span_rows):
             return 1
 
-    for met_rows in common.extract_metric_rows(data_dir, args.batch):
+    for met_rows in common.extract_metric_rows(data_dir, args.batch, target_rows=target):
+        stats["metrics"] += len(met_rows)
         if not insert_jsonl("metrics", met_rows):
             return 1
 
+    if args.stats:
+        args.stats.write_text(json.dumps(stats))
     print("[replay] clickhouse done")
     return 0
 

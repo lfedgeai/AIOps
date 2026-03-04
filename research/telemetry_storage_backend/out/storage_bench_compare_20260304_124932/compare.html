@@ -1,0 +1,87 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Doris vs ClickHouse vs Druid benchmark</title>
+<style>table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:6px 10px}#chartWrap{max-width:900px;height:400px;margin:1em 0}</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head><body>
+  <h1>Doris vs ClickHouse vs Druid benchmark</h1>
+  <div>Generated at 2026-03-04T12:54:36.898055</div>
+  <h2>Ingestion comparison</h2>
+  <div id="ingestChartWrap" style="max-width:600px;height:250px;margin:1em 0"><canvas id="ingestChart"></canvas></div>
+  <table>
+    <tr><th>Backend</th><th>Mechanism</th><th>Duration (s)</th><th>Rows</th><th>Rows/sec</th></tr>
+    <tr><td>Doris</td><td>Batch file load (5000 rows)</td><td>13.19</td><td>78400</td><td>5944.0</td></tr>
+    <tr><td>ClickHouse</td><td>Batch file load (5000 rows)</td><td>12.15</td><td>78400</td><td>6453.0</td></tr>
+    <tr><td>Druid</td><td>Batch file load (5000 rows)</td><td>42.0</td><td>78400</td><td>1867.0</td></tr>
+        <tr><td>Doris</td><td>OTLP (50000 spans, 50000 logs, 50000 metrics)</td><td>202.9</td><td>465600</td><td>2295.0</td></tr>
+    <tr><td>ClickHouse</td><td>OTLP (50000 spans, 50000 logs, 50000 metrics)</td><td>202.9</td><td>827200</td><td>4077.0</td></tr>
+
+  </table>
+  <p><small>Raw ingest: Doris {"status": "ok", "duration_s": 13.19, "mechanism": "Batch file load (5000 rows)", "rows": 78400, "rows_per_sec": 5944.0} | CH {"status": "ok", "duration_s": 12.15, "mechanism": "Batch file load (5000 rows)", "rows": 78400, "rows_per_sec": 6453.0} | Druid {"status": "ok", "duration_s": 42.0, "mechanism": "Batch file load (5000 rows)", "rows": 78400, "rows_per_sec": 1867.0}</small></p>
+  
+  <h3>Data volume (full scan)</h3>
+  <p>Total rows in telemetry tables at query time. Latency = full COUNT(*) time.</p>
+  <table>
+    <tr><th>Backend</th><th>Total rows (logs, spans, metrics)</th><th>Full-scan latency</th></tr>
+    <tr><td>Doris</td><td>699,200 (logs=155,478, spans=387,414, metrics=156,308)</td><td>0.540s</td></tr>
+    <tr><td>ClickHouse</td><td>905,600 (logs=206,578, spans=491,614, metrics=207,408)</td><td>0.006s</td></tr>
+    <tr><td>Druid</td><td>86,043 (logs=50,077, spans=34,855, metrics=1,111)</td><td>0.017s</td></tr>
+  </table>
+
+  <h2>Query latency (seconds)</h2>
+  <div id="chartWrap"><canvas id="latencyChart"></canvas></div>
+  <h2>Query comparison</h2>
+  <table>
+    <tr><th>query</th><th>Doris lat</th><th>Doris rows</th><th>Doris err</th>
+        <th>CH lat</th><th>CH rows</th><th>CH err</th>
+        <th>Druid lat</th><th>Druid rows</th><th>Druid err</th>
+        <th>% diff</th><th>faster</th></tr>
+    <tr><td>correlation_by_timestamp</td><td>0.530203104019165</td><td>20</td><td></td><td>0.06347298622131348</td><td>20</td><td></td><td>0.14657258987426758</td><td>20</td><td></td><td>88.0%</td><td>ClickHouse</td></tr>
+<tr><td>correlation_by_trace_id</td><td>0.5533738136291504</td><td>20</td><td></td><td>0.06876564025878906</td><td>20</td><td></td><td>0.24121904373168945</td><td>20</td><td></td><td>87.6%</td><td>ClickHouse</td></tr>
+<tr><td>data_volume</td><td>0.5199041366577148</td><td>3</td><td></td><td>0.004593610763549805</td><td>3</td><td></td><td>0.023272991180419922</td><td>3</td><td></td><td>99.1%</td><td>ClickHouse</td></tr>
+<tr><td>logs_errors_by_service</td><td>0.5975573062896729</td><td>13</td><td></td><td>0.12737774848937988</td><td>13</td><td></td><td>0.01611495018005371</td><td>0</td><td></td><td>97.3%</td><td>Druid</td></tr>
+<tr><td>logs_recent</td><td>0.6857686042785645</td><td>100</td><td></td><td>0.10613346099853516</td><td>100</td><td></td><td>0.07274460792541504</td><td>100</td><td></td><td>89.4%</td><td>Druid</td></tr>
+<tr><td>logs_search_error</td><td>0.7057099342346191</td><td>73</td><td></td><td>0.12857556343078613</td><td>73</td><td></td><td>0.5413384437561035</td><td>100</td><td></td><td>81.8%</td><td>ClickHouse</td></tr>
+<tr><td>metrics_by_service_hourly</td><td>0.5089399814605713</td><td>7</td><td></td><td>0.020860910415649414</td><td>9</td><td></td><td>0.02312302589416504</td><td>5</td><td></td><td>95.9%</td><td>ClickHouse</td></tr>
+<tr><td>metrics_p95_latency</td><td>0.5667910575866699</td><td>3</td><td></td><td>0.017061710357666016</td><td>3</td><td></td><td>0.012083292007446289</td><td>2</td><td></td><td>97.9%</td><td>Druid</td></tr>
+<tr><td>sla_latency_compliance</td><td>0.5069489479064941</td><td>1</td><td></td><td>0.009298563003540039</td><td>1</td><td></td><td>0.012624979019165039</td><td>1</td><td></td><td>98.2%</td><td>ClickHouse</td></tr>
+<tr><td>spans_error_by_service</td><td>0.4718658924102783</td><td>2</td><td></td><td>0.03912711143493652</td><td>2</td><td></td><td>0.014178276062011719</td><td>0</td><td></td><td>97.0%</td><td>Druid</td></tr>
+<tr><td>trace_by_id</td><td>0.4876251220703125</td><td>4</td><td></td><td>0.008857965469360352</td><td>4</td><td></td><td>0.014567375183105469</td><td>1</td><td></td><td>98.2%</td><td>ClickHouse</td></tr>
+<tr><td>traces_slow_by_service</td><td>0.5123310089111328</td><td>0</td><td></td><td>0.011202335357666016</td><td>0</td><td></td><td>0.009904623031616211</td><td>0</td><td></td><td>98.1%</td><td>Druid</td></tr>
+  </table>
+  <script>
+    const data = {"queries": ["correlation_by_timestamp", "correlation_by_trace_id", "data_volume", "logs_errors_by_service", "logs_recent", "logs_search_error", "metrics_by_service_hourly", "metrics_p95_latency", "sla_latency_compliance", "spans_error_by_service", "trace_by_id", "traces_slow_by_service"], "doris": [0.5302, 0.5534, 0.5199, 0.5976, 0.6858, 0.7057, 0.5089, 0.5668, 0.5069, 0.4719, 0.4876, 0.5123], "clickhouse": [0.0635, 0.0688, 0.0046, 0.1274, 0.1061, 0.1286, 0.0209, 0.0171, 0.0093, 0.0391, 0.0089, 0.0112], "druid": [0.1466, 0.2412, 0.0233, 0.0161, 0.0727, 0.5413, 0.0231, 0.0121, 0.0126, 0.0142, 0.0146, 0.0099]};
+    const ingestData = {"labels": ["Doris", "ClickHouse", "Druid"], "duration_s": [13.19, 12.15, 42.0], "rows_per_sec": [5944.0, 6453.0, 1867.0]};
+    if (ingestData.duration_s.some(x => x != null)) {
+      const ctx = document.getElementById('ingestChart').getContext('2d');
+      new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: ingestData.labels,
+          datasets: [{ label: 'Ingestion time (s)', data: ingestData.duration_s, backgroundColor: ['rgba(54,162,235,0.7)','rgba(75,192,192,0.7)','rgba(255,159,64,0.7)'] }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+      });
+    }
+    const ctx = document.getElementById('latencyChart').getContext('2d');
+    new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: data.queries,
+        datasets: [
+          { label: 'Doris', data: data.doris, backgroundColor: 'rgba(54,162,235,0.7)' },
+          { label: 'ClickHouse', data: data.clickhouse, backgroundColor: 'rgba(75,192,192,0.7)' },
+          { label: 'Druid', data: data.druid, backgroundColor: 'rgba(255,159,64,0.7)' }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: 'top' } },
+        scales: {
+          x: { ticks: { maxRotation: 45, minRotation: 45 } },
+          y: { beginAtZero: true, title: { display: true, text: 'Latency (s)' } }
+        }
+      }
+    });
+  </script>
+</body></html>
