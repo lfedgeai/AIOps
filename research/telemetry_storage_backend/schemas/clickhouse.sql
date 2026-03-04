@@ -1,4 +1,5 @@
 CREATE DATABASE IF NOT EXISTS telemetry;
+CREATE DATABASE IF NOT EXISTS otel;
 
 CREATE TABLE IF NOT EXISTS telemetry.logs (
   ts DateTime64(6),

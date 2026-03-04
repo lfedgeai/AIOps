@@ -1,0 +1,23 @@
+# OTLP Collector + telemetrygen for ingestion benchmark
+# Extends main compose: docker compose -f docker-compose.yml -f docker-compose.otel.yml up -d
+# Usage: make up-otel && make bench-otlp
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    container_name: tsb-otel-collector
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    depends_on:
+      - doris
+      - clickhouse
+    networks:
+      - default
+    restart: unless-stopped
+
+  # Run: docker compose -f docker-compose.yml -f docker-compose.otel.yml run --rm telemetrygen traces ...
+  # Or use: make bench-otlp (runs telemetrygen and reports ingestion time)

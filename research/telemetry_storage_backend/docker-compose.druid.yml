@@ -1,0 +1,84 @@
+# Apache Druid - extends main docker-compose
+# Run: docker compose -f docker-compose.yml -f docker-compose.druid.yml up -d
+# Druid router (SQL API): http://localhost:8888
+
+volumes:
+  druid_metadata: {}
+  druid_var: {}
+  druid_shared: {}
+
+services:
+  druid-zookeeper:
+    image: zookeeper:3.5.10
+    container_name: tsb-druid-zookeeper
+    environment:
+      - ZOO_MY_ID=1
+
+  druid-postgres:
+    image: postgres:15
+    container_name: tsb-druid-postgres
+    volumes:
+      - druid_metadata:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_PASSWORD=druid
+      - POSTGRES_USER=druid
+      - POSTGRES_DB=druid
+
+  druid-coordinator:
+    image: apache/druid:34.0.0
+    container_name: tsb-druid-coordinator
+    user: root
+    volumes:
+      - druid_shared:/opt/shared
+      - druid_var:/opt/druid/var
+    depends_on: [druid-zookeeper, druid-postgres]
+    ports: ["8081:8081"]
+    command: coordinator
+    env_file: docker-compose.druid.env
+
+  druid-broker:
+    image: apache/druid:34.0.0
+    container_name: tsb-druid-broker
+    user: root
+    volumes:
+      - druid_var:/opt/druid/var
+    depends_on: [druid-zookeeper, druid-postgres, druid-coordinator]
+    ports: ["8082:8082"]
+    command: broker
+    env_file: docker-compose.druid.env
+
+  druid-historical:
+    image: apache/druid:34.0.0
+    container_name: tsb-druid-historical
+    user: root
+    volumes:
+      - druid_shared:/opt/shared
+      - druid_var:/opt/druid/var
+    depends_on: [druid-zookeeper, druid-postgres, druid-coordinator]
+    ports: ["8083:8083"]
+    command: historical
+    env_file: docker-compose.druid.env
+
+  druid-middlemanager:
+    image: apache/druid:34.0.0
+    container_name: tsb-druid-middlemanager
+    user: root
+    volumes:
+      - druid_shared:/opt/shared
+      - druid_var:/opt/druid/var
+      - .:/mnt/bench:rw,z
+    depends_on: [druid-zookeeper, druid-postgres, druid-coordinator]
+    ports: ["8091:8091", "8100-8105:8100-8105"]
+    command: middleManager
+    env_file: docker-compose.druid.env
+
+  druid-router:
+    image: apache/druid:34.0.0
+    container_name: tsb-druid-router
+    user: root
+    volumes:
+      - druid_var:/opt/druid/var
+    depends_on: [druid-zookeeper, druid-postgres, druid-coordinator]
+    ports: ["8888:8888"]
+    command: router
+    env_file: docker-compose.druid.env
