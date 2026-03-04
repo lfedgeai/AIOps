@@ -24,9 +24,11 @@ Tech Stack: Python (Pandas/NumPy), k8s
 3. **Ethical Considerations:** Details on anonymization and licensing restrictions.
 
 ## 📂 Repository Structure
+```text
 ├── data/               # Raw and processed datasets
 ├── code/               # code incl Jupyter or RMarkdown files for EDA
 ├── scripts/            # Reproducible scripts for training/analysis runs eg make files
 ├── results/            # Graphs, Tables, and Model Outputs
 ├── docs/               # In-depth documentation and literature review
 └── README.md           # This file
+```
