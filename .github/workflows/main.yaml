@@ -1,128 +1,110 @@
-name: Run Podman Compose demos
+name: Run Docker Compose Demos
 
 on:
   push:
     branches: [ main ]
     paths:
-      - '.github/workflows/**'
+      - '.github/workflows/main.yaml'
       - 'demo/demo-1-basics/**'
       - 'demo/demo-2-otel/**'
+      - 'demo/demo-3-mlflow/**'
+      - '!README.md'
+      - '!README.MD'
+      - '!docs/**'
+
   pull_request:
+    branches: [ main ]
     paths:
-      - '.github/workflows/**'
+      - '.github/workflows/main.yaml'
       - 'demo/demo-1-basics/**'
       - 'demo/demo-2-otel/**'
+      - 'demo/demo-3-mlflow/**'
+      - '!README.md'
+      - '!README.MD'
+      - '!docs/**'
+
   workflow_dispatch:
 
 jobs:
-  podman-compose:
+  docker-compose:
     runs-on: ubuntu-latest
 
-    env:
-      XDG_RUNTIME_DIR: ${{ github.workspace }}/podman-runtime
-      TMPDIR: ${{ github.workspace }}/podman-tmp
-      PODMAN_STORAGE: ${{ github.workspace }}/podman-storage
-
     steps:
+
     # --------------------------------------------------
     # 1️⃣ Checkout
     # --------------------------------------------------
-    - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: false
+        fetch-depth: 1
+        clean: true
 
     # --------------------------------------------------
     # 2️⃣ Free disk space
     # --------------------------------------------------
     - name: Free disk space
       run: |
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-        sudo docker image prune -a -f || true
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+        docker system prune -a -f || true
         df -h
 
-    # --------------------------------------------------
-    # 3️⃣ Install Podman
-    # --------------------------------------------------
-    - name: Install Podman & podman-compose
-      run: |
-        sudo apt-get update -y
-        sudo apt-get install -y podman uidmap python3-pip
-        pip install podman-compose
-
-    # --------------------------------------------------
-    # 4️⃣ Silence Podman warnings
-    # --------------------------------------------------
-    - name: Configure Podman runtime
-      run: |
-        mkdir -p ~/.config/containers
-        cat <<EOF > ~/.config/containers/containers.conf
-        [engine]
-        cgroup_manager = "cgroupfs"
-        runtime = "crun"
-        events_logger = "file"
-        systemd = false
-        log_level = "error"
-        EOF
-
-    # --------------------------------------------------
-    # 5️⃣ Storage
-    # --------------------------------------------------
-    - name: Configure Podman storage
-      run: |
-        mkdir -p "$XDG_RUNTIME_DIR" "$TMPDIR" "$PODMAN_STORAGE"
-        chmod 700 "$XDG_RUNTIME_DIR"
-        chmod 777 "$TMPDIR" "$PODMAN_STORAGE"
-
-        cat <<EOF > ~/.config/containers/storage.conf
-        [storage]
-        driver = "overlay"
-        graphroot = "$PODMAN_STORAGE"
-        runroot = "$XDG_RUNTIME_DIR/runroot"
-        EOF
-
-        podman system migrate
-
-    # --------------------------------------------------
-    # 6️⃣ Hard cleanup
-    # --------------------------------------------------
-    - name: Cleanup
-      run: podman system prune -a -f
-
     # ==================================================
-    # 🔹 DEMO 1 — BASICS
+    # 🔹 DEMO 1
     # ==================================================
-    - name: Create anomaly-network
-      run: podman network create anomaly-network || true
-
     - name: Run demo-1-basics
       working-directory: demo/demo-1-basics
       run: |
-        podman-compose build --no-cache 2>/dev/null
-        podman-compose up -d 2>/dev/null
-
-        echo "✅ demo-1-basics running containers:"
-        podman ps --format "table {{.Names}}\t{{.Status}}"
-
-        podman-compose down -v 2>/dev/null
-
-    - run: podman system prune -a -f
+        docker compose up -d --build
+        sleep 10
+        docker ps
+        docker compose down -v
 
     # ==================================================
-    # 🔹 DEMO 2 — OTEL
+    # 🔹 DEMO 2
     # ==================================================
-    - name: Create edge-network
-      run: podman network create edge-network || true
-
     - name: Run demo-2-otel
       working-directory: demo/demo-2-otel
       run: |
-        podman-compose build --no-cache 2>/dev/null
-        podman-compose up -d 2>/dev/null
+        docker compose up -d --build
+        sleep 15
+        docker ps
+        docker compose down -v
 
-        echo "✅ demo-2-otel running containers:"
-        podman ps --format "table {{.Names}}\t{{.Status}}"
+    # ==================================================
+    # 🔹 DEMO 3 (MLflow Stack)
+    # ==================================================
+    - name: Run demo-3-mlflow
+      working-directory: demo/demo-3-mlflow
+      run: |
+        echo "Creating .env file"
+
+        cat <<EOF > .env
+        POSTGRES_DB=mlflowdb
+        POSTGRES_USER=mlflow
+        POSTGRES_PASSWORD=mlflow123
+        MINIO_ROOT_USER=minio
+        MINIO_ROOT_PASSWORD=minio123
+        MINIO_STORAGE_BUCKET=mlflow
+        MLFLOW_PORT=5000
+        EOF
+
+        docker compose up -d --build
+
+        echo "Waiting for MLflow stack..."
+        sleep 40
+
+        docker ps
+
+        echo "Testing MLflow endpoint..."
+        curl --fail http://localhost:5000 || exit 1
+
+        docker compose down -v
 
     # --------------------------------------------------
-    # 7️⃣ Final cleanup
+    # Final Cleanup
     # --------------------------------------------------
     - name: Final cleanup
       if: always()
-      run: podman system prune -a -f
+      run: docker system prune -a -f
