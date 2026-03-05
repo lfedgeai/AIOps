@@ -157,8 +157,10 @@ make bench-compare
 | `replay_doris.py` (Doris) | `--batch 5000` | Rows per stream load |
 | `replay_clickhouse.py` | `--batch 5000` | Rows per INSERT |
 | `replay_druid.py` | `--batch 5000` | Rows per ingestion task |
+| `replay_oceanbase.py` (OceanBase) | `--batch 5000` | Rows per INSERT (pymysql) |
 
 `common.py` controls extraction:
 
 - `max_per_file=200` in `extract_span_rows` → increase for more spans per trace file
+- `raw[:200000]` (200KB) in `extract_log_rows` → message size cap; prevents huge Druid/OceanBase files at scale
 - `rglob("logs_*.txt")` / `traces_*.json` / `metrics_*.json` → add more files to `DATA_DIR` for more data

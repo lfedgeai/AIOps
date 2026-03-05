@@ -21,12 +21,17 @@ CH_SCHEMA = ROOT / "schemas" / "clickhouse.sql"
 DORIS_QDIR = ROOT / "queries" / "doris"
 CH_QDIR = ROOT / "queries" / "clickhouse"
 DRUID_QDIR = ROOT / "queries" / "druid"
+OB_QDIR = ROOT / "queries" / "oceanbase"
+OB_SCHEMA = ROOT / "schemas" / "oceanbase.sql"
 
 DORIS_FE_HTTP = os.getenv("DORIS_FE_HTTP", "http://localhost:8030")
 DORIS_PASS = os.getenv("DORIS_PASS", "")
 CH_HTTP = os.getenv("CLICKHOUSE_HTTP", "http://localhost:8123")
 CH_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "")
 DRUID_HTTP = os.getenv("DRUID_HTTP", "http://localhost:8888")
+OB_HOST = os.getenv("OCEANBASE_HOST", "127.0.0.1")
+OB_PORT = int(os.getenv("OCEANBASE_PORT", "2881"))
+OB_CONTAINER = os.getenv("OCEANBASE_CONTAINER", "tsb-oceanbase")
 DB = "telemetry"
 
 def _ch_params(extra: dict | None = None) -> dict:
@@ -72,6 +77,13 @@ def _run_doris_sql(sql: str, db: str = "information_schema") -> None:
     ]
     subprocess.run(cmd, check=True)
 
+def _run_oceanbase_sql(sql: str, db: str | None = DB) -> None:
+    cmd = ["docker", "run", "--rm", "-i", "--network", "tsb-net",
+           "mysql:8", "mysql", "-h", OB_CONTAINER, "-P", "2881", "-uroot"]
+    if db:
+        cmd.extend(["-D", db])
+    subprocess.run(cmd, input=sql.encode(), check=True)
+
 def apply_doris_schema() -> None:
     sql = DORIS_SCHEMA.read_text()
     _run_doris_sql(sql)
@@ -99,6 +111,54 @@ def truncate_clickhouse_tables() -> None:
         if r.status_code != 200:
             print(f"[truncate] ClickHouse {t}: {r.status_code} {r.text[:200]}")
     print("[truncate] ClickHouse tables cleared")
+
+def wait_oceanbase_ready(timeout_s: int = 300) -> bool:
+    """Wait until OceanBase accepts queries (bootstrap can take 3-5 min)."""
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        try:
+            cmd = ["docker", "run", "--rm", "-i", "--network", "tsb-net",
+                   "mysql:8", "mysql", "-h", OB_CONTAINER, "-P", "2881", "-uroot", "-e", "SELECT 1"]
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if out.returncode == 0:
+                print("[wait] OceanBase ready")
+                return True
+        except Exception:
+            pass
+        time.sleep(10)
+    return False
+
+def apply_oceanbase_schema() -> None:
+    if not wait_oceanbase_ready(300):
+        raise RuntimeError("OceanBase not ready (bootstrap ~3-5 min)")
+    sql = OB_SCHEMA.read_text()
+    for attempt in range(6):
+        try:
+            cmd = ["docker", "run", "--rm", "-i", "--network", "tsb-net",
+                   "mysql:8", "mysql", "-h", OB_CONTAINER, "-P", "2881", "-uroot"]
+            out = subprocess.run(cmd, input=sql.encode(), capture_output=True, timeout=60)
+            if out.returncode == 0:
+                print("[schema] OceanBase applied")
+                return
+            err = (out.stderr or out.stdout or b"").decode(errors="replace")
+            if "log stream is not leader" in err and attempt < 5:
+                time.sleep(20)
+                continue
+            raise RuntimeError(f"OceanBase schema failed: {err[:500]}")
+        except subprocess.TimeoutExpired:
+            if attempt < 5:
+                time.sleep(10)
+                continue
+            raise
+    raise RuntimeError("OceanBase schema failed after retries")
+
+def truncate_oceanbase_tables() -> None:
+    for t in ("logs", "spans", "metrics"):
+        try:
+            _run_oceanbase_sql(f"TRUNCATE TABLE {DB}.{t};")
+        except Exception as e:
+            print(f"[truncate] OceanBase {t}: {e}")
+    print("[truncate] OceanBase tables cleared")
 
 def run_doris_query(sql: str) -> dict:
     pass_arg = f"-p{DORIS_PASS}" if DORIS_PASS else ""
@@ -142,6 +202,17 @@ def run_druid_query(sql: str) -> dict:
     except Exception:
         return {"latency_s": dt, "rows": 0, "error": r.text[:200]}
 
+def run_oceanbase_query(sql: str) -> dict:
+    cmd = ["docker", "run", "--rm", "-i", "--network", "tsb-net",
+           "mysql:8", "mysql", "-h", OB_CONTAINER, "-P", "2881", "-uroot", "-N", "-B", "-D", DB]
+    t0 = time.time()
+    out = subprocess.run(cmd, input=sql, capture_output=True, text=True, timeout=120)
+    dt = time.time() - t0
+    if out.returncode != 0:
+        return {"error": (out.stderr or out.stdout or "").strip()[:500]}
+    rows = [ln for ln in (out.stdout or "").splitlines() if ln.strip()]
+    return {"latency_s": dt, "rows": len(rows)}
+
 def bench_backend(qdir: Path, run_fn) -> dict:
     results = {}
     for f in sorted(qdir.glob("*.sql")):
@@ -155,14 +226,16 @@ def bench_backend(qdir: Path, run_fn) -> dict:
     return results
 
 
-def get_data_volume(use_doris: bool) -> tuple[dict, dict, dict]:
-    """Run full-scan COUNT on each backend; return (doris_vol, ch_vol, druid_vol)."""
+def get_data_volume(use_doris: bool, use_oceanbase: bool = True) -> tuple:
+    """Run full-scan COUNT on each backend; return (doris_vol, ch_vol, druid_vol, ob_vol)."""
     doris_vol = {}
     ch_vol = {}
     druid_vol = {}
+    ob_vol = {}
     sql_doris = (DORIS_QDIR / "data_volume.sql").read_text()
     sql_ch = (CH_QDIR / "data_volume.sql").read_text()
     sql_druid = (DRUID_QDIR / "data_volume.sql").read_text()
+    sql_ob = (OB_QDIR / "data_volume.sql").read_text()
 
     def _parse_tsv(lines: list[str]) -> dict:
         counts = {}
@@ -232,33 +305,50 @@ def get_data_volume(use_doris: bool) -> tuple[dict, dict, dict]:
     except Exception as e:
         druid_vol = {"error": str(e)[:200]}
 
-    return doris_vol, ch_vol, druid_vol
+    if use_oceanbase:
+        try:
+            t0 = time.time()
+            out = subprocess.run(
+                ["docker", "run", "--rm", "-i", "--network", "tsb-net",
+                 "mysql:8", "mysql", "-h", OB_CONTAINER, "-P", "2881", "-uroot", "-N", "-B", "-D", DB],
+                input=sql_ob, capture_output=True, text=True, timeout=120,
+            )
+            dt = time.time() - t0
+            if out.returncode == 0:
+                lines = [ln for ln in (out.stdout or "").splitlines() if ln.strip()]
+                ob_vol = _parse_tsv(lines)
+                ob_vol["latency_s"] = dt
+            else:
+                ob_vol = {"error": (out.stderr or out.stdout or "")[:200]}
+        except Exception as e:
+            ob_vol = {"error": str(e)[:200]}
+
+    return doris_vol, ch_vol, druid_vol, ob_vol
 
 def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, druid_ingest: dict,
                          doris_qres: dict, ch_qres: dict, druid_qres: dict,
+                         ob_ingest: dict | None = None, ob_qres: dict | None = None,
                          otlp_ingest: dict | None = None,
-                         data_vol: tuple[dict, dict, dict] | None = None) -> None:
+                         data_vol: tuple | None = None) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    all_queries = sorted(set(doris_qres.keys()) | set(ch_qres.keys()) | set(druid_qres.keys()))
+    all_queries = sorted(set(doris_qres.keys()) | set(ch_qres.keys()) | set(druid_qres.keys()) | set((ob_qres or {}).keys()))
     rows = []
-    chart_data = {"queries": [], "doris": [], "clickhouse": [], "druid": []}
+    chart_data = {"queries": [], "doris": [], "clickhouse": [], "druid": [], "oceanbase": []}
+    backends = [("doris", doris_qres), ("clickhouse", ch_qres), ("druid", druid_qres)]
+    if ob_qres:
+        backends.append(("oceanbase", ob_qres))
     for q in all_queries:
         d = doris_qres.get(q, {})
         c = ch_qres.get(q, {})
         dr = druid_qres.get(q, {})
-        d_lat = d.get("latency_s", "")
-        d_rows = d.get("rows", "")
-        d_err = d.get("error", "")
-        c_lat = c.get("latency_s", "")
-        c_rows = c.get("rows", "")
-        c_err = c.get("error", "")
-        dr_lat = dr.get("latency_s", "")
-        dr_rows = dr.get("rows", "")
-        dr_err = dr.get("error", "")
-        winner = ""
-        pct_diff = ""
+        ob = (ob_qres or {}).get(q, {})
+        d_lat, c_lat, dr_lat = d.get("latency_s", ""), c.get("latency_s", ""), dr.get("latency_s", "")
+        ob_lat = ob.get("latency_s", "")
         lats = [(d_lat, "Doris"), (c_lat, "ClickHouse"), (dr_lat, "Druid")]
+        if ob_qres:
+            lats.append((ob_lat, "OceanBase"))
         valid = [(x, n) for x, n in lats if isinstance(x, (int, float))]
+        winner, pct_diff = "", ""
         if len(valid) >= 2:
             fastest = min(valid, key=lambda t: t[0])
             slowest = max(valid, key=lambda t: t[0])
@@ -266,27 +356,24 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
             if slowest[0] >= 1e-9:
                 pct = (slowest[0] - fastest[0]) / slowest[0] * 100
                 pct_diff = f"{pct:.1f}%"
-        rows.append(f"<tr><td>{q}</td><td>{d_lat}</td><td>{d_rows}</td><td>{d_err}</td>"
-                   f"<td>{c_lat}</td><td>{c_rows}</td><td>{c_err}</td>"
-                   f"<td>{dr_lat}</td><td>{dr_rows}</td><td>{dr_err}</td>"
-                   f"<td>{pct_diff}</td><td>{winner}</td></tr>")
+        ob_cells = f"<td>{ob_lat}</td><td>{ob.get('rows', '')}</td><td>{ob.get('error', '')}</td>" if ob_qres else ""
+        rows.append(f"<tr><td>{q}</td><td>{d_lat}</td><td>{d.get('rows', '')}</td><td>{d.get('error', '')}</td>"
+                   f"<td>{c_lat}</td><td>{c.get('rows', '')}</td><td>{c.get('error', '')}</td>"
+                   f"<td>{dr_lat}</td><td>{dr.get('rows', '')}</td><td>{dr.get('error', '')}</td>"
+                   f"{ob_cells}<td>{pct_diff}</td><td>{winner}</td></tr>")
         chart_data["queries"].append(q)
         chart_data["doris"].append(round(d_lat, 4) if isinstance(d_lat, (int, float)) else None)
         chart_data["clickhouse"].append(round(c_lat, 4) if isinstance(c_lat, (int, float)) else None)
         chart_data["druid"].append(round(dr_lat, 4) if isinstance(dr_lat, (int, float)) else None)
-    ingest_chart = {
-        "labels": ["Doris", "ClickHouse", "Druid"],
-        "duration_s": [
-            doris_ingest.get("duration_s"),
-            ch_ingest.get("duration_s"),
-            druid_ingest.get("duration_s"),
-        ],
-        "rows_per_sec": [
-            doris_ingest.get("rows_per_sec"),
-            ch_ingest.get("rows_per_sec"),
-            druid_ingest.get("rows_per_sec"),
-        ],
-    }
+        chart_data["oceanbase"].append(round(ob_lat, 4) if isinstance(ob_lat, (int, float)) else None)
+    ingest_labels = ["Doris", "ClickHouse", "Druid"]
+    ingest_dur = [doris_ingest.get("duration_s"), ch_ingest.get("duration_s"), druid_ingest.get("duration_s")]
+    ingest_rps = [doris_ingest.get("rows_per_sec"), ch_ingest.get("rows_per_sec"), druid_ingest.get("rows_per_sec")]
+    if ob_ingest and ob_ingest.get("status") == "ok":
+        ingest_labels.append("OceanBase")
+        ingest_dur.append(ob_ingest.get("duration_s"))
+        ingest_rps.append(ob_ingest.get("rows_per_sec"))
+    ingest_chart = {"labels": ingest_labels, "duration_s": ingest_dur, "rows_per_sec": ingest_rps}
     otlp_rows = ""
     if otlp_ingest:
         mech = otlp_ingest.get("mechanism", "OTLP")
@@ -299,7 +386,8 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
 
     data_vol_row = ""
     if data_vol:
-        d_vol, c_vol, dr_vol = data_vol
+        d_vol, c_vol, dr_vol = data_vol[0], data_vol[1], data_vol[2]
+        ob_vol = data_vol[3] if len(data_vol) > 3 else {}
         def _fmt(v: dict) -> str:
             if not v or "error" in v:
                 return v.get("error", "-") if v else "-"
@@ -308,6 +396,7 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
         def _lat(v: dict) -> str:
             lat = v.get("latency_s") if v else None
             return f"{lat:.3f}s" if isinstance(lat, (int, float)) else "-"
+        ob_row = f"<tr><td>OceanBase</td><td>{_fmt(ob_vol)}</td><td>{_lat(ob_vol)}</td></tr>" if ob_vol else ""
         data_vol_row = f"""
   <h3>Data volume (full scan)</h3>
   <p>Total rows in telemetry tables at query time. Latency = full COUNT(*) time.</p>
@@ -316,6 +405,7 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
     <tr><td>Doris</td><td>{_fmt(d_vol)}</td><td>{_lat(d_vol)}</td></tr>
     <tr><td>ClickHouse</td><td>{_fmt(c_vol)}</td><td>{_lat(c_vol)}</td></tr>
     <tr><td>Druid</td><td>{_fmt(dr_vol)}</td><td>{_lat(dr_vol)}</td></tr>
+    {ob_row}
   </table>
 """
 
@@ -335,6 +425,7 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
     <tr><td>Doris</td><td>{doris_ingest.get('mechanism', '-')}</td><td>{doris_ingest.get('duration_s', '-')}</td><td>{doris_ingest.get('rows', '-')}</td><td>{doris_ingest.get('rows_per_sec', '-')}</td></tr>
     <tr><td>ClickHouse</td><td>{ch_ingest.get('mechanism', '-')}</td><td>{ch_ingest.get('duration_s', '-')}</td><td>{ch_ingest.get('rows', '-')}</td><td>{ch_ingest.get('rows_per_sec', '-')}</td></tr>
     <tr><td>Druid</td><td>{druid_ingest.get('mechanism', '-')}</td><td>{druid_ingest.get('duration_s', '-')}</td><td>{druid_ingest.get('rows', '-')}</td><td>{druid_ingest.get('rows_per_sec', '-')}</td></tr>
+    {f'<tr><td>OceanBase</td><td>{ob_ingest.get("mechanism", "-")}</td><td>{ob_ingest.get("duration_s", "-")}</td><td>{ob_ingest.get("rows", "-")}</td><td>{ob_ingest.get("rows_per_sec", "-")}</td></tr>' if ob_ingest and ob_ingest.get('status') == 'ok' else ''}
     {otlp_rows}
   </table>
   <p><small>Raw ingest: Doris {json.dumps(doris_ingest)} | CH {json.dumps(ch_ingest)} | Druid {json.dumps(druid_ingest)}</small></p>
@@ -346,6 +437,7 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
     <tr><th>query</th><th>Doris lat</th><th>Doris rows</th><th>Doris err</th>
         <th>CH lat</th><th>CH rows</th><th>CH err</th>
         <th>Druid lat</th><th>Druid rows</th><th>Druid err</th>
+        {"<th>OceanBase lat</th><th>OceanBase rows</th><th>OceanBase err</th>" if ob_qres else ""}
         <th>% diff</th><th>faster</th></tr>
     {chr(10).join(rows)}
   </table>
@@ -364,16 +456,15 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
       }});
     }}
     const ctx = document.getElementById('latencyChart').getContext('2d');
+    const datasets = [
+      {{ label: 'Doris', data: data.doris, backgroundColor: 'rgba(54,162,235,0.7)' }},
+      {{ label: 'ClickHouse', data: data.clickhouse, backgroundColor: 'rgba(75,192,192,0.7)' }},
+      {{ label: 'Druid', data: data.druid, backgroundColor: 'rgba(255,159,64,0.7)' }}
+    ];
+    if (data.oceanbase && data.oceanbase.length) datasets.push({{ label: 'OceanBase', data: data.oceanbase, backgroundColor: 'rgba(153,102,255,0.7)' }});
     new Chart(ctx, {{
       type: 'bar',
-      data: {{
-        labels: data.queries,
-        datasets: [
-          {{ label: 'Doris', data: data.doris, backgroundColor: 'rgba(54,162,235,0.7)' }},
-          {{ label: 'ClickHouse', data: data.clickhouse, backgroundColor: 'rgba(75,192,192,0.7)' }},
-          {{ label: 'Druid', data: data.druid, backgroundColor: 'rgba(255,159,64,0.7)' }}
-        ]
-      }},
+      data: {{ labels: data.queries, datasets: datasets }},
       options: {{
         responsive: true,
         maintainAspectRatio: false,
@@ -390,6 +481,8 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
     (out_dir / "doris_queries.json").write_text(json.dumps(doris_qres, indent=2))
     (out_dir / "clickhouse_queries.json").write_text(json.dumps(ch_qres, indent=2))
     (out_dir / "druid_queries.json").write_text(json.dumps(druid_qres, indent=2))
+    if ob_qres:
+        (out_dir / "oceanbase_queries.json").write_text(json.dumps(ob_qres, indent=2))
     print(f"[bench] wrote {out_dir}/compare.html")
 
 def write_rolling_report(out_base: Path) -> None:
@@ -461,25 +554,30 @@ def main() -> int:
     assert wait_port("127.0.0.1", 8123, 180), "ClickHouse 8123 not ready"
     assert wait_port("127.0.0.1", 8888, 300), "Druid 8888 not ready"
     assert wait_druid_ready(300), "Druid not ready"
+    assert wait_port("127.0.0.1", 2881, 360), "OceanBase 2881 not ready (bootstrap ~3-5 min)"
 
     tsdir = args.out / f"storage_bench_compare_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     tsdir.mkdir(parents=True, exist_ok=True)
     doris_ingest = {"status": "skipped"}
     ch_ingest = {"status": "skipped"}
     druid_ingest = {"status": "skipped"}
+    ob_ingest = {"status": "skipped"}
     doris_qres = {}
     ch_qres = {}
     druid_qres = {}
+    ob_qres = {}
 
     if args.init or args.all:
         if use_doris:
             apply_doris_schema()
         apply_clickhouse_schema()
+        apply_oceanbase_schema()
 
     if args.all:
         if use_doris:
             truncate_doris_tables()
         truncate_clickhouse_tables()
+        truncate_oceanbase_tables()
         stats_dir = tsdir / "ingest_stats"
         stats_dir.mkdir(parents=True, exist_ok=True)
         batch_arg = args.streaming_batch if getattr(args, "streaming_batch", None) else args.batch
@@ -523,6 +621,19 @@ def main() -> int:
             s = json.loads((stats_dir / "druid.json").read_text())
             druid_ingest["rows"] = s.get("logs", 0) + s.get("spans", 0) + s.get("metrics", 0)
             druid_ingest["rows_per_sec"] = round(druid_ingest["rows"] / druid_ingest["duration_s"], 0) if druid_ingest["duration_s"] > 0 else 0
+        ob_cmd = ["python3", str(ROOT / "loaders" / "replay_oceanbase.py"), "--data-dir", str(args.data_dir), "--batch", str(batch_arg),
+                  "--stats", str(stats_dir / "oceanbase.json")]
+        if getattr(args, "scale_to", None):
+            ob_cmd.extend(["--scale-to", str(args.scale_to)])
+        t0 = time.time()
+        subprocess.run(ob_cmd, check=True, env={**os.environ, "OCEANBASE_HOST": "127.0.0.1", "OCEANBASE_PORT": "2881"})
+        ob_ingest["status"] = "ok"
+        ob_ingest["duration_s"] = round(time.time() - t0, 2)
+        ob_ingest["mechanism"] = f"Batch file load ({batch_arg} rows)"
+        if (stats_dir / "oceanbase.json").exists():
+            s = json.loads((stats_dir / "oceanbase.json").read_text())
+            ob_ingest["rows"] = s.get("logs", 0) + s.get("spans", 0) + s.get("metrics", 0)
+            ob_ingest["rows_per_sec"] = round(ob_ingest["rows"] / ob_ingest["duration_s"], 0) if ob_ingest["duration_s"] > 0 else 0
         # Wait for Druid segments to be available for querying
         print("[wait] Druid segments loading...")
         for _ in range(24):
@@ -559,10 +670,12 @@ def main() -> int:
         doris_qres = bench_backend(DORIS_QDIR, run_doris_query)
     ch_qres = bench_backend(CH_QDIR, run_clickhouse_query)
     druid_qres = bench_backend(DRUID_QDIR, run_druid_query)
+    ob_qres = bench_backend(OB_QDIR, run_oceanbase_query)
 
-    data_vol = get_data_volume(use_doris)
+    data_vol = get_data_volume(use_doris, use_oceanbase=True)
 
-    write_combined_report(tsdir, doris_ingest, ch_ingest, druid_ingest, doris_qres, ch_qres, druid_qres, otlp_ingest, data_vol)
+    write_combined_report(tsdir, doris_ingest, ch_ingest, druid_ingest, doris_qres, ch_qres, druid_qres,
+                          ob_ingest=ob_ingest, ob_qres=ob_qres, otlp_ingest=otlp_ingest, data_vol=data_vol)
     write_rolling_report(args.out)
     return 0
 

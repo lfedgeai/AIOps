@@ -1,0 +1,25 @@
+# OceanBase - extends main docker-compose
+# Run: docker compose -f docker-compose.yml -f docker-compose.druid.yml -f docker-compose.oceanbase.yml up -d
+# OceanBase MySQL protocol: localhost:2881 (root, empty password)
+# Bootstrap takes ~3-5 minutes
+
+services:
+  oceanbase:
+    image: oceanbase/oceanbase-ce:4.3.5-lts
+    container_name: tsb-oceanbase
+    environment:
+      - OB_ROOT_PASSWORD=
+      - OB_MODE=slim
+    ports:
+      - "2881:2881"   # MySQL protocol
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/2881' 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 180s
+    restart: unless-stopped
