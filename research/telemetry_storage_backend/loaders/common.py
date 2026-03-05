@@ -82,7 +82,7 @@ def extract_log_rows(data_dir: Path, batch: int, target_rows: int | None = None)
                     "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "service": service,
                     "level": "info",
-                    "message": raw[:800000],
+                    "message": raw[:200000],  # 200KB max for benchmark (avoid huge Druid files)
                     "trace_id": trace_id,
                     "span_id": span_id,
                     "attrs": {},

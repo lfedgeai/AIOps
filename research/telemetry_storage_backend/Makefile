@@ -14,7 +14,7 @@ up:
 	done
 
 up-compare:
-	docker compose -f docker-compose.yml -f docker-compose.druid.yml up -d
+	docker compose -f docker-compose.yml -f docker-compose.druid.yml -f docker-compose.oceanbase.yml up -d
 	@echo "Waiting for Doris health..."
 	@for i in {1..60}; do \
 	  curl -sf http://localhost:8030/api/health && echo "Doris is healthy" && break || sleep 2; \
@@ -27,9 +27,13 @@ up-compare:
 	@for i in {1..120}; do \
 	  curl -sf http://localhost:8888/status/health && echo "Druid is healthy" && break || sleep 5; \
 	done
+	@echo "Waiting for OceanBase (port 2881, bootstrap ~3-5 min)..."
+	@for i in {1..60}; do \
+	  nc -z 127.0.0.1 2881 && echo "OceanBase is ready" && break || sleep 5; \
+	done
 
 up-otel:
-	docker compose -f docker-compose.yml -f docker-compose.druid.yml -f docker-compose.otel.yml up -d
+	docker compose -f docker-compose.yml -f docker-compose.druid.yml -f docker-compose.oceanbase.yml -f docker-compose.otel.yml up -d
 	@echo "Waiting for Doris health..."
 	@for i in {1..60}; do \
 	  curl -sf http://localhost:8030/api/health && echo "Doris is healthy" && break || sleep 2; \
@@ -44,7 +48,7 @@ up-otel:
 	done
 
 down:
-	docker compose -f docker-compose.yml -f docker-compose.druid.yml -f docker-compose.otel.yml down -v
+	docker compose -f docker-compose.yml -f docker-compose.druid.yml -f docker-compose.otel.yml -f docker-compose.oceanbase.yml down -v
 
 schema:
 	@echo "Applying Doris schema..."

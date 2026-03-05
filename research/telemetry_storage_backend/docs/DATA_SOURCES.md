@@ -18,6 +18,8 @@ make bench-compare SCALE_TO=50000
 **Pros**: No new tools, uses existing data, correlation by file pairing  
 **Cons**: Cycling duplicates the same patterns
 
+**Note**: Log messages are capped at 200KB per row (`loaders/common.py`) to avoid huge files when scaling. At 50k rows this keeps Druid/OceanBase ingestion tractable.
+
 ---
 
 ## Option B: telemetrygen (Official OTel)
