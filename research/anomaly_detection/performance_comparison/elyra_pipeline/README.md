@@ -50,8 +50,10 @@ Run the notebooks in order (00 → 01 → 02 → 03 → 04). Set `OTEL_DATASET_D
 
 ### Run as Elyra Pipeline on RHOAI
 
+**→ See [DEPLOY.md](DEPLOY.md) for step-by-step deployment instructions.**
+
 1. **Upload the notebooks** to your RHOAI Jupyter environment (Kubeflow Notebook Server with Elyra).
-2. **Create a pipeline** using the Elyra visual editor, or import `isolation_forest_pipeline.pipeline`.
+2. **Create a pipeline** using the Elyra visual editor, or import `isolation_forest_pipeline.pipeline` (KFP) or `isolation_forest_pipeline_local.pipeline` (local—if you get "Invalid runtime type 'local'", use the local file). See [DEPLOY.md](DEPLOY.md) for troubleshooting.
 3. **Connect nodes**: `00_prepare` → `01_train` → `02_test` → `03_copy_to_s3` → `04_deploy_to_serving`.
 4. **Configure pipeline parameters**:
 
@@ -117,7 +119,24 @@ Uses synthetic data if `OTEL_DATASET_DIR` is unset. Use real datasets:
 OTEL_DATASET_DIR=../datasets python run_pipeline_test.py
 ```
 
-Notebooks 03 and 04 are skipped without AWS credentials and cluster access (expected).
+Notebooks 03 and 04 fail without AWS credentials and KServe/cluster access respectively (expected).
+
+## Installing RHOAI on Your Cluster
+
+To run the Elyra pipeline on RHOAI, the cluster must have RHOAI installed with Workbenches (for Elyra/Jupyter) and KServe (for model serving). Use the included install script:
+
+```bash
+./install-rhoai.sh
+```
+
+**Prerequisites** (checked by the script):
+- OpenShift 4.20 or 4.21
+- Identity provider configured; cluster-admin user (**kubeadmin is NOT allowed**)
+- Default storage class (ODF, local-storage, or other)
+- SNO: 32+ CPU, 128+ GiB RAM (or 2+ workers with 8 CPU, 32 GiB each)
+- Object storage (S3) for pipelines and model serving
+
+See [RHOAI 3.3 documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.3/) for details.
 
 ## OpenShift / RHOAI Compatibility Checklist
 
@@ -128,13 +147,48 @@ Notebooks 03 and 04 are skipped without AWS credentials and cluster access (expe
 | **Runtime image** | ✓ | `quay.io/opendatahub/elyra-runtime-image:2024.1` (or your RHOAI image) |
 | **Artifact passing** | ✓ | Uses `/tmp/artifacts/` paths; Kubeflow passes outputs between nodes |
 | **Node 03 (S3)** | ✓ | Needs `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET` from RHOAI secrets |
-| **Node 04 (KServe)** | ✓ | Needs `oc`/`kubectl` in pod, cluster RBAC, S3 credentials for predictor |
+| **Node 04 (KServe)** | ✓ | Uses Kubernetes Python client (no `oc`); needs cluster RBAC, S3 URI for predictor |
 | **KServe sklearn** | ✓ | MLServer sklearn runtime accepts both `model.pkl` and `model.joblib` |
 
-**RHOAI setup**: Clone the repo, configure pipeline env vars (especially AWS + `INFERENCE_SERVICE_NAMESPACE`), ensure the runtime image has `pandas`, `scikit-learn`, `joblib`, `boto3`, and `oc`/`kubectl`.
+**RHOAI setup**: Clone the repo, configure pipeline env vars via Elyra node properties (AWS + `INFERENCE_SERVICE_NAMESPACE`), ensure the runtime image has `pandas`, `scikit-learn`, `joblib`, `boto3`, and `kubernetes`.
+
+---
+
+## Node 04 — Deploy (Kubernetes Python Client)
+
+Node 04 uses the `kubernetes` Python client to create/update the KServe InferenceService programmatically. **No `oc` or `kubectl` is required.**
+
+- **Elyra node properties** (Environment Variables for the Deploy node): `S3_BUCKET`, `S3_PREFIX`, `INFERENCE_SERVICE_NAMESPACE`, optionally `INFERENCE_SERVICE_NAME`.
+- Runs in-cluster when the pipeline pod has a service account with RBAC to create/update InferenceServices.
+- Requires KServe/Serverless Serving to be installed (InferenceService CRD). On RHOAI this is available by default.
+
+---
+
+## Providing AWS Credentials (for Node 03)
+
+**Option A — Kubernetes Secret + Elyra (Elyra 3.9+)**:
+
+1. Create a secret in your pipeline namespace:
+   ```bash
+   oc create secret generic aws-s3-creds \
+     --from-literal=AWS_ACCESS_KEY_ID=your_access_key \
+     --from-literal=AWS_SECRET_ACCESS_KEY=your_secret_key \
+     -n <your-ds-project>
+   ```
+
+2. In the Elyra pipeline editor, select the **Copy to S3** node → **Properties** → **Environment Variables**. Add entries that reference the secret (format depends on your Elyra version; some UIs support `secretKeyRef`).
+
+**Option B — RHOAI Data Connection + Workbench**: Create an S3 data connection in **Data Science Projects → Connections → Create Connection** (S3 compatible). Attach it to your workbench. The connection is available to notebooks, but pipeline nodes run in separate pods and typically need env vars or a mounted secret.
+
+**Option C — Node env vars (dev only)**: In the pipeline definition or Elyra UI, set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET` for node 03. **Do not** put real secrets in version-controlled pipeline JSON.
+
+**Option D — External Secrets Operator**: If your cluster uses [External Secrets Operator](https://external-secrets.io/), sync AWS credentials from AWS Secrets Manager into a Kubernetes Secret, then reference that secret in the pipeline (same as Option A).
 
 ## Dependencies
 
 - `scikit-learn`: Isolation Forest (or `isotree` for Extended Isolation Forest)
 - `boto3`: S3 copy
+- `kubernetes`: Deploy InferenceService from node 04 (no `oc`/`kubectl` needed)
 - `pandas`, `numpy`, `joblib`: Data and serialization
+
+See `requirements.txt` for pinned versions.
