@@ -1,0 +1,141 @@
+{
+  "doc_type": "pipeline",
+  "version": "3.0",
+  "json_schema": "http://api.dataplatform.ibm.com/schemas/common-pipeline/pipeline-flow/pipeline-flow-v3-schema.json",
+  "id": "isolation-forest-rhoai-pipeline",
+  "primary_pipeline": "isolation-forest-flow",
+  "pipelines": [
+    {
+      "id": "isolation-forest-flow",
+      "nodes": [
+        {
+          "id": "prepare-node",
+          "type": "execution_node",
+          "app_data": {
+            "uid": "prepare-00",
+            "label": "Prepare Features",
+            "component_parameters": {
+              "filename": "00_prepare_features.ipynb",
+              "runtime_image": "quay.io/opendatahub/elyra-runtime-image:2024.1",
+              "env_vars": [
+                "OTEL_DATASET_DIR=../datasets",
+                "OUT_FEATURES_CSV=/tmp/artifacts/features.csv"
+              ],
+              "outputs": [
+                "/tmp/artifacts/features.csv"
+              ]
+            }
+          }
+        },
+        {
+          "id": "train-node",
+          "type": "execution_node",
+          "app_data": {
+            "uid": "train-01",
+            "label": "Train Isolation Forest",
+            "component_parameters": {
+              "filename": "01_train_isolation_forest.ipynb",
+              "runtime_image": "quay.io/opendatahub/elyra-runtime-image:2024.1",
+              "env_vars": [
+                "TRAIN_DATA_PATH=/tmp/artifacts/features.csv",
+                "MODEL_OUTPUT_PATH=/tmp/artifacts/model.pkl",
+                "FEATURE_COLS_PATH=/tmp/artifacts/feature_cols.json",
+                "THRESHOLD_PATH=/tmp/artifacts/threshold.json"
+              ],
+              "inputs": [
+                "/tmp/artifacts/features.csv"
+              ],
+              "outputs": [
+                "/tmp/artifacts/model.pkl",
+                "/tmp/artifacts/feature_cols.json",
+                "/tmp/artifacts/threshold.json"
+              ]
+            }
+          }
+        },
+        {
+          "id": "test-node",
+          "type": "execution_node",
+          "app_data": {
+            "uid": "test-02",
+            "label": "Test Model",
+            "component_parameters": {
+              "filename": "02_test_model.ipynb",
+              "runtime_image": "quay.io/opendatahub/elyra-runtime-image:2024.1",
+              "env_vars": [
+                "MODEL_PATH=/tmp/artifacts/model.pkl",
+                "TEST_DATA_PATH=/tmp/artifacts/features.csv",
+                "FEATURE_COLS_PATH=/tmp/artifacts/feature_cols.json",
+                "THRESHOLD_PATH=/tmp/artifacts/threshold.json",
+                "TEST_REPORT_PATH=/tmp/artifacts/test_report.json"
+              ],
+              "inputs": [
+                "/tmp/artifacts/features.csv",
+                "/tmp/artifacts/model.pkl",
+                "/tmp/artifacts/feature_cols.json",
+                "/tmp/artifacts/threshold.json"
+              ],
+              "outputs": [
+                "/tmp/artifacts/test_report.json"
+              ]
+            }
+          }
+        },
+        {
+          "id": "copy-s3-node",
+          "type": "execution_node",
+          "app_data": {
+            "uid": "copy-s3-03",
+            "label": "Copy to S3",
+            "component_parameters": {
+              "filename": "03_copy_to_s3.ipynb",
+              "runtime_image": "quay.io/opendatahub/elyra-runtime-image:2024.1",
+              "env_vars": [
+                "MODEL_PATH=/tmp/artifacts/model.pkl",
+                "FEATURE_COLS_PATH=/tmp/artifacts/feature_cols.json",
+                "THRESHOLD_PATH=/tmp/artifacts/threshold.json",
+                "TEST_REPORT_PATH=/tmp/artifacts/test_report.json",
+                "AWS_ACCESS_KEY_ID=<set-via-rhoai-secret>",
+                "AWS_SECRET_ACCESS_KEY=<set-via-rhoai-secret>",
+                "S3_BUCKET=<your-bucket>",
+                "S3_PREFIX=models/isolation-forest/"
+              ],
+              "inputs": [
+                "/tmp/artifacts/model.pkl",
+                "/tmp/artifacts/feature_cols.json",
+                "/tmp/artifacts/threshold.json",
+                "/tmp/artifacts/test_report.json"
+              ]
+            }
+          }
+        },
+        {
+          "id": "deploy-serving-node",
+          "type": "execution_node",
+          "app_data": {
+            "uid": "deploy-04",
+            "label": "Deploy to Serving",
+            "component_parameters": {
+              "filename": "04_deploy_to_serving.ipynb",
+              "runtime_image": "quay.io/opendatahub/elyra-runtime-image:2024.1",
+              "env_vars": [
+                "S3_BUCKET=<your-bucket>",
+                "S3_PREFIX=models/isolation-forest/",
+                "INFERENCE_SERVICE_NAME=isolation-forest",
+                "INFERENCE_SERVICE_NAMESPACE=<your-rhoai-project>"
+              ]
+            }
+          }
+        }
+      ],
+      "runtime_ref": "kfp",
+      "links": [
+        {"id": "prepare-to-train", "type": "link", "source": "prepare-node", "target": "train-node"},
+        {"id": "train-to-test", "type": "link", "source": "train-node", "target": "test-node"},
+        {"id": "test-to-copy", "type": "link", "source": "test-node", "target": "copy-s3-node"},
+        {"id": "copy-to-deploy", "type": "link", "source": "copy-s3-node", "target": "deploy-serving-node"}
+      ]
+    }
+  ],
+  "schemas": []
+}
