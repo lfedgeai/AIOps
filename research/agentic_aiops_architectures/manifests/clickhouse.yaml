@@ -1,0 +1,82 @@
+# ClickHouse deployment for OTEL telemetry (traces, metrics, logs)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickhouse
+  namespace: otel-demo
+  labels:
+    app: clickhouse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      securityContext:
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:24.3
+          ports:
+            - containerPort: 9000
+              name: native
+            - containerPort: 8123
+              name: http
+          env:
+            - name: CLICKHOUSE_DB
+              value: otel
+            - name: CLICKHOUSE_USER
+              value: default
+            - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
+              value: "1"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 250m
+            limits:
+              memory: 2Gi
+              cpu: 1000m
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: otel-demo
+  labels:
+    app: clickhouse
+spec:
+  ports:
+    - port: 9000
+      targetPort: 9000
+      name: native
+      protocol: TCP
+    - port: 8123
+      targetPort: 8123
+      name: http
+      protocol: TCP
+  selector:
+    app: clickhouse

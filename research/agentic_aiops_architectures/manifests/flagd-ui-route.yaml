@@ -1,0 +1,20 @@
+# Direct Route to flagd-ui (port 4000) for API read/write.
+# Bypasses frontend-proxy; use for FLAGD_READ_URL and FLAGD_WRITE_URL.
+# Example: FLAGD_WRITE_URL=https://<route-host>/api/write
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: flagd-ui-api
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: flagd-ui
+spec:
+  to:
+    kind: Service
+    name: flagd
+    weight: 100
+  port:
+    targetPort: 4000
+  tls:
+    termination: edge
+  wildcardPolicy: None

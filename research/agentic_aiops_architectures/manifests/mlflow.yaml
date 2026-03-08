@@ -1,0 +1,103 @@
+# MLflow deployment for Agentic AIOps experiment tracking
+# Use: oc apply -f manifests/mlflow.yaml
+# Note: Uses emptyDir for clusters without StorageClass; for persistence use PVC.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentic-aiops
+  labels:
+    app.kubernetes.io/name: agentic-aiops
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: agentic-aiops
+  labels:
+    app: mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      containers:
+        - name: mlflow
+          image: ghcr.io/mlflow/mlflow:v2.9.2
+          args:
+            - server
+            - --backend-store-uri
+            - sqlite:///mlflow/mlruns.db
+            - --default-artifact-root
+            - /mlflow/artifacts
+            - --host
+            - 0.0.0.0
+            - --port
+            - "5000"
+          ports:
+            - containerPort: 5000
+              name: http
+          volumeMounts:
+            - name: data
+              mountPath: /mlflow
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: agentic-aiops
+  labels:
+    app: mlflow
+spec:
+  ports:
+    - port: 5000
+      targetPort: 5000
+      name: http
+      protocol: TCP
+  selector:
+    app: mlflow
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mlflow
+  namespace: agentic-aiops
+  labels:
+    app: mlflow
+spec:
+  to:
+    kind: Service
+    name: mlflow
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+  wildcardPolicy: None
