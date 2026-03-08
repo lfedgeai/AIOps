@@ -57,11 +57,14 @@ def main():
 
     print("\n--- Core pipeline (00-02) OK ---")
 
-    # 03/04: require AWS and OpenShift - verify they fail gracefully
+    # 03/04: require AWS and cluster - verify they fail gracefully or run if available
     for nb, skip_reason in [
         ("03_copy_to_s3.ipynb", "AWS credentials"),
-        ("04_deploy_to_serving.ipynb", "oc/kubectl + cluster"),
+        ("04_deploy_to_serving.ipynb", "KServe / cluster access"),
     ]:
+        if nb == "04_deploy_to_serving.ipynb":
+            os.environ.setdefault("S3_BUCKET", "test-bucket")
+            os.environ.setdefault("INFERENCE_SERVICE_NAMESPACE", "test-ns")
         try:
             if run_notebook(nb, ns):
                 print(f"  {nb}: ran (credentials available)")

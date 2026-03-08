@@ -2,7 +2,7 @@
   "doc_type": "pipeline",
   "version": "3.0",
   "json_schema": "http://api.dataplatform.ibm.com/schemas/common-pipeline/pipeline-flow/pipeline-flow-v3-schema.json",
-  "id": "isolation-forest-rhoai-pipeline",
+  "id": "isolation-forest-local-pipeline",
   "primary_pipeline": "isolation-forest-flow",
   "pipelines": [
     {
@@ -128,7 +128,7 @@
           }
         }
       ],
-      "runtime_ref": "kfp",
+      "runtime_ref": "local",
       "links": [
         {"id": "prepare-to-train", "type": "link", "source": "prepare-node", "target": "train-node"},
         {"id": "train-to-test", "type": "link", "source": "train-node", "target": "test-node"},
