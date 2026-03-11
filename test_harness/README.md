@@ -5,7 +5,7 @@
 **Project Umbrella:** LF Edge  
 **Issue Date:** March 4, 2026  
 **Submission Deadline:** May 1, 2026, 5:00 PM PT  
-**Contact:** proposals@lfedge.org
+**Contact (slack):** [proposals@lfedge.org](https://lfedge.slack.com/archives/C0AJ1UM4LP9)
 
 ## 1. Overview
 
