@@ -1,6 +1,7 @@
 version: "3.9"
 
 services:
+
   app:
     build:
       context: .
@@ -9,20 +10,36 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - PYTHONPATH=/app
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - PROCESS_ANOMALY_URL=http://fastapi-app:8001/process-anomaly
-      - REDIS_OBS_HOST=redis
-      - REDIS_OBS_PORT=6379
-      - DATABASE_URL=postgresql://anomaly:anomaly123$@anomaly-db:5432/anomaly-db
+      PYTHONPATH: /app
+
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      REDIS_OBS_HOST: redis
+      REDIS_OBS_PORT: 6379
+
+      PROCESS_ANOMALY_URL: http://fastapi-app:8001/process-anomaly
+
+      DATABASE_URL: postgresql://anomaly:anomaly123$$@anomaly-db:5432/anomaly-db
+
+      MLFLOW_TRACKING_URI: http://mlflow_server:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+
     volumes:
-      - ${PWD}:/app
+      - .:/app
+
     depends_on:
       - redis
+      - anomaly-db
+      - mlflow_server
+
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
     networks:
       - anomaly-network
+
 
   redis:
     image: redis:7-alpine
@@ -32,22 +49,106 @@ services:
     volumes:
       - redis_data:/data
     networks:
-        - anomaly-network
+      - anomaly-network
+
+
   anomaly-db:
-    image: quay.io/osclimate/postgresql-13:1-101
+    image: postgres:15
     container_name: anomaly-db
     ports:
       - "5433:5432"
     environment:
-      - POSTGRESQL_ADMIN_PASSWORD=admin123$
-      - POSTGRESQL_DATABASE=anomaly-db
-      - POSTGRESQL_PASSWORD=anomaly123$
-      - POSTGRESQL_USER=anomaly
+      POSTGRES_DB: anomaly-db
+      POSTGRES_USER: anomaly
+      POSTGRES_PASSWORD: anomaly123$$
+    volumes:
+      - anomaly_postgres:/var/lib/postgresql/data
     networks:
       - anomaly-network
 
+
+  mlflow_db:
+    image: postgres:15
+    container_name: mlflow_db
+    restart: always
+    environment:
+      POSTGRES_DB: mlflow
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: mlflow123
+    volumes:
+      - mlflow_db_data:/var/lib/postgresql/data
+    networks:
+      - anomaly-network
+
+
+  minio:
+    image: minio/minio:latest
+    container_name: mlflow_minio
+    restart: always
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - anomaly-network
+
+
+  create_bucket:
+    image: minio/mc
+    container_name: mlflow_create_bucket
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 15;
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb -p local/mlflow || true;
+      exit 0;
+      "
+    networks:
+      - anomaly-network
+
+
+  mlflow_server:
+    image: ghcr.io/mlflow/mlflow:latest
+    container_name: mlflow_server
+    restart: always
+    depends_on:
+      - mlflow_db
+      - minio
+      - create_bucket
+    ports:
+      - "5000:5000"
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      MLFLOW_SERVER_ALLOWED_HOSTS: "*"
+    command: >
+      bash -c "
+      pip install psycopg2-binary &&
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri postgresql://mlflow:mlflow123@mlflow_db:5432/mlflow
+      --default-artifact-root s3://mlflow/
+      --allowed-hosts '*'
+      "
+    networks:
+      - anomaly-network
+
+
 volumes:
   redis_data:
+  anomaly_postgres:
+  mlflow_db_data:
+  minio_data:
+
 
 networks:
   anomaly-network:
