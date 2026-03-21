@@ -32,6 +32,7 @@ DRUID_HTTP = os.getenv("DRUID_HTTP", "http://localhost:8888")
 OB_HOST = os.getenv("OCEANBASE_HOST", "127.0.0.1")
 OB_PORT = int(os.getenv("OCEANBASE_PORT", "2881"))
 OB_CONTAINER = os.getenv("OCEANBASE_CONTAINER", "tsb-oceanbase")
+LOKI_HTTP = os.getenv("LOKI_HTTP", "http://localhost:3100")
 DB = "telemetry"
 
 def _ch_params(extra: dict | None = None) -> dict:
@@ -100,9 +101,18 @@ def apply_clickhouse_schema() -> None:
         stmt = stmt.strip()
         if not stmt or stmt.startswith("--"):
             continue
-        r = requests.post(CH_HTTP, params=_ch_params(), data=stmt + ";", timeout=30)
-        if r.status_code != 200:
-            print(f"[schema] ClickHouse: {r.status_code} {r.text[:200]}")
+        for attempt in range(5):
+            try:
+                r = requests.post(CH_HTTP, params=_ch_params(), data=stmt + ";", timeout=30)
+                if r.status_code != 200:
+                    print(f"[schema] ClickHouse: {r.status_code} {r.text[:200]}")
+                break
+            except requests.exceptions.ConnectionError as e:
+                if attempt < 4:
+                    print(f"[schema] ClickHouse connection error, retry {attempt + 1}/5 in 5s...")
+                    time.sleep(5)
+                else:
+                    raise
     print("[schema] ClickHouse applied")
 
 def truncate_clickhouse_tables() -> None:
@@ -212,6 +222,62 @@ def run_oceanbase_query(sql: str) -> dict:
         return {"error": (out.stderr or out.stdout or "").strip()[:500]}
     rows = [ln for ln in (out.stdout or "").splitlines() if ln.strip()]
     return {"latency_s": dt, "rows": len(rows)}
+
+
+# Loki LogQL queries (logs only) - filter by run_id for isolation
+LOKI_LOG_QUERIES = {
+    "logs_errors_by_service": (
+        'sum by (service) (count_over_time({{job="telemetry", run_id="{run_id}"}} |~ "(?i)error" [24h]))'
+    ),
+    "logs_recent": (
+        '{{job="telemetry", run_id="{run_id}"}}'
+    ),
+    "logs_search_error": (
+        '{{job="telemetry", run_id="{run_id}"}} |= "error"'
+    ),
+}
+
+
+def run_loki_log_query(name: str, logql: str, run_id: str, expect_count: bool = False) -> dict:
+    """Run a LogQL query against Loki. For range queries returns row count from values."""
+    url = f"{LOKI_HTTP}/loki/api/v1/query_range"
+    query = logql.format(run_id=run_id)
+    now_ns = int(time.time() * 1_000_000_000)
+    start_ns = now_ns - (30 * 24 * 3600 * 1_000_000_000)  # 30 days ago
+    # Limit 5 to stay under 4MB gRPC default (log lines can be ~200KB each)
+    params = {"query": query, "start": str(start_ns), "end": str(now_ns), "limit": 5}
+    t0 = time.time()
+    try:
+        r = requests.get(url, params=params, timeout=120)
+        dt = time.time() - t0
+        if r.status_code != 200:
+            return {"latency_s": dt, "rows": 0, "error": r.text[:300]}
+        data = r.json()
+        results = data.get("data", {}).get("result", [])
+        if expect_count and "sum by" in query:
+            # Instant/metrics-style: each stream has one value [ts, count]
+            rows = sum(1 for s in results for _ in s.get("values", []))
+        else:
+            rows = sum(len(s.get("values", [])) for s in results)
+        return {"latency_s": dt, "rows": rows}
+    except Exception as e:
+        return {"latency_s": 0, "rows": 0, "error": str(e)[:200]}
+
+
+def bench_loki_logs(run_id: str) -> dict:
+    """Run the 3 log queries against Loki. Returns partial results (logs only)."""
+    res = {}
+    res["logs_errors_by_service"] = run_loki_log_query(
+        "logs_errors_by_service", LOKI_LOG_QUERIES["logs_errors_by_service"], run_id, expect_count=True
+    )
+    res["logs_recent"] = run_loki_log_query(
+        "logs_recent", LOKI_LOG_QUERIES["logs_recent"], run_id
+    )
+    res["logs_search_error"] = run_loki_log_query(
+        "logs_search_error", LOKI_LOG_QUERIES["logs_search_error"], run_id
+    )
+    return res
+
 
 def bench_backend(qdir: Path, run_fn) -> dict:
     results = {}
@@ -328,25 +394,33 @@ def get_data_volume(use_doris: bool, use_oceanbase: bool = True) -> tuple:
 def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, druid_ingest: dict,
                          doris_qres: dict, ch_qres: dict, druid_qres: dict,
                          ob_ingest: dict | None = None, ob_qres: dict | None = None,
+                         loki_ingest: dict | None = None, loki_qres: dict | None = None,
                          otlp_ingest: dict | None = None,
                          data_vol: tuple | None = None) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    all_queries = sorted(set(doris_qres.keys()) | set(ch_qres.keys()) | set(druid_qres.keys()) | set((ob_qres or {}).keys()))
+    all_queries = sorted(set(doris_qres.keys()) | set(ch_qres.keys()) | set(druid_qres.keys())
+                        | set((ob_qres or {}).keys()) | set((loki_qres or {}).keys()))
     rows = []
-    chart_data = {"queries": [], "doris": [], "clickhouse": [], "druid": [], "oceanbase": []}
+    chart_data = {"queries": [], "doris": [], "clickhouse": [], "druid": [], "oceanbase": [], "loki": []}
     backends = [("doris", doris_qres), ("clickhouse", ch_qres), ("druid", druid_qres)]
     if ob_qres:
         backends.append(("oceanbase", ob_qres))
+    if loki_qres:
+        backends.append(("loki", loki_qres))
     for q in all_queries:
         d = doris_qres.get(q, {})
         c = ch_qres.get(q, {})
         dr = druid_qres.get(q, {})
         ob = (ob_qres or {}).get(q, {})
+        loki = (loki_qres or {}).get(q, {})
         d_lat, c_lat, dr_lat = d.get("latency_s", ""), c.get("latency_s", ""), dr.get("latency_s", "")
         ob_lat = ob.get("latency_s", "")
+        loki_lat = loki.get("latency_s", "")
         lats = [(d_lat, "Doris"), (c_lat, "ClickHouse"), (dr_lat, "Druid")]
         if ob_qres:
             lats.append((ob_lat, "OceanBase"))
+        if loki_qres:
+            lats.append((loki_lat, "Loki"))
         valid = [(x, n) for x, n in lats if isinstance(x, (int, float))]
         winner, pct_diff = "", ""
         if len(valid) >= 2:
@@ -357,15 +431,17 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
                 pct = (slowest[0] - fastest[0]) / slowest[0] * 100
                 pct_diff = f"{pct:.1f}%"
         ob_cells = f"<td>{ob_lat}</td><td>{ob.get('rows', '')}</td><td>{ob.get('error', '')}</td>" if ob_qres else ""
+        loki_cells = f"<td>{loki_lat}</td><td>{loki.get('rows', '')}</td><td>{loki.get('error', '')}</td>" if loki_qres else ""
         rows.append(f"<tr><td>{q}</td><td>{d_lat}</td><td>{d.get('rows', '')}</td><td>{d.get('error', '')}</td>"
                    f"<td>{c_lat}</td><td>{c.get('rows', '')}</td><td>{c.get('error', '')}</td>"
                    f"<td>{dr_lat}</td><td>{dr.get('rows', '')}</td><td>{dr.get('error', '')}</td>"
-                   f"{ob_cells}<td>{pct_diff}</td><td>{winner}</td></tr>")
+                   f"{ob_cells}{loki_cells}<td>{pct_diff}</td><td>{winner}</td></tr>")
         chart_data["queries"].append(q)
         chart_data["doris"].append(round(d_lat, 4) if isinstance(d_lat, (int, float)) else None)
         chart_data["clickhouse"].append(round(c_lat, 4) if isinstance(c_lat, (int, float)) else None)
         chart_data["druid"].append(round(dr_lat, 4) if isinstance(dr_lat, (int, float)) else None)
         chart_data["oceanbase"].append(round(ob_lat, 4) if isinstance(ob_lat, (int, float)) else None)
+        chart_data["loki"].append(round(loki_lat, 4) if isinstance(loki_lat, (int, float)) else None)
     ingest_labels = ["Doris", "ClickHouse", "Druid"]
     ingest_dur = [doris_ingest.get("duration_s"), ch_ingest.get("duration_s"), druid_ingest.get("duration_s")]
     ingest_rps = [doris_ingest.get("rows_per_sec"), ch_ingest.get("rows_per_sec"), druid_ingest.get("rows_per_sec")]
@@ -373,6 +449,10 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
         ingest_labels.append("OceanBase")
         ingest_dur.append(ob_ingest.get("duration_s"))
         ingest_rps.append(ob_ingest.get("rows_per_sec"))
+    if loki_ingest and loki_ingest.get("status") == "ok":
+        ingest_labels.append("Loki")
+        ingest_dur.append(loki_ingest.get("duration_s"))
+        ingest_rps.append(loki_ingest.get("rows_per_sec"))
     ingest_chart = {"labels": ingest_labels, "duration_s": ingest_dur, "rows_per_sec": ingest_rps}
     otlp_rows = ""
     if otlp_ingest:
@@ -426,6 +506,7 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
     <tr><td>ClickHouse</td><td>{ch_ingest.get('mechanism', '-')}</td><td>{ch_ingest.get('duration_s', '-')}</td><td>{ch_ingest.get('rows', '-')}</td><td>{ch_ingest.get('rows_per_sec', '-')}</td></tr>
     <tr><td>Druid</td><td>{druid_ingest.get('mechanism', '-')}</td><td>{druid_ingest.get('duration_s', '-')}</td><td>{druid_ingest.get('rows', '-')}</td><td>{druid_ingest.get('rows_per_sec', '-')}</td></tr>
     {f'<tr><td>OceanBase</td><td>{ob_ingest.get("mechanism", "-")}</td><td>{ob_ingest.get("duration_s", "-")}</td><td>{ob_ingest.get("rows", "-")}</td><td>{ob_ingest.get("rows_per_sec", "-")}</td></tr>' if ob_ingest and ob_ingest.get('status') == 'ok' else ''}
+    {f'<tr><td>Loki</td><td>{loki_ingest.get("mechanism", "-") if loki_ingest and loki_ingest.get("status") == "ok" else ("skipped" if loki_ingest and loki_ingest.get("status") == "skipped" else loki_ingest.get("error", "error"))}</td><td>{loki_ingest.get("duration_s", "-") if loki_ingest and loki_ingest.get("status") == "ok" else "-"}</td><td>{loki_ingest.get("rows", "-") if loki_ingest and loki_ingest.get("status") == "ok" else "-"}</td><td>{loki_ingest.get("rows_per_sec", "-") if loki_ingest and loki_ingest.get("status") == "ok" else "-"}</td></tr>' if loki_ingest else ''}
     {otlp_rows}
   </table>
   <p><small>Raw ingest: Doris {json.dumps(doris_ingest)} | CH {json.dumps(ch_ingest)} | Druid {json.dumps(druid_ingest)}</small></p>
@@ -438,6 +519,7 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
         <th>CH lat</th><th>CH rows</th><th>CH err</th>
         <th>Druid lat</th><th>Druid rows</th><th>Druid err</th>
         {"<th>OceanBase lat</th><th>OceanBase rows</th><th>OceanBase err</th>" if ob_qres else ""}
+        {"<th>Loki lat</th><th>Loki rows</th><th>Loki err</th>" if loki_qres else ""}
         <th>% diff</th><th>faster</th></tr>
     {chr(10).join(rows)}
   </table>
@@ -462,6 +544,7 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
       {{ label: 'Druid', data: data.druid, backgroundColor: 'rgba(255,159,64,0.7)' }}
     ];
     if (data.oceanbase && data.oceanbase.length) datasets.push({{ label: 'OceanBase', data: data.oceanbase, backgroundColor: 'rgba(153,102,255,0.7)' }});
+    if (data.loki && data.loki.length) datasets.push({{ label: 'Loki', data: data.loki, backgroundColor: 'rgba(255,99,132,0.7)' }});
     new Chart(ctx, {{
       type: 'bar',
       data: {{ labels: data.queries, datasets: datasets }},
@@ -483,6 +566,8 @@ def write_combined_report(out_dir: Path, doris_ingest: dict, ch_ingest: dict, dr
     (out_dir / "druid_queries.json").write_text(json.dumps(druid_qres, indent=2))
     if ob_qres:
         (out_dir / "oceanbase_queries.json").write_text(json.dumps(ob_qres, indent=2))
+    if loki_qres:
+        (out_dir / "loki_queries.json").write_text(json.dumps(loki_qres, indent=2))
     print(f"[bench] wrote {out_dir}/compare.html")
 
 def write_rolling_report(out_base: Path) -> None:
@@ -555,8 +640,12 @@ def main() -> int:
     assert wait_port("127.0.0.1", 8888, 300), "Druid 8888 not ready"
     assert wait_druid_ready(300), "Druid not ready"
     assert wait_port("127.0.0.1", 2881, 360), "OceanBase 2881 not ready (bootstrap ~3-5 min)"
+    loki_available = wait_port("127.0.0.1", 3100, 60)
+    if not loki_available:
+        print("[bench] Loki not available (port 3100), skipping logs-only backend")
 
     tsdir = args.out / f"storage_bench_compare_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_id = tsdir.name
     tsdir.mkdir(parents=True, exist_ok=True)
     doris_ingest = {"status": "skipped"}
     ch_ingest = {"status": "skipped"}
@@ -566,6 +655,7 @@ def main() -> int:
     ch_qres = {}
     druid_qres = {}
     ob_qres = {}
+    loki_ingest = {"status": "skipped"}
 
     if args.init or args.all:
         if use_doris:
@@ -634,6 +724,26 @@ def main() -> int:
             s = json.loads((stats_dir / "oceanbase.json").read_text())
             ob_ingest["rows"] = s.get("logs", 0) + s.get("spans", 0) + s.get("metrics", 0)
             ob_ingest["rows_per_sec"] = round(ob_ingest["rows"] / ob_ingest["duration_s"], 0) if ob_ingest["duration_s"] > 0 else 0
+        if loki_available:
+            # Use smaller batch for Loki to avoid ingestion rate limit (default 4MB/s)
+            loki_batch = min(25, batch_arg)  # Keep small to avoid Loki 4MB/s rate limit with large log lines
+            loki_cmd = ["python3", str(ROOT / "loaders" / "replay_loki.py"), "--data-dir", str(args.data_dir),
+                        "--batch", str(loki_batch), "--run-id", run_id, "--stats", str(stats_dir / "loki.json")]
+            if getattr(args, "scale_to", None):
+                loki_cmd.extend(["--scale-to", str(args.scale_to)])
+            t0 = time.time()
+            try:
+                subprocess.run(loki_cmd, check=True, env=os.environ.copy())
+                loki_ingest["status"] = "ok"
+                loki_ingest["duration_s"] = round(time.time() - t0, 2)
+                loki_ingest["mechanism"] = "Loki push (logs only)"
+                if (stats_dir / "loki.json").exists():
+                    s = json.loads((stats_dir / "loki.json").read_text())
+                    loki_ingest["rows"] = s.get("logs", 0)
+                    loki_ingest["rows_per_sec"] = round(loki_ingest["rows"] / loki_ingest["duration_s"], 0) if loki_ingest["duration_s"] > 0 else 0
+            except Exception as e:
+                loki_ingest["status"] = "error"
+                loki_ingest["error"] = str(e)[:200]
         # Wait for Druid segments to be available for querying
         print("[wait] Druid segments loading...")
         for _ in range(24):
@@ -671,11 +781,13 @@ def main() -> int:
     ch_qres = bench_backend(CH_QDIR, run_clickhouse_query)
     druid_qres = bench_backend(DRUID_QDIR, run_druid_query)
     ob_qres = bench_backend(OB_QDIR, run_oceanbase_query)
+    loki_qres = bench_loki_logs(run_id) if loki_ingest.get("status") == "ok" else {}
 
     data_vol = get_data_volume(use_doris, use_oceanbase=True)
 
     write_combined_report(tsdir, doris_ingest, ch_ingest, druid_ingest, doris_qres, ch_qres, druid_qres,
-                          ob_ingest=ob_ingest, ob_qres=ob_qres, otlp_ingest=otlp_ingest, data_vol=data_vol)
+                          ob_ingest=ob_ingest, ob_qres=ob_qres, loki_ingest=loki_ingest, loki_qres=loki_qres,
+                          otlp_ingest=otlp_ingest, data_vol=data_vol)
     write_rolling_report(args.out)
     return 0
 

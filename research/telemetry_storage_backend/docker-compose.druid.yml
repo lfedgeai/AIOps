@@ -4,8 +4,6 @@
 
 volumes:
   druid_metadata: {}
-  druid_var: {}
-  druid_shared: {}
 
 services:
   druid-zookeeper:
@@ -24,14 +22,29 @@ services:
       - POSTGRES_USER=druid
       - POSTGRES_DB=druid
 
+  druid-init:
+    image: apache/druid:34.0.0
+    container_name: tsb-druid-init
+    user: root
+    volumes:
+      - ./druid_data/shared:/opt/shared:z
+      - ./druid_data/var:/opt/druid/var:z
+    depends_on: [druid-zookeeper, druid-postgres]
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        mkdir -p /opt/druid/var/tmp /opt/druid/var/druid /opt/shared/segments /opt/shared/indexing-logs
+        chmod -R 777 /opt/druid/var /opt/shared
+        echo "Druid volume init done"
+
   druid-coordinator:
     image: apache/druid:34.0.0
     container_name: tsb-druid-coordinator
     user: root
     volumes:
-      - druid_shared:/opt/shared
-      - druid_var:/opt/druid/var
-    depends_on: [druid-zookeeper, druid-postgres]
+      - ./druid_data/shared:/opt/shared:z
+      - ./druid_data/var:/opt/druid/var:z
+    depends_on: [druid-zookeeper, druid-postgres, druid-init]
     ports: ["8081:8081"]
     command: coordinator
     env_file: docker-compose.druid.env
@@ -41,7 +54,7 @@ services:
     container_name: tsb-druid-broker
     user: root
     volumes:
-      - druid_var:/opt/druid/var
+      - ./druid_data/var:/opt/druid/var:z
     depends_on: [druid-zookeeper, druid-postgres, druid-coordinator]
     ports: ["8082:8082"]
     command: broker
@@ -52,8 +65,8 @@ services:
     container_name: tsb-druid-historical
     user: root
     volumes:
-      - druid_shared:/opt/shared
-      - druid_var:/opt/druid/var
+      - ./druid_data/shared:/opt/shared:z
+      - ./druid_data/var:/opt/druid/var:z
     depends_on: [druid-zookeeper, druid-postgres, druid-coordinator]
     ports: ["8083:8083"]
     command: historical
@@ -64,8 +77,8 @@ services:
     container_name: tsb-druid-middlemanager
     user: root
     volumes:
-      - druid_shared:/opt/shared
-      - druid_var:/opt/druid/var
+      - ./druid_data/shared:/opt/shared:z
+      - ./druid_data/var:/opt/druid/var:z
       - .:/mnt/bench:rw,z
     depends_on: [druid-zookeeper, druid-postgres, druid-coordinator]
     ports: ["8091:8091", "8100-8105:8100-8105"]
@@ -77,7 +90,7 @@ services:
     container_name: tsb-druid-router
     user: root
     volumes:
-      - druid_var:/opt/druid/var
+      - ./druid_data/var:/opt/druid/var:z
     depends_on: [druid-zookeeper, druid-postgres, druid-coordinator]
     ports: ["8888:8888"]
     command: router
