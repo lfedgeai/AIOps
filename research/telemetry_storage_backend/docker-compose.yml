@@ -25,7 +25,7 @@ services:
     environment:
       - CLICKHOUSE_PASSWORD=changeme
     ports:
-      - "8123:8123"   # HTTP
+      - "28223:8123"  # HTTP (28223 to avoid conflict with oc/18123)
       - "9000:9000"   # Native
     ulimits:
       nofile:

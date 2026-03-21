@@ -84,6 +84,7 @@ def _ingest_datasource(
     dimensions: list[str],
     metrics_spec: list[dict],
     filter_glob: str,
+    ts_format: str = "yyyy-MM-dd HH:mm:ss",
 ) -> bool:
     """Run ingestion for one datasource."""
     spec = {
@@ -93,7 +94,7 @@ def _ingest_datasource(
                 "dataSource": data_source,
                 "timestampSpec": {
                     "column": timestamp_col,
-                    "format": "iso" if "T" in timestamp_col else "yyyy-MM-dd HH:mm:ss",
+                    "format": ts_format,
                 },
                 "dimensionsSpec": {
                     "dimensions": dimensions,
@@ -113,7 +114,7 @@ def _ingest_datasource(
                     "filter": filter_glob,
                 },
                 "inputFormat": {"type": "json"},
-                "dropExisting": False,
+                "dropExisting": True,
             },
             "tuningConfig": {
                 "type": "index_parallel",
@@ -121,8 +122,6 @@ def _ingest_datasource(
             },
         },
     }
-    # Support fractional seconds (e.g. 2026-02-07 06:15:17.395775); format without .SSSSSS drops most rows
-    spec["spec"]["dataSchema"]["timestampSpec"]["format"] = "yyyy-MM-dd HH:mm:ss.SSSSSS"
 
     task_id = _submit_task(spec)
     if not task_id:
@@ -160,6 +159,7 @@ def main() -> int:
             ["service", "level", "message", "trace_id", "span_id", "attrs"],
             [{"type": "count", "name": "count"}],
             "logs_*.jsonl",
+            ts_format="yyyy-MM-dd HH:mm:ss",  # logs use time.strftime, no fractional seconds
         ):
             return 1
 
@@ -177,6 +177,7 @@ def main() -> int:
             ["trace_id", "span_id", "parent_span_id", "service", "name", "attributes"],
             [{"type": "count", "name": "count"}, {"type": "longSum", "name": "duration_ms", "fieldName": "duration_ms"}],
             "spans_*.jsonl",
+            ts_format="yyyy-MM-dd HH:mm:ss.SSSSSS",  # spans from iso_to_sql_datetime have fractional
         ):
             return 1
 
@@ -194,6 +195,7 @@ def main() -> int:
             ["metric_name", "labels", "trace_id"],
             [{"type": "count", "name": "count"}, {"type": "doubleSum", "name": "value", "fieldName": "value"}],
             "metrics_*.jsonl",
+            ts_format="yyyy-MM-dd HH:mm:ss",  # metrics use time.strftime, no fractional seconds
         ):
             return 1
 
@@ -205,12 +207,14 @@ def main() -> int:
         args.stats.write_text(json.dumps(stats))
 
     # Ensure segments are readable by Historical (fixes permission issues in shared volume)
-    subprocess.run(
-        ["docker", "run", "--rm", "-v", "telemetry_storage_backend_druid_shared:/opt/shared",
-         "alpine", "chmod", "-R", "a+rX", "/opt/shared/segments"],
-        capture_output=True,
-        timeout=30,
-    )
+    shared_path = Path(__file__).resolve().parents[1] / "druid_data" / "shared"
+    if shared_path.exists():
+        subprocess.run(
+            ["docker", "run", "--rm", "-v", f"{shared_path}:/opt/shared:z",
+             "alpine", "chmod", "-R", "a+rX", "/opt/shared/segments"],
+            capture_output=True,
+            timeout=30,
+        )
 
     print("[replay] druid done")
     return 0
