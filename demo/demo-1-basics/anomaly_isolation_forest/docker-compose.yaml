@@ -18,9 +18,9 @@ services:
       REDIS_OBS_HOST: redis
       REDIS_OBS_PORT: 6379
 
-      PROCESS_ANOMALY_URL: http://fastapi-app:8001/process-anomaly
+      PROCESS_ANOMALY_URL: http://app:8000/process-anomaly
 
-      DATABASE_URL: postgresql://anomaly:anomaly123$$@anomaly-db:5432/anomaly-db
+      DATABASE_URL: "postgresql://anomaly:anomaly123$$@anomaly-db:5432/anomaly-db"
 
       MLFLOW_TRACKING_URI: http://mlflow_server:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
@@ -42,7 +42,7 @@ services:
 
 
   redis:
-    image: redis:7-alpine
+    image: docker.io/library/redis:7-alpine
     container_name: anomaly-redis
     ports:
       - "6379:6379"
@@ -60,7 +60,7 @@ services:
     environment:
       POSTGRES_DB: anomaly-db
       POSTGRES_USER: anomaly
-      POSTGRES_PASSWORD: anomaly123$$
+      POSTGRES_PASSWORD: "anomaly123$$"
     volumes:
       - anomaly_postgres:/var/lib/postgresql/data
     networks:
@@ -68,7 +68,7 @@ services:
 
 
   mlflow_db:
-    image: postgres:15
+    image: docker.io/library/postgres:15
     container_name: mlflow_db
     restart: always
     environment:
@@ -82,7 +82,8 @@ services:
 
 
   minio:
-    image: minio/minio:latest
+    image: docker.io/minio/minio:latest
+
     container_name: mlflow_minio
     restart: always
     ports:
@@ -99,13 +100,13 @@ services:
 
 
   create_bucket:
-    image: minio/mc
+    image: docker.io/minio/mc
     container_name: mlflow_create_bucket
     depends_on:
       - minio
     entrypoint: >
       /bin/sh -c "
-      sleep 15;
+      sleep 20;
       mc alias set local http://minio:9000 minioadmin minioadmin;
       mc mb -p local/mlflow || true;
       exit 0;
@@ -152,4 +153,3 @@ volumes:
 
 networks:
   anomaly-network:
-    external: true
