@@ -65,7 +65,7 @@ All components run in the **otel-demo** namespace:
 ## Access URLs
 
 - **Frontend (Astronomy Shop):** `https://<route-host>/`
-- **Grafana:** `https://grafana-otel-demo.apps.<cluster-domain>/`
+- **Grafana:** `https://<grafana-route-host>/` redirects to `https://<grafana-route-host>/grafana/` (sub-path install). If the UI sends you to `http://localhost:3000`, run `./scripts/fix-grafana-openshift.sh` (sets `GF_SERVER_ROOT_URL` from the Route).
 - **Flagd UI:** `https://<route-host>/feature`
 - **Flagd API (harness):** `https://<flagd-api-host>/api/read` and `/api/write` — use the `flagd-ui-api` route for direct API access
 - **Jaeger:** `https://<route-host>/jaeger/ui/`
@@ -111,6 +111,35 @@ oc port-forward -n otel-demo svc/frontend-proxy 8080:8080
 
 - Add the relevant service account to the privileged SCC.
 - Relax namespace pod security to privileged for otel-demo.
+
+### Grafana Route 503 / pod `3/4` / empty Endpoints / OOM (exit 137)
+
+The bundled chart often sets **Grafana memory limit to 150Mi**, which is too low for Grafana 12 → **OOMKilled**, **readiness never passes**, **no Endpoints**, Route returns **503**.
+
+**Fix (idempotent):** from `agentic_aiops_architectures` run:
+
+```bash
+./scripts/fix-grafana-openshift.sh
+```
+
+This raises the **`grafana`** container to **512Mi** limit / **256Mi** request, aligns **`route/grafana`** `targetPort` with the Service port that forwards to **:3000**, sets **edge TLS**, and sets **`GF_SERVER_ROOT_URL`** / **`GF_SERVER_DOMAIN`** from the Route so Grafana does not redirect browsers to **`http://localhost:3000/grafana/`** (the bundled `grafana.ini` uses an empty `domain`).
+
+### Grafana opens localhost:3000 in the browser
+
+The demo ConfigMap sets `serve_from_sub_path` and a templated `root_url` with an empty `domain`, which resolves to **localhost** behind the OpenShift Route. Re-run **`./scripts/fix-grafana-openshift.sh`** or manually:
+
+```bash
+H="$(oc get route grafana -n otel-demo -o jsonpath='{.spec.host}')"
+oc set env deployment/grafana -n otel-demo -c grafana \
+  GF_SERVER_ROOT_URL="https://${H}/grafana" GF_SERVER_DOMAIN="${H}" GF_SERVER_SERVE_FROM_SUB_PATH=true
+```
+
+**Frontend route:** if the main app URL fails, point **`otel-demo-frontend`** at the HTTP Service port (often name **`service`**, port **8080**), not **`tcp-service`**:
+
+```bash
+oc patch route otel-demo-frontend -n otel-demo --type=json \
+  -p '[{"op": "replace", "path": "/spec/port/targetPort", "value": "service"}]'
+```
 
 ### Flagd-ui write returns 404 via frontend-proxy
 

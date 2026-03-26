@@ -1,0 +1,24 @@
+{
+  "run_id": "20260326075507",
+  "fault_flag": "cartFailure",
+  "fault_variant": "on",
+  "fault_injection_time": "2026-03-26T07:55:07.277064+00:00",
+  "first_alert_time": "2026-03-26T07:56:59.958684+00:00",
+  "remediation_suggested_time": "2026-03-26T07:57:11.735027+00:00",
+  "fault_recovery_time": "2026-03-26T07:56:59.958931+00:00",
+  "mttd_seconds": 112.68162,
+  "mttr_seconds": 124.457963,
+  "detected": true,
+  "suggested_remediations": [
+    "Check CPU/memory usage on frontend-proxy pods",
+    "Investigate network latency between frontend and frontend-proxy",
+    "Restart frontend-proxy service",
+    "Verify service mesh configuration for frontend-proxy",
+    "Check for recent code changes in frontend-proxy"
+  ],
+  "suggested_root_cause": "frontend-proxy",
+  "approach": "qwen3_agent",
+  "llm_invoked": true,
+  "agent_error": null,
+  "agent_output": "{\n  \"detected\": true,\n  \"first_alert_time\": \"2026-03-26T07:56:59.549759+00:00\",\n  \"confidence\": 0.85,\n  \"suggested_root_cause\": \"frontend-proxy\",\n  \"suggested_remediations\": [\n    \"Check CPU/memory usage on frontend-proxy pods\",\n    \"Investigate network latency between frontend and frontend-proxy\",\n    \"Restart frontend-proxy service\",\n    \"Verify service mesh configuration for frontend-proxy\",\n    \"Check for recent code changes in frontend-proxy\"\n  ],\n  \"signals\": {},\n  \"llm_invoked\": true\n}"
+}
