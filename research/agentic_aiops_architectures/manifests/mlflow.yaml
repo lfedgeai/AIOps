@@ -29,16 +29,21 @@ spec:
       containers:
         - name: mlflow
           image: ghcr.io/mlflow/mlflow:v2.9.2
+          command: ["mlflow", "server"]
           args:
-            - server
             - --backend-store-uri
             - sqlite:///mlflow/mlruns.db
             - --default-artifact-root
-            - /mlflow/artifacts
+            - mlflow-artifacts:/
+            - --artifacts-destination
+            - /tmp/mlflow-artifacts
+            - --serve-artifacts
             - --host
             - 0.0.0.0
             - --port
             - "5000"
+            - --workers
+            - "1"
           ports:
             - containerPort: 5000
               name: http
@@ -56,14 +61,18 @@ spec:
             httpGet:
               path: /health
               port: 5000
-            initialDelaySeconds: 10
-            periodSeconds: 5
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
               port: 5000
-            initialDelaySeconds: 30
-            periodSeconds: 10
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
       volumes:
         - name: data
           emptyDir: {}

@@ -1,0 +1,20 @@
+# Harness configuration for MTTD/MTTR experiments
+# Env vars (MLFLOW_TRACKING_URI, FLAGD_*, AGENT_TIMEOUT, MAX_TOOL_ITERATIONS, etc.) override these when set.
+
+# Agent subprocess: allow long enough for Ollama + several tool rounds; detection-timeout must be >= this
+harness:
+  agent_timeout_seconds: 1200
+  max_tool_iterations: 8
+
+# Flagd: use ConfigMap patch when flagd-ui HTTP write returns 404 (common on OpenShift)
+flagd:
+  use_openshift_cm: true
+  configmap_namespace: otel-demo
+
+mlflow:
+  tracking_uri: "https://mlflow-agentic-aiops.apps.sno1gpu.localdomain"
+  # Set to true when using OpenShift route with self-signed TLS
+  insecure_tls: true
+  # Optional: override default experiment description (MLflow UI note at harness start)
+  # experiment_description: |
+  #   Custom markdown for experiment **agentic_aiops_mttd_mttr**.

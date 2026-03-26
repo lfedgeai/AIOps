@@ -40,6 +40,14 @@ fi
 echo "=== 5. Fix service references (all in same ns; ensure correct hosts) ==="
 oc set env deployment/frontend-proxy -n otel-demo FLAGD_UI_HOST=flagd GRAFANA_HOST=grafana 2>/dev/null || true
 
+echo "=== 6. Fix Grafana (memory + route port) — see scripts/fix-grafana-openshift.sh ==="
+FIX_GRAFANA="${SCRIPT_DIR}/fix-grafana-openshift.sh"
+if [ -x "$FIX_GRAFANA" ]; then
+  NS=otel-demo "$FIX_GRAFANA" || true
+else
+  bash "$FIX_GRAFANA" 2>/dev/null || true
+fi
+
 echo "=== Done. Waiting for pods... ==="
 sleep 10
 oc get pods -n otel-demo

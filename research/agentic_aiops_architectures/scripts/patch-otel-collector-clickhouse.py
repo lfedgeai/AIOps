@@ -30,6 +30,14 @@ for pipeline in ["traces", "metrics", "logs"]:
         if "clickhouse" not in exporters:
             config["service"]["pipelines"][pipeline]["exporters"] = exporters + ["clickhouse"]
 
+# Remove otlphttp/prometheus from metrics pipeline (Prometheus is failing with WAL errors,
+# causing connection refused and collector instability)
+if "metrics" in config["service"]["pipelines"]:
+    exporters = config["service"]["pipelines"]["metrics"]["exporters"]
+    config["service"]["pipelines"]["metrics"]["exporters"] = [
+        e for e in exporters if e != "otlphttp/prometheus"
+    ]
+
 new_relay = yaml.dump(config, default_flow_style=False, sort_keys=False)
 cm["data"]["relay"] = new_relay
 # Remove managed fields for apply
