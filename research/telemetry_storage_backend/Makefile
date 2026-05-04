@@ -42,11 +42,11 @@ up-compare:
 	done
 	@echo "Waiting for VictoriaLogs (port 9428)..."
 	@for i in {1..30}; do \
-	  curl -sf http://localhost:9428/health && echo "VictoriaLogs is ready" && break || sleep 2; \
+	  curl -sf http://localhost:9428/-/healthy && echo "VictoriaLogs is ready" && break || sleep 2; \
 	done
 	@echo "Waiting for VictoriaTraces (port 10428)..."
 	@for i in {1..30}; do \
-	  curl -sf http://localhost:10428/health && echo "VictoriaTraces is ready" && break || sleep 2; \
+	  curl -sf http://localhost:10428/-/healthy && echo "VictoriaTraces is ready" && break || sleep 2; \
 	done
 
 up-otel:
@@ -65,11 +65,11 @@ up-otel:
 	done
 	@echo "Waiting for VictoriaLogs (port 9428)..."
 	@for i in {1..30}; do \
-	  curl -sf http://localhost:9428/health && echo "VictoriaLogs is ready" && break || sleep 2; \
+	  curl -sf http://localhost:9428/-/healthy && echo "VictoriaLogs is ready" && break || sleep 2; \
 	done
 	@echo "Waiting for VictoriaTraces (port 10428)..."
 	@for i in {1..30}; do \
-	  curl -sf http://localhost:10428/health && echo "VictoriaTraces is ready" && break || sleep 2; \
+	  curl -sf http://localhost:10428/-/healthy && echo "VictoriaTraces is ready" && break || sleep 2; \
 	done
 	@echo "Waiting for OTLP collector..."
 	@for i in {1..30}; do \
@@ -84,11 +84,11 @@ up-vm:
 	done
 	@echo "Waiting for VictoriaLogs (port 9428)..."
 	@for i in {1..30}; do \
-	  curl -sf http://localhost:9428/health && echo "VictoriaLogs is ready" && break || sleep 2; \
+	  curl -sf http://localhost:9428/-/healthy && echo "VictoriaLogs is ready" && break || sleep 2; \
 	done
 	@echo "Waiting for VictoriaTraces (port 10428)..."
 	@for i in {1..30}; do \
-	  curl -sf http://localhost:10428/health && echo "VictoriaTraces is ready" && break || sleep 2; \
+	  curl -sf http://localhost:10428/-/healthy && echo "VictoriaTraces is ready" && break || sleep 2; \
 	done
 
 down:

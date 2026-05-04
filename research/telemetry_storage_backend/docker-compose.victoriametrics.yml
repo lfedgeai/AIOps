@@ -39,7 +39,7 @@ services:
     networks:
       - default
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9428/health"]
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9428/-/healthy"]
       interval: 10s
       timeout: 5s
       retries: 30
@@ -61,7 +61,7 @@ services:
     networks:
       - default
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:10428/health"]
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:10428/-/healthy"]
       interval: 10s
       timeout: 5s
       retries: 30
