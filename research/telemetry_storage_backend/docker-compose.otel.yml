@@ -13,8 +13,16 @@ services:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP
     depends_on:
-      - doris
-      - clickhouse
+      doris:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      victoriametrics:
+        condition: service_healthy
+      victorialogs:
+        condition: service_healthy
+      victoriatraces:
+        condition: service_healthy
     networks:
       - default
     restart: unless-stopped

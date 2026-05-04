@@ -1,0 +1,73 @@
+# VictoriaMetrics stack: metrics + logs + traces
+# Extends main compose: docker compose -f docker-compose.yml -f docker-compose.victoriametrics.yml up -d
+# VictoriaMetrics API: http://localhost:8428
+# VictoriaLogs API: http://localhost:9428
+# VictoriaTraces API: http://localhost:10428, OTLP: 14317/14318
+
+services:
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.142.0
+    container_name: tsb-victoriametrics
+    ports:
+      - "8428:8428"
+    volumes:
+      - vmdata:/storage
+    command:
+      - "--storageDataPath=/storage"
+      - "--httpListenAddr=:8428"
+      - "--retentionPeriod=100y"
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8428/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.50.0
+    container_name: tsb-victorialogs
+    ports:
+      - "9428:9428"
+    volumes:
+      - vldata:/vlogs
+    command:
+      - "--storageDataPath=/vlogs"
+      - "--httpListenAddr=:9428"
+      - "--retentionPeriod=100y"
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9428/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  victoriatraces:
+    image: docker.io/victoriametrics/victoria-traces:latest
+    container_name: tsb-victoriatraces
+    ports:
+      - "10428:10428"
+      - "14317:4317"
+      - "14318:4318"
+    volumes:
+      - vtdata:/vtraces
+    command:
+      - "--storageDataPath=/vtraces"
+      - "--httpListenAddr=:10428"
+      - "--retentionPeriod=100y"
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:10428/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  vmdata:
+  vldata:
+  vtdata:

@@ -1,0 +1,1 @@
+_time:30d * | stats count() as total, count() if (duration:<500ms) as fast | math fast * 100 / total as pct_under_500ms

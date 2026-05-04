@@ -1,0 +1,1 @@
+_time:30d * | stats by (_time:1m, service) count() as event_count | sort by (event_count) desc | limit 20
