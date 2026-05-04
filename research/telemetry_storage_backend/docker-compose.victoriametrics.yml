@@ -67,6 +67,11 @@ services:
       retries: 30
     restart: unless-stopped
 
+networks:
+  default:
+    name: tsb-net
+    driver: bridge
+
 volumes:
   vmdata:
   vldata:
