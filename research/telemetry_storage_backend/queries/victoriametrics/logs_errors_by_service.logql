@@ -1,0 +1,1 @@
+_time:1d (level:error OR error) | stats by (service) count() as err_count | sort by (err_count) desc | limit 20

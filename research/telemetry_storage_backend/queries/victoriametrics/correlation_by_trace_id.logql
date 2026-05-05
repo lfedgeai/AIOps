@@ -1,0 +1,1 @@
+_time:30d trace_id:* | stats by (trace_id, service) count() as log_count | sort by (log_count) desc | limit 20

@@ -33,12 +33,17 @@ Tech Stack: Python (Pandas/NumPy), k8s
 
 ## 📂 Repository Structure
 ```text
-├── loeaders/           # logic to load the data
+├── loaders/            # logic to load data into each backend
 ├── out/                # benchmark run test results
 ├── queries/            # Queries to produce the performance benchmark
+│   ├── doris/          # SQL queries for Doris
+│   ├── clickhouse/     # SQL queries for ClickHouse
+│   ├── druid/          # SQL queries for Druid
+│   ├── oceanbase/      # SQL queries for OceanBase
+│   └── victoriametrics/  # MetricsQL, LogQL, TraceQL queries
 ├── runner/             # benchmark run logic
 ├── docs/               # In-depth documentation and literature review
-├── schemas/            # backend storage chemas
+├── schemas/            # backend storage schemas
 ├── telemetry_data/     # static logs, metrics, traces and metadata
 └── README.md           # This file
 ```
@@ -53,16 +58,20 @@ This harness replays pre-collected OpenTelemetry-like ground-truth (`telemetry_d
 - `docker-compose.yml` — Doris + ClickHouse for comparison trials
 - `docker-compose.druid.yml` — Druid (extends main)
 - `docker-compose.oceanbase.yml` — OceanBase CE (extends main)
+- `docker-compose.victoriametrics.yml` — VictoriaMetrics stack (metrics + logs + traces)
 - `schemas/doris.sql`, `schemas/clickhouse.sql`, `schemas/oceanbase.sql` — database and tables (logs, spans, metrics)
 - `loaders/replay_doris.py` — Doris replayer using Stream Load HTTP API
 - `loaders/replay_clickhouse.py` — ClickHouse replayer via HTTP
 - `loaders/replay_druid.py` — Druid native batch ingestion
 - `loaders/replay_oceanbase.py` — OceanBase via MySQL protocol (pymysql)
+- `loaders/replay_victoriametrics.py` — VictoriaMetrics replayer (Prometheus remote write for metrics, Loki API for logs, OTLP HTTP for traces)
+- `loaders/remote_write.py` — Prometheus remote write encoding helper
 - `queries/{doris,clickhouse,druid,oceanbase}/*.sql` — canonical queries per backend
+- `queries/victoriametrics/*.{metricsql,logql,traceql}` — VictoriaMetrics queries (MetricsQL, LogQL, TraceQL)
 - `runner/bench.py` — Doris-only: schema → load → queries → report
-- `runner/bench_compare.py` — Doris vs ClickHouse vs Druid vs OceanBase: same flow on all, combined report
+- `runner/bench_compare.py` — Doris vs ClickHouse vs Druid vs OceanBase vs VictoriaMetrics: same flow on all, combined report
 - `out/` — run outputs (`storage_bench_doris_<ts>/`, `storage_bench_compare_<ts>/`, `rolling_index.html`)
-- `otel-collector-config.yaml` — OTLP receiver → Doris + ClickHouse exporters
+- `otel-collector-config.yaml` — OTLP receiver → Doris + ClickHouse + VictoriaMetrics exporters
 - `docker-compose.otel.yml` — OTLP collector service (extends main compose)
 - `runner/run_otlp_ingest.py` — sends 1000 spans/logs/metrics via telemetrygen → collector
 - `runner/map_otlp_to_telemetry.py` — maps `otel.*` → `telemetry.*` so queries use batch + OTLP data
@@ -77,18 +86,25 @@ make bench               # run benchmark (uses telemetry_data/)
 make down                # stop
 ```
 
-**Doris vs ClickHouse vs Druid vs OceanBase comparison:**
+**Doris vs ClickHouse vs Druid vs OceanBase vs VictoriaMetrics comparison:**
 ```bash
-make up-compare          # start Doris + ClickHouse + Druid + OceanBase
+make up-compare          # start Doris + ClickHouse + Druid + OceanBase + VictoriaMetrics
 make bench-compare       # run comparison benchmark (file load only, no telemetrygen)
 make bench-compare SCALE_TO=5000   # scale to 5k rows per type
 make down
 ```
 
+**VictoriaMetrics-only:**
+```bash
+make up-vm               # start VictoriaMetrics + VictoriaLogs + VictoriaTraces
+make bench-vm            # run VM-only benchmark
+make down
+```
+
 **OTLP ingestion (telemetrygen → collector):**
 ```bash
-make up-otel             # start stack + OTLP collector
-make bench-otlp          # file load + telemetrygen (1000 spans, 1000 logs, 1000 metrics) via OTLP → Doris + ClickHouse
+make up-otel             # start stack + OTLP collector (includes VictoriaMetrics)
+make bench-otlp          # file load + telemetrygen (1000 spans, 1000 logs, 1000 metrics) via OTLP → Doris + ClickHouse + VictoriaMetrics
 make down
 ```
 
@@ -96,10 +112,11 @@ make down
 
 See `docs/DATA_SOURCES.md` for 50k correlated benchmark options.
 
-| Run | Data source | Notes |
-|-----|-------------|-------|
-| `bench-compare` | `telemetry_data/` | Pre-collected files (logs_*.txt, traces_*.json, metrics_*.json). No telemetrygen. |
-| `bench-otlp` | `telemetry_data/` + telemetrygen | Same file load; additionally sends 1000 spans/logs/metrics via telemetrygen → OTLP collector → Doris + ClickHouse. |
+| Run             | Data source                    | Notes                                                                                                                                             |
+|-----------------|--------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
+| `bench-compare` | `telemetry_data/`              | Pre-collected files (logs_*.txt, traces_*.json, metrics_*.json). No telemetrygen.                                                                 |
+| `bench-vm`      | `telemetry_data/`              | Same file load, VictoriaMetrics stack only.                                                                                                       |
+| `bench-otlp`    | `telemetry_data/` + telemetrygen | Same file load; additionally sends 1000 spans/logs/metrics via telemetrygen → OTLP collector → Doris + ClickHouse + VictoriaMetrics.             |
 
 Notes:
 - Requires Docker + docker compose.
@@ -117,33 +134,35 @@ Notes:
 
 ## Outputs
 - `out/storage_bench_doris_<ts>/` — Doris-only: `summary.html`, `ingest.json`, `queries.json`
-- `out/storage_bench_compare_<ts>/` — Doris vs ClickHouse vs Druid vs OceanBase: `compare.html`, `*_queries.json` per backend
+- `out/storage_bench_compare_<ts>/` — Doris vs ClickHouse vs Druid vs OceanBase vs VictoriaMetrics: `compare.html`, `*_queries.json` per backend
 - `out/rolling_index.html` — unified index of all runs (newest first)
 
 The ingestion comparison table shows: **Backend | Mechanism | Duration (s) | Rows | Rows/sec**. Mechanism describes the ingest method (e.g. `Batch file load (5000 rows)` or `OTLP (1000 spans, 1000 logs, 1000 metrics)`). With `--otlp`, OTLP rows are appended to the table.
 
 ## Ingestion benchmark (how it works)
 
-**Batch file load** — Same JSON/JSONL files from `telemetry_data/` are replayed into Doris, ClickHouse, Druid, and OceanBase via each loader:
+**Batch file load** — Same JSON/JSONL files from `telemetry_data/` are replayed into Doris, ClickHouse, Druid, OceanBase, and VictoriaMetrics via each loader:
 - Doris: Stream Load HTTP API (`loaders/replay_doris.py`)
 - ClickHouse: HTTP INSERT (`loaders/replay_clickhouse.py`)
 - Druid: Native batch ingestion via Overlord (`loaders/replay_druid.py`)
 - OceanBase: MySQL protocol via pymysql (`loaders/replay_oceanbase.py`)
+- VictoriaMetrics: Prometheus remote write for metrics (`loaders/remote_write.py`), Loki-compatible API for logs, OTLP HTTP for traces (`loaders/replay_victoriametrics.py`)
 
-All four backends get identical data. Ingest duration and rows/sec are measured per backend. **Message size** is capped at 200KB in `loaders/common.py` to avoid huge Druid/OceanBase files when scaling.
+All five backends get identical data. Ingest duration and rows/sec are measured per backend. **Message size** is capped at 200KB in `loaders/common.py` to avoid huge Druid/OceanBase files when scaling.
 
-**OTLP ingestion** — When `--otlp` is used, telemetrygen sends N spans, N logs, and N metrics (gRPC) to the OpenTelemetry Collector (`otel-collector-config.yaml`). The collector batches and exports to Doris and ClickHouse only. Rows are counted in `otel.*` tables after a short flush delay; duration is end-to-end (telemetrygen start → last batch exported). The OTLP data is then **mapped into `telemetry.*`** via `runner/map_otlp_to_telemetry.py` (INSERT … SELECT from `otel.*` with column mapping), so canonical queries run against batch + OTLP data combined.
+**OTLP ingestion** — When `--otlp` is used, telemetrygen sends N spans, N logs, and N metrics (gRPC) to the OpenTelemetry Collector (`otel-collector-config.yaml`). The collector batches and exports to Doris, ClickHouse, and VictoriaMetrics (VictoriaTraces accepts OTLP natively on port 14317/14318). Rows are counted in `otel.*` tables after a short flush delay; duration is end-to-end (telemetrygen start → last batch exported). The OTLP data is then **mapped into `telemetry.*`** via `runner/map_otlp_to_telemetry.py` (INSERT … SELECT from `otel.*` with column mapping), so canonical queries run against batch + OTLP data combined.
 
 **Why Druid is not in OTLP** — The OpenTelemetry Collector has no Druid exporter. Doris and ClickHouse both have official OTLP/contrib exporters; Druid typically ingests OTLP data via Kafka (collector → Kafka → Druid). Adding Druid to the OTLP path would require a Kafka-based pipeline, which this harness does not implement.
 
 ## Query benchmark (how it works)
 
-After ingestion (and OTLP mapping if `--otlp`), the runner executes the same set of SQL queries on each backend. Each query file in `queries/{doris,clickhouse,druid,oceanbase}/*.sql` is run once per backend via its native API:
+After ingestion (and OTLP mapping if `--otlp`), the runner executes the same set of queries on each backend. Each query file in `queries/{doris,clickhouse,druid,oceanbase}/*.sql` and `queries/victoriametrics/*.{metricsql,logql,traceql}` is run once per backend via its native API:
 
 - **Doris** — `mysql` client over Docker (`telemetry.logs`, `telemetry.spans`, `telemetry.metrics`)
 - **ClickHouse** — HTTP POST to `:8123` with `?query=...`
 - **Druid** — HTTP POST to `:8888/druid/v2/sql` with JSON body
 - **OceanBase** — `mysql` client over Docker (port 2881, MySQL-compatible)
+- **VictoriaMetrics** — MetricsQL via `:8428/api/v1/query_range`, LogQL via `:9428/select/logsql/query`, TraceQL via `:10428/api/traces`
 
 **What is measured** — For each query, the runner records:
 - **Latency (s)** — Wall-clock time from query start to completion (includes network, parsing, execution)
@@ -153,6 +172,18 @@ After ingestion (and OTLP mapping if `--otlp`), the runner executes the same set
 - **Data volume (full scan)** — Total rows in `telemetry.*` at query time (logs + spans + metrics) and the latency of a full COUNT(*) scan per table. Confirms the combined dataset size and measures full-scan performance.
 - **Query comparison** — Bar chart and table with latency, result row count, and error per backend. Includes a `data_volume` query that runs full COUNT on all three tables. The fastest backend and % difference vs. slowest are shown.
 - All backends query the same data: batch load + (when `--otlp`) mapped OTLP data in `telemetry.*`.
+
+### VictoriaMetrics stack
+
+VictoriaMetrics uses a split architecture — three separate components handle different telemetry signals:
+
+| Component        | Port  | Signal  | Ingest API                         | Query language |
+|------------------|-------|---------|------------------------------------|----------------|
+| VictoriaMetrics  | 8428  | Metrics | Prometheus remote write (`/api/v1/write`) | MetricsQL      |
+| VictoriaLogs     | 9428  | Logs    | Loki-compatible (`/insert/loki/api/v1/push`) | LogQL          |
+| VictoriaTraces   | 10428 | Traces  | OTLP HTTP/gRPC (ports 14317/14318) | TraceQL        |
+
+Environment variables: `VM_HTTP`, `VL_HTTP`, `VT_HTTP` configure endpoints (defaults: `http://localhost:8428`, `:9428`, `:10428`).
 
 ### Query result differences (row count)
 

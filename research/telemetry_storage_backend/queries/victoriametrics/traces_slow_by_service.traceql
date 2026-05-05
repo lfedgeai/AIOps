@@ -1,0 +1,1 @@
+_time:1d duration:>500ms | stats by ("resource_attr:service.name") count() as slow_cnt | sort by (slow_cnt) desc | limit 20

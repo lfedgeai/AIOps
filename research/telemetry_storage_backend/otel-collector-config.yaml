@@ -33,18 +33,30 @@ exporters:
     username: default
     password: changeme
     create_schema: true
+  otlphttp/victoriametrics:
+    endpoint: http://tsb-victoriametrics:8428/opentelemetry
+    tls:
+      insecure: true
+  otlphttp/victorialogs:
+    endpoint: http://tsb-victorialogs:9428/insert/opentelemetry
+    tls:
+      insecure: true
+  otlphttp/victoriatraces:
+    endpoint: http://tsb-victoriatraces:10428/insert/opentelemetry
+    tls:
+      insecure: true
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [doris, clickhouse]
+      exporters: [doris, clickhouse, otlphttp/victoriatraces]
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [doris, clickhouse]
+      exporters: [doris, clickhouse, otlphttp/victoriametrics]
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [doris, clickhouse]
+      exporters: [doris, clickhouse, otlphttp/victorialogs]
