@@ -55,7 +55,19 @@ CONTAINER ID  IMAGE                             COMMAND               CREATED   
 b7c7fe141144  docker.io/minio/minio:latest      server /data --co...  10 minutes ago  Up 9 minutes   0.0.0.0:9000-9001->9000-9001/tcp  mlflow_minio
 a92845aa7b1a  ghcr.io/mlflow/mlflow:latest      bash -c  pip inst...  10 minutes ago  Up 9 minutes   0.0.0.0:5000->5000/tcp            mlflow_server
 
- **Step : 6**  Once all services are running successfully , you can access the MLflow UI to monitor your experiments 
+**Step 6**: Run the training and inference services separately
+
+# Navigate to the project directory
+cd demo/demo-1-basics/anomaly_isolation_forest
+
+# Run model training
+podman compose exec app python app/train_model.py
+
+# Run inference service and load model from MLflow
+podman compose exec app python app/inference.py
+ 
+ 
+ **Step : 7**  Once all services are running successfully , you can access the MLflow UI to monitor your experiments 
  https://localhost:5000/
 
   In mlflow ui  can see the tracking of experiment named  anomaly-detction 

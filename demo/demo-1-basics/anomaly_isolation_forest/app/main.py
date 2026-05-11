@@ -27,10 +27,20 @@ from sqlalchemy.orm import Session
 from app.db.db import SessionLocal, engine
 from fastapi.middleware.cors import CORSMiddleware
 
-logging.basicConfig(level=logging.DEBUG)  # Change INFO to DEBUG
+
+
+# ---------------- MLflow ADDITION ----------------
+import mlflow
+
+mlflow.set_tracking_uri(
+    os.getenv("MLFLOW_TRACKING_URI", "http://mlflow_server:5000")
+)
+mlflow.set_experiment("anomaly-detection-inference")
+# --------------------------------------------------
+
+logging.basicConfig(level=logging.DEBUG)
 
 logger = logging.getLogger("apscheduler")
-
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -208,9 +218,58 @@ async def root():
 # Prediction endpoint
 @app.post("/predict")
 async def predict(request: AnomalyRequest):
+
+    # -----------------------------
+    # Model Prediction
+    # -----------------------------
     result = predict_anomaly(model, request)
-    logger.info(f"Single anomaly prediction processed for pod: {request.pod_name}")
-    return result
+
+    # -----------------------------
+    # Normalize prediction result
+    # -----------------------------
+    prediction_result = result.get("result", "Normal")
+
+    anomaly_metric = 1 if prediction_result == "Anomaly" else 0
+
+    # -----------------------------
+    # MLflow Logging
+    # -----------------------------
+    try:
+        with mlflow.start_run(run_name="inference"):
+
+            # Parameters
+            mlflow.log_param("cluster_name", request.cluster_name)
+            mlflow.log_param("pod_name", request.pod_name)
+            mlflow.log_param("app_name", request.app_name)
+
+            # Metrics
+            mlflow.log_metric("cpu_usage", request.cpu_usage)
+            mlflow.log_metric("memory_usage", request.memory_usage)
+            mlflow.log_metric("is_anomaly", anomaly_metric)
+
+            # Tags
+            mlflow.set_tag("prediction_result", prediction_result)
+
+            logger.info(
+                f"MLflow logged successfully for pod {request.pod_name}"
+            )
+
+    except Exception as e:
+        logger.error(f"MLflow logging failed: {e}")
+
+    # -----------------------------
+    # Final API Response
+    # -----------------------------
+    return {
+        "cluster_name": request.cluster_name,
+        "pod_name": request.pod_name,
+        "app_name": request.app_name,
+        "timestamp": request.timestamp,
+        "cpu_usage": request.cpu_usage,
+        "memory_usage": request.memory_usage,
+        "result": prediction_result,
+        "is_anomaly": anomaly_metric
+    }
 
 # Bulk prediction endpoint
 @app.post("/predict/bulk")

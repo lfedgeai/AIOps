@@ -20,7 +20,8 @@ services:
 
       PROCESS_ANOMALY_URL: http://app:8000/process-anomaly
 
-      DATABASE_URL: "postgresql://anomaly:anomaly123$$@anomaly-db:5432/anomaly-db"
+      # DATABASE_URL: "postgresql://anomaly:anomaly123$$@anomaly-db:5432/anomaly-db"
+      DATABASE_URL: "postgresql+psycopg2://anomaly:anomaly123%24@anomaly-db:5432/anomaly-db"
 
       MLFLOW_TRACKING_URI: http://mlflow_server:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
