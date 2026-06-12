@@ -42,7 +42,7 @@ The stack uses an external Docker network. Create it once before running service
 Navigate to the folder containing:postgres ,minio ,iceberg-catalog compose file
 
 ```bash
-   docker compose -f docker-compose.persistance.yml up  --build
+   docker compose -f docker-compose-persistance.yml up  --build
  ```
 
  **Step :4**  Start Edge + OpenTelemetry Stack
@@ -54,7 +54,7 @@ otel-aggregator
 otel-testapp compose file
 
 ```bash
-   docker compose -f docker-compose.yaml up --build
+   docker compose -f docker-compose.yml up --build
  ```
 
  **Step :4** To Check Logs for both stoaage and edge 
