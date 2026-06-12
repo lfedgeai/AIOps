@@ -18,7 +18,8 @@ Key Deliverables:
 
 Describe the technical approach and the "How" behind the research. For exanple: I am using the OTEL demo app to generate data, train models, develop different feature sets and compare different algorithms and AI models (predictive) comparing the results calculating precision, recall, F1 score and Area Under the Curve (AUC).
 
-## Approach: For example: collect ground truth data to train model and algortihm, then evaluate performance with a separate data set
+## Approach: 
+For example: collect ground truth data to train model and algortihm, then evaluate performance with a separate data set
 Core Logic: ./comparison/compare_detectors.py
 Tech Stack: For Example: OTEL Demo App, Python (Pandas/NumPy), Docker/Podman, Pytorch, Make
 
