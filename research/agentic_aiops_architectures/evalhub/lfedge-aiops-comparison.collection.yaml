@@ -1,0 +1,23 @@
+# EvalHub collection: baseline LM-eval tasks for side-by-side model comparison
+# alongside AIOps harness runs (MTTD/MTTR live in MLflow — see scripts/run_harness.sh).
+# Register in EvalHub via API/UI for your tenant when supported; provider_id must match
+# cluster provider id: lm_evaluation_harness (underscore).
+
+id: lfedge-aiops-comparison-baseline
+name: LF Edge AIOps — LM baseline (EvalHub)
+category: aiops
+description: >
+  Standard lm-evaluation-harness GSM8K smoke for comparing MaaS models from EvalHub.
+  Pair with LF Edge harness MLflow experiments (agentic-aiops namespace) for full AIOps story.
+tags:
+  - lfedge
+  - aiops
+  - lm_eval
+benchmarks:
+  - id: gsm8k
+    provider_id: lm_evaluation_harness
+    weight: 1
+    parameters: {}
+    primary_score:
+      metric: exact_match
+      lower_is_better: false

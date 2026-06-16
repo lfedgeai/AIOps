@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+import time
 import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from code.agents.ai_metrics import RoundMetrics, aggregate_metrics, render_ai_metrics_text
 from code.agents.mlflow_agent_logging import (
     log_agent_trace_error_to_mlflow,
     log_agent_trace_to_mlflow,
@@ -30,14 +32,16 @@ from code.agents.mlflow_agent_logging import (
     serialize_tool_calls_for_mlflow,
 )
 from code.agents.mlflow_config import mlflow_tracking_uri
-from code.tools.agent_tools import TOOL_DEFINITIONS, execute_tool
+from code.tools.tool_profiles import (
+    active_profile_name,
+    execute_tool_gated,
+    resolve_tool_definitions,
+    system_prompt_for_profile,
+)
 
 CLICKHOUSE_HTTP = os.environ.get("CLICKHOUSE_HTTP", "http://127.0.0.1:8123")
 
-LLAMA_SCOUT_API_BASE = os.environ.get(
-    "LLAMA_SCOUT_API_BASE",
-    "",
-)
+LLAMA_SCOUT_API_BASE = os.environ.get("LLAMA_SCOUT_API_BASE", "")
 LLAMA_SCOUT_API_KEY = os.environ.get("LLAMA_SCOUT_API_KEY", "")
 LLAMA_SCOUT_MODEL = os.environ.get("LLAMA_SCOUT_MODEL", "llama-scout-17b")
 MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "8"))
@@ -54,25 +58,22 @@ class DetectionResult:
     llm_invoked: bool = False
 
 
-SYSTEM_PROMPT = """You are an AIOps expert analyzing observability data from a microservices application (OTEL demo).
+_BASE_SYSTEM_PROMPT = """You are an autonomous AIOps agent managing a microservices application (OTEL demo on OpenShift).
+Your job is to DETECT faults, DIAGNOSE root cause, and REPORT remediations via run_remediation.
 
-You have access to tools to query ClickHouse: query_clickhouse, search_logs, search_traces, search_metrics, and run_remediation.
+Use ONLY the tools listed in your profile. Do not invent tools you cannot call.
 
-Your task: determine if there is a failure or anomaly requiring remediation, and suggest remediation steps.
-
-Process:
-1. Use search_logs, search_traces, search_metrics to gather telemetry. The since_ts parameter is the detection window start (ISO8601).
-2. Analyze the data.
-3. When you have your conclusion, respond with a JSON object (no markdown):
-   {"detected": true|false, "confidence": 0.0-1.0, "suggested_root_cause": "service or null", "suggested_remediations": ["step1", "step2", ...]}
-4. If detected=true, call run_remediation with your suggested steps before giving the final JSON.
-
-Rules:
-- detected=true if meaningful errors or latency indicate a fault
-- detected=false if data is sparse or normal
-- confidence: 0.5=uncertain, 0.9=high
-- suggested_remediations: 2-5 concrete, actionable steps
+Output final JSON (no markdown):
+{"detected": true|false, "confidence": 0.0-1.0, "suggested_root_cause": "service", "suggested_remediations": ["steps taken or recommended"]}
 """
+
+
+def _get_tools() -> list:
+    return resolve_tool_definitions()
+
+
+def _get_system_prompt() -> str:
+    return system_prompt_for_profile(active_profile_name(), _BASE_SYSTEM_PROMPT)
 
 
 def _truncate_tool_result(text: str, max_chars: int = 14_000) -> str:
@@ -90,11 +91,15 @@ def run_agentic_loop(
         "ch_http": ch_http,
         "since_ts": since_ts,
         "mlflow_run_id": mlflow_run_id or os.environ.get("MLFLOW_RUN_ID"),
+        "tool_profile": active_profile_name(),
         "remediation_steps": [],
         "tool_calls_log": [],
         "thinking_log": [],
         "llm_rounds": [],
     }
+
+    tools = _get_tools()
+    system_prompt = _get_system_prompt()
 
     user_msg = (
         f"Analyze telemetry since {since_ts}. Use the tools to search logs, traces, "
@@ -117,12 +122,13 @@ def run_agentic_loop(
             return
         uri = mlflow_tracking_uri()
         prompts_payload: dict[str, Any] = {
-            "system_prompt": SYSTEM_PROMPT,
+            "system_prompt": system_prompt,
             "user_prompt": user_msg,
             "since_ts": since_ts,
+            "tool_profile": tool_ctx.get("tool_profile"),
             "openai_model": LLAMA_SCOUT_MODEL,
             "openai_api_base": (LLAMA_SCOUT_API_BASE or "").rstrip("/"),
-            "registered_tool_names": [t.get("function", {}).get("name") for t in TOOL_DEFINITIONS],
+            "registered_tool_names": [t.get("function", {}).get("name") for t in tools],
             "conversation_messages": serialize_messages_for_mlflow(messages),
         }
         if prompts:
@@ -158,7 +164,7 @@ def run_agentic_loop(
                 )
 
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_msg},
     ]
 
@@ -180,6 +186,23 @@ def run_agentic_loop(
     except ImportError:
         client_kwargs["timeout"] = 180.0
     client = OpenAI(**client_kwargs)
+    all_round_metrics: list[RoundMetrics] = []
+
+    def _finalize(result: dict[str, Any]) -> dict[str, Any]:
+        result["ai_metrics"] = aggregate_metrics(all_round_metrics)
+        result["ai_metrics_rounds"] = [rm.to_dict() for rm in all_round_metrics]
+        run_id = tool_ctx.get("mlflow_run_id") or os.environ.get("MLFLOW_RUN_ID")
+        if run_id:
+            try:
+                from mlflow.tracking import MlflowClient
+                from code.agents.mlflow_agent_logging import _ensure_mlflow_tls_env, _log_text_artifact
+                _ensure_mlflow_tls_env()
+                uri = mlflow_tracking_uri()
+                _c = MlflowClient(uri)
+                _log_text_artifact(_c, run_id, render_ai_metrics_text(all_round_metrics), "agent_ai_metrics.txt")
+            except Exception as e:
+                print(f"[agent] ai_metrics artifact failed: {e}", file=sys.stderr, flush=True)
+        return result
 
     for round_idx in range(MAX_TOOL_ITERATIONS):
         print(
@@ -188,15 +211,20 @@ def run_agentic_loop(
             flush=True,
         )
         req_messages_snapshot = serialize_messages_for_mlflow(messages)
+        rm = RoundMetrics(round_idx=round_idx + 1, model=LLAMA_SCOUT_MODEL)
+        all_round_metrics.append(rm)
 
         try:
+            rm.mark_request_start()
             response = client.chat.completions.create(
                 model=LLAMA_SCOUT_MODEL,
                 messages=messages,
-                tools=TOOL_DEFINITIONS,
+                tools=tools,
                 tool_choice="auto",
                 temperature=0.2,
             )
+            rm.mark_response_end()
+            rm.record_usage(getattr(response, "usage", None))
         except Exception as e:
             tool_ctx["llm_rounds"].append({
                 "round": round_idx + 1,
@@ -208,14 +236,14 @@ def run_agentic_loop(
                 tool_calls=tool_ctx.get("tool_calls_log"),
                 thinking=tool_ctx.get("thinking_log"),
             )
-            return {
+            return _finalize({
                 "detected": False,
                 "confidence": 0.0,
                 "suggested_root_cause": None,
                 "suggested_remediations": tool_ctx.get("remediation_steps", []),
                 "llm_invoked": True,
                 "llm_error": str(e),
-            }
+            })
 
         choice = response.choices[0]
         msg = choice.message
@@ -268,7 +296,9 @@ def run_agentic_loop(
                 except json.JSONDecodeError:
                     args = {}
                 print(f"[llama_scout_agent] tool {name} (native)", file=sys.stderr, flush=True)
-                result = _truncate_tool_result(execute_tool(name, args, tool_ctx))
+                t_tool = time.monotonic()
+                result = _truncate_tool_result(execute_tool_gated(name, args, tool_ctx))
+                rm.record_tool_exec(name, time.monotonic() - t_tool)
                 tool_ctx["tool_calls_log"].append({
                     "name": name,
                     "arguments": args,
@@ -303,13 +333,13 @@ def run_agentic_loop(
                     tool_calls=tool_ctx.get("tool_calls_log"),
                     thinking=tool_ctx.get("thinking_log"),
                 )
-                return {
+                return _finalize({
                     "detected": bool(parsed.get("detected", False)),
                     "confidence": float(parsed.get("confidence", 0.0)),
                     "suggested_root_cause": parsed.get("suggested_root_cause") or None,
                     "suggested_remediations": remediations if remediations else list(parsed.get("suggested_remediations", [])),
                     "llm_invoked": True,
-                }
+                })
             except json.JSONDecodeError:
                 _append_llm_round(note="non_json_assistant_text_nudge_follows")
                 _log_to_mlflow(
@@ -329,25 +359,25 @@ def run_agentic_loop(
             tool_calls=tool_ctx.get("tool_calls_log"),
             thinking=tool_ctx.get("thinking_log"),
         )
-        return {
+        return _finalize({
             "detected": False,
             "confidence": 0.0,
             "suggested_root_cause": None,
             "suggested_remediations": tool_ctx.get("remediation_steps", []),
             "llm_invoked": True,
-        }
+        })
 
     _log_to_mlflow(
         tool_calls=tool_ctx.get("tool_calls_log"),
         thinking=tool_ctx.get("thinking_log"),
     )
-    return {
+    return _finalize({
         "detected": False,
         "confidence": 0.0,
         "suggested_root_cause": None,
         "suggested_remediations": tool_ctx.get("remediation_steps", []),
         "llm_invoked": True,
-    }
+    })
 
 
 def run_detection(
@@ -363,6 +393,10 @@ def run_detection(
     llm_invoked = llm_result.get("llm_invoked", False)
 
     signals: dict[str, Any] = {}
+    if llm_result.get("ai_metrics"):
+        signals["ai_metrics"] = llm_result["ai_metrics"]
+    if llm_result.get("ai_metrics_rounds"):
+        signals["ai_metrics_rounds"] = llm_result["ai_metrics_rounds"]
     first_alert_time = datetime.now(timezone.utc).isoformat() if detected else None
 
     return DetectionResult(

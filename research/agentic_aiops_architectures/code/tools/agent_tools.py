@@ -1,7 +1,8 @@
 """
-Shared agent tools for LLM-based AIOps: ClickHouse queries, search, and remediation logging.
+Shared agent tools for LLM-based AIOps: ClickHouse queries, search,
+Kubernetes cluster inspection, and remediation execution.
 
-Used by all agents (ollama_qwen2, deepseek_agent, qwen3_agent, llama_scout_agent) for the agentic tool-calling loop.
+Used by all agents for the agentic tool-calling loop.
 """
 from __future__ import annotations
 
@@ -11,6 +12,8 @@ from datetime import datetime
 from typing import Any
 
 import requests
+
+K8S_NAMESPACE = os.environ.get("K8S_NAMESPACE", "otel-demo")
 
 CLICKHOUSE_HTTP = os.environ.get("CLICKHOUSE_HTTP", "http://127.0.0.1:8123")
 
@@ -187,6 +190,111 @@ def run_remediation(
     return f"Captured {len(steps)} remediation step(s) (MLflow logging skipped—no run_id)."
 
 
+def _get_k8s_client():
+    """Load kubeconfig (works both locally and in-cluster)."""
+    from kubernetes import client, config
+    try:
+        config.load_incluster_config()
+    except config.ConfigException:
+        config.load_kube_config()
+    return client
+
+
+def get_pod_status(namespace: str | None = None) -> str:
+    """List pods with status, restarts, and age in the namespace."""
+    ns = namespace or K8S_NAMESPACE
+    try:
+        k = _get_k8s_client()
+        v1 = k.CoreV1Api()
+        pods = v1.list_namespaced_pod(ns, _request_timeout=15)
+        rows = []
+        for p in pods.items:
+            name = p.metadata.name
+            phase = p.status.phase
+            restarts = sum(cs.restart_count for cs in (p.status.container_statuses or []))
+            ready = sum(1 for cs in (p.status.container_statuses or []) if cs.ready)
+            total = len(p.status.container_statuses or [])
+            rows.append(f"{name}\t{ready}/{total}\t{phase}\trestarts={restarts}")
+        return "\n".join(rows) if rows else "No pods found."
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def get_pod_logs(pod_name: str, namespace: str | None = None, tail_lines: int = 50) -> str:
+    """Get recent logs from a pod."""
+    ns = namespace or K8S_NAMESPACE
+    try:
+        k = _get_k8s_client()
+        v1 = k.CoreV1Api()
+        logs = v1.read_namespaced_pod_log(pod_name, ns, tail_lines=tail_lines, _request_timeout=15)
+        return logs if logs else "(empty logs)"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def get_events(namespace: str | None = None) -> str:
+    """Get recent Kubernetes events (warnings, errors)."""
+    ns = namespace or K8S_NAMESPACE
+    try:
+        k = _get_k8s_client()
+        v1 = k.CoreV1Api()
+        events = v1.list_namespaced_event(ns, _request_timeout=15)
+        rows = []
+        for e in sorted(events.items, key=lambda x: x.last_timestamp or x.event_time or datetime.min, reverse=True)[:30]:
+            ts = (e.last_timestamp or e.event_time or "").isoformat() if hasattr(e.last_timestamp or e.event_time or "", "isoformat") else str(e.last_timestamp or e.event_time or "")
+            rows.append(f"{ts}\t{e.type}\t{e.reason}\t{e.involved_object.name}\t{e.message}")
+        return "\n".join(rows) if rows else "No events."
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def restart_deployment(deployment_name: str, namespace: str | None = None) -> str:
+    """Restart a deployment by patching its rollout annotation."""
+    ns = namespace or K8S_NAMESPACE
+    try:
+        k = _get_k8s_client()
+        apps = k.AppsV1Api()
+        now = datetime.utcnow().isoformat() + "Z"
+        body = {
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {"kubectl.kubernetes.io/restartedAt": now}
+                    }
+                }
+            }
+        }
+        apps.patch_namespaced_deployment(deployment_name, ns, body, _request_timeout=15)
+        return f"Deployment {deployment_name} restarted in {ns}."
+    except Exception as e:
+        return f"Error restarting {deployment_name}: {e}"
+
+
+def scale_deployment(deployment_name: str, replicas: int, namespace: str | None = None) -> str:
+    """Scale a deployment to the specified number of replicas."""
+    ns = namespace or K8S_NAMESPACE
+    try:
+        k = _get_k8s_client()
+        apps = k.AppsV1Api()
+        body = {"spec": {"replicas": replicas}}
+        apps.patch_namespaced_deployment(deployment_name, ns, body, _request_timeout=15)
+        return f"Deployment {deployment_name} scaled to {replicas} replicas in {ns}."
+    except Exception as e:
+        return f"Error scaling {deployment_name}: {e}"
+
+
+def delete_pod(pod_name: str, namespace: str | None = None) -> str:
+    """Delete a pod (triggers restart via deployment controller)."""
+    ns = namespace or K8S_NAMESPACE
+    try:
+        k = _get_k8s_client()
+        v1 = k.CoreV1Api()
+        v1.delete_namespaced_pod(pod_name, ns, _request_timeout=15)
+        return f"Pod {pod_name} deleted in {ns}. Deployment controller will recreate it."
+    except Exception as e:
+        return f"Error deleting {pod_name}: {e}"
+
+
 # OpenAI-style tool definitions for the LLM
 TOOL_DEFINITIONS = [
     {
@@ -254,7 +362,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "run_remediation",
-            "description": "Log remediation steps (for now, logs to MLflow; does not execute actions). Call this when you have determined remediation steps to apply.",
+            "description": "Log remediation steps to MLflow. Call this when you have determined remediation steps.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -265,6 +373,94 @@ TOOL_DEFINITIONS = [
                     },
                 },
                 "required": ["steps"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_pod_status",
+            "description": "List pods with status, ready count, restarts in a Kubernetes namespace. Use to check which pods are unhealthy, CrashLoopBackOff, or have high restart counts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default: otel-demo)."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_pod_logs",
+            "description": "Get recent log lines from a specific pod. Use after identifying a problematic pod via get_pod_status.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pod_name": {"type": "string", "description": "Pod name (e.g. 'cartservice-7f4b8c9d-abc12')."},
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default: otel-demo)."},
+                    "tail_lines": {"type": "integer", "description": "Number of recent log lines (default: 50)."},
+                },
+                "required": ["pod_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_events",
+            "description": "Get recent Kubernetes events (warnings, errors, OOMKilled, CrashLoopBackOff, etc.) for a namespace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default: otel-demo)."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "restart_deployment",
+            "description": "Restart a Kubernetes deployment (rolling restart). Use to remediate a failing service.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "deployment_name": {"type": "string", "description": "Deployment name (e.g. 'cartservice')."},
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default: otel-demo)."},
+                },
+                "required": ["deployment_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scale_deployment",
+            "description": "Scale a deployment to a specific replica count. Use to restore a scaled-to-zero service or add capacity.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "deployment_name": {"type": "string", "description": "Deployment name."},
+                    "replicas": {"type": "integer", "description": "Desired replica count."},
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default: otel-demo)."},
+                },
+                "required": ["deployment_name", "replicas"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_pod",
+            "description": "Delete a specific pod to trigger recreation by the deployment controller. Use to clear a stuck or crashed pod.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pod_name": {"type": "string", "description": "Pod name to delete."},
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default: otel-demo)."},
+                },
+                "required": ["pod_name"],
             },
         },
     },
@@ -307,4 +503,24 @@ def execute_tool(name: str, arguments: dict[str, Any], ctx: dict[str, Any]) -> s
             steps = [steps]
         accumulated = ctx.get("remediation_steps")
         return run_remediation(steps, mlflow_run_id, accumulated)
+    if name == "get_pod_status":
+        return get_pod_status(arguments.get("namespace"))
+    if name == "get_pod_logs":
+        return get_pod_logs(
+            arguments.get("pod_name", ""),
+            arguments.get("namespace"),
+            arguments.get("tail_lines", 50),
+        )
+    if name == "get_events":
+        return get_events(arguments.get("namespace"))
+    if name == "restart_deployment":
+        return restart_deployment(arguments.get("deployment_name", ""), arguments.get("namespace"))
+    if name == "scale_deployment":
+        return scale_deployment(
+            arguments.get("deployment_name", ""),
+            arguments.get("replicas", 1),
+            arguments.get("namespace"),
+        )
+    if name == "delete_pod":
+        return delete_pod(arguments.get("pod_name", ""), arguments.get("namespace"))
     return f"Unknown tool: {name}"

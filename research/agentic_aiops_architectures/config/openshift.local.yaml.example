@@ -1,0 +1,12 @@
+# Copy to openshift.local.yaml (gitignored) for machine-specific cluster settings.
+#
+#   cp config/openshift.local.yaml.example config/openshift.local.yaml
+#
+# Precedence: OPENSHIFT_* env vars > openshift.local.yaml > openshift.yaml
+
+cluster:
+  context: "default/api-your-cluster:6443/kube:admin"
+  api_url: "https://api.your-cluster.example.com:6443"
+  # ca_bundle: "/path/to/ca-bundle.crt"
+
+namespace: agentic-aiops

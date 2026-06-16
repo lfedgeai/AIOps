@@ -9,7 +9,7 @@
 # Usage:
 #   export FLAGD_READ_URL="https://$(oc get route flagd-ui-api -n otel-demo -o jsonpath='{.spec.host}')/api/read"
 #   export FLAGD_WRITE_URL="https://$(oc get route flagd-ui-api -n otel-demo -o jsonpath='{.spec.host}')/api/write"
-#   ./scripts/run_harness.sh [--flag cartFailure] [--variant on]
+#   ./scripts/run_harness.sh [--flag scale_zero] [--variant cart] [--scenario a]
 
 set -e
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

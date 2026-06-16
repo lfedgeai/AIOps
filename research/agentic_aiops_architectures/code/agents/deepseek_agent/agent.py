@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import time
 import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -24,22 +25,25 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from code.agents.ai_metrics import RoundMetrics, aggregate_metrics, render_ai_metrics_text
 from code.agents.mlflow_agent_logging import (
     log_agent_trace_error_to_mlflow,
     log_agent_trace_to_mlflow,
     serialize_messages_for_mlflow,
 )
 from code.agents.mlflow_config import mlflow_tracking_uri
-from code.tools.agent_tools import TOOL_DEFINITIONS, execute_tool
+from code.tools.tool_profiles import (
+    active_profile_name,
+    execute_tool_gated,
+    resolve_tool_definitions,
+    system_prompt_for_profile,
+)
 
 import requests
 
 CLICKHOUSE_HTTP = os.environ.get("CLICKHOUSE_HTTP", "http://127.0.0.1:8123")
 
-DEEPSEEK_API_BASE = os.environ.get(
-    "DEEPSEEK_API_BASE",
-    "",
-)
+DEEPSEEK_API_BASE = os.environ.get("DEEPSEEK_API_BASE", "")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-r1-distill-qwen-14b")
 MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "8"))
@@ -57,9 +61,9 @@ class DetectionResult:
 
 
 def _build_tool_descriptions() -> str:
-    """Render TOOL_DEFINITIONS into a text block the LLM can read."""
+    """Render active tool definitions into a text block the LLM can read."""
     parts: list[str] = []
-    for td in TOOL_DEFINITIONS:
+    for td in resolve_tool_definitions():
         fn = td.get("function", {})
         name = fn.get("name", "")
         desc = fn.get("description", "")
@@ -73,39 +77,36 @@ def _build_tool_descriptions() -> str:
     return "\n\n".join(parts)
 
 
-SYSTEM_PROMPT = f"""You are an AIOps expert analyzing observability data from a microservices application (OTEL demo on OpenShift).
+_BASE_SYSTEM_PROMPT = """You are an AIOps expert analyzing observability data from a microservices application (OTEL demo on OpenShift).
 
 ## CRITICAL: You MUST call tools before answering
 
-You have NO prior knowledge of the system state. You MUST use tools to gather real data BEFORE making any detection decision. Any answer without tool calls first is WRONG.
+You have NO prior knowledge of the system state. Use only the tools listed in your profile.
 
 ## How to call tools
 
 Emit a <tool_call> block with a JSON object containing "name" and "arguments":
-<tool_call>{{"name": "search_logs", "arguments": {{"query": "error", "since_ts": "2026-03-24T00:00:00Z"}}}}</tool_call>
+<tool_call>{"name": "search_logs", "arguments": {"query": "error", "since_ts": "2026-03-24T00:00:00Z"}}</tool_call>
 
 You may call multiple tools in one message — use one <tool_call> block per tool.
 The system will reply with <tool_result> blocks containing tool output.
 
-{_build_tool_descriptions()}
+## Available tools (profile-gated)
 
-## Workflow (follow exactly)
-
-Step 1: Call search_logs with query="error" and the since_ts provided.
-Step 2: Call search_traces and search_metrics to get more context.
-Step 3: If needed, use query_clickhouse for custom SQL.
-Step 4: Analyze ALL gathered data.
-Step 5: If failure detected, call run_remediation with steps.
-Step 6: ONLY AFTER using tools, output your final JSON (no markdown fences):
-   {{"detected": true|false, "confidence": 0.0-1.0, "suggested_root_cause": "service name or null", "suggested_remediations": ["step1", "step2"]}}
-
-## Rules
-- You MUST call at least search_logs before giving a final answer
-- detected=true only when actual data shows errors or latency anomalies
-- detected=false when data is sparse or normal
-- Do NOT wrap final JSON in code fences
-- Do NOT answer without calling tools first
 """
+
+
+def _get_system_prompt() -> str:
+    return system_prompt_for_profile(
+        active_profile_name(),
+        _BASE_SYSTEM_PROMPT + _build_tool_descriptions() + """
+
+## Final answer
+
+After gathering data with your allowed tools, output JSON (no markdown fences):
+{"detected": true|false, "confidence": 0.0-1.0, "suggested_root_cause": "service name or null", "suggested_remediations": ["..."]}
+""",
+    )
 
 _TOOL_CALL_RE = re.compile(
     r"<tool_call>\s*(\{.*?\})\s*</tool_call>",
@@ -223,11 +224,14 @@ def run_agentic_loop(
         "ch_http": ch_http,
         "since_ts": since_ts,
         "mlflow_run_id": mlflow_run_id or os.environ.get("MLFLOW_RUN_ID"),
+        "tool_profile": active_profile_name(),
         "remediation_steps": [],
         "tool_calls_log": [],
         "thinking_log": [],
         "llm_rounds": [],
     }
+
+    system_prompt = _get_system_prompt()
 
     user_msg = (
         f"Analyze telemetry since {since_ts}. "
@@ -251,12 +255,13 @@ def run_agentic_loop(
             return
         uri = mlflow_tracking_uri()
         prompts_payload: dict[str, Any] = {
-            "system_prompt": SYSTEM_PROMPT,
+            "system_prompt": system_prompt,
             "user_prompt": user_msg,
             "since_ts": since_ts,
+            "tool_profile": tool_ctx.get("tool_profile"),
             "openai_model": DEEPSEEK_MODEL,
             "openai_api_base": (DEEPSEEK_API_BASE or "").rstrip("/"),
-            "registered_tool_names": [t.get("function", {}).get("name") for t in TOOL_DEFINITIONS],
+            "registered_tool_names": [t.get("function", {}).get("name") for t in resolve_tool_definitions()],
             "conversation_messages": serialize_messages_for_mlflow(messages),
         }
         if prompts:
@@ -292,16 +297,43 @@ def run_agentic_loop(
                 )
 
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_msg},
     ]
 
     _log_to_mlflow()
+    all_round_metrics: list[RoundMetrics] = []
+
+    def _finalize(result: dict[str, Any]) -> dict[str, Any]:
+        result["ai_metrics"] = aggregate_metrics(all_round_metrics)
+        result["ai_metrics_rounds"] = [rm.to_dict() for rm in all_round_metrics]
+        run_id = tool_ctx.get("mlflow_run_id") or os.environ.get("MLFLOW_RUN_ID")
+        if run_id:
+            try:
+                from mlflow.tracking import MlflowClient
+                from code.agents.mlflow_agent_logging import _ensure_mlflow_tls_env, _log_text_artifact
+                _ensure_mlflow_tls_env()
+                uri = mlflow_tracking_uri()
+                _c = MlflowClient(uri)
+                _log_text_artifact(_c, run_id, render_ai_metrics_text(all_round_metrics), "agent_ai_metrics.txt")
+            except Exception as e:
+                print(f"[agent] ai_metrics artifact failed: {e}", file=sys.stderr, flush=True)
+        return result
 
     for round_idx in range(MAX_TOOL_ITERATIONS):
         req_messages_snapshot = serialize_messages_for_mlflow(messages)
+        rm = RoundMetrics(round_idx=round_idx + 1, model=DEEPSEEK_MODEL)
+        all_round_metrics.append(rm)
+
         try:
+            rm.mark_request_start()
             resp = _chat_completions(messages)
+            rm.mark_response_end()
+            usage = resp.get("usage", {})
+            if usage:
+                rm.prompt_tokens = usage.get("prompt_tokens", 0)
+                rm.completion_tokens = usage.get("completion_tokens", 0)
+                rm.total_tokens = usage.get("total_tokens", 0)
         except requests.RequestException as e:
             err_msg = str(e)
             if "401" in err_msg:
@@ -316,14 +348,14 @@ def run_agentic_loop(
                 tool_calls=tool_ctx.get("tool_calls_log"),
                 thinking=tool_ctx.get("thinking_log"),
             )
-            return {
+            return _finalize({
                 "detected": False,
                 "confidence": 0.0,
                 "suggested_root_cause": None,
                 "suggested_remediations": tool_ctx.get("remediation_steps", []),
                 "llm_invoked": True,
                 "llm_error": err_msg,
-            }
+            })
 
         choice = resp.get("choices", [{}])[0] or {}
         msg = choice.get("message", {})
@@ -357,13 +389,13 @@ def run_agentic_loop(
                     tool_calls=tool_ctx.get("tool_calls_log"),
                     thinking=tool_ctx.get("thinking_log"),
                 )
-                return {
+                return _finalize({
                     "detected": bool(parsed_json.get("detected", False)),
                     "confidence": float(parsed_json.get("confidence", 0.0)),
                     "suggested_root_cause": parsed_json.get("suggested_root_cause"),
                     "suggested_remediations": remediations if remediations else list(parsed_json.get("suggested_remediations", [])),
                     "llm_invoked": True,
-                }
+                })
 
             tool_ctx["llm_rounds"].append({
                 "round": round_idx + 1,
@@ -395,13 +427,13 @@ def run_agentic_loop(
                 tool_calls=tool_ctx.get("tool_calls_log"),
                 thinking=tool_ctx.get("thinking_log"),
             )
-            return {
+            return _finalize({
                 "detected": False,
                 "confidence": 0.0,
                 "suggested_root_cause": None,
                 "suggested_remediations": tool_ctx.get("remediation_steps", []),
                 "llm_invoked": True,
-            }
+            })
 
         tool_exec_log: list[dict[str, Any]] = []
         result_parts: list[str] = []
@@ -409,7 +441,9 @@ def run_agentic_loop(
             name = tc["name"]
             args = tc["arguments"]
             print(f"[agent] tool call: {name}({json.dumps(args)[:200]})", file=sys.stderr, flush=True)
-            result = execute_tool(name, args, tool_ctx)
+            t_tool = time.monotonic()
+            result = execute_tool_gated(name, args, tool_ctx)
+            rm.record_tool_exec(name, time.monotonic() - t_tool)
             tool_ctx["tool_calls_log"].append({
                 "name": name,
                 "arguments": args,
@@ -444,13 +478,13 @@ def run_agentic_loop(
         tool_calls=tool_ctx.get("tool_calls_log"),
         thinking=tool_ctx.get("thinking_log"),
     )
-    return {
+    return _finalize({
         "detected": False,
         "confidence": 0.0,
         "suggested_root_cause": None,
         "suggested_remediations": tool_ctx.get("remediation_steps", []),
         "llm_invoked": True,
-    }
+    })
 
 
 def run_detection(
@@ -466,6 +500,10 @@ def run_detection(
     llm_invoked = llm_result.get("llm_invoked", False)
 
     signals: dict[str, Any] = {}
+    if llm_result.get("ai_metrics"):
+        signals["ai_metrics"] = llm_result["ai_metrics"]
+    if llm_result.get("ai_metrics_rounds"):
+        signals["ai_metrics_rounds"] = llm_result["ai_metrics_rounds"]
     first_alert_time = datetime.now(timezone.utc).isoformat() if detected else None
 
     return DetectionResult(

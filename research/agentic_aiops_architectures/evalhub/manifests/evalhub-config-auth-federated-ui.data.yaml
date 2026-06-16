@@ -1,0 +1,108 @@
+# REFERENCE ONLY (not applied by any script): replacement body for evalhub-config key auth.yaml.
+# Extends TrustyAI’s default auth so GET/HEAD could use ?namespace= as tenant when the dashboard BFF
+# omits X-Tenant. Alone this is insufficient: EvalHub’s list-jobs API still rejects unknown query
+# parameters, so requests with ?namespace= fail with query_bad_parameter until the product aligns
+# BFF + EvalHub (see README §5).
+authorization:
+  endpoints:
+    - path: /api/v1/evaluations/jobs/*/events
+      mappings:
+        - methods: [post]
+          resources:
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: status-events
+                verb: create
+    - path: /api/v1/evaluations/jobs
+      mappings:
+        - methods: [post]
+          resources:
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: evaluations
+                verb: create
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: mlflow.kubeflow.org
+                resource: experiments
+                verb: create
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: mlflow.kubeflow.org
+                resource: experiments
+                verb: get
+        - methods: [get, head]
+          resources:
+            - rewrites:
+                byQueryString:
+                  name: namespace
+              resourceAttributes:
+                namespace: "{{.FromQueryString}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: evaluations
+                verb: "{{.FromMethod}}"
+        - resources:
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: evaluations
+                verb: "{{.FromMethod}}"
+    - path: /api/v1/evaluations/collections
+      mappings:
+        - methods: [get, head]
+          resources:
+            - rewrites:
+                byQueryString:
+                  name: namespace
+              resourceAttributes:
+                namespace: "{{.FromQueryString}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: collections
+                verb: "{{.FromMethod}}"
+        - resources:
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: collections
+                verb: "{{.FromMethod}}"
+    - path: /api/v1/evaluations/providers
+      mappings:
+        - methods: [get, head]
+          resources:
+            - rewrites:
+                byQueryString:
+                  name: namespace
+              resourceAttributes:
+                namespace: "{{.FromQueryString}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: providers
+                verb: "{{.FromMethod}}"
+        - resources:
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: providers
+                verb: "{{.FromMethod}}"

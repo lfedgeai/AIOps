@@ -1,10 +1,17 @@
 # OpenShift deployment configuration for Agentic AIOps experiment tracking
-# Use with: oc apply -f config/openshift.yaml (or apply individual manifests)
+#
+# Cluster identity is configurable (do not hardcode lab cluster names here):
+#   1. config/openshift.local.yaml  (gitignored; see openshift.local.yaml.example)
+#   2. Environment: OPENSHIFT_CONTEXT, OPENSHIFT_API_URL, OPENSHIFT_NAMESPACE
+#   3. Defaults below (empty = use current `oc` session / oc login target)
+#
+# Load merged config in Python: code.harness.openshift_config.load_openshift_config()
+# CLI: python -m code.harness.openshift_config
 
 cluster:
-  # Cluster context name from `oc config get-contexts`
+  # From `oc config current-context` — set in openshift.local.yaml or OPENSHIFT_CONTEXT
   context: ""
-  # API URL (e.g. https://api.cluster-xxx.openshift.com:6443)
+  # e.g. https://api.<cluster-domain>:6443 — set in openshift.local.yaml or OPENSHIFT_API_URL
   api_url: ""
   # Optional: custom CA bundle path if using self-signed certs
   # ca_bundle: ""

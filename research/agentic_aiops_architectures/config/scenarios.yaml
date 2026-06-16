@@ -1,0 +1,36 @@
+# Experiment scenarios — same fault injection, different agent topology / tool access.
+# Override with env SCENARIO=a|b|c or harness --scenario.
+
+scenarios:
+  a:
+    id: a
+    name: multimodal_telemetry
+    description: Single agent with logs, traces, and metrics (no Kubernetes API tools).
+    mode: single
+    tool_profile: telemetry_multimodal
+
+  b:
+    id: b
+    name: signal_specialists
+    description: Three agents — one each for logs, traces, and metrics.
+    mode: multi
+    roles:
+      - id: logs
+        tool_profile: logs_only
+      - id: traces
+        tool_profile: traces_only
+      - id: metrics
+        tool_profile: metrics_only
+
+  c:
+    id: c
+    name: domain_specialists
+    description: Three agents — hardware (metrics), platform (Kubernetes), application (logs/traces).
+    mode: multi
+    roles:
+      - id: hardware
+        tool_profile: hardware_metrics
+      - id: platform
+        tool_profile: platform_k8s
+      - id: application
+        tool_profile: application_telemetry

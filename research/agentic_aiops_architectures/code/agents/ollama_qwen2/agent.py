@@ -31,7 +31,12 @@ from code.agents.mlflow_agent_logging import (
     serialize_tool_calls_for_mlflow,
 )
 from code.agents.mlflow_config import mlflow_tracking_uri
-from code.tools.agent_tools import TOOL_DEFINITIONS, execute_tool
+from code.tools.tool_profiles import (
+    active_profile_name,
+    execute_tool_gated,
+    resolve_tool_definitions,
+    system_prompt_for_profile,
+)
 
 CLICKHOUSE_HTTP = os.environ.get("CLICKHOUSE_HTTP", "http://127.0.0.1:8123")
 # Use 127.0.0.1 by default: "localhost" can resolve to IPv6 (::1) while Ollama often listens on IPv4 only → long hangs.
@@ -55,25 +60,21 @@ class DetectionResult:
     llm_invoked: bool = False
 
 
-SYSTEM_PROMPT = """You are an AIOps expert analyzing observability data from a microservices application (OTEL demo).
+_BASE_SYSTEM_PROMPT = """You are an AIOps expert analyzing observability data from a microservices application (OTEL demo).
 
-You have access to tools to query ClickHouse: query_clickhouse, search_logs, search_traces, search_metrics, and run_remediation.
+Use ONLY the tools listed in your profile. Determine if there is a failure and suggest remediations.
 
-Your task: determine if there is a failure or anomaly requiring remediation, and suggest remediation steps.
-
-Process:
-1. Use search_logs, search_traces, search_metrics to gather telemetry. The since_ts parameter is the detection window start (ISO8601).
-2. Analyze the data.
-3. When you have your conclusion, respond with a JSON object (no markdown):
-   {"detected": true|false, "confidence": 0.0-1.0, "suggested_root_cause": "service or null", "suggested_remediations": ["step1", "step2", ...]}
-4. If detected=true, call run_remediation with your suggested steps before giving the final JSON.
-
-Rules:
-- detected=true if meaningful errors or latency indicate a fault
-- detected=false if data is sparse or normal
-- confidence: 0.5=uncertain, 0.9=high
-- suggested_remediations: 2-5 concrete, actionable steps
+Respond with JSON (no markdown):
+{"detected": true|false, "confidence": 0.0-1.0, "suggested_root_cause": "service or null", "suggested_remediations": ["step1", "step2"]}
 """
+
+
+def _get_tools() -> list:
+    return resolve_tool_definitions()
+
+
+def _get_system_prompt() -> str:
+    return system_prompt_for_profile(active_profile_name(), _BASE_SYSTEM_PROMPT)
 
 
 def _ollama_style_tool_followups(base_url: str) -> bool:
@@ -137,11 +138,15 @@ def run_agentic_loop(
         "ch_http": ch_http,
         "since_ts": since_ts,
         "mlflow_run_id": mlflow_run_id or os.environ.get("MLFLOW_RUN_ID"),
+        "tool_profile": active_profile_name(),
         "remediation_steps": [],
         "tool_calls_log": [],
         "thinking_log": [],  # assistant message content (reasoning) for MLflow
         "llm_rounds": [],  # per API call: request messages + assistant + tool executions (MLflow)
     }
+
+    tools = _get_tools()
+    system_prompt = _get_system_prompt()
 
     user_msg = f"""Analyze telemetry since {since_ts}. Use the tools to search logs, traces, and metrics. Determine if there is a failure and suggest remediations. Respond with JSON when done."""
 
@@ -160,12 +165,13 @@ def run_agentic_loop(
             return
         uri = mlflow_tracking_uri()
         prompts_payload: dict[str, Any] = {
-            "system_prompt": SYSTEM_PROMPT,
+            "system_prompt": system_prompt,
             "user_prompt": user_msg,
             "since_ts": since_ts,
+            "tool_profile": tool_ctx.get("tool_profile"),
             "openai_model": OPENAI_MODEL,
             "openai_api_base": (OPENAI_API_BASE or "").rstrip("/"),
-            "registered_tool_names": [t.get("function", {}).get("name") for t in TOOL_DEFINITIONS],
+            "registered_tool_names": [t.get("function", {}).get("name") for t in tools],
             # Full conversation as sent to the LLM on the latest turn (includes tool results).
             "conversation_messages": serialize_messages_for_mlflow(messages),
         }
@@ -202,7 +208,7 @@ def run_agentic_loop(
                 )
 
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_msg},
     ]
 
@@ -243,7 +249,7 @@ def run_agentic_loop(
             response = client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=messages,
-                tools=TOOL_DEFINITIONS,
+                tools=tools,
                 tool_choice="auto",
                 temperature=0.2,
             )
@@ -335,7 +341,7 @@ def run_agentic_loop(
                     args = {}
                 tag = "native" if not use_ollama_followups else "native→ollama-compat"
                 print(f"[ollama_qwen2] tool {name} ({tag})", file=sys.stderr, flush=True)
-                result = _truncate_tool_result(execute_tool(name, args, tool_ctx))
+                result = _truncate_tool_result(execute_tool_gated(name, args, tool_ctx))
                 tool_ctx["tool_calls_log"].append(
                     {
                         "name": name,
@@ -378,7 +384,7 @@ def run_agentic_loop(
                 name = inv.get("name", "")
                 args = inv.get("arguments") or {}
                 print(f"[ollama_qwen2] tool {name} (inline)", file=sys.stderr, flush=True)
-                result = _truncate_tool_result(execute_tool(name, args, tool_ctx))
+                result = _truncate_tool_result(execute_tool_gated(name, args, tool_ctx))
                 tool_ctx["tool_calls_log"].append(
                     {
                         "name": name,

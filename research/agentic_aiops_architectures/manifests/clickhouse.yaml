@@ -1,4 +1,25 @@
-# ClickHouse deployment for OTEL telemetry (traces, metrics, logs)
+# ClickHouse deployment for OTEL telemetry (traces, metrics, logs).
+# Tuned for OpenShift: no fixed UID; memory limit + server cap to avoid OOMKilled under ingest.
+# If you edit ConfigMap `clickhouse-otel-config` data only, bump pod annotation
+# `lfedge.aiops/clickhouse-config` on the Deployment template so pods reload the file.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-otel-config
+  namespace: otel-demo
+  labels:
+    app: clickhouse
+data:
+  # Merged by the official image into /etc/clickhouse-server/config.d/
+  # max_server_memory_usage: stay below the container memory limit (leave headroom for OS/cache).
+  99-otel-k8s-memory.xml: |
+    <clickhouse>
+      <!-- 3 GiB cap — stay below the 4Gi container limit (avoids OOMKilled under OTEL ingest). -->
+      <max_server_memory_usage>3221225472</max_server_memory_usage>
+      <max_concurrent_queries>24</max_concurrent_queries>
+    </clickhouse>
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -11,15 +32,17 @@ spec:
   selector:
     matchLabels:
       app: clickhouse
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
         app: clickhouse
+      annotations:
+        # Bump when changing clickhouse-otel-config so `oc apply` rolls pods without manual restart.
+        lfedge.aiops/clickhouse-config: "v2"
     spec:
-      securityContext:
-        runAsUser: 101
-        runAsGroup: 101
-        fsGroup: 101
+      # OpenShift restricted-v2: omit fixed UID/GID (101) — use assigned namespace range.
       containers:
         - name: clickhouse
           image: clickhouse/clickhouse-server:24.3
@@ -38,28 +61,45 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/clickhouse
+            - name: otel-config
+              mountPath: /etc/clickhouse-server/config.d/99-otel-k8s-memory.xml
+              subPath: 99-otel-k8s-memory.xml
+              readOnly: true
           resources:
             requests:
-              memory: 512Mi
+              memory: 1Gi
               cpu: 250m
             limits:
-              memory: 2Gi
-              cpu: 1000m
+              memory: 4Gi
+              cpu: "2000m"
+          startupProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            failureThreshold: 36
+            periodSeconds: 5
           readinessProbe:
             httpGet:
               path: /ping
               port: 8123
-            initialDelaySeconds: 10
+            initialDelaySeconds: 5
             periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
           livenessProbe:
             httpGet:
               path: /ping
               port: 8123
-            initialDelaySeconds: 30
-            periodSeconds: 10
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
       volumes:
         - name: data
           emptyDir: {}
+        - name: otel-config
+          configMap:
+            name: clickhouse-otel-config
 ---
 apiVersion: v1
 kind: Service

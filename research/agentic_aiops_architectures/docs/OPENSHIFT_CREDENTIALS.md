@@ -73,9 +73,23 @@ oc auth can-i create pvc --all-namespaces
 
 ## 5. Config File Override
 
-You can override `config/openshift.yaml` values via environment variables or a local override file (excluded from git):
+Cluster settings in `config/openshift.yaml` use empty defaults. Override per machine:
 
 ```bash
-# Override namespace
-export OPENSHIFT_NAMESPACE=my-project
+cp config/openshift.local.yaml.example config/openshift.local.yaml
+# edit cluster.context and cluster.api_url
+```
+
+Or use environment variables (highest precedence):
+
+```bash
+export OPENSHIFT_CONTEXT="$(oc config current-context)"
+export OPENSHIFT_API_URL="https://api.your-cluster.example.com:6443"
+export OPENSHIFT_NAMESPACE=agentic-aiops
+```
+
+Inspect merged config:
+
+```bash
+python -m code.harness.openshift_config
 ```
