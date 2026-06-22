@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-Reference Agent: LLM-based AIOps failure detection using tool-calling (agentic loop).
+Nemotron Agent: AIOps failure detection using native tool calling.
 
-Uses an OpenAI-compatible API (Ollama, vLLM, etc.) with tools: query_clickhouse,
-search_logs, search_traces, search_metrics, run_remediation. The LLM iteratively
-calls tools to gather telemetry, then returns detection + remediations.
+Uses NVIDIA Nemotron-3-Nano served via vLLM/NIM with native function calling
+and reasoning support.
 """
 from __future__ import annotations
 
@@ -13,17 +12,18 @@ import json
 import os
 import re
 import sys
+import time
 import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# Ensure project root is on path for code.tools
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from code.agents.ai_metrics import RoundMetrics, aggregate_metrics, render_ai_metrics_text
 from code.agents.mlflow_agent_logging import (
     log_agent_trace_error_to_mlflow,
     log_agent_trace_to_mlflow,
@@ -39,18 +39,15 @@ from code.tools.tool_profiles import (
 )
 
 CLICKHOUSE_HTTP = os.environ.get("CLICKHOUSE_HTTP", "http://127.0.0.1:8123")
-# Use 127.0.0.1 by default: "localhost" can resolve to IPv6 (::1) while Ollama often listens on IPv4 only → long hangs.
-OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE", "http://127.0.0.1:11434/v1")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "ollama")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "qwen2.5")
+
+NEMOTRON_API_BASE = os.environ.get("NEMOTRON_API_BASE", "")
+NEMOTRON_API_KEY = os.environ.get("NEMOTRON_API_KEY", "")
+NEMOTRON_MODEL = os.environ.get("NEMOTRON_MODEL", "nvidia/nemotron-3-nano")
 MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "8"))
-# Per-request HTTP timeout (seconds) — avoids hanging forever if Ollama stalls
-OPENAI_TIMEOUT_SEC = float(os.environ.get("OPENAI_TIMEOUT_SEC", "180"))
 
 
 @dataclass
 class DetectionResult:
-    """Result of one agent invocation."""
     detected: bool
     first_alert_time: str | None
     confidence: float
@@ -60,12 +57,17 @@ class DetectionResult:
     llm_invoked: bool = False
 
 
-_BASE_SYSTEM_PROMPT = """You are an AIOps expert analyzing observability data from a microservices application (OTEL demo).
+_BASE_SYSTEM_PROMPT = """You are an autonomous AIOps agent managing a microservices application.
+Your job is to DETECT faults, DIAGNOSE root cause, FIX the problem, and REPORT what you did.
 
-Use ONLY the tools listed in your profile. Determine if there is a failure and suggest remediations.
+Use ONLY the tools listed in your profile. Do not invent tools you cannot call.
 
-Respond with JSON (no markdown):
-{"detected": true|false, "confidence": 0.0-1.0, "suggested_root_cause": "service or null", "suggested_remediations": ["step1", "step2"]}
+Output final JSON (no markdown):
+{"detected": true|false, "confidence": 0.0-1.0, "suggested_root_cause": "service", "suggested_remediations": ["steps taken or recommended"]}
+
+Rules:
+- detected=false only when your available signals look normal for the fault window.
+- Call log_action to log steps you took or recommend.
 """
 
 
@@ -77,55 +79,10 @@ def _get_system_prompt() -> str:
     return system_prompt_for_profile(active_profile_name(), _BASE_SYSTEM_PROMPT)
 
 
-def _ollama_style_tool_followups(base_url: str) -> bool:
-    """
-    Ollama's OpenAI-compatible /v1/chat often hangs on transcripts that mix assistant.tool_calls with role=tool.
-    Use plain assistant text plus user-role tool outputs instead (same pattern as inline-tool parsing).
-    """
-    ex = os.environ.get("OLLAMA_STYLE_TOOL_FOLLOWUPS", "").strip().lower()
-    if ex in ("0", "false", "no", "off"):
-        return False
-    if ex in ("1", "true", "yes", "on"):
-        return True
-    u = (base_url or "").lower()
-    return ":11434" in u or "localhost:11434" in u or "127.0.0.1:11434" in u
-
-
 def _truncate_tool_result(text: str, max_chars: int = 14_000) -> str:
-    """Keep LLM context small so local models (Ollama) don't stall on huge tool payloads."""
     if not text or len(text) <= max_chars:
         return text
     return text[: max_chars - 80] + "\n... [truncated for context size] ..."
-
-
-def _extract_inline_tool_calls_from_content(content: str) -> list[dict[str, Any]]:
-    """Parse {\"name\": \"...\", \"arguments\": {...}} blobs from model text (Ollama often sets tool_calls=None)."""
-    if not content or '"name"' not in content:
-        return []
-    decoder = json.JSONDecoder()
-    found: list[dict[str, Any]] = []
-    i = 0
-    n = len(content)
-    while i < n:
-        if content[i] != "{":
-            i += 1
-            continue
-        try:
-            obj, end = decoder.raw_decode(content[i:])
-            if isinstance(obj, dict) and "name" in obj:
-                args = obj.get("arguments")
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except json.JSONDecodeError:
-                        args = {}
-                if not isinstance(args, dict):
-                    args = {}
-                found.append({"name": str(obj["name"]), "arguments": args})
-            i += end
-        except json.JSONDecodeError:
-            i += 1
-    return found
 
 
 def run_agentic_loop(
@@ -133,7 +90,6 @@ def run_agentic_loop(
     since_ts: str,
     mlflow_run_id: str | None = None,
 ) -> dict[str, Any]:
-    """Run the agentic tool-calling loop; return parsed detection result."""
     tool_ctx: dict[str, Any] = {
         "ch_http": ch_http,
         "since_ts": since_ts,
@@ -141,14 +97,21 @@ def run_agentic_loop(
         "tool_profile": active_profile_name(),
         "remediation_steps": [],
         "tool_calls_log": [],
-        "thinking_log": [],  # assistant message content (reasoning) for MLflow
-        "llm_rounds": [],  # per API call: request messages + assistant + tool executions (MLflow)
+        "thinking_log": [],
+        "llm_rounds": [],
     }
 
     tools = _get_tools()
     system_prompt = _get_system_prompt()
 
-    user_msg = f"""Analyze telemetry since {since_ts}. Use the tools to search logs, traces, and metrics. Determine if there is a failure and suggest remediations. Respond with JSON when done."""
+    user_msg = (
+        f"Analyze telemetry since {since_ts}. Use the tools to search logs, traces, "
+        "and metrics. Determine if there is a failure and suggest remediations. "
+        "Respond with JSON when done."
+    )
+    prompt_override = (os.environ.get("AGENT_USER_PROMPT_OVERRIDE") or "").strip()
+    if prompt_override:
+        user_msg = prompt_override.replace("{since_ts}", since_ts)
 
     def _mlflow_preview(text: str, max_chars: int = 12_000) -> str:
         if len(text) <= max_chars:
@@ -169,10 +132,9 @@ def run_agentic_loop(
             "user_prompt": user_msg,
             "since_ts": since_ts,
             "tool_profile": tool_ctx.get("tool_profile"),
-            "openai_model": OPENAI_MODEL,
-            "openai_api_base": (OPENAI_API_BASE or "").rstrip("/"),
+            "openai_model": NEMOTRON_MODEL,
+            "openai_api_base": (NEMOTRON_API_BASE or "").rstrip("/"),
             "registered_tool_names": [t.get("function", {}).get("name") for t in tools],
-            # Full conversation as sent to the LLM on the latest turn (includes tool results).
             "conversation_messages": serialize_messages_for_mlflow(messages),
         }
         if prompts:
@@ -212,7 +174,7 @@ def run_agentic_loop(
         {"role": "user", "content": user_msg},
     ]
 
-    _log_to_mlflow()  # Prompts + initial conversation before LLM import (captures run even if deps fail)
+    _log_to_mlflow()
 
     try:
         from openai import OpenAI
@@ -220,60 +182,123 @@ def run_agentic_loop(
         _log_to_mlflow(prompts={"agent_note": "openai package not installed; LLM not invoked"})
         return {"detected": False, "confidence": 0.0, "suggested_root_cause": None, "suggested_remediations": [], "llm_invoked": False}
 
-    base_url = (OPENAI_API_BASE or "").rstrip("/")
-    client_kwargs: dict[str, Any] = {"api_key": OPENAI_API_KEY or "ollama"}
-    if base_url:
-        client_kwargs["base_url"] = base_url
+    client_kwargs: dict[str, Any] = {
+        "api_key": NEMOTRON_API_KEY or "nokey",
+        "base_url": (NEMOTRON_API_BASE or "").rstrip("/"),
+    }
     try:
         import httpx
-
-        client_kwargs["timeout"] = httpx.Timeout(
-            connect=15.0,
-            read=OPENAI_TIMEOUT_SEC,
-            write=120.0,
-            pool=10.0,
-        )
+        client_kwargs["timeout"] = httpx.Timeout(connect=15.0, read=180.0, write=120.0, pool=10.0)
     except ImportError:
-        client_kwargs["timeout"] = OPENAI_TIMEOUT_SEC
+        client_kwargs["timeout"] = 180.0
     client = OpenAI(**client_kwargs)
+    all_round_metrics: list[RoundMetrics] = []
+
+    def _finalize(result: dict[str, Any]) -> dict[str, Any]:
+        result["ai_metrics"] = aggregate_metrics(all_round_metrics)
+        result["ai_metrics_rounds"] = [rm.to_dict() for rm in all_round_metrics]
+        if tool_ctx.get("remediation_executed_time"):
+            result["remediation_executed_time"] = tool_ctx["remediation_executed_time"]
+        if tool_ctx.get("detection_timestamp"):
+            result["detection_timestamp"] = tool_ctx["detection_timestamp"]
+        run_id = tool_ctx.get("mlflow_run_id") or os.environ.get("MLFLOW_RUN_ID")
+        if run_id:
+            try:
+                from mlflow.tracking import MlflowClient
+                from code.agents.mlflow_agent_logging import _ensure_mlflow_tls_env, _log_text_artifact
+                _ensure_mlflow_tls_env()
+                uri = mlflow_tracking_uri()
+                _c = MlflowClient(uri)
+                _log_text_artifact(_c, run_id, render_ai_metrics_text(all_round_metrics), "agent_ai_metrics.txt")
+            except Exception as e:
+                print(f"[agent] ai_metrics artifact failed: {e}", file=sys.stderr, flush=True)
+        return result
 
     for round_idx in range(MAX_TOOL_ITERATIONS):
         print(
-            f"[ollama_qwen2] LLM round {round_idx + 1}/{MAX_TOOL_ITERATIONS} (model={OPENAI_MODEL})",
+            f"[nemotron_agent] LLM round {round_idx + 1}/{MAX_TOOL_ITERATIONS} (model={NEMOTRON_MODEL})",
             file=sys.stderr,
             flush=True,
         )
         req_messages_snapshot = serialize_messages_for_mlflow(messages)
+        rm = RoundMetrics(round_idx=round_idx + 1, model=NEMOTRON_MODEL)
+        all_round_metrics.append(rm)
 
         try:
-            response = client.chat.completions.create(
-                model=OPENAI_MODEL,
+            rm.mark_request_start()
+            stream = client.chat.completions.create(
+                model=NEMOTRON_MODEL,
                 messages=messages,
                 tools=tools,
                 tool_choice="auto",
                 temperature=0.2,
+                stream=True,
+                stream_options={"include_usage": True},
             )
+            collected_content = ""
+            collected_tool_calls: dict[int, dict[str, Any]] = {}
+            finish_reason = None
+            for chunk in stream:
+                rm.mark_first_token()
+                if not chunk.choices:
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        rm.record_usage(chunk.usage)
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    collected_content += delta.content
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in collected_tool_calls:
+                            collected_tool_calls[idx] = {
+                                "id": tc_delta.id or "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        if tc_delta.id:
+                            collected_tool_calls[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                collected_tool_calls[idx]["function"]["name"] += tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                collected_tool_calls[idx]["function"]["arguments"] += tc_delta.function.arguments
+                if chunk.choices[0].finish_reason:
+                    finish_reason = chunk.choices[0].finish_reason
+
+            class _Msg:
+                def __init__(self, content, tool_calls):
+                    self.content = content
+                    self.tool_calls = tool_calls
+            class _Choice:
+                def __init__(self, message, finish_reason):
+                    self.message = message
+                    self.finish_reason = finish_reason
+            tc_list = [type("TC", (), {"id": v["id"], "function": type("Fn", (), {"name": v["function"]["name"], "arguments": v["function"]["arguments"]})()})() for v in sorted(collected_tool_calls.values(), key=lambda x: list(collected_tool_calls.keys())[list(collected_tool_calls.values()).index(x)])] if collected_tool_calls else []
+            response = type("Resp", (), {"choices": [_Choice(_Msg(collected_content or None, tc_list or None), finish_reason)]})()
+            rm.mark_response_end()
+            if rm.total_tokens == 0:
+                approx_compl = len(collected_content.split()) + sum(len(v["function"]["arguments"].split()) for v in collected_tool_calls.values())
+                rm.completion_tokens = max(rm.completion_tokens, approx_compl)
         except Exception as e:
-            tool_ctx["llm_rounds"].append(
-                {
-                    "round": round_idx + 1,
-                    "model": OPENAI_MODEL,
-                    "request_messages": req_messages_snapshot,
-                    "api_error": str(e),
-                }
-            )
+            tool_ctx["llm_rounds"].append({
+                "round": round_idx + 1,
+                "model": NEMOTRON_MODEL,
+                "request_messages": req_messages_snapshot,
+                "api_error": str(e),
+            })
             _log_to_mlflow(
                 tool_calls=tool_ctx.get("tool_calls_log"),
                 thinking=tool_ctx.get("thinking_log"),
             )
-            return {
+            return _finalize({
                 "detected": False,
                 "confidence": 0.0,
                 "suggested_root_cause": None,
                 "suggested_remediations": tool_ctx.get("remediation_steps", []),
                 "llm_invoked": True,
                 "llm_error": str(e),
-            }
+            })
 
         choice = response.choices[0]
         msg = choice.message
@@ -289,7 +314,7 @@ def run_agentic_loop(
         ) -> None:
             entry: dict[str, Any] = {
                 "round": round_idx + 1,
-                "model": OPENAI_MODEL,
+                "model": NEMOTRON_MODEL,
                 "request_messages": req_messages_snapshot,
                 "assistant_content": (content or "")[:100_000],
                 "native_tool_calls_from_api": serialize_tool_calls_for_mlflow(api_tool_calls),
@@ -300,73 +325,48 @@ def run_agentic_loop(
                 entry["note"] = note
             tool_ctx["llm_rounds"].append(entry)
 
-        # Native OpenAI-style tool_calls: strict API uses assistant.tool_calls + role=tool; Ollama needs user follow-ups.
         if api_tool_calls:
-            use_ollama_followups = _ollama_style_tool_followups(base_url)
-            if use_ollama_followups:
-                planned: list[str] = []
-                for tc in api_tool_calls:
-                    fn = tc.function if hasattr(tc, "function") else tc.get("function", {})
-                    name = fn.name if hasattr(fn, "name") else fn.get("name", "")
-                    args_str = fn.arguments if hasattr(fn, "arguments") else fn.get("arguments", "{}")
-                    planned.append(f"{name}({args_str})")
-                asst_body = (content or "").strip()
-                suffix = "[Tool calls requested: " + "; ".join(planned) + "]"
-                asst_body = f"{asst_body}\n\n{suffix}" if asst_body else suffix
-                messages.append({"role": "assistant", "content": asst_body})
-            else:
-                tc_serialized: list[dict[str, Any]] = []
-                for tc in api_tool_calls:
-                    tid = tc.id if hasattr(tc, "id") else tc.get("id", "")
-                    fn = tc.function if hasattr(tc, "function") else tc.get("function", {})
-                    name = fn.name if hasattr(fn, "name") else fn.get("name", "")
-                    args_str = fn.arguments if hasattr(fn, "arguments") else fn.get("arguments", "{}")
-                    tc_serialized.append(
-                        {"id": tid, "type": "function", "function": {"name": name, "arguments": args_str}}
-                    )
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": content if content else None,
-                        "tool_calls": tc_serialized,
-                    }
+            tc_serialized: list[dict[str, Any]] = []
+            for tc in api_tool_calls:
+                tid = tc.id if hasattr(tc, "id") else tc.get("id", "")
+                fn = tc.function if hasattr(tc, "function") else tc.get("function", {})
+                name = fn.name if hasattr(fn, "name") else fn.get("name", "")
+                args_str = fn.arguments if hasattr(fn, "arguments") else fn.get("arguments", "{}")
+                tc_serialized.append(
+                    {"id": tid, "type": "function", "function": {"name": name, "arguments": args_str}}
                 )
+            messages.append({
+                "role": "assistant",
+                "content": content if content else None,
+                "tool_calls": tc_serialized,
+            })
+
             tool_exec_log: list[dict[str, Any]] = []
             for tc in api_tool_calls:
-                name = tc.function.name if hasattr(tc.function, "name") else tc.get("function", {}).get("name", "")
-                args_str = tc.function.arguments if hasattr(tc.function, "arguments") else tc.get("function", {}).get("arguments", "{}")
+                fn = tc.function if hasattr(tc, "function") else tc.get("function", {})
+                name = fn.name if hasattr(fn, "name") else fn.get("name", "")
+                args_str = fn.arguments if hasattr(fn, "arguments") else fn.get("arguments", "{}")
                 try:
                     args = json.loads(args_str)
                 except json.JSONDecodeError:
                     args = {}
-                tag = "native" if not use_ollama_followups else "native→ollama-compat"
-                print(f"[ollama_qwen2] tool {name} ({tag})", file=sys.stderr, flush=True)
+                print(f"[nemotron_agent] tool {name} (native)", file=sys.stderr, flush=True)
+                t_tool = time.monotonic()
                 result = _truncate_tool_result(execute_tool_gated(name, args, tool_ctx))
-                tool_ctx["tool_calls_log"].append(
-                    {
-                        "name": name,
-                        "arguments": args,
-                        "result_preview": _mlflow_preview(str(result)),
-                    }
-                )
+                rm.record_tool_exec(name, time.monotonic() - t_tool)
+                tool_ctx["tool_calls_log"].append({
+                    "name": name,
+                    "arguments": args,
+                    "result_preview": _mlflow_preview(str(result)),
+                })
                 tool_exec_log.append(
                     {"name": name, "arguments": args, "result_preview": _mlflow_preview(str(result))}
                 )
-                if use_ollama_followups:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": f"[Tool `{name}` output]\n{result}",
-                        }
-                    )
-                else:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.id if hasattr(tc, "id") else tc.get("id", ""),
-                            "content": result,
-                        }
-                    )
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id if hasattr(tc, "id") else tc.get("id", ""),
+                    "content": result,
+                })
             _append_llm_round(tool_executions=tool_exec_log)
             _log_to_mlflow(
                 tool_calls=tool_ctx.get("tool_calls_log"),
@@ -375,73 +375,38 @@ def run_agentic_loop(
             continue
 
         raw_content = (msg.content or "").strip()
-        # Ollama: tool JSON in message body; role=tool + empty tool_calls confuses many servers — use user follow-ups.
-        inline_tools = _extract_inline_tool_calls_from_content(raw_content)
-        if inline_tools:
-            messages.append({"role": "assistant", "content": content})
-            tool_exec_log = []
-            for inv in inline_tools:
-                name = inv.get("name", "")
-                args = inv.get("arguments") or {}
-                print(f"[ollama_qwen2] tool {name} (inline)", file=sys.stderr, flush=True)
-                result = _truncate_tool_result(execute_tool_gated(name, args, tool_ctx))
-                tool_ctx["tool_calls_log"].append(
-                    {
-                        "name": name,
-                        "arguments": args,
-                        "result_preview": _mlflow_preview(str(result)),
-                    }
-                )
-                tool_exec_log.append(
-                    {"name": name, "arguments": args, "result_preview": _mlflow_preview(str(result))}
-                )
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"[Tool `{name}` output]\n{result}",
-                    }
-                )
-            _append_llm_round(tool_executions=tool_exec_log, note="inline_tool_json_in_assistant_text")
-            _log_to_mlflow(
-                tool_calls=tool_ctx.get("tool_calls_log"),
-                thinking=tool_ctx.get("thinking_log"),
-            )
-            continue
-
-        parse_content = raw_content
-        if parse_content:
-            parse_content = re.sub(r"^```(?:json)?\s*", "", parse_content)
+        if raw_content:
+            parse_content = re.sub(r"^```(?:json)?\s*", "", raw_content)
             parse_content = re.sub(r"\s*```\s*$", "", parse_content)
             try:
                 parsed = json.loads(parse_content)
+                if not isinstance(parsed, dict):
+                    raise json.JSONDecodeError("expected object", parse_content, 0)
                 remediations = tool_ctx.get("remediation_steps") or parsed.get("suggested_remediations", [])
                 _append_llm_round(note="final_detection_json")
                 _log_to_mlflow(
                     tool_calls=tool_ctx.get("tool_calls_log"),
                     thinking=tool_ctx.get("thinking_log"),
                 )
-                return {
+                return _finalize({
                     "detected": bool(parsed.get("detected", False)),
                     "confidence": float(parsed.get("confidence", 0.0)),
                     "suggested_root_cause": parsed.get("suggested_root_cause") or None,
                     "suggested_remediations": remediations if remediations else list(parsed.get("suggested_remediations", [])),
                     "llm_invoked": True,
-                }
+                })
             except json.JSONDecodeError:
-                # Model still reasoning; keep conversation and ask another round.
                 _append_llm_round(note="non_json_assistant_text_nudge_follows")
                 _log_to_mlflow(
                     tool_calls=tool_ctx.get("tool_calls_log"),
                     thinking=tool_ctx.get("thinking_log"),
                 )
                 messages.append({"role": "assistant", "content": content})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "Reply with only the final JSON object (no markdown): "
-                        '{"detected": true|false, "confidence": 0.0-1.0, "suggested_root_cause": "...", "suggested_remediations": ["..."]}',
-                    }
-                )
+                messages.append({
+                    "role": "user",
+                    "content": "Reply with only the final JSON object (no markdown): "
+                    '{"detected": true|false, "confidence": 0.0-1.0, "suggested_root_cause": "...", "suggested_remediations": ["..."]}',
+                })
                 continue
 
         _append_llm_round(note="empty_or_unparsed_assistant_message")
@@ -449,25 +414,25 @@ def run_agentic_loop(
             tool_calls=tool_ctx.get("tool_calls_log"),
             thinking=tool_ctx.get("thinking_log"),
         )
-        return {
+        return _finalize({
             "detected": False,
             "confidence": 0.0,
             "suggested_root_cause": None,
             "suggested_remediations": tool_ctx.get("remediation_steps", []),
             "llm_invoked": True,
-        }
+        })
 
     _log_to_mlflow(
         tool_calls=tool_ctx.get("tool_calls_log"),
         thinking=tool_ctx.get("thinking_log"),
     )
-    return {
+    return _finalize({
         "detected": False,
         "confidence": 0.0,
         "suggested_root_cause": None,
         "suggested_remediations": tool_ctx.get("remediation_steps", []),
         "llm_invoked": True,
-    }
+    })
 
 
 def run_detection(
@@ -475,7 +440,6 @@ def run_detection(
     since_ts: str,
     mlflow_run_id: str | None = None,
 ) -> DetectionResult:
-    """Run failure detection via agentic tool-calling loop."""
     llm_result = run_agentic_loop(ch_http, since_ts, mlflow_run_id)
     detected = llm_result.get("detected", False)
     confidence = llm_result.get("confidence", 0.0)
@@ -484,7 +448,17 @@ def run_detection(
     llm_invoked = llm_result.get("llm_invoked", False)
 
     signals: dict[str, Any] = {}
-    first_alert_time = datetime.now(timezone.utc).isoformat() if detected else None
+    if llm_result.get("ai_metrics"):
+        signals["ai_metrics"] = llm_result["ai_metrics"]
+    if llm_result.get("ai_metrics_rounds"):
+        signals["ai_metrics_rounds"] = llm_result["ai_metrics_rounds"]
+    if llm_result.get("remediation_executed_time"):
+        signals["remediation_executed_time"] = llm_result["remediation_executed_time"]
+    detection_timestamp = llm_result.get("detection_timestamp")
+    if not detection_timestamp and detected:
+        detection_timestamp = datetime.now(timezone.utc).isoformat()
+    signals["detection_timestamp"] = detection_timestamp
+    first_alert_time = detection_timestamp
 
     return DetectionResult(
         detected=detected,
@@ -498,7 +472,7 @@ def run_detection(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="LLM-based AIOps Agent (agentic tool-calling)")
+    ap = argparse.ArgumentParser(description="Nemotron AIOps Agent (native tool calling + reasoning)")
     ap.add_argument("--since", required=True, help="ISO8601 timestamp for detection window start")
     ap.add_argument("--json", action="store_true", help="Output JSON to stdout")
     args = ap.parse_args()

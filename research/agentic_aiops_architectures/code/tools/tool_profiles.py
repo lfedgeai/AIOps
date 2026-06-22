@@ -15,20 +15,34 @@ from code.tools import agent_tools
 
 # Profile name -> allowed tool names
 TOOL_PROFILES: dict[str, list[str]] = {
-    # Scenario A: unified telemetry (no K8s API)
-    "telemetry_multimodal": [
+    # Scenario 0: baseline — telemetry only (no K8s)
+    "telemetry_only": [
         "search_logs",
         "search_traces",
         "search_metrics",
         "query_clickhouse",
-        "run_remediation",
+        "log_action",
+    ],
+    # Scenario A: telemetry + Kubernetes tools (detect + diagnose + fix)
+    "telemetry_k8s": [
+        "search_logs",
+        "search_traces",
+        "search_metrics",
+        "query_clickhouse",
+        "get_pod_status",
+        "get_pod_logs",
+        "get_events",
+        "restart_deployment",
+        "scale_deployment",
+        "delete_pod",
+        "log_action",
     ],
     # Scenario B: signal specialists
-    "logs_only": ["search_logs", "query_clickhouse", "run_remediation"],
-    "traces_only": ["search_traces", "run_remediation"],
-    "metrics_only": ["search_metrics", "run_remediation"],
+    "logs_only": ["search_logs", "query_clickhouse", "log_action"],
+    "traces_only": ["search_traces", "log_action"],
+    "metrics_only": ["search_metrics", "log_action"],
     # Scenario C: domain specialists
-    "hardware_metrics": ["search_metrics", "query_clickhouse", "run_remediation"],
+    "hardware_metrics": ["search_metrics", "query_clickhouse", "log_action"],
     "platform_k8s": [
         "get_pod_status",
         "get_pod_logs",
@@ -36,16 +50,16 @@ TOOL_PROFILES: dict[str, list[str]] = {
         "restart_deployment",
         "scale_deployment",
         "delete_pod",
-        "run_remediation",
+        "log_action",
     ],
-    "application_telemetry": ["search_logs", "search_traces", "run_remediation"],
+    "application_telemetry": ["search_logs", "search_traces", "log_action"],
     # Backward compatibility: all tools (pre-refactor agents)
     "full": [
         "query_clickhouse",
         "search_logs",
         "search_traces",
         "search_metrics",
-        "run_remediation",
+        "log_action",
         "get_pod_status",
         "get_pod_logs",
         "get_events",
@@ -56,10 +70,17 @@ TOOL_PROFILES: dict[str, list[str]] = {
 }
 
 PROFILE_PROMPTS: dict[str, str] = {
-    "telemetry_multimodal": (
+    "telemetry_only": (
         "You analyze logs, traces, and metrics from ClickHouse only. "
-        "Do NOT assume Kubernetes pod status — use telemetry tools. "
+        "You do NOT have Kubernetes API access — you cannot check pod status, "
+        "events, or execute remediation actions. "
         "Identify the failing microservice from observability signals."
+    ),
+    "telemetry_k8s": (
+        "You have full telemetry AND Kubernetes cluster access. "
+        "Use search_logs + get_pod_status + get_events to detect and diagnose faults. "
+        "When you find a fault, FIX it using restart_deployment, scale_deployment, or delete_pod. "
+        "You MUST call K8s remediation tools when a fault is found — do not just suggest."
     ),
     "logs_only": (
         "You are a logs-only specialist. Use search_logs and query_clickhouse. "

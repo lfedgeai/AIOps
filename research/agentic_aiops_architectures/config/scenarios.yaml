@@ -1,13 +1,26 @@
 # Experiment scenarios — same fault injection, different agent topology / tool access.
-# Override with env SCENARIO=a|b|c or harness --scenario.
+# Override with env SCENARIO=0|a|b|c or harness --scenario.
 
 scenarios:
+  "0":
+    id: "0"
+    name: baseline_telemetry
+    description: >
+      Baseline. Single agent with telemetry tools only (logs, traces, metrics).
+      No Kubernetes API access — agent can detect faults but cannot inspect
+      cluster state or execute remediation.
+    mode: single
+    tool_profile: telemetry_only
+
   a:
     id: a
-    name: multimodal_telemetry
-    description: Single agent with logs, traces, and metrics (no Kubernetes API tools).
+    name: multimodal_telemetry_k8s
+    description: >
+      Single agent with telemetry AND Kubernetes tools. Can detect faults via
+      observability data, inspect cluster state (pod status, events), and
+      execute remediation (restart, scale, delete pod).
     mode: single
-    tool_profile: telemetry_multimodal
+    tool_profile: telemetry_k8s
 
   b:
     id: b

@@ -77,7 +77,8 @@ def _build_tool_descriptions() -> str:
     return "\n\n".join(parts)
 
 
-_BASE_SYSTEM_PROMPT = """You are an AIOps expert analyzing observability data from a microservices application (OTEL demo on OpenShift).
+_BASE_SYSTEM_PROMPT = """You are an autonomous AIOps agent managing a microservices application.
+Your job is to DETECT faults, DIAGNOSE root cause, FIX the problem, and REPORT what you did.
 
 ## CRITICAL: You MUST call tools before answering
 
@@ -307,6 +308,10 @@ def run_agentic_loop(
     def _finalize(result: dict[str, Any]) -> dict[str, Any]:
         result["ai_metrics"] = aggregate_metrics(all_round_metrics)
         result["ai_metrics_rounds"] = [rm.to_dict() for rm in all_round_metrics]
+        if tool_ctx.get("remediation_executed_time"):
+            result["remediation_executed_time"] = tool_ctx["remediation_executed_time"]
+        if tool_ctx.get("detection_timestamp"):
+            result["detection_timestamp"] = tool_ctx["detection_timestamp"]
         run_id = tool_ctx.get("mlflow_run_id") or os.environ.get("MLFLOW_RUN_ID")
         if run_id:
             try:
@@ -504,7 +509,13 @@ def run_detection(
         signals["ai_metrics"] = llm_result["ai_metrics"]
     if llm_result.get("ai_metrics_rounds"):
         signals["ai_metrics_rounds"] = llm_result["ai_metrics_rounds"]
-    first_alert_time = datetime.now(timezone.utc).isoformat() if detected else None
+    if llm_result.get("remediation_executed_time"):
+        signals["remediation_executed_time"] = llm_result["remediation_executed_time"]
+    detection_timestamp = llm_result.get("detection_timestamp")
+    if not detection_timestamp and detected:
+        detection_timestamp = datetime.now(timezone.utc).isoformat()
+    signals["detection_timestamp"] = detection_timestamp
+    first_alert_time = detection_timestamp
 
     return DetectionResult(
         detected=detected,

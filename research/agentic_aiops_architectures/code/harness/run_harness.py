@@ -200,7 +200,7 @@ MLFLOW_EXPERIMENT_NAME = "agentic_aiops_mttd_mttr"
 HARNESS_EXPERIMENT_DESCRIPTION = """\
 **Agentic AIOps — MTTD / MTTR harness**
 
-End-to-end comparison of LLM agents for **failure detection** and **remediation suggestions** on the OpenTelemetry demo stack.
+End-to-end comparison of LLM agents for **failure detection** and **autonomous remediation** on microservices infrastructure.
 
 **Procedure**
 1. Inject a fault via **Kubernetes API** (scale_zero, kill_pod, memory_limit) or optionally **flagd** (`--use-flagd`).
@@ -318,7 +318,7 @@ def _resolve_classifier_script(
 
 # All agents: (approach_name, script_path). Approach name states the LLM.
 AGENTS = [
-    ("ollama_qwen", ROOT / "code" / "agents" / "ollama_qwen2" / "agent.py"),
+    ("nemotron-nano-3", ROOT / "code" / "agents" / "nemotron_agent" / "agent.py"),
     ("maas_deepseek", ROOT / "code" / "agents" / "deepseek_agent" / "agent.py"),
     ("maas_qwen3", ROOT / "code" / "agents" / "qwen3_agent" / "agent.py"),
     ("maas_llama-scout", ROOT / "code" / "agents" / "llama_scout_agent" / "agent.py"),
@@ -340,6 +340,7 @@ class HarnessRun:
     suggested_remediations: list[str]
     suggested_root_cause: str | None
     approach: str = "ollama_qwen2.5"
+    remediation_time_seconds: float | None = None
     llm_invoked: bool = False
     agent_error: str | None = None  # e.g. timeout, connection failure
     agent_output: str | None = None  # raw JSON the agent printed to stdout
@@ -352,7 +353,11 @@ class HarnessRun:
     role_scores: list[dict[str, Any]] | None = None
 
 
-K8S_FAULT_TYPES = {"kill_pod", "scale_zero", "memory_limit"}
+K8S_FAULT_TYPES = {
+    "kill_pod", "scale_zero", "memory_limit",
+    "network_partition", "readiness_probe_fail", "config_corruption",
+    "pvc_full", "node_taint", "replica_overload", "dependency_removal",
+}
 K8S_FAULT_NAMESPACE = os.environ.get("K8S_FAULT_NAMESPACE", "otel-demo")
 
 
@@ -371,6 +376,7 @@ def inject_k8s_fault(fault_type: str, target: str) -> bool:
             apps.patch_namespaced_deployment(target, ns, {"spec": {"replicas": 0}})
             print(f"[harness] K8s fault: scaled {target} to 0 replicas in {ns}", flush=True)
             return True
+
         elif fault_type == "kill_pod":
             v1 = client.CoreV1Api()
             pods = v1.list_namespaced_pod(ns, label_selector=f"app.kubernetes.io/component={target}")
@@ -380,6 +386,7 @@ def inject_k8s_fault(fault_type: str, target: str) -> bool:
                 v1.delete_namespaced_pod(p.metadata.name, ns)
                 print(f"[harness] K8s fault: killed pod {p.metadata.name} in {ns}", flush=True)
             return bool(pods.items)
+
         elif fault_type == "memory_limit":
             apps = client.AppsV1Api()
             dep = apps.read_namespaced_deployment(target, ns)
@@ -392,6 +399,89 @@ def inject_k8s_fault(fault_type: str, target: str) -> bool:
             apps.replace_namespaced_deployment(target, ns, dep)
             print(f"[harness] K8s fault: set {target} memory limit to 10Mi in {ns}", flush=True)
             return True
+
+        elif fault_type == "network_partition":
+            net = client.NetworkingV1Api()
+            policy = client.V1NetworkPolicy(
+                metadata=client.V1ObjectMeta(name=f"harness-block-{target}", namespace=ns),
+                spec=client.V1NetworkPolicySpec(
+                    pod_selector=client.V1LabelSelector(
+                        match_labels={"app.kubernetes.io/component": target}
+                    ),
+                    ingress=[],
+                    policy_types=["Ingress"],
+                ),
+            )
+            net.create_namespaced_network_policy(ns, policy)
+            print(f"[harness] K8s fault: network partition on {target} (block all ingress) in {ns}", flush=True)
+            return True
+
+        elif fault_type == "readiness_probe_fail":
+            apps = client.AppsV1Api()
+            dep = apps.read_namespaced_deployment(target, ns)
+            for c in dep.spec.template.spec.containers:
+                c.readiness_probe = client.V1Probe(
+                    exec=client.V1ExecAction(command=["false"]),
+                    period_seconds=5,
+                    failure_threshold=1,
+                )
+            apps.replace_namespaced_deployment(target, ns, dep)
+            print(f"[harness] K8s fault: readiness probe set to always-fail on {target} in {ns}", flush=True)
+            return True
+
+        elif fault_type == "config_corruption":
+            apps = client.AppsV1Api()
+            dep = apps.read_namespaced_deployment(target, ns)
+            for c in dep.spec.template.spec.containers:
+                if c.env is None:
+                    c.env = []
+                c.env.append(client.V1EnvVar(name="DATABASE_HOST", value="invalid-host-that-does-not-exist.local"))
+                c.env.append(client.V1EnvVar(name="HARNESS_INJECTED_FAULT", value="config_corruption"))
+            apps.replace_namespaced_deployment(target, ns, dep)
+            print(f"[harness] K8s fault: corrupted config (bad DATABASE_HOST) on {target} in {ns}", flush=True)
+            return True
+
+        elif fault_type == "pvc_full":
+            v1 = client.CoreV1Api()
+            pods = v1.list_namespaced_pod(ns, label_selector=f"app.kubernetes.io/component={target}")
+            if not pods.items:
+                pods = v1.list_namespaced_pod(ns, label_selector=f"app={target}")
+            if pods.items:
+                pod_name = pods.items[0].metadata.name
+                v1.connect_get_namespaced_pod_exec(
+                    pod_name, ns,
+                    command=["sh", "-c", "dd if=/dev/zero of=/tmp/fill_disk bs=1M count=500 2>/dev/null || true"],
+                    stderr=True, stdout=True,
+                )
+                print(f"[harness] K8s fault: filled disk in {pod_name} (500MB) in {ns}", flush=True)
+                return True
+            print(f"[harness] K8s fault: pvc_full - no pods found for {target}", flush=True)
+            return False
+
+        elif fault_type == "node_taint":
+            v1 = client.CoreV1Api()
+            nodes = v1.list_node()
+            if nodes.items:
+                node_name = nodes.items[0].metadata.name
+                body = {"spec": {"taints": [{"key": "harness-fault", "value": "true", "effect": "NoExecute"}]}}
+                v1.patch_node(node_name, body)
+                print(f"[harness] K8s fault: tainted node {node_name} with NoExecute", flush=True)
+                return True
+            return False
+
+        elif fault_type == "replica_overload":
+            apps = client.AppsV1Api()
+            apps.patch_namespaced_deployment(target, ns, {"spec": {"replicas": 0}})
+            apps.patch_namespaced_deployment("load-generator", ns, {"spec": {"replicas": 3}})
+            print(f"[harness] K8s fault: scaled {target} to 0 + load-generator to 3 in {ns}", flush=True)
+            return True
+
+        elif fault_type == "dependency_removal":
+            apps = client.AppsV1Api()
+            apps.patch_namespaced_deployment(target, ns, {"spec": {"replicas": 0}})
+            print(f"[harness] K8s fault: removed dependency {target} (scaled to 0) in {ns}", flush=True)
+            return True
+
         else:
             print(f"[harness] Unknown K8s fault type: {fault_type}", flush=True)
             return False
@@ -415,9 +505,11 @@ def recover_k8s_fault(fault_type: str, target: str) -> bool:
             apps.patch_namespaced_deployment(target, ns, {"spec": {"replicas": 1}})
             print(f"[harness] K8s recovery: scaled {target} back to 1 in {ns}", flush=True)
             return True
+
         elif fault_type == "kill_pod":
             print(f"[harness] K8s recovery: kill_pod is self-healing (deployment recreates pod)", flush=True)
             return True
+
         elif fault_type == "memory_limit":
             apps = client.AppsV1Api()
             dep = apps.read_namespaced_deployment(target, ns)
@@ -427,6 +519,72 @@ def recover_k8s_fault(fault_type: str, target: str) -> bool:
             apps.replace_namespaced_deployment(target, ns, dep)
             print(f"[harness] K8s recovery: removed memory limit on {target} in {ns}", flush=True)
             return True
+
+        elif fault_type == "network_partition":
+            net = client.NetworkingV1Api()
+            net.delete_namespaced_network_policy(f"harness-block-{target}", ns)
+            print(f"[harness] K8s recovery: removed network partition on {target} in {ns}", flush=True)
+            return True
+
+        elif fault_type == "readiness_probe_fail":
+            apps = client.AppsV1Api()
+            dep = apps.read_namespaced_deployment(target, ns)
+            for c in dep.spec.template.spec.containers:
+                c.readiness_probe = None
+            apps.replace_namespaced_deployment(target, ns, dep)
+            print(f"[harness] K8s recovery: removed broken readiness probe on {target} in {ns}", flush=True)
+            return True
+
+        elif fault_type == "config_corruption":
+            apps = client.AppsV1Api()
+            dep = apps.read_namespaced_deployment(target, ns)
+            for c in dep.spec.template.spec.containers:
+                if c.env:
+                    c.env = [e for e in c.env if e.name not in ("DATABASE_HOST", "HARNESS_INJECTED_FAULT") or e.value != "invalid-host-that-does-not-exist.local"]
+            apps.replace_namespaced_deployment(target, ns, dep)
+            print(f"[harness] K8s recovery: restored config on {target} in {ns}", flush=True)
+            return True
+
+        elif fault_type == "pvc_full":
+            v1 = client.CoreV1Api()
+            pods = v1.list_namespaced_pod(ns, label_selector=f"app.kubernetes.io/component={target}")
+            if not pods.items:
+                pods = v1.list_namespaced_pod(ns, label_selector=f"app={target}")
+            if pods.items:
+                pod_name = pods.items[0].metadata.name
+                v1.connect_get_namespaced_pod_exec(
+                    pod_name, ns,
+                    command=["rm", "-f", "/tmp/fill_disk"],
+                    stderr=True, stdout=True,
+                )
+                print(f"[harness] K8s recovery: cleaned disk in {pod_name} in {ns}", flush=True)
+            return True
+
+        elif fault_type == "node_taint":
+            v1 = client.CoreV1Api()
+            nodes = v1.list_node()
+            if nodes.items:
+                node_name = nodes.items[0].metadata.name
+                node = v1.read_node(node_name)
+                if node.spec.taints:
+                    node.spec.taints = [t for t in node.spec.taints if t.key != "harness-fault"]
+                v1.replace_node(node_name, node)
+                print(f"[harness] K8s recovery: removed harness-fault taint from {node_name}", flush=True)
+            return True
+
+        elif fault_type == "replica_overload":
+            apps = client.AppsV1Api()
+            apps.patch_namespaced_deployment(target, ns, {"spec": {"replicas": 1}})
+            apps.patch_namespaced_deployment("load-generator", ns, {"spec": {"replicas": 1}})
+            print(f"[harness] K8s recovery: restored {target} to 1 + load-generator to 1 in {ns}", flush=True)
+            return True
+
+        elif fault_type == "dependency_removal":
+            apps = client.AppsV1Api()
+            apps.patch_namespaced_deployment(target, ns, {"spec": {"replicas": 1}})
+            print(f"[harness] K8s recovery: restored dependency {target} to 1 in {ns}", flush=True)
+            return True
+
         return True
     except Exception as e:
         print(f"[harness] K8s recovery failed: {e}", flush=True)
@@ -611,7 +769,7 @@ def _log_run_to_mlflow(run: HarnessRun, log_mlflow: bool, mlflow_run=None, skip_
 - **Fault mode**: {fault_mode}
 - **Detection**: {'Yes' if run.detected else 'No'}
 - **MTTD** (fault → detection): {mttd_str}
-- **MTTR** (fault → remediation suggested): {mttr_str}
+- **MTTR** (fault → system restored): {mttr_str}
 - **LLM invoked**: {run.llm_invoked}"""
         if run.expected_root_cause:
             desc += f"\n- **Expected root cause**: {run.expected_root_cause}"
@@ -660,6 +818,7 @@ def _log_run_to_mlflow(run: HarnessRun, log_mlflow: bool, mlflow_run=None, skip_
             metrics: dict[str, float] = {
                 "mttd_seconds": run.mttd_seconds if run.mttd_seconds is not None else -1,
                 "mttr_seconds": run.mttr_seconds if run.mttr_seconds is not None else -1,
+                "remediation_time_seconds": run.remediation_time_seconds if run.remediation_time_seconds is not None else -1,
                 "detected": 1.0 if run.detected else 0.0,
             }
             if run.rca_correct is not None:
@@ -769,7 +928,7 @@ def run_single_experiment(
     else:
         fault_injection_time = datetime.now(timezone.utc).isoformat()
 
-    # Start MLflow run early so agent's run_remediation can log during execution
+    # Start MLflow run early so agent's log_action can log during execution
     mlflow_run = None
     if log_mlflow:
         try:
@@ -882,7 +1041,16 @@ def run_single_experiment(
         if result.get("llm_invoked"):
             ever_llm_invoked = True
         if result.get("detected"):
-            first_alert_time = datetime.now(timezone.utc).isoformat()
+            # Use agent's internal detection timestamp if available (more accurate than harness clock)
+            agent_det_ts = None
+            agent_out_raw = result.get("agent_output_raw") or ""
+            if agent_out_raw:
+                try:
+                    _ao = json.loads(agent_out_raw)
+                    agent_det_ts = (_ao.get("signals") or {}).get("detection_timestamp")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            first_alert_time = agent_det_ts or datetime.now(timezone.utc).isoformat()
             agent_result = result
             append_ledger({
                 "event": "first_alert",
@@ -915,20 +1083,33 @@ def run_single_experiment(
         "timestamp": fault_recovery_time,
     })
 
-    # MTTD = fault_injection → first detection
-    # MTTR = fault_injection → remediation suggested (time until agent proposes fix)
+    # MTTD = fault_injection → first detection (when agent notices)
+    # MTTR = fault_injection → remediation executed (when system is fixed)
+    # Remediation Time = detection → remediation executed (time spent fixing)
     mttd_seconds = None
     mttr_seconds = None
+    remediation_time_seconds = None
     remediation_time = None
     if first_alert_time:
         t0 = datetime.fromisoformat(fault_injection_time.replace("Z", "+00:00"))
         t1 = datetime.fromisoformat(first_alert_time.replace("Z", "+00:00"))
         mttd_seconds = (t1 - t0).total_seconds()
         src_rem = agent_result if agent_result else last_result
-        if src_rem.get("suggested_remediations"):
-            remediation_time = datetime.now(timezone.utc).isoformat()
-            t_rem = datetime.fromisoformat(remediation_time.replace("Z", "+00:00"))
+        rem_exec_ts = None
+        agent_out_str = src_rem.get("agent_output_raw") or ""
+        if agent_out_str:
+            try:
+                agent_out_parsed = json.loads(agent_out_str)
+                rem_exec_ts = (agent_out_parsed.get("signals") or {}).get("remediation_executed_time")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if rem_exec_ts:
+            t_rem = datetime.fromisoformat(rem_exec_ts.replace("Z", "+00:00"))
             mttr_seconds = (t_rem - t0).total_seconds()
+            remediation_time_seconds = (t_rem - t1).total_seconds()
+            remediation_time = rem_exec_ts
+        elif src_rem.get("suggested_remediations"):
+            remediation_time = datetime.now(timezone.utc).isoformat()
     src = agent_result if agent_result else last_result
     rca = score_rca(fault_flag, fault_variant, src.get("suggested_root_cause"))
     rem = score_remediation(fault_flag, fault_variant, src.get("suggested_remediations"))
@@ -943,6 +1124,7 @@ def run_single_experiment(
         fault_recovery_time=fault_recovery_time,
         mttd_seconds=mttd_seconds,
         mttr_seconds=mttr_seconds,
+        remediation_time_seconds=remediation_time_seconds,
         detected=bool(first_alert_time),
         suggested_remediations=src.get("suggested_remediations", []),
         suggested_root_cause=src.get("suggested_root_cause"),
@@ -1005,7 +1187,7 @@ def main() -> int:
         "--scenario",
         default=os.environ.get("SCENARIO", "a"),
         choices=list_scenario_ids(),
-        help="Experiment scenario: a=multimodal telemetry, b=signal specialists, c=domain specialists",
+        help="Experiment scenario: 0=baseline telemetry only, a=telemetry+K8s, b=signal specialists, c=domain specialists",
     )
     ap.add_argument(
         "--all-scenarios",

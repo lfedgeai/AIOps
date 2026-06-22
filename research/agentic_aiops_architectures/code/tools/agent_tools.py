@@ -155,7 +155,7 @@ def search_metrics_data(
     return "No metrics tables found (tried otel_metrics_gauge, otel_metrics_sum, otel_metrics)."
 
 
-def run_remediation(
+def log_action(
     steps: list[str],
     mlflow_run_id: str | None = None,
     accumulated: list[str] | None = None,
@@ -361,8 +361,8 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
-            "name": "run_remediation",
-            "description": "Log remediation steps to MLflow. Call this when you have determined remediation steps.",
+            "name": "log_action",
+            "description": "Log what you found and what actions you took. This does NOT execute any fix — it only records your findings and steps to the experiment tracker. Call this AFTER using K8s tools to fix the issue.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -467,6 +467,10 @@ TOOL_DEFINITIONS = [
 ]
 
 
+WRITE_TOOLS = {"restart_deployment", "scale_deployment", "delete_pod"}
+
+
+
 def execute_tool(name: str, arguments: dict[str, Any], ctx: dict[str, Any]) -> str:
     """Execute a tool by name with given arguments. ctx: {ch_http, since_ts, mlflow_run_id}."""
     ch_http = ctx.get("ch_http") or CLICKHOUSE_HTTP
@@ -497,12 +501,12 @@ def execute_tool(name: str, arguments: dict[str, Any], ctx: dict[str, Any]) -> s
             limit=arguments.get("limit", 50),
             ch_http=ch_http,
         )
-    if name == "run_remediation":
+    if name == "log_action":
         steps = arguments.get("steps", [])
         if isinstance(steps, str):
             steps = [steps]
         accumulated = ctx.get("remediation_steps")
-        return run_remediation(steps, mlflow_run_id, accumulated)
+        return log_action(steps, mlflow_run_id, accumulated)
     if name == "get_pod_status":
         return get_pod_status(arguments.get("namespace"))
     if name == "get_pod_logs":
@@ -514,13 +518,28 @@ def execute_tool(name: str, arguments: dict[str, Any], ctx: dict[str, Any]) -> s
     if name == "get_events":
         return get_events(arguments.get("namespace"))
     if name == "restart_deployment":
-        return restart_deployment(arguments.get("deployment_name", ""), arguments.get("namespace"))
+        if "detection_timestamp" not in ctx:
+            ctx["detection_timestamp"] = datetime.utcnow().isoformat() + "Z"
+        result = restart_deployment(arguments.get("deployment_name", ""), arguments.get("namespace"))
+        if not result.startswith("Error") and "remediation_executed_time" not in ctx:
+            ctx["remediation_executed_time"] = datetime.utcnow().isoformat() + "Z"
+        return result
     if name == "scale_deployment":
-        return scale_deployment(
+        if "detection_timestamp" not in ctx:
+            ctx["detection_timestamp"] = datetime.utcnow().isoformat() + "Z"
+        result = scale_deployment(
             arguments.get("deployment_name", ""),
             arguments.get("replicas", 1),
             arguments.get("namespace"),
         )
+        if not result.startswith("Error") and "remediation_executed_time" not in ctx:
+            ctx["remediation_executed_time"] = datetime.utcnow().isoformat() + "Z"
+        return result
     if name == "delete_pod":
-        return delete_pod(arguments.get("pod_name", ""), arguments.get("namespace"))
+        if "detection_timestamp" not in ctx:
+            ctx["detection_timestamp"] = datetime.utcnow().isoformat() + "Z"
+        result = delete_pod(arguments.get("pod_name", ""), arguments.get("namespace"))
+        if not result.startswith("Error") and "remediation_executed_time" not in ctx:
+            ctx["remediation_executed_time"] = datetime.utcnow().isoformat() + "Z"
+        return result
     return f"Unknown tool: {name}"
