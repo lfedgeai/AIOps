@@ -111,7 +111,7 @@ out/                   # Run output JSONs (gitignored)
 
 ## Docs
 
-- [EVALUATION_RESULTS_22June26.md](docs/EVALUATION_RESULTS_22June26.md) — Latest benchmark results
+- [EVALUATION_RESULTS_23June26.md](docs/EVALUATION_RESULTS_23June26.md) — Full matrix results (128 runs)
 - [ARCHITECTURE_PROPOSAL.md](docs/ARCHITECTURE_PROPOSAL.md) — Full design
 - [LLM_CREDENTIALS.md](docs/LLM_CREDENTIALS.md) — API key setup
 - [OPENSHIFT_OTEL_DEPLOYMENT.md](docs/OPENSHIFT_OTEL_DEPLOYMENT.md) — OpenShift deployment
