@@ -1,6 +1,6 @@
 #!/bin/bash
-# Full evaluation matrix: all agents × all faults × scenario a (telemetry+K8s)
-# Estimated runtime: ~8 hours
+# Full evaluation matrix: all agents × all faults × all scenarios
+# Estimated runtime: ~10-12 hours (128 runs: 4 agents × 8 faults × 4 scenarios)
 set -e
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -13,11 +13,19 @@ export MLFLOW_TRACKING_URI=http://localhost:5050
 
 FAULTS="scale_zero kill_pod memory_limit network_partition readiness_probe_fail config_corruption dependency_removal replica_overload"
 AGENTS="code/agents/nemotron_agent/agent.py code/agents/qwen3_agent/agent.py code/agents/deepseek_agent/agent.py code/agents/llama_scout_agent/agent.py"
-SCENARIO="a"
+SCENARIOS="0 a b c"
+
+# Count total runs
+num_faults=$(echo $FAULTS | wc -w)
+num_agents=$(echo $AGENTS | wc -w)
+num_scenarios=$(echo $SCENARIOS | wc -w)
+total=$((num_faults * num_agents * num_scenarios))
 
 echo "[matrix] Starting full evaluation: $(date)"
 echo "[matrix] Faults: $FAULTS"
-echo "[matrix] Scenario: $SCENARIO"
+echo "[matrix] Scenarios: $SCENARIOS"
+echo "[matrix] Agents: $num_agents"
+echo "[matrix] Total runs: $total"
 
 # Ensure MLflow is running
 if ! curl -sf http://localhost:5050/ >/dev/null 2>&1; then
@@ -47,31 +55,32 @@ refresh_infra() {
 }
 
 count=0
-total=32  # 4 agents x 8 faults
 
-for fault in $FAULTS; do
-  refresh_infra
-  for agent in $AGENTS; do
-    count=$((count + 1))
-    agent_name=$(basename $(dirname $agent))
-    echo ""
-    echo "========================================"
-    echo "[matrix] Run $count/$total: fault=$fault agent=$agent_name scenario=$SCENARIO"
-    echo "[matrix] $(date)"
-    echo "========================================"
-    /usr/bin/python3.13 -u code/harness/run_harness.py \
-      --scenario "$SCENARIO" \
-      --classifier "$agent" \
-      --detection-timeout 300 \
-      --poll-interval 30 \
-      --fault-duration 120 \
-      --flag "$fault" \
-      --variant cart \
-      -o "out/matrix_${fault}_${agent_name}.json" 2>&1 | grep -E '\[harness\]|detected|Written'
-    sleep 10
+for scenario in $SCENARIOS; do
+  for fault in $FAULTS; do
+    refresh_infra
+    for agent in $AGENTS; do
+      count=$((count + 1))
+      agent_name=$(basename $(dirname $agent))
+      echo ""
+      echo "========================================"
+      echo "[matrix] Run $count/$total: scenario=$scenario fault=$fault agent=$agent_name"
+      echo "[matrix] $(date)"
+      echo "========================================"
+      /usr/bin/python3.13 -u code/harness/run_harness.py \
+        --scenario "$scenario" \
+        --classifier "$agent" \
+        --detection-timeout 300 \
+        --poll-interval 30 \
+        --fault-duration 120 \
+        --flag "$fault" \
+        --variant cart \
+        -o "out/matrix_s${scenario}_${fault}_${agent_name}.json" 2>&1 | grep -E '\[harness\]|detected|Written'
+      sleep 10
+    done
   done
 done
 
 echo ""
 echo "[matrix] COMPLETE: $(date)"
-echo "[matrix] Total runs: $count"
+echo "[matrix] Total runs: $count/$total"

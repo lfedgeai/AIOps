@@ -32,6 +32,7 @@ from code.agents.mlflow_agent_logging import (
     serialize_tool_calls_for_mlflow,
 )
 from code.agents.mlflow_config import mlflow_tracking_uri
+from code.agents.tracing import trace_tool_call
 from code.tools.tool_profiles import (
     active_profile_name,
     execute_tool_gated,
@@ -182,6 +183,12 @@ def run_agentic_loop(
     except ImportError:
         _log_to_mlflow(prompts={"agent_note": "openai package not installed; LLM not invoked"})
         return {"detected": False, "confidence": 0.0, "suggested_root_cause": None, "suggested_remediations": [], "llm_invoked": False}
+
+    try:
+        import mlflow
+        mlflow.openai.autolog(log_models=False, log_input_examples=False)
+    except Exception:
+        pass
 
     client_kwargs: dict[str, Any] = {
         "api_key": QWEN3_API_KEY or "nokey",
@@ -353,7 +360,9 @@ def run_agentic_loop(
                     args = {}
                 print(f"[qwen3_agent] tool {name} (native)", file=sys.stderr, flush=True)
                 t_tool = time.monotonic()
-                result = _truncate_tool_result(execute_tool_gated(name, args, tool_ctx))
+                with trace_tool_call(name, args) as span_data:
+                    result = _truncate_tool_result(execute_tool_gated(name, args, tool_ctx))
+                    span_data["result_preview"] = result[:500]
                 rm.record_tool_exec(name, time.monotonic() - t_tool)
                 tool_ctx["tool_calls_log"].append({
                     "name": name,

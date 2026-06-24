@@ -32,6 +32,7 @@ from code.agents.mlflow_agent_logging import (
     serialize_messages_for_mlflow,
 )
 from code.agents.mlflow_config import mlflow_tracking_uri
+from code.agents.tracing import trace_llm_call, trace_tool_call
 from code.tools.tool_profiles import (
     active_profile_name,
     execute_tool_gated,
@@ -447,7 +448,9 @@ def run_agentic_loop(
             args = tc["arguments"]
             print(f"[agent] tool call: {name}({json.dumps(args)[:200]})", file=sys.stderr, flush=True)
             t_tool = time.monotonic()
-            result = execute_tool_gated(name, args, tool_ctx)
+            with trace_tool_call(name, args) as span_data:
+                result = execute_tool_gated(name, args, tool_ctx)
+                span_data["result_preview"] = str(result)[:500]
             rm.record_tool_exec(name, time.monotonic() - t_tool)
             tool_ctx["tool_calls_log"].append({
                 "name": name,

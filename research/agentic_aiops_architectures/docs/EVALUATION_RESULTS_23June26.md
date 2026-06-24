@@ -91,3 +91,33 @@ Total autonomous fixes across 128 runs: only **15** (12%). Most detections resul
 4. **Don't split tools across agents** (scenario B): A single agent with all tools consistently outperforms specialized agents with limited views.
 
 5. **Enforce remediation execution**: The 12% fix rate needs improvement. Options: stronger prompting, code-level auto-execution of suggested fixes, or a dedicated remediation agent that receives the diagnosis and always acts.
+
+### 6. CRITICAL: Root Cause Accuracy is 12% — Agents Fix the Wrong Service
+
+Deep analysis of MLflow artifacts reveals that **only 4 out of 32 detected runs (12%) correctly identified `cart` as the root cause**. In the remaining 88%, agents identified pre-existing issues as the fault:
+
+| Misidentified root cause | Count | Why |
+|---|---|---|
+| load-generator | 14/32 | Chromium BrowserType.launch crashes dominate logs |
+| email | 6/32 | Service has 6+ restarts (CrashLoopBackOff) |
+| postgresql | 4/32 | 2013 restarts visible in pod status |
+| cart (correct) | 4/32 | Only Llama Scout occasionally gets it right |
+| other | 4/32 | Generic "resource issues", "security constraints" |
+
+**Every autonomous fix (MTTR) was applied to the wrong service.** The actual cart fault persisted after the agent's "remediation."
+
+**Root cause of the RCA failure**: The cluster has significant background noise (pre-existing issues). When agents call `search_logs(query="error")`, they get 20 results dominated by load-generator Chromium crashes. The injected cart fault produces fewer/quieter errors that get buried.
+
+**What's needed**: Agents should establish a **baseline** (what errors existed before the fault?) and detect **what changed** — not just what's loudest. This is a context engineering problem, not a model capability problem. A human SRE ignores known issues and focuses on deltas. The agent must learn to do the same.
+
+**Implications**:
+- Detection rate (82%) is misleadingly high — agents detect "something is wrong" (trivially true in a noisy cluster) but rarely identify the actual injected fault
+- MTTR metrics are measuring fixes to the wrong service
+- A clean cluster would give artificially good results that don't reflect production reality
+- The next iteration should add temporal correlation: compare telemetry before and after fault injection to identify what's NEW
+
+---
+
+## Detailed Analysis
+
+See [EVALUATION_DETAILED_RUN_LOG_23June26.md](EVALUATION_DETAILED_RUN_LOG_23June26.md) for the full per-run log with tool calls, token counts, TTFT, and agent behavioral analysis.

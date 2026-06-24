@@ -31,6 +31,7 @@ from code.agents.mlflow_agent_logging import (
     serialize_tool_calls_for_mlflow,
 )
 from code.agents.mlflow_config import mlflow_tracking_uri
+from code.agents.tracing import trace_llm_call, trace_tool_call, start_agent_trace, end_agent_trace
 from code.tools.tool_profiles import (
     active_profile_name,
     execute_tool_gated,
@@ -100,6 +101,19 @@ def run_agentic_loop(
         "thinking_log": [],
         "llm_rounds": [],
     }
+
+    # Activate MLflow run context for tracing
+    _mlflow_run_ctx = None
+    try:
+        import mlflow
+        _run_id = tool_ctx.get("mlflow_run_id")
+        _uri = os.environ.get("MLFLOW_TRACKING_URI")
+        if _run_id and _uri:
+            mlflow.set_tracking_uri(_uri)
+            _mlflow_run_ctx = mlflow.start_run(run_id=_run_id, log_system_metrics=False)
+            _mlflow_run_ctx.__enter__()
+    except Exception:
+        pass
 
     tools = _get_tools()
     system_prompt = _get_system_prompt()
@@ -182,6 +196,13 @@ def run_agentic_loop(
         _log_to_mlflow(prompts={"agent_note": "openai package not installed; LLM not invoked"})
         return {"detected": False, "confidence": 0.0, "suggested_root_cause": None, "suggested_remediations": [], "llm_invoked": False}
 
+    # Enable MLflow tracing for OpenAI calls
+    try:
+        import mlflow
+        mlflow.openai.autolog(log_models=False, log_input_examples=False)
+    except Exception:
+        pass
+
     client_kwargs: dict[str, Any] = {
         "api_key": NEMOTRON_API_KEY or "nokey",
         "base_url": (NEMOTRON_API_BASE or "").rstrip("/"),
@@ -201,6 +222,12 @@ def run_agentic_loop(
             result["remediation_executed_time"] = tool_ctx["remediation_executed_time"]
         if tool_ctx.get("detection_timestamp"):
             result["detection_timestamp"] = tool_ctx["detection_timestamp"]
+        # End MLflow run context (for tracing)
+        if _mlflow_run_ctx:
+            try:
+                _mlflow_run_ctx.__exit__(None, None, None)
+            except Exception:
+                pass
         run_id = tool_ctx.get("mlflow_run_id") or os.environ.get("MLFLOW_RUN_ID")
         if run_id:
             try:
@@ -352,7 +379,9 @@ def run_agentic_loop(
                     args = {}
                 print(f"[nemotron_agent] tool {name} (native)", file=sys.stderr, flush=True)
                 t_tool = time.monotonic()
-                result = _truncate_tool_result(execute_tool_gated(name, args, tool_ctx))
+                with trace_tool_call(name, args) as span_data:
+                    result = _truncate_tool_result(execute_tool_gated(name, args, tool_ctx))
+                    span_data["result_preview"] = result[:500]
                 rm.record_tool_exec(name, time.monotonic() - t_tool)
                 tool_ctx["tool_calls_log"].append({
                     "name": name,
@@ -440,6 +469,16 @@ def run_detection(
     since_ts: str,
     mlflow_run_id: str | None = None,
 ) -> DetectionResult:
+    # Start MLflow trace for this detection run
+    try:
+        import mlflow
+        uri = os.environ.get("MLFLOW_TRACKING_URI")
+        if uri and mlflow_run_id:
+            mlflow.set_tracking_uri(uri)
+            mlflow.set_experiment("agentic_aiops_mttd_mttr")
+    except Exception:
+        pass
+
     llm_result = run_agentic_loop(ch_http, since_ts, mlflow_run_id)
     detected = llm_result.get("detected", False)
     confidence = llm_result.get("confidence", 0.0)
