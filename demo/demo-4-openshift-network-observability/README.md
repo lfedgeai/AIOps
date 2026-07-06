@@ -4,6 +4,8 @@ A self-contained kit to stand up **Red Hat OpenShift Network Observability** on 
 
 Tested on **OpenShift 4.20**.
 
+The demo video can be found at this [link](https://drive.google.com/file/d/1YrsLr0K4wLte1XAAa7ITZHX5Zz7370KY/view?usp=sharing)
+
 ---
 
 ## What's in here
