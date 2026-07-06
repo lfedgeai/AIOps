@@ -1,0 +1,251 @@
+[1;34m==>[0m Checking required CLIs
+[1;32m[ ok ][0m oc, aws, jq present.
+[1;34m==>[0m OpenShift cluster login
+Already logged in as system:admin at https://api.cluster-s2nfg.s2nfg.sandbox5322.opentlc.com:6443. Re-login? [y/N]: OpenShift API server URL (https://api.<cluster>.<domain>:6443): Skip TLS verification? (not recommended for FSI/Gov) [y/N]: Authentication method:
+  1) Token
+  2) Username / password
+Choose [2]: Username: Console URL: https://api.cluster-s2nfg.s2nfg.sandbox5322.opentlc.com:6443/console
+Authentication required for https://api.cluster-s2nfg.s2nfg.sandbox5322.opentlc.com:6443 (openshift)
+Username: kubeadmin
+Password: 
+Login successful.
+
+You have access to 75 projects, the list has been suppressed. You can list all projects with 'oc projects'
+
+Using project "default".
+[1;32m[ ok ][0m Logged in as kube:admin.
+[1;34m==>[0m Validating cluster prerequisites
+[1;32m[ ok ][0m cluster-admin confirmed.
+[1;32m[ ok ][0m CNI is OVN-Kubernetes.
+[1;32m[ ok ][0m Cloud credential mode: mint/passthrough.
+[1;32m[ ok ][0m Loki PVC storage class: gp3-csi.
+[1;34m==>[0m AWS S3 configuration
+AWS region [ap-southeast-1]: S3 bucket name for Loki [netobserv-loki-cluster-s2nfg-49zxt]: AWS Access Key ID: AWS Secret Access Key (input hidden): 
+[1;34m==>[0m Verifying AWS credentials
+[1;32m[ ok ][0m AWS credentials valid.
+[1;34m==>[0m Creating S3 bucket: netobserv-loki-cluster-s2nfg-49zxt
+[1;32m[ ok ][0m Bucket created.
+[1;34m==>[0m Applying bucket hardening (public-access block + encryption + TLS-only)
+[1;32m[ ok ][0m Default encryption: SSE-S3 (AES256). Set KMS_KEY_ID for a customer-managed key.
+[1;32m[ ok ][0m TLS-only bucket policy applied.
+Create a dedicated, bucket-scoped IAM user for Loki? (requires IAM rights on the supplied key) [y/N]: [1;34m==>[0m Provisioning least-privilege IAM user
+[1;32m[ ok ][0m Scoped IAM user 'loki-netobserv-cluster-s2nfg-49zxt' created; Loki will use its access key.
+[1;33m[warn][0m This user has no key rotation automation — track it in your credential inventory.
+[1;34m==>[0m Creating namespaces
+[1;32m[ ok ][0m Namespaces ready: netobserv-loki, netobserv.
+[1;34m==>[0m Creating Loki S3 Secret (applied via stdin; keys not in process list)
+[1;32m[ ok ][0m Secret loki-s3 created.
+[1;34m==>[0m Installing Loki Operator into openshift-operators-redhat (channel: stable-6.5)
+[1;34m==>[0m Waiting for operator CSV 'loki-operator' in openshift-operators-redhat (Succeeded)
+[1;32m[ ok ][0m loki-operator is Succeeded.
+[1;32m[ ok ][0m LokiStack CRD established.
+[1;34m==>[0m Creating LokiStack (size: 1x.extra-small, tenant: openshift-network)
+[1;34m==>[0m Waiting for LokiStack to become Ready (this can take a few minutes)
+[1;32m[ ok ][0m LokiStack is Ready.
+[1;34m==>[0m Installing Network Observability Operator into openshift-netobserv-operator (channel: stable)
+[1;34m==>[0m Waiting for operator CSV 'network-observability-operator' in openshift-netobserv-operator (Succeeded)
+[1;32m[ ok ][0m network-observability-operator is Succeeded.
+[1;32m[ ok ][0m FlowCollector CRD established.
+Enable advanced eBPF features (PacketDrop, DNSTracking, FlowRTT)? Requires privileged agent [y/N]: [1;34m==>[0m Creating FlowCollector 'cluster'
+[1;32m[ ok ][0m FlowCollector applied.
+[1;34m==>[0m Verifying deployment
+--- Operator CSVs ---
+cert-manager-operator                              loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+cert-manager-operator                              network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+cert-manager                                       loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+cert-manager                                       network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+default                                            loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+default                                            network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+kube-node-lease                                    loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+kube-node-lease                                    network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+kube-public                                        loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+kube-public                                        network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+kube-system                                        loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+kube-system                                        network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+netobserv-loki                                     loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+netobserv-loki                                     network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+netobserv-privileged                               loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+netobserv-privileged                               network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+netobserv                                          loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+netobserv                                          network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-apiserver-operator                       loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-apiserver-operator                       network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-apiserver                                loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-apiserver                                network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-authentication-operator                  loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-authentication-operator                  network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-authentication                           loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-authentication                           network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-catalogd                                 loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-catalogd                                 network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-cloud-controller-manager-operator        loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-cloud-controller-manager-operator        network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-cloud-controller-manager                 loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-cloud-controller-manager                 network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-cloud-credential-operator                loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-cloud-credential-operator                network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-cloud-network-config-controller          loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-cloud-network-config-controller          network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-cloud-platform-infra                     loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-cloud-platform-infra                     network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-cluster-csi-drivers                      loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-cluster-csi-drivers                      network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-cluster-machine-approver                 loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-cluster-machine-approver                 network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-cluster-node-tuning-operator             loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-cluster-node-tuning-operator             network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-cluster-olm-operator                     loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-cluster-olm-operator                     network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-cluster-samples-operator                 loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-cluster-samples-operator                 network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-cluster-storage-operator                 loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-cluster-storage-operator                 network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-cluster-version                          loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-cluster-version                          network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-config-managed                           loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-config-managed                           network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-config-operator                          loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-config-operator                          network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-config                                   loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-config                                   network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-console-operator                         loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-console-operator                         network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-console-user-settings                    loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-console-user-settings                    network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-console                                  loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-console                                  network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-controller-manager-operator              loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-controller-manager-operator              network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-controller-manager                       loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-controller-manager                       network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-dns-operator                             loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-dns-operator                             network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-dns                                      loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-dns                                      network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-etcd-operator                            loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-etcd-operator                            network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-etcd                                     loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-etcd                                     network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-host-network                             loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-host-network                             network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-image-registry                           loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-image-registry                           network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-infra                                    loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-infra                                    network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-ingress-canary                           loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-ingress-canary                           network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-ingress-operator                         loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-ingress-operator                         network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-ingress                                  loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-ingress                                  network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-insights                                 loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-insights                                 network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-kni-infra                                loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-kni-infra                                network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-kube-apiserver-operator                  loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-kube-apiserver-operator                  network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-kube-apiserver                           loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-kube-apiserver                           network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-kube-controller-manager-operator         loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-kube-controller-manager-operator         network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-kube-controller-manager                  loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-kube-controller-manager                  network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-kube-scheduler-operator                  loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-kube-scheduler-operator                  network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-kube-scheduler                           loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-kube-scheduler                           network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-kube-storage-version-migrator-operator   loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-kube-storage-version-migrator-operator   network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-kube-storage-version-migrator            loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-kube-storage-version-migrator            network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-machine-api                              loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-machine-api                              network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-machine-config-operator                  loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-machine-config-operator                  network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-marketplace                              loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-marketplace                              network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-monitoring                               loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-monitoring                               network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-multus                                   loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-multus                                   network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-netobserv-operator                       loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-netobserv-operator                       network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-network-console                          loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-network-console                          network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-network-diagnostics                      loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-network-diagnostics                      network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-network-node-identity                    loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-network-node-identity                    network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-network-operator                         loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-network-operator                         network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-node                                     loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-node                                     network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-nutanix-infra                            loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-nutanix-infra                            network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-oauth-apiserver                          loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-oauth-apiserver                          network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-openstack-infra                          loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-openstack-infra                          network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-operator-controller                      loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-operator-controller                      network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-operator-lifecycle-manager               loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-operator-lifecycle-manager               network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-operators-redhat                         loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-operators-redhat                         network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-operators                                loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-operators                                network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-ovirt-infra                              loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-ovirt-infra                              network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-ovn-kubernetes                           loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-ovn-kubernetes                           network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-route-controller-manager                 loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-route-controller-manager                 network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-service-ca-operator                      loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-service-ca-operator                      network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-service-ca                               loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-service-ca                               network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-user-workload-monitoring                 loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-user-workload-monitoring                 network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift-vsphere-infra                            loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift-vsphere-infra                            network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+openshift                                          loki-operator.v6.5.1                     Loki Operator                                 6.5.1            loki-operator.v6.5.0                     Succeeded
+openshift                                          network-observability-operator.v1.12.0   Network Observability                         1.12.0           network-observability-operator.v1.11.2   Succeeded
+--- Loki pods (netobserv-loki) ---
+NAME                                 READY   STATUS    RESTARTS   AGE
+loki-compactor-0                     1/1     Running   0          3m48s
+loki-distributor-5b458dcbc5-mnwsv    1/1     Running   0          3m49s
+loki-distributor-5b458dcbc5-v9dsj    1/1     Running   0          3m49s
+loki-gateway-6dd97f4887-7kzjn        2/2     Running   0          3m48s
+loki-gateway-6dd97f4887-zv2qp        2/2     Running   0          3m48s
+loki-index-gateway-0                 1/1     Running   0          3m48s
+loki-index-gateway-1                 1/1     Running   0          3m9s
+loki-ingester-0                      1/1     Running   0          3m49s
+loki-ingester-1                      1/1     Running   0          2m39s
+loki-querier-5f999fbdf-cjrjg         1/1     Running   0          3m48s
+loki-querier-5f999fbdf-fxd9p         1/1     Running   0          3m48s
+loki-query-frontend-6bbf548d-g2245   1/1     Running   0          3m48s
+loki-query-frontend-6bbf548d-gpxnd   1/1     Running   0          3m48s
+--- Network Observability pods (netobserv) ---
+NAME                                READY   STATUS        RESTARTS   AGE
+flowlogs-pipeline-7cfvh             0/1     Terminating   0          15s
+flowlogs-pipeline-d22g7             0/1     Terminating   0          15s
+flowlogs-pipeline-lnt9n             0/1     Terminating   0          15s
+flowlogs-pipeline-n2z5f             0/1     Terminating   0          15s
+flowlogs-pipeline-thndg             0/1     Terminating   0          15s
+flowlogs-pipeline-wjr4c             0/1     Terminating   0          15s
+netobserv-plugin-7fc8d76744-bbxsl   1/1     Running       0          15s
+--- FlowCollector status ---
+Ready=False WaitingFlowCollectorController=False WaitingFLPParent=False WaitingMonitoring=False WaitingNetworkPolicy=False WaitingLokiStack=True WaitingStaticController=False ConfigurationIssue=False WaitingEBPFAgents=True WaitingWebConsole=False WaitingFLPMonolith=True WaitingFLPTransformer=Unknown WaitingDemoLoki=Unknown 
+
+[1;32m=============================================================[0m
+ Network Observability install complete.
+   Loki namespace   : netobserv-loki  (size 1x.extra-small, class gp3-csi)
+   NetObserv ns     : netobserv  (sampling 1-in-50)
+   S3 bucket        : netobserv-loki-cluster-s2nfg-49zxt (ap-southeast-1)
+
+ View flows: https://console-openshift-console.apps.cluster-s2nfg.s2nfg.sandbox5322.opentlc.com  ->  Observe -> Network Traffic
+   (allow a minute or two for the eBPF agents to start streaming flows)
+
+ If Loki pods are not yet Ready:  oc get pods -n netobserv-loki
+ If flows do not appear:          oc logs -n netobserv -l app=flowlogs-pipeline
+[1;32m=============================================================[0m
