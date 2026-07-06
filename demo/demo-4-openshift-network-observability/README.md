@@ -75,7 +75,7 @@ Both scripts read sensible defaults; override via environment variables.
 | `STORAGE_CLASS` | `gp3-csi` | Loki PVC storage class. |
 | `KMS_KEY_ID` | *(unset)* | Set to a CMK ARN for SSE-KMS bucket encryption (FSI). |
 | `CATALOG_SOURCE` | `redhat-operators` | Point at your mirror for disconnected clusters. |
-| `LOKI_CHANNEL` / `NETOBSERV_CHANNEL` | Note that it is currently pinned to version 6.5. |
+| `LOKI_CHANNEL` / `NETOBSERV_CHANNEL` | `6.5` | Note that it is currently pinned to version 6.5. |
 
 **`deploy-netobserv-todo-app.sh`**
 
