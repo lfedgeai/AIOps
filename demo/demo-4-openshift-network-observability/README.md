@@ -70,7 +70,7 @@ Both scripts read sensible defaults; override via environment variables.
 
 | Var | Default | Notes |
 |-----|---------|-------|
-| `LOKI_SIZE` | `1x.small` | `1x.pico` / `1x.extra-small` start lighter for small demo clusters. |
+| `LOKI_SIZE` | `1x.extra-small` | `1x.pico` / `1x.extra-small` start lighter for small demo clusters. |
 | `SAMPLING` | `50` | 1-in-N packet sampling. |
 | `STORAGE_CLASS` | `gp3-csi` | Loki PVC storage class. |
 | `KMS_KEY_ID` | *(unset)* | Set to a CMK ARN for SSE-KMS bucket encryption (FSI). |
