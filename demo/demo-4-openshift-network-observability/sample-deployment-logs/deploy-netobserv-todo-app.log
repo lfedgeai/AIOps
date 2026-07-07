@@ -1,0 +1,47 @@
+[1;32m[ ok ][0m Logged in as kube:admin.
+[1;32m[ ok ][0m FlowCollector 'cluster' present — Network Observability will capture this traffic.
+[1;34m==>[0m Creating namespaces
+[1;32m[ ok ][0m Namespaces ready: todo-demo, todo-client.
+[1;34m==>[0m Deploying PostgreSQL into todo-demo
+[1;32m[ ok ][0m PostgreSQL manifests applied.
+[1;34m==>[0m Waiting for PostgreSQL to be ready (todo connects at startup)
+Waiting for deployment "postgresql" rollout to finish: 0 of 1 updated replicas are available...
+deployment "postgresql" successfully rolled out
+[1;34m==>[0m Deploying the todo application into todo-demo
+[1;32m[ ok ][0m todo manifests applied.
+[1;34m==>[0m Waiting for the todo application to be ready
+Waiting for deployment "todo" rollout to finish: 0 of 1 updated replicas are available...
+deployment "todo" successfully rolled out
+[1;32m[ ok ][0m Route: https://todo-todo-demo.apps.cluster-s2nfg.s2nfg.sandbox5322.opentlc.com/
+[1;34m==>[0m Applying database microsegmentation NetworkPolicy
+[1;32m[ ok ][0m PostgreSQL now reachable only from the todo tier — all other :5432 ingress is dropped.
+[1;34m==>[0m Deploying traffic generator (loadgen) into todo-client
+Waiting for deployment "loadgen" rollout to finish: 0 of 1 updated replicas are available...
+deployment "loadgen" successfully rolled out
+[1;32m[ ok ][0m loadgen deployed.
+
+[1;32m=============================================================[0m
+ Realistic todo + PostgreSQL demo deployed. Traffic is flowing.
+   Application tenant : todo-demo      (todo, postgresql)
+   Consumer tenant    : todo-client   (loadgen)
+   Public route       : https://todo-todo-demo.apps.cluster-s2nfg.s2nfg.sandbox5322.opentlc.com/
+
+ In https://console-openshift-console.apps.cluster-s2nfg.s2nfg.sandbox5322.opentlc.com  ->  Observe -> Network Traffic :
+   * Topology     : todo -> postgresql on :5432 is the real app-to-DB edge;
+                    loadgen -> todo is the cross-namespace consumer edge.
+   * Per-tenant   : filter Namespace = todo-demo vs todo-client to show
+                    tenant-scoped visibility (the multi-tenancy story).
+   * DB flows     : filter Destination port = 5432 to prove exactly which
+                    workload talks to the database, and at what volume —
+                    the audit/segmentation evidence FSI/Gov reviewers ask for.
+   * Packet drops : loadgen's direct :5432 attempt is denied by the
+                    allow-db-from-todo-only policy. With PacketDrop enabled
+                    in the installer, those dropped flows are visible here.
+   * DNS          : todo resolving "postgresql", loadgen resolving "todo".
+
+ Watch traffic being generated:
+   oc logs -n todo-client deploy/loadgen -f
+
+ Tear it all down:
+   ./deploy-netobserv-todo-app.sh delete
+[1;32m=============================================================[0m
