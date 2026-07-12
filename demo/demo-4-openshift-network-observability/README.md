@@ -26,7 +26,7 @@ The second demo video on fault injection, flow capture and analysis by frontier 
 - OpenShift **4.20** cluster, installed with **IPI on AWS**, using **OVN-Kubernetes** (default).
 - Cluster credential mode is `mint`/`passthrough` (non-[STS](https://www.redhat.com/en/blog/what-is-aws-sts-and-how-does-red-hat-openshift-service-on-aws-rosa-use-sts) — this kit uses static S3 credentials).
 - `cluster-admin` on the cluster.
-- Local CLIs: [oc](https://mirror.openshift.com/pub/openshift-v4/clients/oc/latest/linux/), **`aws`**, **`jq`**.
+- Local CLIs: [oc](https://mirror.openshift.com/pub/openshift-v4/clients/oc/latest/linux/), [aws](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), [jq](https://jqlang.org/download/).
 - The **`oc netobserv`** plugin
 - An AWS access key/secret with rights to create an S3 bucket (and, optionally, a scoped IAM user).
 
