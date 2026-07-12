@@ -71,7 +71,7 @@ oc logs -n todo-client deploy/loadgen -f
 
 ## Configuration
 
-Both scripts read sensible defaults; override via environment variables.
+Scripts can be overridden using environment variables
 
 **`install-netobserv-aws.sh`**
 
@@ -144,12 +144,12 @@ Capture evidence while application is degraded
 $ ./netobserv-capture-and-bundle.sh
 ```
 
-Note that we can also run wire-level capture and feed the information to AI Models. The target port is 5432 (port that the postgresql is listening to).
+Note that we can also run wire-level capture and feed the information to AI Models. The target port is 5432, where the postgresql is listening to.
 ```
 $ oc netobserv packets --protocol=TCP --port=5432
 ```
 
-Lastly, make use of AI models such as Qwen3.6 to analyze the `evidence.json` and wireshark traces
+Lastly, make use of AI models such as Qwen 3.6 to analyze the `evidence.json` and/or wireshark traces
 
 ---
 
