@@ -20,7 +20,7 @@ The demo video can be found at this [link](https://drive.google.com/file/d/1YrsL
 ## Prerequisites
 
 - OpenShift **4.20** cluster, installed with **IPI on AWS**, using **OVN-Kubernetes** (default).
-- Cluster credential mode is `mint`/`passthrough` (**non-[STS](https://www.redhat.com/en/blog/what-is-aws-sts-and-how-does-red-hat-openshift-service-on-aws-rosa-use-sts)** — this kit uses static S3 credentials).
+- Cluster credential mode is `mint`/`passthrough` (non-[STS](https://www.redhat.com/en/blog/what-is-aws-sts-and-how-does-red-hat-openshift-service-on-aws-rosa-use-sts) — this kit uses static S3 credentials).
 - `cluster-admin` on the cluster.
 - Local CLIs: **`oc`**, **`aws`**, **`jq`**.
 - An AWS access key/secret with rights to create an S3 bucket (and, optionally, a scoped IAM user).
@@ -119,7 +119,7 @@ todo-client (consumer)         todo-demo (application tenant)
 
 ## Notes & gotchas
 
-- **Non-STS by design.** This kit uses static S3 credentials for a demo. For a production/STS cluster, use the [Cloud Credential Operator (CCO)](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/authentication_and_authorization/managing-cloud-provider-credentials) token flow (see the runbook) instead.
+- **Non-STS by design.** This kit uses static S3 credentials for a demo. For a production/STS cluster, use the [Cloud Credential Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/authentication_and_authorization/managing-cloud-provider-credentials) token flow (see the runbook) instead.
 - **PostgreSQL image** (`registry.redhat.io/rhel8/postgresql-10`) pulls via the cluster's global pull secret — present on a standard install. An `ImagePullBackOff` on `postgresql` means the pull secret, not the manifest.
 - **Advanced eBPF features are optional.** The dropped-flow, DNS, and RTT demo moments require PacketDrop / DNSTracking / FlowRTT — enable them at install time.
 - **Loki retention** is usually set to 7, 14 or 28 days. For longer compliance windows, export flows (Kafka / OpenTelemetry) to a long-term store, syslog server or SIEM such as Splunk.
