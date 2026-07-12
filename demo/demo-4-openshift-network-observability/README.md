@@ -34,14 +34,14 @@ The second demo video on fault injection, flow capture and analysis by frontier 
 
 ## Quickstart
 
-**0. Clone the repository and go to the Network Observability demo directory**
+**1. Clone the repository and go to the Network Observability demo directory**
 
 ```
 git clone https://github.com/lfedgeai/AIOps.git
 cd AIOps/demo/demo-4-openshift-network-observability
 ```
 
-**1. Install Network Observability** — you will be prompted for cluster login, AWS keys, region and bucket name:
+**2. Install Network Observability** — you will be prompted for cluster login, AWS keys, region and bucket name:
 
 ```bash
 cd scripts
@@ -51,7 +51,7 @@ chmod +x install-netobserv-aws.sh
 
 When prompted, you can optionally enable a bucket-scoped IAM user (recommended for FSI) and the advanced eBPF features (**PacketDrop / DNSTracking / FlowRTT**).
 
-**2. Deploy the sample app + traffic:**
+**3. Deploy the sample app + traffic:**
 
 ```bash
 cd scripts
@@ -59,7 +59,7 @@ chmod +x deploy-netobserv-todo-app.sh
 ./deploy-netobserv-todo-app.sh
 ```
 
-**3. View flows:** in the console, **Observe → Network Traffic** (allow 3–5 min to populate). Then follow `netobserv-demo-walkthrough.md`.
+**4. View flows:** in the console, **Observe → Network Traffic** (allow 3–5 min to populate). Then follow `netobserv-demo-walkthrough.md`.
 
 Watch traffic being generated:
 
@@ -116,7 +116,7 @@ Both scripts read sensible defaults; override via environment variables.
 
 ## Fault Injection and AI Analysis Demo
 
-On the RHEL 9/10 Bastion, setup `oc netobserv` CLI
+On the RHEL 9 Bastion node, setup `oc netobserv` CLI
 ```bash
 $ podman create --name netobserv-cli registry.redhat.io/network-observability/network-observability-cli-rhel9:1.12
 $ podman cp netobserv-cli:/oc-netobserv .
