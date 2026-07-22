@@ -4,11 +4,15 @@ Framework for comparing LLM agents on autonomous fault detection and remediation
 
 ## Architecture
 
-- **Telemetry**: OTEL Demo → Collector → ClickHouse (logs, traces, metrics)
+- **Telemetry**: OTEL Demo → Collector → ClickHouse in `agentic-aiops` (logs, traces, metrics)
 - **Fault injection**: Kubernetes API (scale_zero, kill_pod, memory_limit, network_partition, etc.)
-- **Agents**: Nemotron-Nano-3, Qwen3-14B, DeepSeek R1 Distill 14B, Llama Scout 17B
+- **Agents**: Nemotron-Nano-3, Qwen3-14B, DeepSeek R1 Distill 14B, Llama Scout 17B, GPT-OSS 120B
 - **Experiment tracking**: MLflow (local)
 - **No frameworks**: No LangChain, no AutoGen — each agent is a single Python file with a tool-calling loop
+
+Each harness run picks one cell in the evaluation space: **agent × scenario × context** (plus a fault). Context corpora (C0–C4) are orthogonal to scenario topology.
+
+![Agentic AIOps evaluation space: agents × scenarios × context corpora](docs/images/eval_space_agents_scenarios_context.png)
 
 ## Quick Start
 
@@ -17,8 +21,10 @@ Framework for comparing LLM agents on autonomous fault detection and remediation
 cp config/.env.example config/.env
 # Edit config/.env with your API keys and endpoints
 
-# 2. Port-forward ClickHouse
-oc port-forward -n otel-demo svc/clickhouse 38123:8123 &
+# 2. Deploy / port-forward ClickHouse (observability tier in `agentic-aiops`, not `otel-demo`)
+oc apply -f manifests/clickhouse.yaml
+python3 scripts/patch-otel-collector-clickhouse.py   # OTEL collector → cross-namespace CH
+oc port-forward -n agentic-aiops svc/clickhouse 38123:8123 &
 
 # 3. Start local MLflow
 /usr/bin/python3.13 -m mlflow server \
@@ -73,6 +79,7 @@ Usage: `./scripts/run_harness.sh --scenario a` or `--all-scenarios`
 | `qwen3_agent/` | Qwen3-14B | Native + streaming | `QWEN3_API_KEY`, `QWEN3_API_BASE` |
 | `deepseek_agent/` | DeepSeek R1 Distill 14B | Prompt-based | `DEEPSEEK_API_KEY`, `DEEPSEEK_API_BASE` |
 | `llama_scout_agent/` | Llama Scout 17B | Native | `LLAMA_SCOUT_API_KEY`, `LLAMA_SCOUT_API_BASE` |
+| `gpt_oss_agent/` | GPT-OSS 120B | Native | `GPT_OSS_API_KEY`, `GPT_OSS_API_BASE` |
 
 All credentials in `config/.env` (gitignored). `run_harness.sh` sources it automatically.
 
@@ -112,7 +119,8 @@ out/                   # Run output JSONs (gitignored)
 ## Docs
 
 - [EVALUATION_RESULTS_23June26.md](docs/EVALUATION_RESULTS_23June26.md) — Full matrix results (128 runs)
-- [ARCHITECTURE_PROPOSAL.md](docs/ARCHITECTURE_PROPOSAL.md) — Full design
+- [CONTEXT_ENGINEERING_EVAL_REPORT.md](docs/CONTEXT_ENGINEERING_EVAL_REPORT.md) — Context levels L0–L2 eval (Nemotron)
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — Current system architecture
 - [LLM_CREDENTIALS.md](docs/LLM_CREDENTIALS.md) — API key setup
 - [OPENSHIFT_OTEL_DEPLOYMENT.md](docs/OPENSHIFT_OTEL_DEPLOYMENT.md) — OpenShift deployment
 

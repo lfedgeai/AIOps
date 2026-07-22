@@ -21,6 +21,7 @@ cp config/.env.example config/.env
 | `deepseek_agent` | `DEEPSEEK_API_BASE` | `DEEPSEEK_API_KEY` | deepseek-r1-distill-qwen-14b |
 | `qwen3_agent` | `QWEN3_API_BASE` | `QWEN3_API_KEY` | qwen3-14b |
 | `llama_scout_agent` | `LLAMA_SCOUT_API_BASE` | `LLAMA_SCOUT_API_KEY` | llama-scout-17b |
+| `gpt_oss_agent` | `GPT_OSS_API_BASE` | `GPT_OSS_API_KEY` | gpt-oss-120b |
 | `ollama_qwen2` | `OPENAI_API_BASE` (default: `http://127.0.0.1:11434/v1`) | `OPENAI_API_KEY` (default: `ollama`) | qwen2.5 |
 
 Set `*_API_BASE` and `*_API_KEY` in `config/.env` for hosted agents. There is no default gateway URL in the repository.

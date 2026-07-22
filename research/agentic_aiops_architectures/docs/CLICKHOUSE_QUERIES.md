@@ -8,24 +8,24 @@ Reference for the **`otel`** database used by the OpenTelemetry Collector **Clic
 
 ### Running SQL inside the ClickHouse pod (OpenShift / Kubernetes)
 
-When the server runs in-cluster (e.g. **`otel-demo`** deployment **`clickhouse`** from `manifests/clickhouse.yaml`), you can run queries **from inside the container** with `clickhouse-client` (no port-forward needed).
+When the server runs in-cluster (e.g. **`agentic-aiops`** deployment **`clickhouse`** from `manifests/clickhouse.yaml`), you can run queries **from inside the container** with `clickhouse-client` (no port-forward needed).
 
 **Interactive client** (multi-line SQL, `\q` to exit may vary; often Ctrl+D):
 
 ```bash
-oc exec -it -n otel-demo deploy/clickhouse -- clickhouse-client --database otel
+oc exec -it -n agentic-aiops deploy/clickhouse -- clickhouse-client --database otel
 ```
 
 **One-shot query** (non-interactive):
 
 ```bash
-oc exec -n otel-demo deploy/clickhouse -- clickhouse-client --database otel --query "SELECT count() FROM otel_logs"
+oc exec -n agentic-aiops deploy/clickhouse -- clickhouse-client --database otel --query "SELECT count() FROM otel_logs"
 ```
 
 **Multiline from your shell** (heredoc):
 
 ```bash
-oc exec -i -n otel-demo deploy/clickhouse -- clickhouse-client --database otel --multiquery <<'SQL'
+oc exec -i -n agentic-aiops deploy/clickhouse -- clickhouse-client --database otel --multiquery <<'SQL'
 SHOW TABLES;
 SELECT count() FROM otel_logs;
 SQL
@@ -34,14 +34,14 @@ SQL
 **HTTP from inside the same pod** (matches how probes/docs often test):
 
 ```bash
-oc exec -n otel-demo deploy/clickhouse -- wget -qO- "http://127.0.0.1:8123/?query=SELECT%201"
+oc exec -n agentic-aiops deploy/clickhouse -- wget -qO- "http://127.0.0.1:8123/?query=SELECT%201"
 ```
 
 **If you use a different namespace or workload name**, list targets first:
 
 ```bash
-oc get pods -n otel-demo -l app=clickhouse
-oc exec -it -n otel-demo <pod-name> -- clickhouse-client --database otel
+oc get pods -n agentic-aiops -l app=clickhouse
+oc exec -it -n agentic-aiops <pod-name> -- clickhouse-client --database otel
 ```
 
 Default user in the demo manifest is **`default`** with empty password unless you added secrets; the client uses the server’s local socket when run inside the pod.

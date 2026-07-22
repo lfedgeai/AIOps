@@ -21,7 +21,7 @@ SELECT
 FROM system.tables 
 WHERE database = 'otel'
 Via HTTP (curl)
-# Port-forward first: oc port-forward -n otel-demo svc/clickhouse 8123:8123 &
+# Port-forward first: oc port-forward -n agentic-aiops svc/clickhouse 8123:8123 &
 curl -s 'http://localhost:8123/?query=SHOW+DATABASES'
 curl -s 'http://localhost:8123/?query=SHOW+TABLES+FROM+otel'
 curl -s 'http://localhost:8123/?query=DESCRIBE+TABLE+otel.otel_logs'
@@ -40,20 +40,20 @@ HTTP interface (curl)
 ClickHouse exposes an HTTP API on port 8123:
 
 # Port-forward if needed
-oc port-forward -n otel-demo svc/clickhouse 8123:8123 &
+oc port-forward -n agentic-aiops svc/clickhouse 8123:8123 &
 # URL-encode your query
 curl -s 'http://localhost:8123/?query=SELECT%20count()%20FROM%20otel.otel_logs'
 curl -s 'http://localhost:8123/?query=SELECT%20count()%20FROM%20otel.otel_traces'
 # Or POST the query body
 curl -s -X POST 'http://localhost:8123/' -d "SELECT * FROM otel.otel_logs LIMIT 5 FORMAT TabSeparated"
 2. Inside the cluster
-From any pod in otel-demo:
+From any pod in agentic-aiops:
 
-oc exec -n otel-demo deploy/clickhouse -- wget -qO- 'http://127.0.0.1:8123/?query=SELECT%20count()%20FROM%20otel.otel_logs'
+oc exec -n agentic-aiops deploy/clickhouse -- wget -qO- 'http://127.0.0.1:8123/?query=SELECT%20count()%20FROM%20otel.otel_logs'
 3. ClickHouse CLI
 If the image includes clickhouse-client:
 
-oc exec -it -n otel-demo deploy/clickhouse -- clickhouse-client --query "SELECT count() FROM otel.otel_logs"
+oc exec -it -n agentic-aiops deploy/clickhouse -- clickhouse-client --query "SELECT count() FROM otel.otel_logs"
 
 4. From the agents / harness
 Use the query_clickhouse tool from code/tools/agent_tools.py:
