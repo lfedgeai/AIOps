@@ -20,8 +20,14 @@ cp config/.env.example config/.env
 |-------|--------------|-------------|-------|
 | `deepseek_agent` | `DEEPSEEK_API_BASE` | `DEEPSEEK_API_KEY` | deepseek-r1-distill-qwen-14b |
 | `qwen3_agent` | `QWEN3_API_BASE` | `QWEN3_API_KEY` | qwen3-14b |
+| `qwen35_9b_agent` | `QWEN35_API_BASE` | `QWEN35_API_KEY` | qwen35-9b |
+| `qwen36_27b_agent` | `QWEN36_API_BASE` | `QWEN36_API_KEY` | qwen36-27b |
+| `kimi_k2_agent` | `KIMI_API_BASE` | `KIMI_API_KEY` | kimi-k2-7 |
+| `nemotron_agent` | `NEMOTRON_API_BASE` | `NEMOTRON_API_KEY` | nemotron-cascade-2-30b |
 | `llama_scout_agent` | `LLAMA_SCOUT_API_BASE` | `LLAMA_SCOUT_API_KEY` | llama-scout-17b |
 | `gpt_oss_agent` | `GPT_OSS_API_BASE` | `GPT_OSS_API_KEY` | gpt-oss-120b |
+| `granite_agent` | `GRANITE_API_BASE` | `GRANITE_API_KEY` | granite-3-2-8b-instruct |
+| `llama31_70b_agent` | `LLAMA31_70B_API_BASE` | `LLAMA31_70B_API_KEY` | llama-31-70b-cpu |
 | `ollama_qwen2` | `OPENAI_API_BASE` (default: `http://127.0.0.1:11434/v1`) | `OPENAI_API_KEY` (default: `ollama`) | qwen2.5 |
 
 Set `*_API_BASE` and `*_API_KEY` in `config/.env` for hosted agents. There is no default gateway URL in the repository.

@@ -56,9 +56,14 @@ Campaign scripts:
 | Script | Purpose |
 |--------|---------|
 | `scripts/run_harness.sh` | Single run |
-| `scripts/run_full_matrix.sh` | Agents × faults on scenario `a` |
-| `scripts/run_context_matrix.sh` / `run_c_matrix.sh` / `run_full_c_matrix.sh` | Context corpora (C0–C4) matrices |
-| `scripts/run_scenario_campaign.sh` | Scenario sweep |
+| `scripts/run_full_matrix.sh` | Agents × faults × scenarios **0/a/b/c** (~10–12h) |
+| `scripts/run_c_matrix_scenario_a_c1-c4.sh` | Scenario **A** only × agents × 3 faults × corpora **C1–C4** (`INCLUDE_C0=1` adds C0) |
+| `scripts/run_c_matrix_scenario_a_c_permutations.sh` | Scenario **A** × all CONTEXT_C subsets (16) × agents × 3 faults (Option 2) |
+| `scripts/run_full_c_matrix.sh` | Agents × scenarios 0/a/b/c × faults × C0–C4 (full cross-product) |
+| `scripts/run_context_matrix.sh` | Legacy short matrix (Nemotron × scenarios × older L0–L2 levels) |
+| `scripts/run_scenario_campaign.sh` | All agents × scenarios a/b/c for one fault |
+
+`scripts/run_c_matrix.sh` remains as a compatibility shim to `run_c_matrix_scenario_a_c1-c4.sh`.
 
 ---
 
@@ -68,16 +73,22 @@ Campaign scripts:
 OTEL Demo (otel-demo ns)
         │ OTLP
         ▼
-OTEL Collector ──patch──► ClickHouse (agentic-aiops ns)
-                              │
-                              ▼
-                    agent tools: search_logs / search_traces /
-                                 search_metrics / query_clickhouse /
-                                 compare_telemetry
+OTEL Collector ConfigMap patch
+  • add ClickHouse exporter (tcp://clickhouse.agentic-aiops…:9000, db=otel)
+  • attach exporter to traces + metrics + logs pipelines
+  • remove broken otlphttp/prometheus from metrics
+        │
+        ▼
+ClickHouse (agentic-aiops ns)
+        │
+        ▼
+agent tools: search_logs / search_traces /
+             search_metrics / query_clickhouse /
+             compare_telemetry
 ```
 
 - ClickHouse manifests: `manifests/clickhouse.yaml`
-- Collector patch: `scripts/patch-otel-collector-clickhouse.py`
+- Collector patch (ClickHouse exporter for traces/metrics/logs): `scripts/patch-otel-collector-clickhouse.py`
 - Query reference: `docs/CLICKHOUSE_QUERIES.md`
 - Local access typically via `oc port-forward -n agentic-aiops svc/clickhouse 38123:8123`
 
@@ -142,13 +153,17 @@ Each agent under `code/agents/<name>/agent.py` implements the same contract: too
 
 | Agent | Model | Tool calling |
 |-------|-------|--------------|
-| `nemotron_agent` | NVIDIA Nemotron-3-Nano | Native + reasoning |
+| `nemotron_agent` | Nemotron Cascade 2 30B | Native + reasoning |
 | `qwen3_agent` | Qwen3-14B | Native + streaming |
+| `qwen35_9b_agent` | Qwen3.5 9B | Native |
+| `qwen36_27b_agent` | Qwen3.6 27B | Native |
+| `kimi_k2_agent` | Kimi K2-7 | Native |
 | `deepseek_agent` | DeepSeek R1 Distill 14B | Prompt-based |
-| `llama_scout_agent` | Llama Scout 17B | Native |
-| `gpt_oss_agent` | GPT-OSS 120B | Native |
+| `granite_agent` | Granite 3.2 8B Instruct | Native |
+| `llama31_70b_agent` | Llama 3.1 70B (CPU) | Native |
+| `llama_scout_agent` / `gpt_oss_agent` | (optional) | Dropped from default matrix Aug 2026 — see [RUN_NOTES_10Aug26.md](RUN_NOTES_10Aug26.md) |
 
-Shared helpers: `ai_metrics.py` (TTFT, tokens/sec), `mlflow_agent_logging.py`, `remediation_signals.py`.
+Shared helpers: `prompts.py` (**canonical system/user task framing for all agents**), `ai_metrics.py` (TTFT, tokens/sec), `mlflow_agent_logging.py`, `remediation_signals.py`. Profile overlays (scenario tool access) remain in `code/tools/tool_profiles.py`. DeepSeek may append tool-call *syntax* instructions only — not a different job description.
 
 ---
 
@@ -161,10 +176,14 @@ Independent of scenario topology. Controlled by `CONTEXT_C` / `config/context_c_
 | **C0** | (none) | Live telemetry/tools only |
 | **C1** | `rag_search_source` | App source (`src/**`) |
 | **C2** | `rag_search_docs` | Docs / README / changelog |
-| **C3** | `rag_search_architecture` | Architecture / mermaid material |
-| **C4** | `rag_search_dependencies` | Compose + K8s manifests |
+| **C3** | `rag_search_architecture` | System overview (README, compose topology, …) |
+| **C4** | `rag_search_dependencies` | Compose files, Dockerfiles, collector configs |
 
-Default RAG repo: OpenTelemetry Demo (`open-telemetry/opentelemetry-demo`). Implementation: `code/tools/context_engineering.py`, `rag_context.py`, `rag_policy.py`. Eval write-up: `docs/CONTEXT_ENGINEERING_EVAL_REPORT.md`.
+Default RAG repo: OpenTelemetry Demo (`open-telemetry/opentelemetry-demo`). Implementation: `code/tools/context_engineering.py`, `rag_context.py`, `rag_policy.py`, `code/agents/rag_force.py`.
+
+When `CONTEXT_C` includes C1–C4, the harness **forces** each enabled RAG tool early in the loop and **aborts before fault injection** if any requested corpus has zero indexable chunks (`EmptyCorpusError`). Empty corpora are invalid for context-engineering evaluation — there is no soft-fallback to telemetry-only.
+
+Campaign shortcut for scenario A × C1–C4: `scripts/run_c_matrix_scenario_a_c1-c4.sh` (`INCLUDE_C0=1` adds C0).
 
 ---
 
@@ -211,7 +230,7 @@ Per run: TTFT, tokens/sec, total tokens, tool-call count, LLM rounds (logged as 
 | Metrics | `mttd_seconds`, `mttr_seconds`, `mttr_verified_seconds`, `rca_correct`, remediation flags, AI metrics |
 | Artifacts | agent output, prompts, tool calls, thinking, judge JSON, harness summary |
 
-Default tracking URI: `http://localhost:5050` (local SQLite `mlflow_local.db` + `mlartifacts/`).
+Default tracking URI: `http://localhost:5050` (local SQLite `mlflow_local.db` + `mlartifacts/`). Started by `scripts/ensure_local_mlflow.sh` / matrix runners. **Do not use** the OpenShift `agentic-aiops/mlflow` service for harness runs.
 
 ---
 
@@ -249,7 +268,12 @@ OpenShift notes: `docs/OPENSHIFT_OTEL_DEPLOYMENT.md`, `docs/OPENSHIFT_CREDENTIAL
 ## 12. Related Documents
 
 - [README.md](../README.md) — quick start and operational reference
+- [EVALUATION_RESULTS_12Aug26.md](EVALUATION_RESULTS_12Aug26.md) — Option 2 expanded MaaS lineup (8 agents, 384 runs) + MLflow audit
+- [EVALUATION_RESULTS_11Aug26.md](EVALUATION_RESULTS_11Aug26.md) — Option 2 re-run (Granite + Llama31; Scout/GPT-OSS dropped) + MLflow audit
+- [RUN_NOTES_10Aug26.md](RUN_NOTES_10Aug26.md) — Aug 2026 lineup / smoke notes
+- [EVALUATION_RESULTS_26July26.md](EVALUATION_RESULTS_26July26.md) — Option 2 (all CONTEXT_C subsets, 240 runs) + MLflow audit
+- [EVALUATION_RESULTS_25July26.md](EVALUATION_RESULTS_25July26.md) — Option 1 re-run (scenario A × C0–C4, forced RAG, fixed corpora)
 - [CONTEXT_ENGINEERING_EVAL_REPORT.md](CONTEXT_ENGINEERING_EVAL_REPORT.md) — C0–C4 matrix results
-- [EVALUATION_RESULTS_07July26.md](EVALUATION_RESULTS_07July26.md) / [EVALUATION_RESULTS_23June26.md](EVALUATION_RESULTS_23June26.md) — campaign results
+- [EVALUATION_RESULTS_07July26.md](EVALUATION_RESULTS_07July26.md) / [EVALUATION_RESULTS_23June26.md](EVALUATION_RESULTS_23June26.md) — earlier campaign results
 - [CLICKHOUSE_QUERIES.md](CLICKHOUSE_QUERIES.md) — SQL against `otel.*` tables
 - [LLM_CREDENTIALS.md](LLM_CREDENTIALS.md) — API keys and endpoints

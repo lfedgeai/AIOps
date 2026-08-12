@@ -1,145 +1,55 @@
 # Context Engineering Evaluation Report
 
-*Generated 2026-07-06 15:23 UTC — 108 runs*
+*Generated 2026-07-25 — Option 1 re-run only (75 runs, mtime ≥ 2026-07-24 22:50)*  
+*Full narrative: [EVALUATION_RESULTS_25July26.md](EVALUATION_RESULTS_25July26.md)*
 
 ## Executive summary
 
-- **Matrix**: agents × 3 faults × single CONTEXT_C corpora (C1–C4; C0 optional).
-- **Corpora**: C1=source, C2=docs, C3=architecture, C4=dependencies.
-- **compare_telemetry**: always-on for telemetry profiles (not a corpus).
+- **Matrix**: scenario A × C0–C4 × 5 agents × 3 faults; forced RAG on C1–C4.
+- **Corpora** (non-empty): C1=source (1784 chunks), C2=docs (130), C3=architecture (129), C4=dependencies (166).
+- **Empty-corpus aborts**: 0 (gate armed; indexes valid).
+- **compare_telemetry**: available in scenario A; used in 33/75 runs.
 
-### RCA by context corpus
+### Detection / RCA by context
 
-| Context | RCA accuracy | MTTD median |
-|---------|--------------|-------------|
-| C1 | 3/24 (12%) | 170s |
-| C2 | 4/24 (17%) | 88s |
-| C3 | 3/24 (12%) | 80s |
-| C4 | 4/24 (17%) | 157s |
-| C0 | 0/12 (0%) | 153s |
+| Context | Detect | RCA | Remediation | MTTD median |
+|---------|--------|-----|-------------|-------------|
+| C0 | 11/15 (73%) | 6/15 (40%) | 6/15 (40%) | 64s |
+| **C1** | **12/15 (80%)** | 9/15 (60%) | **10/15 (67%)** | 82s |
+| C2 | 10/15 (67%) | 9/15 (60%) | 8/15 (53%) | 65s |
+| **C3** | 11/15 (73%) | **10/15 (67%)** | 8/15 (53%) | 96s |
+| C4 | 8/15 (53%) | 7/15 (47%) | 6/15 (40%) | 120s |
 
-### RCA by fault
+### By fault
 
-| Fault | RCA accuracy |
-|-------|--------------|
-| config_corruption | 4/36 (11%) |
-| kill_pod | 4/36 (11%) |
-| scale_zero | 6/36 (17%) |
+| Fault | Detect | RCA | Remediation |
+|-------|--------|-----|-------------|
+| scale_zero | 18/25 (72%) | 14/25 (56%) | 12/25 (48%) |
+| config_corruption | 18/25 (72%) | 14/25 (56%) | 13/25 (52%) |
+| kill_pod | 16/25 (64%) | 13/25 (52%) | 13/25 (52%) |
 
-## Per-run detail
+### By agent
 
-| File | C | Agent | Scenario | Fault | RCA | Remediation |
-|------|---|-------|----------|-------|-----|-------------|
-| context_L0_s0_config_corruption_nemotron.json | C0 | - | 0 | config_corruption | False | False |
-| context_L0_sa_config_corruption_nemotron.json | C0 | - | a | config_corruption | False | False |
-| context_L0_sb_config_corruption_nemotron.json | C0 | - | b | config_corruption | False | False |
-| context_L0_sc_config_corruption_nemotron.json | C0 | - | c | config_corruption | False | False |
-| context_L0_s0_kill_pod_nemotron.json | C0 | - | 0 | kill_pod | False | False |
-| context_L0_sa_kill_pod_nemotron.json | C0 | - | a | kill_pod | False | False |
-| context_L0_sb_kill_pod_nemotron.json | C0 | - | b | kill_pod | False | False |
-| context_L0_sc_kill_pod_nemotron.json | C0 | - | c | kill_pod | False | False |
-| context_L0_s0_scale_zero_nemotron.json | C0 | - | 0 | scale_zero | False | False |
-| context_L0_sa_scale_zero_nemotron.json | C0 | - | a | scale_zero | False | False |
-| context_L0_sb_scale_zero_nemotron.json | C0 | - | b | scale_zero | False | False |
-| context_L0_sc_scale_zero_nemotron.json | C0 | - | c | scale_zero | False | False |
-| context_C1_sa_config_corruption_maas_deepseek.json | C1 | - | a | config_corruption | False | False |
-| context_C1_sa_config_corruption_maas_llama-scout.json | C1 | - | a | config_corruption | True | True |
-| context_C1_sa_config_corruption_maas_qwen3.json | C1 | - | a | config_corruption | False | False |
-| context_C1_sa_config_corruption_nemotron-nano-3.json | C1 | - | a | config_corruption | False | False |
-| context_L1_s0_config_corruption_nemotron.json | C1 | - | 0 | config_corruption | False | False |
-| context_L1_sa_config_corruption_nemotron.json | C1 | - | a | config_corruption | False | False |
-| context_L1_sb_config_corruption_nemotron.json | C1 | - | b | config_corruption | False | False |
-| context_L1_sc_config_corruption_nemotron.json | C1 | - | c | config_corruption | False | False |
-| context_C1_sa_kill_pod_maas_deepseek.json | C1 | - | a | kill_pod | False | False |
-| context_C1_sa_kill_pod_maas_llama-scout.json | C1 | - | a | kill_pod | True | True |
-| context_C1_sa_kill_pod_maas_qwen3.json | C1 | - | a | kill_pod | False | False |
-| context_C1_sa_kill_pod_nemotron-nano-3.json | C1 | - | a | kill_pod | False | False |
-| context_L1_s0_kill_pod_nemotron.json | C1 | - | 0 | kill_pod | False | False |
-| context_L1_sa_kill_pod_nemotron.json | C1 | - | a | kill_pod | False | False |
-| context_L1_sb_kill_pod_nemotron.json | C1 | - | b | kill_pod | False | False |
-| context_L1_sc_kill_pod_nemotron.json | C1 | - | c | kill_pod | False | False |
-| context_C1_sa_scale_zero_maas_deepseek.json | C1 | - | a | scale_zero | False | True |
-| context_C1_sa_scale_zero_maas_llama-scout.json | C1 | - | a | scale_zero | True | False |
-| context_C1_sa_scale_zero_maas_qwen3.json | C1 | - | a | scale_zero | False | False |
-| context_C1_sa_scale_zero_nemotron-nano-3.json | C1 | - | a | scale_zero | False | False |
-| context_L1_s0_scale_zero_nemotron.json | C1 | - | 0 | scale_zero | False | False |
-| context_L1_sa_scale_zero_nemotron.json | C1 | - | a | scale_zero | False | False |
-| context_L1_sb_scale_zero_nemotron.json | C1 | - | b | scale_zero | False | False |
-| context_L1_sc_scale_zero_nemotron.json | C1 | - | c | scale_zero | False | True |
-| context_C2_sa_config_corruption_maas_deepseek.json | C2 | - | a | config_corruption | False | False |
-| context_C2_sa_config_corruption_maas_llama-scout.json | C2 | - | a | config_corruption | False | False |
-| context_C2_sa_config_corruption_maas_qwen3.json | C2 | - | a | config_corruption | False | False |
-| context_C2_sa_config_corruption_nemotron-nano-3.json | C2 | - | a | config_corruption | False | False |
-| context_L2_s0_config_corruption_nemotron.json | C2 | - | 0 | config_corruption | False | False |
-| context_L2_sa_config_corruption_nemotron.json | C2 | - | a | config_corruption | False | False |
-| context_L2_sb_config_corruption_nemotron.json | C2 | - | b | config_corruption | False | False |
-| context_L2_sc_config_corruption_nemotron.json | C2 | - | c | config_corruption | False | False |
-| context_C2_sa_kill_pod_maas_deepseek.json | C2 | - | a | kill_pod | False | False |
-| context_C2_sa_kill_pod_maas_llama-scout.json | C2 | - | a | kill_pod | True | True |
-| context_C2_sa_kill_pod_maas_qwen3.json | C2 | - | a | kill_pod | False | False |
-| context_C2_sa_kill_pod_nemotron-nano-3.json | C2 | - | a | kill_pod | False | False |
-| context_L2_s0_kill_pod_nemotron.json | C2 | - | 0 | kill_pod | False | False |
-| context_L2_sa_kill_pod_nemotron.json | C2 | - | a | kill_pod | False | False |
-| context_L2_sb_kill_pod_nemotron.json | C2 | - | b | kill_pod | False | False |
-| context_L2_sc_kill_pod_nemotron.json | C2 | - | c | kill_pod | False | False |
-| context_C2_sa_scale_zero_maas_deepseek.json | C2 | - | a | scale_zero | False | False |
-| context_C2_sa_scale_zero_maas_llama-scout.json | C2 | - | a | scale_zero | True | True |
-| context_C2_sa_scale_zero_maas_qwen3.json | C2 | - | a | scale_zero | False | False |
-| context_C2_sa_scale_zero_nemotron-nano-3.json | C2 | - | a | scale_zero | True | True |
-| context_L2_s0_scale_zero_nemotron.json | C2 | - | 0 | scale_zero | False | False |
-| context_L2_sa_scale_zero_nemotron.json | C2 | - | a | scale_zero | False | False |
-| context_L2_sb_scale_zero_nemotron.json | C2 | - | b | scale_zero | False | False |
-| context_L2_sc_scale_zero_nemotron.json | C2 | - | c | scale_zero | True | True |
-| context_C3_sa_config_corruption_maas_deepseek.json | C3 | - | a | config_corruption | True | False |
-| context_C3_sa_config_corruption_maas_llama-scout.json | C3 | - | a | config_corruption | False | False |
-| context_C3_sa_config_corruption_maas_qwen3.json | C3 | - | a | config_corruption | False | False |
-| context_C3_sa_config_corruption_nemotron-nano-3.json | C3 | - | a | config_corruption | False | False |
-| context_L3_s0_config_corruption_nemotron.json | C3 | - | 0 | config_corruption | False | False |
-| context_L3_sa_config_corruption_nemotron.json | C3 | - | a | config_corruption | False | False |
-| context_L3_sb_config_corruption_nemotron.json | C3 | - | b | config_corruption | False | False |
-| context_L3_sc_config_corruption_nemotron.json | C3 | - | c | config_corruption | False | False |
-| context_C3_sa_kill_pod_maas_deepseek.json | C3 | - | a | kill_pod | False | False |
-| context_C3_sa_kill_pod_maas_llama-scout.json | C3 | - | a | kill_pod | True | True |
-| context_C3_sa_kill_pod_maas_qwen3.json | C3 | - | a | kill_pod | False | False |
-| context_C3_sa_kill_pod_nemotron-nano-3.json | C3 | - | a | kill_pod | False | False |
-| context_L3_s0_kill_pod_nemotron.json | C3 | - | 0 | kill_pod | False | False |
-| context_L3_sa_kill_pod_nemotron.json | C3 | - | a | kill_pod | False | False |
-| context_L3_sb_kill_pod_nemotron.json | C3 | - | b | kill_pod | False | False |
-| context_L3_sc_kill_pod_nemotron.json | C3 | - | c | kill_pod | False | False |
-| context_C3_sa_scale_zero_maas_deepseek.json | C3 | - | a | scale_zero | True | False |
-| context_C3_sa_scale_zero_maas_llama-scout.json | C3 | - | a | scale_zero | False | False |
-| context_C3_sa_scale_zero_maas_qwen3.json | C3 | - | a | scale_zero | False | False |
-| context_C3_sa_scale_zero_nemotron-nano-3.json | C3 | - | a | scale_zero | False | False |
-| context_L3_s0_scale_zero_nemotron.json | C3 | - | 0 | scale_zero | False | False |
-| context_L3_sa_scale_zero_nemotron.json | C3 | - | a | scale_zero | False | False |
-| context_L3_sb_scale_zero_nemotron.json | C3 | - | b | scale_zero | False | False |
-| context_L3_sc_scale_zero_nemotron.json | C3 | - | c | scale_zero | False | False |
-| context_C4_sa_config_corruption_maas_deepseek.json | C4 | - | a | config_corruption | False | False |
-| context_C4_sa_config_corruption_maas_llama-scout.json | C4 | - | a | config_corruption | True | True |
-| context_C4_sa_config_corruption_maas_qwen3.json | C4 | - | a | config_corruption | False | False |
-| context_C4_sa_config_corruption_nemotron-nano-3.json | C4 | - | a | config_corruption | True | False |
-| context_L4_s0_config_corruption_nemotron.json | C4 | - | 0 | config_corruption | False | False |
-| context_L4_sa_config_corruption_nemotron.json | C4 | - | a | config_corruption | False | False |
-| context_L4_sb_config_corruption_nemotron.json | C4 | - | b | config_corruption | False | False |
-| context_L4_sc_config_corruption_nemotron.json | C4 | - | c | config_corruption | False | False |
-| context_C4_sa_kill_pod_maas_deepseek.json | C4 | - | a | kill_pod | False | False |
-| context_C4_sa_kill_pod_maas_llama-scout.json | C4 | - | a | kill_pod | False | False |
-| context_C4_sa_kill_pod_maas_qwen3.json | C4 | - | a | kill_pod | False | False |
-| context_C4_sa_kill_pod_nemotron-nano-3.json | C4 | - | a | kill_pod | True | True |
-| context_L4_s0_kill_pod_nemotron.json | C4 | - | 0 | kill_pod | False | False |
-| context_L4_sa_kill_pod_nemotron.json | C4 | - | a | kill_pod | False | False |
-| context_L4_sb_kill_pod_nemotron.json | C4 | - | b | kill_pod | False | False |
-| context_L4_sc_kill_pod_nemotron.json | C4 | - | c | kill_pod | False | False |
-| context_C4_sa_scale_zero_maas_deepseek.json | C4 | - | a | scale_zero | False | False |
-| context_C4_sa_scale_zero_maas_llama-scout.json | C4 | - | a | scale_zero | True | False |
-| context_C4_sa_scale_zero_maas_qwen3.json | C4 | - | a | scale_zero | False | False |
-| context_C4_sa_scale_zero_nemotron-nano-3.json | C4 | - | a | scale_zero | False | False |
-| context_L4_s0_scale_zero_nemotron.json | C4 | - | 0 | scale_zero | False | False |
-| context_L4_sa_scale_zero_nemotron.json | C4 | - | a | scale_zero | False | False |
-| context_L4_sb_scale_zero_nemotron.json | C4 | - | b | scale_zero | False | False |
-| context_L4_sc_scale_zero_nemotron.json | C4 | - | c | scale_zero | False | True |
+| Agent | Detect | RCA | Remediation |
+|-------|--------|-----|-------------|
+| nemotron-nano-3 | 14/15 (93%) | 13/15 (87%) | 13/15 (87%) |
+| maas_deepseek | 13/15 (87%) | 12/15 (80%) | 9/15 (60%) |
+| maas_qwen3 | 13/15 (87%) | 9/15 (60%) | 9/15 (60%) |
+| maas_llama-scout | 6/15 (40%) | 2/15 (13%) | 2/15 (13%) |
+| maas_gpt-oss-120b | 6/15 (40%) | 5/15 (33%) | 5/15 (33%) |
 
----
+## Takeaways
 
-MLflow: `http://localhost:5050` — filter by tag `context_c`.
+1. With fixed C3/C4 corpora, **C1 leads detection/remediation; C3 leads RCA** — C0 is no longer “best.”
+2. Forced RAG fired on **60/60** C1–C4 runs; no `corpus_empty`.
+3. Agent skill still dominates context choice.
 
+## Regenerate
+
+```bash
+# Narrative report is hand-written for the Option 1 slice:
+# docs/EVALUATION_RESULTS_25July26.md
+#
+# Broader auto table (mixes historical out/ files):
+python scripts/analyze_context_matrix.py --out-dir out --report docs/CONTEXT_ENGINEERING_EVAL_REPORT.md
+```

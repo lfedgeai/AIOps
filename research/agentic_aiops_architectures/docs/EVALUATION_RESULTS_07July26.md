@@ -48,7 +48,7 @@ Context levels control *optional RAG tools* layered on top of the scenario tool 
 **Rules in this evaluation:**
 
 - Each run used **one corpus only** (C1, C2, C3, or C4 — not combined).
-- **C0 was not included** in this matrix (available via `INCLUDE_C0=1` in `scripts/run_c_matrix.sh`).
+- **C0 was not included** in this matrix (available via `INCLUDE_C0=1` in `scripts/run_c_matrix_scenario_a_c1-c4.sh`).
 - RAG is **tool-call only** — no auto-injection of chunks into the prompt.
 - **`compare_telemetry`** is a standard telemetry tool (always available in scenario A); it is **not** a context layer.
 - **`get_baseline_telemetry`** and generic **`rag_search`** were removed in the C-model refactor.
@@ -240,10 +240,10 @@ The RCA improvement is primarily **model selection (Llama Scout)** and **stricte
 
 ```bash
 # Re-run the matrix (scenario A, C1–C4, 48 runs)
-./scripts/run_c_matrix.sh
+./scripts/run_c_matrix_scenario_a_c1-c4.sh
 
 # Include C0 baseline (60 runs)
-INCLUDE_C0=1 ./scripts/run_c_matrix.sh
+INCLUDE_C0=1 ./scripts/run_c_matrix_scenario_a_c1-c4.sh
 
 # Summarize JSON outputs
 python scripts/analyze_context_matrix.py --out-dir out --report docs/CONTEXT_ENGINEERING_EVAL_REPORT.md
@@ -253,7 +253,7 @@ python scripts/analyze_context_matrix.py --out-dir out --report docs/CONTEXT_ENG
 
 - Scenarios: `config/scenarios.yaml`
 - Context corpora: `config/context_c_levels.yaml`
-- Matrix script: `scripts/run_c_matrix.sh`
+- Matrix script: `scripts/run_c_matrix_scenario_a_c1-c4.sh`
 
 **Related reports:**
 
