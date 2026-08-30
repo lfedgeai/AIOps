@@ -2,7 +2,7 @@
 
 A self-contained kit to stand up **Red Hat OpenShift Network Observability** on a fresh IPI-on-AWS cluster and run a sample customer-facing demo. The demo highlights per-tenant visibility, database microsegmentation and auditable flow evidence. It also inject a real incident, capture it with the `oc netobserv` CLI and have AI analyze the flow logs.
 
-Tested on **OpenShift 4.20**.
+Tested on **OpenShift 4.21**.
 
 The environment and application deployment and configuration demo video can be found at this [link](https://drive.google.com/file/d/1YrsLr0K4wLte1XAAa7ITZHX5Zz7370KY/view?usp=sharing)
 
@@ -23,7 +23,7 @@ The second demo video on fault injection, flow capture and analysis by frontier 
 
 ## Prerequisites
 
-- OpenShift **4.20** cluster, installed with **IPI on AWS**, using **OVN-Kubernetes** (default).
+- OpenShift **4.21** cluster, installed with **IPI on AWS**, using **OVN-Kubernetes** (default).
 - Cluster credential mode is `mint`/`passthrough` (non-[STS](https://www.redhat.com/en/blog/what-is-aws-sts-and-how-does-red-hat-openshift-service-on-aws-rosa-use-sts) — this kit uses static S3 credentials).
 - `cluster-admin` on the cluster.
 - Local CLIs: [oc](https://mirror.openshift.com/pub/openshift-v4/clients/oc/latest/linux/), [aws](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), [jq](https://jqlang.org/download/).
