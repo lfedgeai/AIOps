@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-otel-prometheus-config
+  labels:
+    app.kubernetes.io/name: openclaw-otel-prometheus
+    app.kubernetes.io/part-of: netobserv-platform-merge
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    scrape_configs:
+      - job_name: openclaw-otel-collector
+        static_configs:
+          - targets: ['openclaw-otel-collector:8889']
+
+      # NetObserv flow metrics via Prometheus federation API (cluster-monitoring token)
+      # Note: thanos-querier has no /federate (404) — use prometheus-k8s:9091
+      - job_name: federate-netobserv
+        scrape_interval: 30s
+        honor_labels: true
+        metrics_path: /federate
+        params:
+          'match[]':
+            - '{__name__=~"netobserv_.*"}'
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true
+        bearer_token_file: /etc/prometheus/thanos-token/token
+        static_configs:
+          - targets:
+              # Thanos querier has no /federate (404); use Prometheus federation API on :9091
+              - prometheus-k8s.openshift-monitoring.svc:9091

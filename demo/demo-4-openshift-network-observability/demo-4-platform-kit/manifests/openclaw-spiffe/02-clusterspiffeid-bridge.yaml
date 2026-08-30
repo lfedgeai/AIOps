@@ -1,0 +1,13 @@
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: netobserv-grafana-bridge
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: openclaw
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: netobserv-grafana-bridge
+  spiffeIDTemplate: 'spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}'

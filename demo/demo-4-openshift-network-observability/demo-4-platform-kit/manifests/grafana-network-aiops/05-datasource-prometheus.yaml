@@ -1,0 +1,30 @@
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDatasource
+metadata:
+  name: prometheus-netobserv
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  allowCrossNamespaceImport: true
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
+  datasource:
+    name: Prometheus
+    type: prometheus
+    access: proxy
+    uid: prometheus-netobserv
+    url: https://thanos-querier.openshift-monitoring.svc:9091
+    isDefault: true
+    jsonData:
+      tlsSkipVerify: true
+      timeInterval: 30s
+      httpHeaderName1: Authorization
+    secureJsonData:
+      httpHeaderValue1: ""
+  valuesFrom:
+    - targetPath: secureJsonData.httpHeaderValue1
+      valueFrom:
+        secretKeyRef:
+          name: grafana-prometheus-auth
+          key: authorization

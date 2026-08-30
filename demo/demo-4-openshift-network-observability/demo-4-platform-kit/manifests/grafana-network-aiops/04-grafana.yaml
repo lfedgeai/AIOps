@@ -1,0 +1,45 @@
+apiVersion: grafana.integreatly.org/v1beta1
+kind: Grafana
+metadata:
+  name: network-aiops
+  namespace: netobserv-demo
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+    dashboards: grafana
+spec:
+  # Operator creates PVC {cr.Name}-pvc → network-aiops-pvc (survives pod/cluster restart).
+  persistentVolumeClaim:
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 2Gi
+  config:
+    log:
+      mode: console
+    auth:
+      disable_login_form: "false"
+    security:
+      admin_user: admin
+      admin_password: netobserv-demo
+  deployment:
+    spec:
+      replicas: 1
+      strategy:
+        type: Recreate
+      template:
+        spec:
+          containers:
+            - name: grafana
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 512Mi
+                limits:
+                  cpu: "1"
+                  memory: 2Gi
+          volumes:
+            - name: grafana-data
+              persistentVolumeClaim:
+                claimName: network-aiops-pvc

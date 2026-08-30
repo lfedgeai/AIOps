@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ansible-automation-platform
+  labels:
+    openshift.io/cluster-monitoring: "true"
+    app.kubernetes.io/part-of: netobserv-aap
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: ansible-automation-platform-operator
+  namespace: ansible-automation-platform
+  labels:
+    app.kubernetes.io/part-of: netobserv-aap
+spec:
+  targetNamespaces:
+    - ansible-automation-platform
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: ansible-automation-platform
+  namespace: ansible-automation-platform
+  labels:
+    app.kubernetes.io/part-of: netobserv-aap
+spec:
+  channel: stable-2.7
+  installPlanApproval: Automatic
+  name: ansible-automation-platform-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace

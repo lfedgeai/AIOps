@@ -1,0 +1,21 @@
+# Dedicated RHCL Gateway for OpenClaw (Option A — not shared RHOAI data-science-gateway).
+# Edge TLS terminates on the OpenShift Route; gateway listener is HTTP :8080.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: openclaw-gateway
+  namespace: openclaw
+  labels:
+    kuadrant.io/gateway: "true"
+    app.kubernetes.io/name: openclaw
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  gatewayClassName: data-science-gateway-class
+  listeners:
+    - name: http
+      port: 8080
+      protocol: HTTP
+      hostname: PLACEHOLDER_OPENCLAW_RHCL_HOST
+      allowedRoutes:
+        namespaces:
+          from: Same

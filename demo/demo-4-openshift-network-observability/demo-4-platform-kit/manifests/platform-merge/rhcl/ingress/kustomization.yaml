@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Placeholders substituted by scripts/install-rhcl-ingress.sh at apply time.
+resources:
+  - 01-gateway-openclaw.yaml
+  - 02-gateway-deny-all-authpolicy.yaml
+  - 03-httproute-openclaw-ui.yaml
+  - 03b-httproute-openclaw-static.yaml
+  - 04-httproute-oidc-callback.yaml
+  - 05-route-openclaw-rhcl.yaml
+  - 06-oauthclient-openclaw-rhcl.yaml
+  - 07-oidcpolicy-openclaw-ui.yaml
+  - 08-ratelimitpolicy-openclaw-demo.yaml
+  - 09-authpolicy-openclaw-ui-authorize.yaml
+  - 10-authpolicy-openclaw-ui-static.yaml

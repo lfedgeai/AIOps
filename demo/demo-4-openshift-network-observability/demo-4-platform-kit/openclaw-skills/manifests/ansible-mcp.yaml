@@ -1,0 +1,103 @@
+# In-cluster Ansible Automation Platform MCP for OpenClaw (job launch only).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ansible-mcp
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: ansible-mcp
+    app.kubernetes.io/part-of: netobserv-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ansible-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ansible-mcp
+        app.kubernetes.io/part-of: netobserv-demo
+    spec:
+      serviceAccountName: ansible-mcp
+      containers:
+        - name: mcp
+          image: registry.access.redhat.com/ubi9/python-312:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: MCP_HOST
+              value: "0.0.0.0"
+            - name: MCP_PORT
+              value: "8080"
+            - name: HOME
+              value: /tmp
+            - name: PIP_DISABLE_PIP_VERSION_CHECK
+              value: "1"
+            - name: AAP_TLS_SKIP_VERIFY
+              value: "true"
+            - name: AAP_ORG
+              value: netobserv-demo
+            - name: AAP_CONTROLLER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-aap-launcher
+                  key: controller_url
+            - name: AAP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-aap-launcher
+                  key: token
+          workingDir: /opt/mcp
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+              python3 -m pip install -q -r /opt/mcp/requirements.txt
+              exec python3 /opt/mcp/server.py
+          volumeMounts:
+            - name: mcp-scripts
+              mountPath: /opt/mcp
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: mcp-scripts
+          configMap:
+            name: ansible-mcp-scripts
+            defaultMode: 0555
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ansible-mcp
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: ansible-mcp
+spec:
+  selector:
+    app.kubernetes.io/name: ansible-mcp
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ansible-mcp
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: ansible-mcp

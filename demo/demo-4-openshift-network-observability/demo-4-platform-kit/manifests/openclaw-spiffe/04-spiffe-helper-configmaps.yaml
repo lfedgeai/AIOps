@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netobserv-grafana-bridge-spiffe-helper
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: netobserv-grafana-bridge
+data:
+  helper.conf: |
+    agent_address = "/spiffe-workload-api/spire-agent.sock"
+    cmd = ""
+    cmd_args = ""
+    cert_dir = "/spiffe/svid"
+    renew_signal = "HUP"
+    svid_file_name = "svid.pem"
+    svid_key_file_name = "svid.key"
+    svid_bundle_file_name = "svid_bundle.pem"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-hooks-mtls-spiffe-helper
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: openclaw-hooks-mtls
+data:
+  helper.conf: |
+    agent_address = "/spiffe-workload-api/spire-agent.sock"
+    cmd = ""
+    cmd_args = ""
+    cert_dir = "/spiffe/svid"
+    renew_signal = "HUP"
+    svid_file_name = "svid.pem"
+    svid_key_file_name = "svid.key"
+    svid_bundle_file_name = "svid_bundle.pem"

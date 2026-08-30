@@ -1,0 +1,129 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw-hooks-mtls
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: openclaw-hooks-mtls
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-hooks-mtls
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openclaw-hooks-mtls
+    spec:
+      serviceAccountName: openclaw-hooks-mtls
+      imagePullSecrets:
+        - name: redhat-io-pull
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: spiffe-helper-init
+          image: SPIFFE_HELPER_IMAGE_PLACEHOLDER
+          args:
+            - "-config"
+            - /etc/spiffe-helper/helper.conf
+            - "-daemon-mode=false"
+          volumeMounts:
+            - name: spiffe-workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+            - name: spiffe-svid
+              mountPath: /spiffe/svid
+            - name: spiffe-helper-config
+              mountPath: /etc/spiffe-helper
+              readOnly: true
+      containers:
+        - name: hooks-mtls
+          image: registry.access.redhat.com/ubi9/python-312:latest
+          command: ["python3", "/scripts/openclaw-hooks-mtls-proxy.py"]
+          env:
+            - name: LISTEN_PORT
+              value: "18790"
+            - name: OPENCLAW_HOOKS_URL
+              value: http://openclaw.openclaw.svc.cluster.local:18789/hooks/agent
+            - name: OPENCLAW_HOOKS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-hooks-token
+                  key: OPENCLAW_HOOKS_TOKEN
+            - name: SPIFFE_CERT_DIR
+              value: /spiffe/svid
+            - name: ALLOWED_CLIENT_SPIFFE_PREFIXES
+              value: spiffe://CLUSTER_TRUST_DOMAIN_PLACEHOLDER/ns/openclaw/sa/netobserv-grafana-bridge
+          ports:
+            - name: https
+              containerPort: 18790
+          readinessProbe:
+            tcpSocket:
+              port: https
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: https
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: spiffe-svid
+              mountPath: /spiffe/svid
+              readOnly: true
+        - name: spiffe-helper
+          image: SPIFFE_HELPER_IMAGE_PLACEHOLDER
+          args:
+            - "-config"
+            - /etc/spiffe-helper/helper.conf
+          volumeMounts:
+            - name: spiffe-workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+            - name: spiffe-svid
+              mountPath: /spiffe/svid
+            - name: spiffe-helper-config
+              mountPath: /etc/spiffe-helper
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: openclaw-hooks-mtls-scripts
+        - name: spiffe-workload-api
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+        - name: spiffe-svid
+          emptyDir:
+            medium: Memory
+        - name: spiffe-helper-config
+          configMap:
+            name: openclaw-hooks-mtls-spiffe-helper
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-hooks-mtls
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: openclaw-hooks-mtls
+spec:
+  selector:
+    app.kubernetes.io/name: openclaw-hooks-mtls
+  ports:
+    - name: https
+      port: 18790
+      targetPort: https

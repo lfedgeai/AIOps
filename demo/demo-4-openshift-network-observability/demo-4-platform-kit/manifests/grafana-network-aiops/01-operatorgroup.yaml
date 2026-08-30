@@ -1,0 +1,9 @@
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: grafana-operator-group
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  targetNamespaces:
+    - netobserv-demo

@@ -1,0 +1,133 @@
+# In-cluster NetObserv flow capture proxy for agent-driven demos.
+# Uses bastion/cluster-admin kubeconfig (lab) to run oc-netobserv capture.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netobserv-capture-proxy
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: netobserv-capture-proxy
+    app.kubernetes.io/part-of: netobserv-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: netobserv-capture-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: netobserv-capture-proxy
+        app.kubernetes.io/part-of: netobserv-demo
+    spec:
+      serviceAccountName: openclaw-netobserv
+      containers:
+        - name: proxy
+          image: registry.access.redhat.com/ubi9/python-312:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: NETOBSERV_IN_CLUSTER
+              value: "1"
+            - name: KUBECONFIG
+              value: /opt/kube/config
+            - name: NETOBSERV_BIN
+              value: /tmp/netobserv/oc-netobserv
+            - name: PATH
+              value: /tmp/netobserv:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            - name: NETOBSERV_CLI_VERSION
+              value: "1.9.0"
+            - name: CAPTURE_DURATION
+              value: "60"
+            - name: LOAD_BURST_REPLICAS
+              value: "3"
+            - name: HOME
+              value: /tmp
+          workingDir: /opt/capture
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+              mkdir -p /tmp/netobserv /data
+              export PATH="/tmp/netobserv:${PATH}"
+              if [[ ! -x /tmp/netobserv/oc.real ]]; then
+                curl -sfL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/4.21.27/openshift-client-linux.tar.gz \
+                  | tar -xz -C /tmp/netobserv oc
+                mv /tmp/netobserv/oc /tmp/netobserv/oc.real
+                chmod +x /tmp/netobserv/oc.real
+              fi
+              if [[ ! -x /tmp/netobserv/oc ]] || ! grep -q netobserv-cli-scc-hook /tmp/netobserv/oc 2>/dev/null; then
+                cat > /tmp/netobserv/oc <<'EOF'
+              #!/bin/bash
+              # netobserv-cli-scc-hook: collector pod must run privileged to write ./output/flow
+              REAL=/tmp/netobserv/oc.real
+              if [[ "$1" == "run" ]] && printf '%s\n' "$@" | grep -qw collector; then
+                args=(run --privileged)
+                shift
+                while [[ $# -gt 0 ]]; do
+                  args+=("$1")
+                  shift
+                done
+                exec "$REAL" "${args[@]}"
+              fi
+              exec "$REAL" "$@"
+              EOF
+                chmod +x /tmp/netobserv/oc
+              fi
+              if [[ ! -x /tmp/netobserv/oc-netobserv ]]; then
+                curl -sfL -o /tmp/netobserv/oc-netobserv \
+                  "https://mirror.openshift.com/pub/cgw/netobserv/${NETOBSERV_CLI_VERSION}/oc-netobserv-amd64"
+                chmod +x /tmp/netobserv/oc-netobserv
+              fi
+              exec python3 /opt/capture/netobserv-capture-proxy.py
+          volumeMounts:
+            - name: capture-scripts
+              mountPath: /opt/capture
+              readOnly: true
+            - name: capture-kubeconfig
+              mountPath: /opt/kube
+              readOnly: true
+            - name: capture-data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+      volumes:
+        - name: capture-scripts
+          configMap:
+            name: netobserv-capture-proxy-scripts
+            defaultMode: 0555
+        - name: capture-kubeconfig
+          secret:
+            secretName: netobserv-capture-kubeconfig
+            optional: true
+        - name: capture-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netobserv-capture-proxy
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: netobserv-capture-proxy
+    app.kubernetes.io/part-of: netobserv-demo
+spec:
+  selector:
+    app.kubernetes.io/name: netobserv-capture-proxy
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
