@@ -211,7 +211,7 @@ Full runbook: [docs/PHASE-11-RHCL.md](docs/PHASE-11-RHCL.md)
 ## After install — demo day
 
 ```bash
-export DEMO_KIT_ROOT=~/AIOps/demo/demo-4-platform-kit
+export DEMO_KIT_ROOT="${DEMO_KIT_ROOT:-$(cd ../demo-4-platform-kit && pwd)}"
 "$DEMO_KIT_ROOT/scripts/demo-cluster-preflight.sh" check
 "$DEMO_KIT_ROOT/scripts/netobserv-e2e-openclaw-test.sh" demo-a-fast
 ```
