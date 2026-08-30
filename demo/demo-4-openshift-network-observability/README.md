@@ -1,6 +1,6 @@
 # Network Observability on OpenShift — Demo Kit (IPI-on-AWS)
 
-A self-contained kit to stand up **Red Hat OpenShift Network Observability** on a fresh IPI-on-AWS cluster and run a sample customer-facing demo. The demo highlights per-tenant visibility, database microsegmentation and auditable flow evidence. It also inject a real incident, capture it with the `oc netobserv` CLI and have AI analyze the flow logs.
+A self-contained kit for **Red Hat OpenShift Network Observability** demos — from a **scripted NetObserv + fault-injection lab** (`scripts/`) to a **full greenfield agentic AIOps stack** (`demo-4-greenfield-install/` + `demo-4-platform-kit/`). The basic path highlights per-tenant visibility, database microsegmentation, and auditable flow evidence. It also injects a real incident, captures flows with the `oc netobserv` CLI, and analyzes evidence with an LLM.
 
 Tested on **OpenShift 4.21**.
 
@@ -10,7 +10,36 @@ The second demo video on fault injection, flow capture and analysis by frontier 
 
 ---
 
-## What's in here
+## Choose your path
+
+This directory contains **two related demos**:
+
+| Path | Folder | Best for |
+|------|--------|----------|
+| **NetObserv basics** | [`scripts/`](scripts/) | Stand up NetObserv + todo app, inject a fault, capture flows, analyze evidence with an LLM |
+| **Full agentic AIOps (greenfield)** | [`demo-4-greenfield-install/`](demo-4-greenfield-install/) + [`demo-4-platform-kit/`](demo-4-platform-kit/) | Phased install of NetObserv, OpenClaw/OpenShell, RHOAI/MLflow, Grafana, TrustyAI Guardrails, AAP, Slack, event-driven AIOps, SPIFFE, and RHCL — with end-to-end **Demo A** (fault → investigate → heal) |
+
+The **basic quickstart below** uses `scripts/` only.
+
+For the **full stack**, start here:
+
+```bash
+git clone https://github.com/lfedgeai/AIOps.git
+cd AIOps/demo/demo-4-openshift-network-observability/demo-4-greenfield-install
+
+cp config/site-secrets.example.yaml config/site-secrets.local.yaml
+# oc login on your cluster bastion first — see docs/CLUSTER-LOGIN.md
+./scripts/greenfield-install.sh config prompt   # AWS + LLM + Slack wizard
+./scripts/greenfield-install.sh phases          # Phases 1–12
+```
+
+The platform kit (`../demo-4-platform-kit`) is resolved automatically as `DEMO_KIT_ROOT`. See [`demo-4-greenfield-install/README.md`](demo-4-greenfield-install/README.md) and [`INSTALL.md`](demo-4-greenfield-install/INSTALL.md) for the full runbook.
+
+**Day-2 / repeat demos:** [`demo-4-greenfield-install/CLUSTER-WAKE.md`](demo-4-greenfield-install/CLUSTER-WAKE.md) · trial run: `"$DEMO_KIT_ROOT/scripts/netobserv-e2e-openclaw-test.sh" demo-a-fast`
+
+---
+
+## What's in here (NetObserv basics — `scripts/`)
 
 | File | Purpose |
 |------|---------|
@@ -34,17 +63,16 @@ The second demo video on fault injection, flow capture and analysis by frontier 
 
 ## Quickstart
 
-**1. Clone the repository and go to the Network Observability demo directory**
+**1. Clone the repository and go to the scripts directory**
 
 ```
 git clone https://github.com/lfedgeai/AIOps.git
-cd AIOps/demo/demo-4-openshift-network-observability
+cd AIOps/demo/demo-4-openshift-network-observability/scripts
 ```
 
 **2. Install Network Observability** — you will be prompted for cluster login, AWS keys, region and bucket name:
 
 ```bash
-cd scripts
 chmod +x install-netobserv-aws.sh
 ./install-netobserv-aws.sh 2>&1 | tee netobserv-install.log
 ```
@@ -54,7 +82,6 @@ When prompted, you can optionally enable a bucket-scoped IAM user (recommended f
 **3. Deploy the sample app + traffic:**
 
 ```bash
-cd scripts
 chmod +x deploy-netobserv-todo-app.sh
 ./deploy-netobserv-todo-app.sh
 ```
