@@ -11,7 +11,7 @@ async def main():
 
     # Load Chroma
     db = load_vectordb_from_yaml(
-        "resources/vectordb.yaml",
+        "resources/chroma/vectordb.yaml",
         "local",
         "."
     )

@@ -1,0 +1,130 @@
+# =========================================================
+# AutoRAG AIOps Evaluation Configuration
+# AutoRAG 0.3.25
+# =========================================================
+
+
+# =========================================================
+# 1. Vector Database
+# =========================================================
+
+vectordb:
+
+  - name: local
+    db_type: chroma
+    client_type: persistent
+    path: resources/chroma
+    collection_name: aiops
+
+    embedding_model: huggingface_baai_bge_small
+
+
+# =========================================================
+# 2. Node Lines
+# =========================================================
+
+node_lines:
+
+  # -------------------------------------------------------
+  # 2.1 Retrieval — compare semantic, lexical, and hybrid
+  #     against each other on the same metrics
+  # -------------------------------------------------------
+
+  - node_line_name: semantic_retrieval_node_line
+    nodes:
+      - node_type: semantic_retrieval
+        strategy:
+          metrics:
+            - retrieval_f1
+            - retrieval_recall
+            - retrieval_ndcg
+            - retrieval_mrr
+        top_k: [3, 5]
+        modules:
+          - module_type: vectordb
+            vectordb: local
+  - node_line_name: lexical_retrieval_node_line
+    nodes:
+      - node_type: lexical_retrieval
+        strategy:
+          metrics:
+            - retrieval_f1
+            - retrieval_recall
+            - retrieval_ndcg
+            - retrieval_mrr
+        top_k: 3
+        modules:
+          - module_type: bm25
+
+
+  # -------------------------------------------------------
+  # 2.2 Prompt Maker
+  # -------------------------------------------------------
+
+  - node_line_name: post_retrieve_node_line
+
+    nodes:
+
+      - node_type: prompt_maker
+
+        strategy:
+          metrics:
+            - metric_name: meteor
+
+            - metric_name: rouge
+
+            - metric_name: sem_score
+              embedding_model: huggingface_baai_bge_small
+
+        modules:
+
+          - module_type: fstring
+
+            prompt: |
+
+              You are an AIOps troubleshooting assistant.
+
+              Answer the question using only the provided
+              operational context.
+
+              Question:
+              {query}
+
+              Operational context:
+              {retrieved_contents}
+
+              Answer:
+
+
+  # -------------------------------------------------------
+  # 2.3 Generator (kept fixed for now — one LLM candidate)
+  # -------------------------------------------------------
+
+      - node_type: generator
+
+        strategy:
+          metrics:
+            - metric_name: meteor
+
+            - metric_name: rouge
+
+            - metric_name: sem_score
+              embedding_model: huggingface_baai_bge_small
+
+        modules:
+
+          - module_type: llama_index_llm
+            llm: huggingfacellm
+
+            model: Qwen/Qwen2.5-0.5B-Instruct
+            model_name: Qwen/Qwen2.5-0.5B-Instruct
+            tokenizer_name: Qwen/Qwen2.5-0.5B-Instruct
+
+            context_window: 3900
+            max_new_tokens: 256
+
+            batch: 1
+
+            device_map: cpu
+
+            is_chat_model: true
