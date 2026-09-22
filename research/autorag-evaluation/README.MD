@@ -111,16 +111,22 @@ pip install autorag chromadb llama-index llama-index-embeddings-huggingface llam
 From this directory:
 
 ```bash
-# 1) Ingest the corpus into the Chroma vector store (only needed once, or after corpus changes)
+# 1) Build the corpus + initial QA data
+python3  create_dataset.py
+
+# 2) Clean/repair the QA schema
+python3 fix_qa.py
+
+# 3) Ingest the corpus into the Chroma vector store (only needed once, or after corpus changes)
 python3 ingest_chroma.py
 
-# 2) Validate the config on a small automatic sample (fast sanity check)
+# 4) Validate the config on a small automatic sample (fast sanity check)
 autorag validate \
   --qa_data_path data/aiops_qa_fixed.parquet \
   --corpus_data_path data/aiops_corpus.parquet \
   --config config/aiops.yaml
 
-# 3) Run the full evaluation
+# 5) Run the full evaluation
 autorag evaluate \
   --qa_data_path data/aiops_qa_fixed.parquet \
   --corpus_data_path data/aiops_corpus.parquet \
