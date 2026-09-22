@@ -1,0 +1,9 @@
+vectordb:
+  - name: local
+    db_type: chroma
+    client_type: persistent
+    embedding_model:
+      type: huggingface
+      model_name: BAAI/bge-small-en-v1.5
+    collection_name: bge_small
+    path: ./resources/chroma
