@@ -1,0 +1,90 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Doris vs ClickHouse vs Druid benchmark</title>
+<style>table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:6px 10px}#chartWrap{max-width:900px;height:400px;margin:1em 0}</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head><body>
+  <h1>Doris vs ClickHouse vs Druid benchmark</h1>
+  <div>Generated at 2026-09-29T21:07:30.332880</div>
+  <h2>Ingestion comparison</h2>
+  <div id="ingestChartWrap" style="max-width:600px;height:250px;margin:1em 0"><canvas id="ingestChart"></canvas></div>
+  <table>
+    <tr><th>Backend</th><th>Mechanism</th><th>Duration (s)</th><th>Rows</th><th>Rows/sec</th></tr>
+    <tr><td>Doris</td><td>Batch file load (5000 rows)</td><td>17.15</td><td>78400</td><td>4571.0</td></tr>
+    <tr><td>ClickHouse</td><td>Batch file load (5000 rows)</td><td>12.77</td><td>78400</td><td>6139.0</td></tr>
+    <tr><td>Druid</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+    
+    <tr><td>Loki</td><td>skipped</td><td>-</td><td>-</td><td>-</td></tr>
+    
+  </table>
+  <p><small>Raw ingest: Doris {"status": "ok", "duration_s": 17.15, "mechanism": "Batch file load (5000 rows)", "rows": 78400, "rows_per_sec": 4571.0} | CH {"status": "ok", "duration_s": 12.77, "mechanism": "Batch file load (5000 rows)", "rows": 78400, "rows_per_sec": 6139.0} | Druid {"status": "skipped"}</small></p>
+  
+  <h3>Data volume (full scan)</h3>
+  <p>Total rows in telemetry tables at query time. Latency = full COUNT(*) time.</p>
+  <table>
+    <tr><th>Backend</th><th>Total rows (logs, spans, metrics)</th><th>Full-scan latency</th></tr>
+    <tr><td>Doris</td><td>78,400 (logs=278, spans=77,014, metrics=1,108)</td><td>0.015s</td></tr>
+    <tr><td>ClickHouse</td><td>78,400 (logs=278, spans=77,014, metrics=1,108)</td><td>0.006s</td></tr>
+    <tr><td>Druid</td><td>-</td><td>-</td></tr>
+    
+  </table>
+
+  <h2>Query latency (seconds)</h2>
+  <div id="chartWrap"><canvas id="latencyChart"></canvas></div>
+  <h2>Query comparison</h2>
+  <table>
+    <tr><th>query</th><th>Doris lat</th><th>Doris rows</th><th>Doris err</th>
+        <th>CH lat</th><th>CH rows</th><th>CH err</th>
+        <th>Druid lat</th><th>Druid rows</th><th>Druid err</th>
+        
+        
+        <th>% diff</th><th>faster</th></tr>
+    <tr><td>correlation_by_timestamp</td><td>0.02895783301210031</td><td>20</td><td></td><td>0.015517834050115198</td><td>20</td><td></td><td></td><td></td><td></td><td>46.4%</td><td>ClickHouse</td></tr>
+<tr><td>correlation_by_trace_id</td><td>0.030308375018648803</td><td>20</td><td></td><td>0.02752391598187387</td><td>20</td><td></td><td></td><td></td><td></td><td>9.2%</td><td>ClickHouse</td></tr>
+<tr><td>data_volume</td><td>0.015400625008624047</td><td>3</td><td></td><td>0.004769959021359682</td><td>3</td><td></td><td></td><td></td><td></td><td>69.0%</td><td>ClickHouse</td></tr>
+<tr><td>logs_errors_by_service</td><td>0.011083959019742906</td><td>13</td><td></td><td>0.04403412499232218</td><td>13</td><td></td><td></td><td></td><td></td><td>74.8%</td><td>Doris</td></tr>
+<tr><td>logs_recent</td><td>0.05873708403669298</td><td>100</td><td></td><td>0.0077776669641025364</td><td>100</td><td></td><td></td><td></td><td></td><td>86.8%</td><td>ClickHouse</td></tr>
+<tr><td>logs_search_error</td><td>0.031344625051133335</td><td>73</td><td></td><td>0.035160375002305955</td><td>73</td><td></td><td></td><td></td><td></td><td>10.9%</td><td>Doris</td></tr>
+<tr><td>metrics_by_service_hourly</td><td>0.010515041009057313</td><td>2</td><td></td><td>0.004303166002500802</td><td>2</td><td></td><td></td><td></td><td></td><td>59.1%</td><td>ClickHouse</td></tr>
+<tr><td>metrics_p95_latency</td><td>0.010080708016175777</td><td>2</td><td></td><td>0.004005583003163338</td><td>2</td><td></td><td></td><td></td><td></td><td>60.3%</td><td>ClickHouse</td></tr>
+<tr><td>sla_latency_compliance</td><td>0.009092916967347264</td><td>1</td><td></td><td>0.004355582990683615</td><td>1</td><td></td><td></td><td></td><td></td><td>52.1%</td><td>ClickHouse</td></tr>
+<tr><td>spans_error_by_service</td><td>0.011893249989952892</td><td>2</td><td></td><td>0.020745540969073772</td><td>2</td><td></td><td></td><td></td><td></td><td>42.7%</td><td>Doris</td></tr>
+<tr><td>trace_by_id</td><td>0.025115958997048438</td><td>4</td><td></td><td>0.004291999968700111</td><td>4</td><td></td><td></td><td></td><td></td><td>82.9%</td><td>ClickHouse</td></tr>
+<tr><td>traces_slow_by_service</td><td>0.010574875050224364</td><td>0</td><td></td><td>0.00424941600067541</td><td>0</td><td></td><td></td><td></td><td></td><td>59.8%</td><td>ClickHouse</td></tr>
+  </table>
+  <script>
+    const data = {"queries": ["correlation_by_timestamp", "correlation_by_trace_id", "data_volume", "logs_errors_by_service", "logs_recent", "logs_search_error", "metrics_by_service_hourly", "metrics_p95_latency", "sla_latency_compliance", "spans_error_by_service", "trace_by_id", "traces_slow_by_service"], "doris": [0.029, 0.0303, 0.0154, 0.0111, 0.0587, 0.0313, 0.0105, 0.0101, 0.0091, 0.0119, 0.0251, 0.0106], "clickhouse": [0.0155, 0.0275, 0.0048, 0.044, 0.0078, 0.0352, 0.0043, 0.004, 0.0044, 0.0207, 0.0043, 0.0042], "druid": [null, null, null, null, null, null, null, null, null, null, null, null], "oceanbase": [null, null, null, null, null, null, null, null, null, null, null, null], "loki": [null, null, null, null, null, null, null, null, null, null, null, null]};
+    const ingestData = {"labels": ["Doris", "ClickHouse", "Druid"], "duration_s": [17.15, 12.77, null], "rows_per_sec": [4571.0, 6139.0, null]};
+    if (ingestData.duration_s.some(x => x != null)) {
+      const ctx = document.getElementById('ingestChart').getContext('2d');
+      new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: ingestData.labels,
+          datasets: [{ label: 'Ingestion time (s)', data: ingestData.duration_s, backgroundColor: ['rgba(54,162,235,0.7)','rgba(75,192,192,0.7)','rgba(255,159,64,0.7)'] }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+      });
+    }
+    const ctx = document.getElementById('latencyChart').getContext('2d');
+    const datasets = [
+      { label: 'Doris', data: data.doris, backgroundColor: 'rgba(54,162,235,0.7)' },
+      { label: 'ClickHouse', data: data.clickhouse, backgroundColor: 'rgba(75,192,192,0.7)' },
+      { label: 'Druid', data: data.druid, backgroundColor: 'rgba(255,159,64,0.7)' }
+    ];
+    if (data.oceanbase && data.oceanbase.length) datasets.push({ label: 'OceanBase', data: data.oceanbase, backgroundColor: 'rgba(153,102,255,0.7)' });
+    if (data.loki && data.loki.length) datasets.push({ label: 'Loki', data: data.loki, backgroundColor: 'rgba(255,99,132,0.7)' });
+    new Chart(ctx, {
+      type: 'bar',
+      data: { labels: data.queries, datasets: datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: 'top' } },
+        scales: {
+          x: { ticks: { maxRotation: 45, minRotation: 45 } },
+          y: { beginAtZero: true, title: { display: true, text: 'Latency (s)' } }
+        }
+      }
+    });
+  </script>
+</body></html>

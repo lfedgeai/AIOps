@@ -99,6 +99,7 @@ def stream_load(table: str, file_path: Path, fmt: str = "json", columns: str | N
         "-H", f"read_json_by_line: {'true' if read_json_by_line else 'false'}",
         "-H", "max_filter_ratio: 1",
         "-H", "Expect: 100-continue",
+        *(["-H", f"columns: {columns}"] if columns else []),
         "-T", str(file_path),
         url,
     ]
@@ -129,6 +130,15 @@ def stream_load(table: str, file_path: Path, fmt: str = "json", columns: str | N
         except subprocess.CalledProcessError as ce2:
             print(f"[stream_load][exec-curl] FAILED {table}: {ce2.stdout or ce2.stderr}")
             return False
+
+def _http_status_code(attributes) -> int | None:
+    """Promote attributes["http.status_code"] to a typed column so it can be indexed."""
+    v = attributes.get("http.status_code") if isinstance(attributes, dict) else None
+    if isinstance(v, (int, float)):
+        return int(v)
+    if isinstance(v, str) and v.isdigit():
+        return int(v)
+    return None
 
 def rows_to_jsonl(rows):
     """
@@ -163,7 +173,8 @@ def main() -> int:
         stats["logs"] += len(log_rows)
         logs_tmp.write_bytes(rows_to_jsonl(log_rows))
         jp = json.dumps(["$.ts","$.service","$.level","$.message","$.trace_id","$.span_id","$.attrs"])
-        if not stream_load("logs", logs_tmp, jsonpaths=jp, read_json_by_line=True):
+        if not stream_load("logs", logs_tmp, jsonpaths=jp, read_json_by_line=True,
+                           columns="ts,service,level,message,trace_id,span_id,attrs"):
             return 1
     if logs_tmp.exists():
         logs_tmp.unlink(missing_ok=True)
@@ -172,9 +183,12 @@ def main() -> int:
     traces_tmp = Path(".replay_spans.jsonl")
     for span_rows in common.extract_span_rows(data_dir, args.batch, target_rows=target):
         stats["spans"] += len(span_rows)
+        for r in span_rows:
+            r["http_status_code"] = _http_status_code(r.get("attributes"))
         traces_tmp.write_bytes(rows_to_jsonl(span_rows))
-        jp = json.dumps(["$.ts_start","$.trace_id","$.ts_end","$.span_id","$.parent_span_id","$.service","$.name","$.duration_ms","$.attributes"])
-        if not stream_load("spans", traces_tmp, jsonpaths=jp, read_json_by_line=True):
+        jp = json.dumps(["$.ts_start","$.trace_id","$.ts_end","$.span_id","$.parent_span_id","$.service","$.name","$.duration_ms","$.http_status_code","$.attributes"])
+        if not stream_load("spans", traces_tmp, jsonpaths=jp, read_json_by_line=True,
+                           columns="ts_start,trace_id,ts_end,span_id,parent_span_id,service,name,duration_ms,http_status_code,attributes"):
             return 1
     if traces_tmp.exists():
         traces_tmp.unlink(missing_ok=True)
@@ -184,8 +198,9 @@ def main() -> int:
     for met_rows in common.extract_metric_rows(data_dir, args.batch, target_rows=target):
         stats["metrics"] += len(met_rows)
         metrics_tmp.write_bytes(rows_to_jsonl(met_rows))
-        jp = json.dumps(["$.ts","$.metric_name","$.value","$.labels"])
-        if not stream_load("metrics", metrics_tmp, jsonpaths=jp, read_json_by_line=True):
+        jp = json.dumps(["$.ts","$.metric_name","$.value","$.trace_id","$.labels"])
+        if not stream_load("metrics", metrics_tmp, jsonpaths=jp, read_json_by_line=True,
+                           columns="ts,metric_name,value,trace_id,labels"):
             return 1
     if metrics_tmp.exists():
         metrics_tmp.unlink(missing_ok=True)
