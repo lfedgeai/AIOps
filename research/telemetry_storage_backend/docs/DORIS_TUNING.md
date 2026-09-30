@@ -13,8 +13,14 @@ measurement artifact, not engine speed.
    day", but there was no `PARTITION BY`. Log search used three `LIKE '%error%'` scans, and JSON
    attributes were parsed per row. Doris's main log-analytics features (inverted and full-text
    indexes, partition pruning) were not in use.
+3. **Query and layout.** `correlation_by_trace_id` de-duplicated a raw three-way join with
+   `COUNT(DISTINCT)`. It now aggregates per trace first, and spans and metrics are colocated on
+   `trace_id`. JSON attributes are now `VARIANT`, so ad-hoc attribute filters are columnar.
 
-Results before and after are in [Results](#results).
+On 2.46M spans, the new schema makes log search 8–20× faster, error-span filtering 3× faster and
+trace correlation 1.6× faster. The other queries are unchanged: they're bound by a fixed Doris
+per-query floor of about 15–20 ms, which is planning and scheduling rather than scanning. Results
+are in [Results](#results).
 
 ## 1. Measurement fix
 
@@ -66,12 +72,15 @@ Rule: each canonical query must be served by one of these:
 | Change | Why |
 |---|---|
 | `AUTO PARTITION BY RANGE (date_trunc(ts, 'day'))` on logs, spans, metrics (partition column is `NOT NULL`) | Every query filters `ts >= NOW() - INTERVAL …`. Without partitions each one scanned all tablets. Daily partitions also make TTL and retention a partition drop. |
-| `logs`: `DISTRIBUTED BY RANDOM` instead of `HASH(service)` | `service` is heavily skewed: in this dataset `frontend` is 50.5% of rows and `load-generator` 18.7%, so one of 8 hash buckets holds at least half the data and a single scanner thread dominates. No log query does a point lookup by service. |
+| `logs`: `DISTRIBUTED BY RANDOM` instead of `HASH(service)` | `service` is heavily skewed (`frontend` is 50.5% of rows), and no log query looks up by service. We also tried `HASH(trace_id)`, to join the colocation group below: it spread logs evenly, but made `logs_search_error` 2.5× slower (42→115 ms), so logs stay RANDOM. Note that RANDOM writes each load job to one tablet, so this small dataset (a few loads) ends up in a single tablet; with continuous ingestion the loads spread across all 8. |
+| `spans` and `metrics`: `DISTRIBUTED BY HASH(trace_id)` with `"colocate_with" = "telemetry_trace"` | Colocated tables have matching buckets, so a join on `trace_id` runs bucket-local with no data exchange. `correlation_by_trace_id` went from 248 to 180 ms. Metrics previously hashed on `metric_name`, and no metric query depends on that. **Caveat:** production OTLP metrics usually have no `trace_id`; if so, they'd all hash into one bucket, and metrics should stay on `HASH(metric_name)` outside the group. |
+| 8 buckets per partition (unchanged) | Tested 8, 4 and 2 on the scaled data: the suite totalled 303, 482 and 571 ms. With 8 vCPUs, one tablet per core gives the most scan parallelism. Fewer tablets don't lower the per-query floor (see below). |
 | `logs.message`: `INVERTED` index with `parser=unicode`, `lower_case=true`, `support_phrase=true` | Full-text search. `MATCH_ANY 'error'` replaces `LIKE '%error%' OR LIKE '%Error%' OR LIKE '%ERROR%'`, which was three substring scans over messages of up to 200 KB. |
 | `INVERTED` indexes on `logs.level`, `logs.service`, `logs.trace_id`, `spans.trace_id`, `spans.service`, `metrics.metric_name` | Equality filters and trace lookups. |
 | `spans.duration_ms`: `INVERTED` (numeric, BKD) | Range filters `duration_ms > 500` and `> 5000`. |
 | New `spans.http_status_code INT`, promoted from `attributes["http.status_code"]` at load time, with an `INVERTED` index | The error-span query parsed JSON on every row. A typed, indexed column turns it into an index range lookup. |
-| New `metrics.trace_id VARCHAR`, promoted from `labels.trace_id` at load time, with an `INVERTED` index | `correlation_by_trace_id` joined on `json_extract_string(labels,'$.trace_id')`, computed per row. It now joins on a plain column. |
+| New `metrics.trace_id VARCHAR`, promoted from `labels.trace_id` at load time, with an `INVERTED` index | `correlation_by_trace_id` joined on `json_extract_string(labels,'$.trace_id')`, computed per row. It now joins on a plain column, which is also the colocation key. |
+| `attributes`, `labels`, `attrs`: `VARIANT` instead of `JSON`, each with an `INVERTED` index | VARIANT stores every JSON key as its own typed sub-column, so filters on keys that were never promoted become columnar and indexed with no schema change. On 2.4M spans, `attributes['rpc.grpc.status_code'] != 0` went from 53 to 29 ms and `attributes['http.method'] = 'POST'` from 51 to 21 ms (vs `json_extract_string`), with identical results. Dotted keys stay literal: `attributes['http.status_code']`. We kept the promoted columns because querying the hot key via VARIANT was slower (22→37 ms) than the indexed `INT` column. |
 | `compaction_policy=time_series` (logs, spans) | Recommended for append-only observability tables: less write amplification during compaction. |
 | Compression left at the default `lz4`, **not** `zstd` | Tested. With `zstd` on logs, `logs_recent` went from 32 to 52 ms and `logs_search_error` from 99 to 157 ms, because both decompress the wide `message` column. Spans showed no measurable difference. Use `"compression" = "zstd"` when storage cost matters more than latency. |
 
@@ -89,7 +98,7 @@ The promoted columns are filled by `loaders/replay_doris.py` for batch loads and
 | `traces_slow_by_service` | `ts_start` range, `duration_ms > 500` | Partition pruning; `idx_duration_ms` (BKD range) |
 | `spans_error_by_service` | `ts_start` range, `http_status_code >= 500 OR duration_ms > 5000` | Partition pruning; `idx_http_status_code` ∪ `idx_duration_ms` |
 | `sla_latency_compliance` | `ts_start` range, aggregate over all rows in range | Partition pruning plus sort key (a full aggregate needs every row in range; no index helps) |
-| `correlation_by_trace_id` | join spans ↔ logs ↔ metrics on `trace_id` | Plain-column equi-joins instead of `json_extract` per row. A join is bounded by its hash-join cost, not by an access path. |
+| `correlation_by_trace_id` | join spans ↔ logs ↔ metrics on `trace_id` | Rewritten: each side is aggregated per trace before joining; spans ⋈ metrics is colocated (bucket-local); plain-column join keys instead of `json_extract` |
 | `correlation_by_timestamp` | per-minute buckets over a `ts` range | Partition pruning plus sort key |
 | `metrics_p95_latency`, `metrics_by_service_hourly` | `ts` range, group by `metric_name` | Partition pruning plus sort key `(ts, metric_name)` |
 | `data_volume` | `COUNT(*)` | Full scan by definition |
@@ -103,10 +112,35 @@ The promoted columns are filled by `loaders/replay_doris.py` for batch loads and
 - **ClickHouse bug fixed on the way.** `http.status_code` is a JSON *number* in the dataset (about
   35k spans, 968 of them 5xx). `JSONExtractString` returns `''` for numbers, so the old ClickHouse
   query never counted a 5xx span. It now uses `JSONExtractInt`, so both engines count the same rows.
-- **Fairness.** The ClickHouse schema is unchanged here: no skip indexes, no partitioning, no
-  `LowCardinality`. A fully fair comparison should give ClickHouse the equivalents too
-  (`PARTITION BY toDate(ts)`, `tokenbf_v1` or `ngrambf_v1` on `message`, `bloom_filter` on
-  `trace_id`, typed `http_status_code`).
+
+### Query rewrite: `correlation_by_trace_id`
+
+The original query joined raw span, log and metric rows and then removed duplicates with
+`COUNT(DISTINCT …)`. The rewrite aggregates each table per `trace_id` first and joins the small
+results. The span side uses `GROUP BY` over a `SELECT DISTINCT`, which Doris runs as two plain
+aggregations instead of a multi-phase distinct aggregation. Plain `COUNT(*)` over the same groups
+took 42 ms against 154 ms for `COUNT(DISTINCT span_id)`. On 2.4M spans the rewrite alone went from
+178 to 102 ms, with identical results.
+
+### The per-query floor, and what doesn't lower it
+
+Doris answers `SELECT 1` in 3.6 ms (ClickHouse: 2.7 ms), so the MySQL protocol and parser are not
+the problem. Any query that touches a table, even one with 3 rows, costs about 16 ms. A query
+profile shows the BE executes it in under 1 ms; the rest is FE planning (including about 5 ms of
+table locking) and scheduling fragments onto the BE. That's why Doris's simplest queries sit at
+about 10–20 ms, while ClickHouse's are at about 5 ms.
+
+Things we measured that don't help:
+
+- **Fewer buckets:** slower, as shown above.
+- **`parallel_pipeline_task_num = 8`** (the default is half the cores): no change once there are
+  8 tablets.
+- **`zstd`:** slower, as shown above.
+
+What does cut the floor is caching results or plans: the SQL cache, or server-side prepared
+statements, which only apply to primary-key point lookups on unique-key tables. Those measure
+cache hits rather than query execution, so this benchmark leaves them off, the same reason it
+doesn't use pre-aggregated materialized views.
 
 ## Also fixed: span queries were scanning nothing
 
@@ -135,11 +169,12 @@ now runs a Doris full compaction and ClickHouse `OPTIMIZE TABLE … FINAL` befor
 
 ## Results
 
-**Setup.** Apple M3 Max, with Podman 5.8 running a VM with 8 vCPU and 14 GB. Doris 3.0.8
+**Setup.** Apple M3 Max, with Podman 5.8 running a VM with 8 vCPU and 20 GB. Doris 3.0.8
 (`apache/doris:3.0.8-all`, a single FE+BE) and ClickHouse 24.3.18, both with default settings.
 Values are median client latency in ms over 5 timed runs after 1 warm-up (10 after 2 for the
-scaled set). Every configuration returned **identical row counts** for every query. Both engines
-were compacted before timing.
+scaled set). Every configuration returned **identical row counts** for every query, except where
+noted. Both engines were compacted before timing. All numbers in this section come from a single
+session.
 
 - **A** = original harness (`docker run mysql:8` per query), old schema and queries
 - **B** = new harness (persistent pymysql), old schema and queries
@@ -149,25 +184,26 @@ were compacted before timing.
 
 | Query | ClickHouse | Doris A | Doris B | Doris C |
 |---|---:|---:|---:|---:|
-| correlation_by_timestamp | 11.4 | 235.5 | 23.3 | 24.0 |
-| correlation_by_trace_id | 20.3 | 234.8 | 25.3 | 24.6 |
-| data_volume | 4.8 | 232.0 | 14.0 | 16.3 |
-| logs_errors_by_service | 34.8 | 246.8 | 22.5 | **11.8** |
-| logs_recent | 16.6 | 254.6 | 31.2 | 49.0 ¹ |
-| logs_search_error | 34.0 | 250.7 | 35.8 | **29.5** |
-| metrics_by_service_hourly | 4.1 | 221.8 | 9.6 | 9.9 |
-| metrics_p95_latency | 4.0 | 216.9 | 9.3 | 10.3 |
-| sla_latency_compliance | 3.6 | 222.3 | 9.4 | 9.8 |
-| spans_error_by_service | 20.5 | 221.3 | 12.7 | **11.7** |
-| trace_by_id | 4.1 | 219.9 | 12.1 | 11.9 |
-| traces_slow_by_service | 4.0 | 221.3 | 9.2 | 11.2 |
+| correlation_by_timestamp | 17.1 | 356.0 | 38.0 | 48.3 |
+| correlation_by_trace_id | 29.4 | 359.6 | 38.8 | 44.5 |
+| data_volume | 7.3 | 308.7 | 22.5 | 25.2 |
+| logs_errors_by_service | 53.5 | 342.9 | 27.9 | **19.4** |
+| logs_recent | 10.7 | 389.9 | 84.6 | 68.4 |
+| logs_search_error | 54.0 | 337.6 | 60.7 | **37.0** |
+| metrics_by_service_hourly | 6.8 | 313.3 | 16.8 | 20.6 |
+| metrics_p95_latency | 5.2 | 294.4 | 15.7 | 22.5 |
+| sla_latency_compliance | 6.0 | 285.8 | 15.1 | 23.1 |
+| spans_error_by_service | 28.9 | 298.8 | 21.8 | 26.7 |
+| trace_by_id | 7.6 | 298.8 | 18.4 | 23.4 |
+| traces_slow_by_service | 6.0 | 291.1 | 15.2 | 18.6 |
 
-¹ Noisy on this run: the range was 29–64 ms. With 278 rows of up to 200 KB each, the query is
-dominated by transferring `LEFT(message,150)` for 100 rows.
-
-**Going from A to B removes about 210 ms from every Doris query.** That was container start-up in
+**Going from A to B removes 271–321 ms from every Doris query.** That was container start-up in
 the harness, not Doris. On the original machine the overhead was about 450 ms, which is why every
 published Doris number sat between 0.42 and 0.81 s.
+
+At this size the new schema only pays off on the log-search queries. The simple span and metric
+queries are a few ms slower in C, from the extra per-query cost of VARIANT sub-columns, more
+indexes and the colocation group, which shows up only when a query does almost no work.
 
 ### Scaled in-database (×32 spans = 2,464,448; ×16 logs = 4,448, about 0.9 GB of text; ×32 metrics = 35,456)
 
@@ -176,30 +212,33 @@ The data was replicated with `INSERT … SELECT` identically in each engine. Cop
 
 | Query | ClickHouse | Doris B (old schema) | Doris C (new schema) | C vs B |
 |---|---:|---:|---:|---:|
-| logs_errors_by_service | 94.1 | 97.4 | **13.3** | 7.3× faster |
-| logs_search_error | 98.6 | 225.1 | **34.1** | 6.6× faster |
-| spans_error_by_service | 66.5 | 42.5 | **13.4** | 3.2× faster |
-| correlation_by_timestamp | 22.9 | 63.3 | 61.1 | ≈ |
-| correlation_by_trace_id | 89.2 | 174.8 | 186.4 | ≈ (within noise; range 169–248) |
-| logs_recent | 20.1 | 27.5 | 31.3 | ≈ |
-| trace_by_id | 10.7 | 12.9 | 13.7 | ≈ |
-| sla_latency_compliance | 6.1 | 21.9 | 23.5 | ≈ |
-| traces_slow_by_service | 5.8 | 9.5 | 9.7 | ≈ |
-| metrics_p95_latency | 4.8 | 11.1 | 10.5 | ≈ |
-| metrics_by_service_hourly | 6.0 | 10.0 | 10.5 | ≈ |
-| data_volume | 4.7 | 15.1 | 18.4 | ≈ |
+| logs_errors_by_service | 146.8 | 341.7 | **16.8** | 20.4× faster |
+| logs_search_error | 134.4 | 433.0 | **51.3** | 8.4× faster |
+| spans_error_by_service | 95.9 | 58.3 | **19.6** | 3.0× faster |
+| correlation_by_trace_id | 111.6 | 233.6 | **147.1** | 1.6× faster |
+| correlation_by_timestamp | 28.1 | 89.1 | 79.3 | ≈ |
+| data_volume | 6.3 | 23.5 | 23.1 | ≈ |
+| logs_recent | 37.5 | 35.5 | 36.4 | ≈ |
+| metrics_by_service_hourly | 8.8 | 18.3 | 17.6 | ≈ |
+| metrics_p95_latency | 6.4 | 22.0 | 17.5 | 1.3× faster |
+| sla_latency_compliance | 7.5 | 33.5 | 30.7 | ≈ |
+| trace_by_id | 11.6 | 22.3 | 18.8 | ≈ |
+| traces_slow_by_service | 7.3 | 22.8 | 14.7 | 1.6× faster |
+
+`trace_by_id` returned 16 spans in C and 4 in B. The query picks "any trace" with `LIMIT 1`, and
+colocation changed the physical row order, so it fetched a larger trace.
 
 ### Reading the numbers
 
 - The **index-served shapes** (full-text log search, error-span filters) are where the schema
-  change pays off. They are 3–7× faster than the old schema and 3–7× faster than the untuned
-  ClickHouse schema.
+  change pays off most: 3–20× faster than the old schema. B's log-search numbers vary widely
+  from run to run (see min/max in `out/doris_tuning_20260929/ab_results.json`), so read those
+  ratios as "an order of magnitude", not as exact values.
+- **`correlation_by_trace_id`** is 1.6× faster, from the query rewrite plus colocating spans and
+  metrics on `trace_id`.
 - **Scan and aggregate shapes** (SLA, per-minute correlation, metrics rollups) and short lookups
-  are unchanged, within noise. At this size they are bound by a fixed per-query floor of about
-  10 ms in Doris (see `metrics_p95_latency` and `data_volume`), compared with about 4–5 ms for ClickHouse.
+  are unchanged or slightly faster. They're bound by the per-query floor described above.
   Partitioning and sort keys matter once the data covers many days. Here it covers one.
-- `correlation_by_trace_id` is a three-way hash join over 2.4M spans. An index doesn't change
-  its cost.
 - `traces_slow_by_service` returns 0 rows on every engine: no span in the dataset has
   `duration_ms > 500` within the 1‑day window.
 
@@ -212,3 +251,7 @@ make bench-compare BACKENDS=doris,clickhouse QUERY_RUNS=5
 
 On Podman, start Doris with `--pids-limit=-1`. The default 2048-PID cap kills the BE (`Cannot
 fork`) under query load. Docker Desktop has no such cap.
+
+Also pin the container IP, e.g. `--ip 10.89.0.50` on the `tsb-net` network. The all-in-one image
+identifies its FE by IP, so if a restart assigns a new address the FE waits forever in `UNKNOWN`
+state and never comes back.
