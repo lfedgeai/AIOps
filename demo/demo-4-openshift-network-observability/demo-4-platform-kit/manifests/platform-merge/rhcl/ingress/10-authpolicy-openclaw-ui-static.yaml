@@ -1,0 +1,20 @@
+# Allow unauthenticated GET for Control UI static icons (overrides gateway deny-all).
+# HTTPRoute openclaw-ui-static only exposes /apple-touch-icon.png and /favicon.ico.
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: openclaw-ui-static-allow
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: openclaw-ui-static
+  overrides:
+    rules:
+      authorization:
+        allow-public-static:
+          opa:
+            rego: "allow = true"

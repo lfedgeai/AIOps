@@ -1,0 +1,25 @@
+# Authorino OIDC login via Kuadrant OIDCPolicy — OpenShift cluster OAuth (not RHOAI data-science client).
+# Use jwksURL (OpenShift has no OIDC discovery on oauth-openshift route). scope=user:full patched post-apply.
+apiVersion: extensions.kuadrant.io/v1alpha1
+kind: OIDCPolicy
+metadata:
+  name: openclaw-ui-oidc
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  provider:
+    jwksURL: PLACEHOLDER_OAUTH_JWKS_URL
+    clientID: openclaw-rhcl
+    clientSecret: PLACEHOLDER_OAUTH_CLIENT_SECRET
+    authorizationEndpoint: https://oauth-openshift.PLACEHOLDER_INGRESS_DOMAIN/oauth/authorize
+    tokenEndpoint: https://oauth-openshift.PLACEHOLDER_INGRESS_DOMAIN/oauth/token
+    redirectURI: https://PLACEHOLDER_OPENCLAW_RHCL_HOST/auth/callback
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: openclaw-ui
+  auth:
+    tokenSource:
+      cookie:
+        name: jwt

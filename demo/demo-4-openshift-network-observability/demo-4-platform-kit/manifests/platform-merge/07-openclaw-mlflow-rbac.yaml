@@ -1,0 +1,32 @@
+# Allows netobserv-mcp (openclaw-netobserv SA) to log Traces to RHOAI MLflow via kubernetes auth.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openclaw-mlflow-client
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+rules:
+  - apiGroups: ["mlflow.kubeflow.org"]
+    resources: ["experiments", "gatewayendpoints", "gatewayendpoints/use"]
+    verbs: ["get", "list", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openclaw-mlflow-client
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openclaw-mlflow-client
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-netobserv
+    namespace: openclaw
+  - kind: ServiceAccount
+    name: netobserv-grafana-bridge
+    namespace: openclaw
+  - kind: ServiceAccount
+    name: netobserv-llm-guard-proxy
+    namespace: netobserv-guardrails

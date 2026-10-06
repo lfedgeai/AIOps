@@ -1,0 +1,5 @@
+node_line_name,node_type,best_module_filename,best_module_name,best_module_params,best_execution_time
+semantic_retrieval_node_line,semantic_retrieval,0.parquet,VectorDB,"{'top_k': 3, 'vectordb': 'local'}",0.0312070369720459
+lexical_retrieval_node_line,lexical_retrieval,0.parquet,BM25,{'top_k': 3},0.0038780689239501
+post_retrieve_node_line,prompt_maker,0.parquet,Fstring,{'prompt': '\nYou are an AIOps troubleshooting assistant.\n\nAnswer the question using only the provided\noperational context.\n\nQuestion:\n{query}\n\nOperational context:\n{retrieved_contents}\n\nAnswer:\n'},0.001202392578125
+post_retrieve_node_line,generator,0.parquet,LlamaIndexLLM,"{'llm': 'huggingfacellm', 'model': 'Qwen/Qwen2.5-0.5B-Instruct', 'model_name': 'Qwen/Qwen2.5-0.5B-Instruct', 'tokenizer_name': 'Qwen/Qwen2.5-0.5B-Instruct', 'context_window': 3900, 'max_new_tokens': 256, 'batch': 1, 'device_map': 'cpu', 'is_chat_model': True}",27.279327821731567

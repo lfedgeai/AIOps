@@ -1,0 +1,110 @@
+# Standalone MLflow tracking server for OpenClaw audit traces (Phase 1).
+# Lab scale: SQLite + PVC. Not HA. For RHOAI kubernetes-auth MLflow, see OPENCLAW-MLFLOW-DESIGN.md Option B.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-data
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: mlflow
+    app.kubernetes.io/part-of: netobserv-demo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: mlflow
+    app.kubernetes.io/part-of: netobserv-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mlflow
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mlflow
+        app.kubernetes.io/part-of: netobserv-demo
+    spec:
+      containers:
+        - name: mlflow
+          image: ghcr.io/mlflow/mlflow:v3.1.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5000
+          env:
+            - name: MLFLOW_BACKEND_STORE_URI
+              value: sqlite:////data/mlflow.db
+            - name: MLFLOW_DEFAULT_ARTIFACT_ROOT
+              value: file:///data/artifacts
+          command:
+            - mlflow
+            - server
+            - --host=0.0.0.0
+            - --port=5000
+            - --backend-store-uri=sqlite:////data/mlflow.db
+            - --default-artifact-root=file:///data/artifacts
+            - --serve-artifacts
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mlflow-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: mlflow
+    app.kubernetes.io/part-of: netobserv-demo
+spec:
+  selector:
+    app.kubernetes.io/name: mlflow
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mlflow-openclaw
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: mlflow
+    app.kubernetes.io/part-of: netobserv-demo
+spec:
+  to:
+    kind: Service
+    name: mlflow
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

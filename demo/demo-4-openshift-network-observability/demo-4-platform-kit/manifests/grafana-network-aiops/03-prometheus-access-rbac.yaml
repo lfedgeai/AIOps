@@ -1,0 +1,34 @@
+# Lets Grafana query openshift-monitoring Thanos (NetObserv flow metrics).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-prometheus-reader
+  namespace: netobserv-demo
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-prometheus-reader-netobserv-demo
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: grafana-prometheus-reader
+    namespace: netobserv-demo
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-prometheus-token
+  namespace: netobserv-demo
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+  annotations:
+    kubernetes.io/service-account.name: grafana-prometheus-reader
+type: kubernetes.io/service-account-token

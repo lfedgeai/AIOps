@@ -1,0 +1,138 @@
+# OpenShell remote seed wraps the workspace under openclaw-openshell-upload-*,
+# but OpenClaw reads skills at the flat path:
+#   /sandbox/.openclaw/sandbox-skills/skills/<name>/SKILL.md
+# This loop flattens every running agent sandbox so skill reads succeed.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: netobserv-sandbox-flatten
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: netobserv-sandbox-flatten
+    app.kubernetes.io/part-of: netobserv-demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: netobserv-sandbox-flatten
+  namespace: openshell
+  labels:
+    app.kubernetes.io/name: netobserv-sandbox-flatten
+    app.kubernetes.io/part-of: netobserv-demo
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: netobserv-sandbox-flatten
+  namespace: openshell
+  labels:
+    app.kubernetes.io/name: netobserv-sandbox-flatten
+    app.kubernetes.io/part-of: netobserv-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: netobserv-sandbox-flatten
+subjects:
+  - kind: ServiceAccount
+    name: netobserv-sandbox-flatten
+    namespace: openclaw
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netobserv-sandbox-flatten-script
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: netobserv-sandbox-flatten
+    app.kubernetes.io/part-of: netobserv-demo
+data:
+  flatten-loop.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    OPENSHELL_NS="${OPENSHELL_NS:-openshell}"
+    INTERVAL_SEC="${INTERVAL_SEC:-8}"
+    FLATTEN_REMOTE='
+    set +e
+    flatten_root() {
+      root="$1"
+      for d in "$root"/openclaw-openshell-upload-*; do
+        [ -d "$d" ] || continue
+        cp -a "$d"/. "$root"/ 2>/dev/null
+        rm -rf "$d"
+        echo "flattened:$d"
+      done
+    }
+    flatten_root /sandbox
+    mkdir -p /sandbox/.openclaw/sandbox-skills
+    flatten_root /sandbox/.openclaw/sandbox-skills
+    if [ -f /sandbox/.openclaw/sandbox-skills/skills/netobserv-evidence/SKILL.md ]; then
+      echo "ok:skill"
+    fi
+    '
+    echo "netobserv-sandbox-flatten watching ns=$OPENSHELL_NS interval=${INTERVAL_SEC}s"
+    while true; do
+      pods="$(kubectl -n "$OPENSHELL_NS" get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep '^openclaw-agent-' || true)"
+      for pod in $pods; do
+        phase="$(kubectl -n "$OPENSHELL_NS" get pod "$pod" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+        [[ "$phase" == "Running" ]] || continue
+        out="$(kubectl -n "$OPENSHELL_NS" exec "$pod" -c agent -- sh -c "$FLATTEN_REMOTE" 2>/dev/null || true)"
+        if printf '%s' "$out" | grep -q 'flattened:'; then
+          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $pod $out"
+        fi
+      done
+      sleep "$INTERVAL_SEC"
+    done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netobserv-sandbox-flatten
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: netobserv-sandbox-flatten
+    app.kubernetes.io/part-of: netobserv-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: netobserv-sandbox-flatten
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: netobserv-sandbox-flatten
+        app.kubernetes.io/part-of: netobserv-demo
+    spec:
+      serviceAccountName: netobserv-sandbox-flatten
+      containers:
+        - name: flatten
+          image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OPENSHELL_NS
+              value: openshell
+            - name: INTERVAL_SEC
+              value: "3"
+          command: ["/bin/bash", "/scripts/flatten-loop.sh"]
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+        - name: script
+          configMap:
+            name: netobserv-sandbox-flatten-script
+            defaultMode: 0755

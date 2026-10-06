@@ -1,0 +1,30 @@
+# Zero-trust default on the dedicated gateway. OIDCPolicy on HTTPRoutes overrides for protected paths.
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: openclaw-gateway-deny-all
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: openclaw-gateway
+  defaults:
+    when:
+      # Never evaluate deny-all on OIDC callback (Authorino handles code exchange there).
+      - predicate: 'request.path != "/auth/callback" && !request.path.startsWith("/auth/callback/")'
+    rules:
+      authorization:
+        deny-all:
+          opa:
+            rego: "allow = false"
+      response:
+        unauthorized:
+          headers:
+            content-type:
+              value: application/json
+          body:
+            value: |
+              {"error":"Forbidden","message":"OpenClaw RHCL gateway deny-all — OIDCPolicy required on HTTPRoute"}

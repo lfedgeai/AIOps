@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netobserv-grafana-bridge
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: netobserv-grafana-bridge
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: netobserv-grafana-bridge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: netobserv-grafana-bridge
+    spec:
+      serviceAccountName: openclaw-netobserv
+      containers:
+        - name: bridge
+          image: registry.access.redhat.com/ubi9/python-312:latest
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              python3 -m pip install -q 'mlflow>=3.1,<4'
+              export MLFLOW_TRACING_PATH=/tracing
+              exec python3 /scripts/netobserv-grafana-bridge.py
+          env:
+            - name: MLFLOW_TRACING_PATH
+              value: /tracing
+            - name: MLFLOW_TRACE_CONTEXT_TTL_SEC
+              value: "3600"
+            - name: OPENCLAW_HOOKS_URL
+              value: http://openclaw.openclaw.svc.cluster.local:18789/hooks/agent
+            - name: OPENCLAW_HOOKS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-hooks-token
+                  key: OPENCLAW_HOOKS_TOKEN
+            - name: SLACK_CHANNEL_ID
+              value: "SLACK_CHANNEL_ID_PLACEHOLDER"
+            - name: LISTEN_PORT
+              value: "8080"
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: 250m
+              memory: 512Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: mlflow-tracing
+              mountPath: /tracing
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: netobserv-grafana-bridge-scripts
+        - name: mlflow-tracing
+          configMap:
+            name: netobserv-mlflow-tracing
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netobserv-grafana-bridge
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: netobserv-grafana-bridge
+spec:
+  selector:
+    app.kubernetes.io/name: netobserv-grafana-bridge
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

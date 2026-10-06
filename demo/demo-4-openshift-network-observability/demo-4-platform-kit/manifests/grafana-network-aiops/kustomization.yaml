@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: netobserv-demo
+
+resources:
+  - 01-operatorgroup.yaml
+  - 02-subscription.yaml
+  - 03-prometheus-access-rbac.yaml
+  - 04-grafana.yaml
+  - 05-datasource-prometheus.yaml
+  - 06-dashboard-network-aiops.yaml
+  - 07-route.yaml
+  - 08-datasource-openclaw-otel.yaml

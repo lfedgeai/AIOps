@@ -1,0 +1,15 @@
+# Enable TrustyAI + KServe (RawDeployment Headed) for GuardrailsOrchestrator.
+# Apply when guardrailsorchestrators.trustyai.opendatahub.io CRD is missing.
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  components:
+    kserve:
+      managementState: Managed
+      rawDeploymentServiceConfig: Headed
+    trustyai:
+      managementState: Managed

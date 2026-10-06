@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: openclaw
+resources:
+  - 00-scc-privileged-bindings.yaml
+  - 01-serviceaccounts.yaml
+  - 02-clusterspiffeid-bridge.yaml
+  - 03-clusterspiffeid-hooks-mtls.yaml
+  - 04-spiffe-helper-configmaps.yaml
+  - 05-openclaw-hooks-mtls-proxy.yaml
+  - 06-netobserv-grafana-bridge-spiffe.yaml

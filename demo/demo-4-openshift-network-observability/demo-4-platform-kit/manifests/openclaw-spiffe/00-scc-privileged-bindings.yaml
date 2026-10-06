@@ -1,0 +1,32 @@
+# SPIFFE CSI volumes require privileged SCC (ZTWI 1.1+ uses platform privileged, not custom spire-spiffe-csi-driver).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: netobserv-grafana-bridge-spiffe-privileged
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:privileged
+subjects:
+  - kind: ServiceAccount
+    name: netobserv-grafana-bridge
+    namespace: openclaw
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openclaw-hooks-mtls-spiffe-privileged
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:privileged
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-hooks-mtls
+    namespace: openclaw

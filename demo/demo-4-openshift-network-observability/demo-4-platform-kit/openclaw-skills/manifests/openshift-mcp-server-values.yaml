@@ -1,0 +1,66 @@
+# OpenShift MCP server (Red Hat) — ClusterIP only for OpenClaw gateway.
+# Sandbox never dials this; OpenClaw connects in-cluster over Streamable HTTP.
+#
+# Install (see scripts/deploy-openshift-mcp-server.sh):
+#   helm upgrade -i openshift-mcp oci://ghcr.io/containers/charts/kubernetes-mcp-server \
+#     -n openclaw -f openshift-mcp-server-values.yaml
+#
+# OpenClaw wiring: auto-enabled when primary LLM contextWindow >= 65536 (128k LiteMaaS).
+# Override: ENABLE_OPENSHIFT_MCP=1|0 on seed; DISABLE_OPENSHIFT_MCP=1 forces off.
+#
+# Prerequisites: NetObserv operator + netobserv/netobserv-plugin:9001
+
+openshift: true
+
+fullnameOverride: openshift-mcp
+nameOverride: openshift-mcp
+
+replicaCount: 1
+
+ingress:
+  enabled: false
+
+httpRoute:
+  enabled: false
+
+serviceAccount:
+  create: true
+  automountToken: true
+
+extraContainers: []
+
+rbac:
+  create: true
+  extraClusterRoleBindings:
+    # Cluster-wide read for core tools + NetObserv plugin RBAC via the same token
+    - name: view
+      roleRef:
+        name: view
+        external: true
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+config:
+  port: "8080"
+  # core: cluster-wide read-only checks (events, nodes, resources); netobserv: live flow/metrics
+  # 128k LiteMaaS — both fit; legacy 16k MaaS should use netobserv only.
+  toolsets:
+    - core
+    - netobserv
+  # Pod SA for API + NetObserv plugin (no per-user OAuth)
+  cluster_auth_mode: kubeconfig
+  # Prefer observe-only for the shared demo SA; heal stays on netobserv-mcp
+  read_only: true
+  disable_destructive: true
+  toolset_configs:
+    netobserv:
+      # Defaults to https://netobserv-plugin.netobserv.svc.cluster.local:9001 on OCP
+      namespace: netobserv
+      service: netobserv-plugin
+      port: 9001

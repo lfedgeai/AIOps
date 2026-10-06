@@ -1,0 +1,21 @@
+# NetObserv demo — desired wiring state (kit-owned, not OpenShell lab defaults).
+# reconcile-openclaw-demo-wiring.sh reads this + live cluster secrets/CRDs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netobserv-demo-desired-state
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/part-of: netobserv-demo
+    netobserv.demo/config-layer: kit-desired-state
+data:
+  # auto = enable when prerequisites exist (secret / CRD); on = require; off = skip
+  features.yaml: |
+    guardrails: auto
+    event_aiops: auto
+    slack: auto
+  gateway_preset: netobserv-sre
+  guardrails_namespace: netobserv-guardrails
+  # Override at reconcile time: SLACK_CHANNEL_ID env or site-secrets.local.yaml
+  slack_channel_id: ""
+  direct_llm_base_url: https://litemaas.example.com/v1

@@ -1,0 +1,15 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: grafana-network-aiops
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  to:
+    kind: Service
+    name: network-aiops-service
+  port:
+    targetPort: grafana
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
