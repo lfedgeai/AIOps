@@ -1,4 +1,4 @@
-# Platform kit
+# Platform Kit
 
 Everything the greenfield installer deploys and everything you run on demo day. Install first with [`demo-4-greenfield-install/`](../demo-4-greenfield-install/README.md); come back here to run the scenarios and prove the controls.
 
@@ -23,7 +23,7 @@ The NetObserv install and todo-app scripts here are the installer's versions. Th
 
 ---
 
-## Before a demo
+## Before a Demo
 
 From the bastion, after the install:
 
@@ -58,7 +58,7 @@ The agent heals on a separate turn from the investigation; after a long investig
 
 ---
 
-## Proving the controls
+## Proving the Controls
 
 | Claim | Proof |
 |---|---|
@@ -92,7 +92,7 @@ The agent heals on a separate turn from the investigation; after a long investig
 
 ---
 
-## Supply chain
+## Supply Chain
 
 Every image and chart is pinned in [`scripts/supply-chain-pins.env`](scripts/supply-chain-pins.env). `supply-chain-check.sh` verifies the pins; `verify-image-pulls.sh` confirms the images are pullable before you install.
 

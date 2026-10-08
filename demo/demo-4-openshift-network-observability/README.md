@@ -8,7 +8,7 @@ An AI agent that investigates incidents from measured network evidence and remed
 
 ---
 
-## What the demo shows
+## What the Demo Shows
 
 A real network fault is injected on a live application path. An agent investigates it — on demand from Slack or the OpenClaw UI, or automatically from a Grafana alert — captures NetObserv flows, and posts a diagnosis backed by per-flow round-trip time and drop evidence. It then asks before acting. If a human confirms, remediation runs on a separate turn as a pre-approved Ansible job template.
 
@@ -29,7 +29,7 @@ The governance argument rests on four independent controls:
 
 ---
 
-## Where to go
+## Where to Go
 
 | You want to… | Open |
 |---|---|
@@ -39,7 +39,7 @@ The governance argument rests on four independent controls:
 
 The two `demo-4-*` folders are siblings by design; keep them side by side.
 
-## Quick start
+## Quick Start
 
 ```bash
 git clone https://github.com/lfedgeai/AIOps.git
@@ -53,7 +53,7 @@ Prerequisites, the twelve phases, and what each installs: [`demo-4-greenfield-in
 
 ---
 
-## What is supported
+## What is Supported
 
 | Component | Status |
 |---|---|

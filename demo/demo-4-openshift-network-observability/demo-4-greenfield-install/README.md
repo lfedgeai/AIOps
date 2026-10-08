@@ -18,7 +18,7 @@ Full prerequisites, time budget and the credentials you collect by hand: [`INSTA
 
 ---
 
-## Quick start
+## Quick Start
 
 ```bash
 git clone https://github.com/lfedgeai/AIOps.git
@@ -37,7 +37,7 @@ source config/env.local
 `config/site-secrets.local.yaml` and `config/env.local` are gitignored. Never commit them.
 
 
-### Installing from a laptop
+### Installing from a Laptop
 
 Edit on your laptop, run on the bastion. Set `BASTION_HOST` in `config/env.local`, then:
 
@@ -75,17 +75,17 @@ Phases 8 and 10 have manual steps — creating the Slack app and its scopes, and
 
 ---
 
-## Slack setup (Phase 8)
+## Slack Setup
 
 One-time **manual** work in [api.slack.com/apps](https://api.slack.com/apps), then wire on the bastion. Use a **dedicated Slack app per cluster** (Socket Mode allows only one active connection per app token).
 
-### 1. Create the app
+### 1. Create the App
 
 1. **Create New App** → **From scratch** (name it anything, e.g. `AgentOps-Test` — that becomes your `@mention` name).
 2. **Socket Mode** → turn **ON**.
 3. Create an **App-Level Token** with scope `connections:write` → copy `xapp-…` (app token).
 
-### 2. Bot token scopes (OAuth & Permissions)
+### 2. Bot Token Scopes (OAuth & Permissions)
 
 Under **Scopes** → **Bot Token Scopes**, add **all** of these:
 
@@ -107,7 +107,7 @@ Under **Scopes** → **Bot Token Scopes**, add **all** of these:
 
 Copy the **Bot User OAuth Token** (`xoxb-…`).
 
-### 3. Event subscriptions
+### 3. Event Subscriptions
 
 With **Socket Mode** still ON:
 
@@ -116,7 +116,7 @@ With **Socket Mode** still ON:
 
 Save changes. Reinstall the app again if Slack prompts you.
 
-### 4. Channel + site secrets (bastion)
+### 4. Channel + Site Secrets (Bastion)
 
 1. Create or pick a demo channel (e.g. `#agentops-test`).
 2. `/invite @<your-bot-name>` in that channel.
@@ -131,7 +131,7 @@ slack:
   app_token: xapp-...
 ```
 
-### 5. Wire on cluster
+### 5. Wire on Cluster
 
 ```bash
 ./scripts/phase8-slack.sh deploy
@@ -159,7 +159,7 @@ Test in Slack: `@<your-bot-name> hello` (mention required — `requireMention: t
 
 ---
 
-## SPIFFE / ZTWI (Phase 10)
+## SPIFFE / ZTWI
 
 Automated on the bastion after Phase 9. Installs **Zero Trust Workload Identity Manager** and upgrades the event path to **mTLS**.
 
@@ -179,7 +179,7 @@ After cluster reboot: `./scripts/phase10-spiffe.sh repair`
 
 ---
 
-## RHCL OAuth (Phase 11, optional)
+## RHCL OAuth (Optional)
 
 Enterprise Control UI login via OpenShift OAuth. **Not required** for Slack/MCP demos.
 
@@ -199,7 +199,7 @@ Test: incognito → `https://openclaw-rhcl.apps.<ingress>/`
 
 ---
 
-## Trial run
+## Trial Run
 
 Phase 12 checks each component on its own. Run the whole demo end to end once before you rely on it — from this folder:
 
@@ -238,6 +238,6 @@ demo-4-platform-kit/README.md.
 
 ---
 
-## Next
+## Next Step
 
 Installed? Run the demos: [`demo-4-platform-kit/README.md`](../demo-4-platform-kit/README.md).
