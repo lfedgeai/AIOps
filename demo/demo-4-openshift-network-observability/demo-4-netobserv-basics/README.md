@@ -1,45 +1,14 @@
-# Network Observability on OpenShift — Demo Kit (IPI-on-AWS)
+# Network Observability on OpenShift — NetObserv-only lab
 
-A self-contained kit for **Red Hat OpenShift Network Observability** demos — from a **scripted NetObserv + fault-injection lab** (`scripts/`) to a **full greenfield agentic AIOps stack** (`demo-4-greenfield-install/` + `demo-4-platform-kit/`). The basic path highlights per-tenant visibility, database microsegmentation, and auditable flow evidence. It also injects a real incident, captures flows with the `oc netobserv` CLI, and analyzes evidence with an LLM.
+The original lab for this demo: Red Hat OpenShift Network Observability, a two-tier todo app with real traffic, a controllable fault, and a flow-evidence bundle you can hand to an LLM for offline analysis. **There is no agent here** — for the full governed agentic AIOps stack, see the [top-level README](../README.md).
 
-Tested on **OpenShift 4.21**.
+Tested on **OpenShift 4.21**. Sample install and deploy output is in [`sample-deployment-logs/`](sample-deployment-logs/).
 
-The environment and application deployment and configuration demo video can be found at this [link](https://drive.google.com/file/d/1YrsLr0K4wLte1XAAa7ITZHX5Zz7370KY/view?usp=sharing)
-
-The second demo video on fault injection, flow capture and analysis by frontier AI model can be found at this [link](https://drive.google.com/file/d/1IXMIjAY-xOEWHWdXe-_qS8g45qG6GpoX/view?usp=drive_link) 
+**Videos:** [environment and app deployment](https://drive.google.com/file/d/1YrsLr0K4wLte1XAAa7ITZHX5Zz7370KY/view?usp=sharing) · [fault injection, flow capture and AI analysis](https://drive.google.com/file/d/1IXMIjAY-xOEWHWdXe-_qS8g45qG6GpoX/view?usp=drive_link)
 
 ---
 
-## Choose your path
-
-This directory contains **two related demos**:
-
-| Path | Folder | Best for |
-|------|--------|----------|
-| **NetObserv basics** | [`scripts/`](scripts/) | Stand up NetObserv + todo app, inject a fault, capture flows, analyze evidence with an LLM |
-| **Full agentic AIOps (greenfield)** | [`demo-4-greenfield-install/`](demo-4-greenfield-install/) + [`demo-4-platform-kit/`](demo-4-platform-kit/) | Phased install of NetObserv, OpenClaw/OpenShell, RHOAI/MLflow, Grafana, TrustyAI Guardrails, AAP, Slack, event-driven AIOps, SPIFFE, and RHCL — with end-to-end **Demo A** (fault → investigate → heal) |
-
-The **basic quickstart below** uses `scripts/` only.
-
-For the **full stack**, start here:
-
-```bash
-git clone https://github.com/lfedgeai/AIOps.git
-cd AIOps/demo/demo-4-openshift-network-observability/demo-4-greenfield-install
-
-cp config/site-secrets.example.yaml config/site-secrets.local.yaml
-# oc login on your cluster bastion first — see docs/CLUSTER-LOGIN.md
-./scripts/greenfield-install.sh config prompt   # AWS + LLM + Slack wizard
-./scripts/greenfield-install.sh phases          # Phases 1–12
-```
-
-The platform kit (`../demo-4-platform-kit`) is resolved automatically as `DEMO_KIT_ROOT`. See [`demo-4-greenfield-install/README.md`](demo-4-greenfield-install/README.md) and [`INSTALL.md`](demo-4-greenfield-install/INSTALL.md) for the full runbook.
-
-**Day-2 / repeat demos:** [`demo-4-greenfield-install/CLUSTER-WAKE.md`](demo-4-greenfield-install/CLUSTER-WAKE.md) · trial run: `"$DEMO_KIT_ROOT/scripts/netobserv-e2e-openclaw-test.sh" demo-a-fast`
-
----
-
-## What's in here (NetObserv basics — `scripts/`)
+## What's in here
 
 | File | Purpose |
 |------|---------|
@@ -67,7 +36,7 @@ The platform kit (`../demo-4-platform-kit`) is resolved automatically as `DEMO_K
 
 ```
 git clone https://github.com/lfedgeai/AIOps.git
-cd AIOps/demo/demo-4-openshift-network-observability/scripts
+cd AIOps/demo/demo-4-openshift-network-observability/demo-4-netobserv-basics/scripts
 ```
 
 **2. Install Network Observability** — you will be prompted for cluster login, AWS keys, region and bucket name:
@@ -86,7 +55,7 @@ chmod +x deploy-netobserv-todo-app.sh
 ./deploy-netobserv-todo-app.sh
 ```
 
-**4. View flows:** in the console, **Observe → Network Traffic** (allow 3–5 min to populate). Then follow `netobserv-demo-walkthrough.md`.
+**4. View flows:** in the console, **Observe → Network Traffic** (allow 3–5 min to populate).
 
 Watch traffic being generated:
 
