@@ -205,13 +205,31 @@ Full runbook: [docs/PHASE-11-RHCL.md](docs/PHASE-11-RHCL.md)
 
 ---
 
-## After install — Demo Day
+## Trial run
+
+Phase 12 checks each component on its own. Run the whole demo end to end once before you rely on it — from this folder:
 
 ```bash
 export DEMO_KIT_ROOT="${DEMO_KIT_ROOT:-$(cd ../demo-4-platform-kit && pwd)}"
 "$DEMO_KIT_ROOT/scripts/demo-cluster-preflight.sh" check
 "$DEMO_KIT_ROOT/scripts/netobserv-e2e-openclaw-test.sh" demo-a-fast
 ```
+`demo-cluster-preflight.sh check` is read-only; if it reports drift, run it again with `heal`.
+`demo-a-fast` injects a real latency fault on the todo → PostgreSQL path and takes about three minutes.
+
+What to expect next:
+- With the event path (Phase 9): a Grafana alert opens a Slack incident thread two to three
+  minutes after the fault, and the agent starts investigating on its own.
+- Without it: ask the agent in Slack or the OpenClaw UI why the todo app is slow.
+
+Either way, confirm the heal when the agent offers it. If you stop before that, clear the fault yourself:
+
+```bash
+"$DEMO_KIT_ROOT/scripts/netobserv-e2e-openclaw-test.sh" restore
+```
+
+If the trial works, the install is done. All scenarios, proof scripts and day-2 helpers:
+demo-4-platform-kit/README.md.
 
 ---
 
