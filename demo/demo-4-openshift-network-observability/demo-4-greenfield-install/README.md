@@ -1,4 +1,4 @@
-# Greenfield install
+# Greenfield Install
 
 Phased installer for the governed agentic AIOps demo on a new OpenShift cluster. This folder holds the orchestrator, site configuration and per-phase runbooks. What it deploys lives in the sibling [`demo-4-platform-kit/`](../demo-4-platform-kit/), which the installer finds automatically as `DEMO_KIT_ROOT`.
 
@@ -157,8 +157,6 @@ Test in Slack: `@<your-bot-name> hello` (mention required — `requireMention: t
 | Same app on two clusters | Flaky / one cluster steals connection | One app per cluster |
 | Bot not invited | No replies | `/invite @<your-bot-name>` |
 
-Full runbook: [docs/PHASE-8-SLACK.md](docs/PHASE-8-SLACK.md)
-
 ---
 
 ## SPIFFE / ZTWI (Phase 10)
@@ -179,8 +177,6 @@ Automated on the bastion after Phase 9. Installs **Zero Trust Workload Identity 
 
 After cluster reboot: `./scripts/phase10-spiffe.sh repair`
 
-Full runbook: [docs/PHASE-10-SPIFFE.md](docs/PHASE-10-SPIFFE.md)
-
 ---
 
 ## RHCL OAuth (Phase 11, optional)
@@ -200,8 +196,6 @@ Enterprise Control UI login via OpenShift OAuth. **Not required** for Slack/MCP 
 | Skip | `SKIP_RHCL=1` keeps legacy Route + gateway token |
 
 Test: incognito → `https://openclaw-rhcl.apps.<ingress>/`
-
-Full runbook: [docs/PHASE-11-RHCL.md](docs/PHASE-11-RHCL.md)
 
 ---
 
