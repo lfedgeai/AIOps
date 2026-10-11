@@ -1,26 +1,26 @@
-[1;32m[ ok ][0m Logged in as kube:admin.
-[1;32m[ ok ][0m FlowCollector 'cluster' present — Network Observability will capture this traffic.
-[1;34m==>[0m Creating namespaces
-[1;32m[ ok ][0m Namespaces ready: todo-demo, todo-client.
-[1;34m==>[0m Deploying PostgreSQL into todo-demo
-[1;32m[ ok ][0m PostgreSQL manifests applied.
-[1;34m==>[0m Waiting for PostgreSQL to be ready (todo connects at startup)
+[ ok ] Logged in as kube:admin.
+[ ok ] FlowCollector 'cluster' present — Network Observability will capture this traffic.
+==> Creating namespaces
+[ ok ] Namespaces ready: todo-demo, todo-client.
+==> Deploying PostgreSQL into todo-demo
+[ ok ] PostgreSQL manifests applied.
+==> Waiting for PostgreSQL to be ready (todo connects at startup)
 Waiting for deployment "postgresql" rollout to finish: 0 of 1 updated replicas are available...
 deployment "postgresql" successfully rolled out
-[1;34m==>[0m Deploying the todo application into todo-demo
-[1;32m[ ok ][0m todo manifests applied.
-[1;34m==>[0m Waiting for the todo application to be ready
+==> Deploying the todo application into todo-demo
+[ ok ] todo manifests applied.
+==> Waiting for the todo application to be ready
 Waiting for deployment "todo" rollout to finish: 0 of 1 updated replicas are available...
 deployment "todo" successfully rolled out
-[1;32m[ ok ][0m Route: https://todo-todo-demo.apps.cluster-s2nfg.s2nfg.sandbox5322.opentlc.com/
-[1;34m==>[0m Applying database microsegmentation NetworkPolicy
-[1;32m[ ok ][0m PostgreSQL now reachable only from the todo tier — all other :5432 ingress is dropped.
-[1;34m==>[0m Deploying traffic generator (loadgen) into todo-client
+[ ok ] Route: https://todo-todo-demo.apps.cluster-s2nfg.s2nfg.sandbox5322.opentlc.com/
+==> Applying database microsegmentation NetworkPolicy
+[ ok ] PostgreSQL now reachable only from the todo tier — all other :5432 ingress is dropped.
+==> Deploying traffic generator (loadgen) into todo-client
 Waiting for deployment "loadgen" rollout to finish: 0 of 1 updated replicas are available...
 deployment "loadgen" successfully rolled out
-[1;32m[ ok ][0m loadgen deployed.
+[ ok ] loadgen deployed.
 
-[1;32m=============================================================[0m
+=============================================================
  Realistic todo + PostgreSQL demo deployed. Traffic is flowing.
    Application tenant : todo-demo      (todo, postgresql)
    Consumer tenant    : todo-client   (loadgen)
@@ -44,4 +44,4 @@ deployment "loadgen" successfully rolled out
 
  Tear it all down:
    ./deploy-netobserv-todo-app.sh delete
-[1;32m=============================================================[0m
+=============================================================

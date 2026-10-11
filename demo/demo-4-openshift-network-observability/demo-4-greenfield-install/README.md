@@ -1,59 +1,50 @@
-# Demo 4 — Greenfield install
+# Greenfield Install
 
-Replicate the full **NetObserv + OpenClaw Demo A + platform stack** on a **new OpenShift cluster**.
+Phased installer for the governed agentic AIOps demo on a new OpenShift cluster. This folder holds the orchestrator, site configuration and per-phase runbooks. What it deploys lives in the sibling [`demo-4-platform-kit/`](../demo-4-platform-kit/), which the installer finds automatically as `DEMO_KIT_ROOT`.
 
-This folder is the **orchestrator** (phased install, site secrets, docs). Install scripts and manifests live in the sibling **platform kit** (`demo-4-platform-kit`).
-
----
-
-## Layout
-
-```text
-demo-4-openshift-network-observability/
-  demo-4-greenfield-install/   ← you are here (orchestrator)
-  demo-4-platform-kit/         ← DEMO_KIT_ROOT (sibling folder)
-```
-
-See [docs/PLATFORM-KIT.md](docs/PLATFORM-KIT.md) for what the platform kit contains.
+For what the demo is and why, see the [top-level README](../README.md). To run the demos after installing, see the [platform kit README](../demo-4-platform-kit/README.md).
 
 ---
 
-## Quick start
+## Prerequisites
+
+- OpenShift **4.21+** on AWS (IPI), OVN-Kubernetes, `cluster-admin`
+- A RHEL 9 bastion with `oc`, `aws`, `jq` and `python3`, logged in to the cluster — [`docs/CLUSTER-LOGIN.md`](docs/CLUSTER-LOGIN.md)
+- An S3 bucket and AWS credentials for LokiStack
+- An OpenAI-compatible LLM endpoint — [`docs/PHASE-2-LLM-PROVIDERS.md`](docs/PHASE-2-LLM-PROVIDERS.md)
+- A Slack app (Phases 8–9) and an AAP subscription (Phase 6)
+
+Full prerequisites, time budget and the credentials you collect by hand: [`INSTALL.md`](INSTALL.md).
+
+---
+
+## Quick Start
 
 ```bash
-# 1. Clone repo; cd into greenfield (platform kit is sibling ../demo-4-platform-kit)
-cd demo/demo-4-openshift-network-observability/demo-4-greenfield-install
-cp config/env.example config/env.local   # optional
+git clone https://github.com/lfedgeai/AIOps.git
+cd AIOps/demo/demo-4-openshift-network-observability/demo-4-greenfield-install
+
+cp config/env.example config/env.local          # optional overrides
 source config/env.local
 
-export DEMO_KIT_ROOT="${DEMO_KIT_ROOT:-$(cd ../demo-4-platform-kit && pwd)}"
-
-# 2. OpenShift login on bastion (see docs/CLUSTER-LOGIN.md)
-export OCP_API="https://api.cluster-<name>.<domain>:6443"
-oc login "$OCP_API" -u kubeadmin -p '<password>'
-./scripts/cluster-login.sh check
-
-# 3. Site secrets (AWS + LLM — required before Phase 1)
-./scripts/greenfield-install.sh config prompt
-
-# 4. Preflight + install
-chmod +x scripts/*.sh scripts/site_config.py
+./scripts/cluster-login.sh check                # confirm the bastion is logged in
+./scripts/greenfield-install.sh config prompt   # AWS, LLM and Slack → config/site-secrets.local.yaml
 ./scripts/greenfield-install.sh preflight
-./scripts/greenfield-install.sh netobserv    # Phase 1
+./scripts/greenfield-install.sh all             # or one phase at a time — see below
+./scripts/greenfield-install.sh phases          # progress at any point
 ```
 
-**Full guide:** [INSTALL.md](INSTALL.md)  
-**Phase helpers:** `./scripts/phase2-openshell.sh` · `phase3-rhoai.sh` · … · `phase11-rhcl.sh`  
-**Checklist:** [docs/PHASE-CHECKLIST.md](docs/PHASE-CHECKLIST.md)  
-**Cluster was powered off mid-install:** [CLUSTER-WAKE.md](CLUSTER-WAKE.md)
+`config/site-secrets.local.yaml` and `config/env.local` are gitignored. Never commit them.
 
----
 
-## Bastion sync (laptop → cluster bastion)
+### Installing from a Laptop
+
+Edit on your laptop, run on the bastion. Set `BASTION_HOST` in `config/env.local`, then:
 
 ```bash
-./scripts/sync-to-bastion.sh all
+./scripts/sync-to-bastion.sh            # both folders; or: greenfield | kit
 ```
+
 
 Syncs **greenfield** and **platform kit** to the target bastion. Set `BASTION_HOST` in `config/env.local`.
 
@@ -61,34 +52,40 @@ Syncs **greenfield** and **platform kit** to the target bastion. Set `BASTION_HO
 
 ---
 
-## What gets installed
+## Phases
 
-| Phase | Components |
-|-------|------------|
-| 1 | NetObserv + Loki (AWS) + todo app |
-| 2 | OpenShell + OpenClaw + LLM |
-| 3 | RHOAI + MLflow Traces |
-| 4 | Grafana Network AIOps + OTel federation |
-| 5 | TrustyAI guardrails |
-| 6 | AAP + Gitea + ansible-automation MCP |
-| 7 | NetObserv agent skills seed |
-| 8–10 | Slack, event-AIOps, SPIFFE mTLS |
-| 11 | RHCL OAuth (optional) |
-| 12 | Verify + trial `demo-a-fast` |
+Run any phase by number or name — `./scripts/greenfield-install.sh 6` and `./scripts/greenfield-install.sh aap` are the same. Phases 2–11 also have their own scripts, `scripts/phaseN-*.sh`, with `plan`, `check` and `verify` — and `deploy` for every phase except 3, which the main installer runs.
+
+| Phase | Name | Installs | Runbook |
+|---|---|---|---|
+| 1 | `netobserv` | Network Observability + LokiStack (S3) + todo app | [INSTALL.md](INSTALL.md#phase-1--netobserv--sample-app) |
+| 2 | `openshell` | OpenShell sandbox + OpenClaw agent + LLM provider | [PHASE-2](docs/PHASE-2-OPENSHELL.md) |
+| 3 | `rhoai` | Red Hat OpenShift AI + MLflow traces | [PHASE-3](docs/PHASE-3-RHOAI.md) |
+| 4 | `grafana` | Grafana network AIOps dashboards + OTel federation | [PHASE-4](docs/PHASE-4-GRAFANA.md) |
+| 5 | `guardrails` | TrustyAI guardrails | [PHASE-5](docs/PHASE-5-GUARDRAILS.md) |
+| 6 | `aap` | Ansible Automation Platform + Gitea + ansible MCP | [PHASE-6](docs/PHASE-6-AAP.md) |
+| 7 | `agent` | Agent skills and MCP servers seeded | [PHASE-7](docs/PHASE-7-AGENT.md) |
+| 8 | `slack` | Slack Socket Mode — one-time app setup in Slack first | [PHASE-8](docs/PHASE-8-SLACK.md) |
+| 9 | `event` | Event-driven path: Grafana alert → bridge → Slack thread | [PHASE-9](docs/PHASE-9-EVENT.md) |
+| 10 | `spiffe` | Zero Trust Workload Identity — mTLS on the bridge-to-agent hop | [PHASE-10](docs/PHASE-10-SPIFFE.md) |
+| 11 | `rhcl` | Red Hat Connectivity Link OAuth for the UI *(optional — `SKIP_RHCL=1` to skip)* | [PHASE-11](docs/PHASE-11-RHCL.md) |
+| 12 | `verify` | End-to-end verification + trial run of the fast demo | [Checklist](docs/PHASE-CHECKLIST.md) |
+
+Phases 8 and 10 have manual steps — creating the Slack app and its scopes, and subscribing to the ZTWI operator. Their runbooks cover each step and the common mistakes.
 
 ---
 
-## Slack setup (Phase 8)
+## Slack Setup
 
 One-time **manual** work in [api.slack.com/apps](https://api.slack.com/apps), then wire on the bastion. Use a **dedicated Slack app per cluster** (Socket Mode allows only one active connection per app token).
 
-### 1. Create the app
+### 1. Create the App
 
 1. **Create New App** → **From scratch** (name it anything, e.g. `AgentOps-Test` — that becomes your `@mention` name).
 2. **Socket Mode** → turn **ON**.
 3. Create an **App-Level Token** with scope `connections:write` → copy `xapp-…` (app token).
 
-### 2. Bot token scopes (OAuth & Permissions)
+### 2. Bot Token Scopes (OAuth & Permissions)
 
 Under **Scopes** → **Bot Token Scopes**, add **all** of these:
 
@@ -110,7 +107,7 @@ Under **Scopes** → **Bot Token Scopes**, add **all** of these:
 
 Copy the **Bot User OAuth Token** (`xoxb-…`).
 
-### 3. Event subscriptions
+### 3. Event Subscriptions
 
 With **Socket Mode** still ON:
 
@@ -119,7 +116,7 @@ With **Socket Mode** still ON:
 
 Save changes. Reinstall the app again if Slack prompts you.
 
-### 4. Channel + site secrets (bastion)
+### 4. Channel + Site Secrets (Bastion)
 
 1. Create or pick a demo channel (e.g. `#agentops-test`).
 2. `/invite @<your-bot-name>` in that channel.
@@ -134,7 +131,7 @@ slack:
   app_token: xapp-...
 ```
 
-### 5. Wire on cluster
+### 5. Wire on Cluster
 
 ```bash
 ./scripts/phase8-slack.sh deploy
@@ -160,11 +157,9 @@ Test in Slack: `@<your-bot-name> hello` (mention required — `requireMention: t
 | Same app on two clusters | Flaky / one cluster steals connection | One app per cluster |
 | Bot not invited | No replies | `/invite @<your-bot-name>` |
 
-Full runbook: [docs/PHASE-8-SLACK.md](docs/PHASE-8-SLACK.md)
-
 ---
 
-## SPIFFE / ZTWI (Phase 10)
+## SPIFFE / ZTWI
 
 Automated on the bastion after Phase 9. Installs **Zero Trust Workload Identity Manager** and upgrades the event path to **mTLS**.
 
@@ -182,11 +177,9 @@ Automated on the bastion after Phase 9. Installs **Zero Trust Workload Identity 
 
 After cluster reboot: `./scripts/phase10-spiffe.sh repair`
 
-Full runbook: [docs/PHASE-10-SPIFFE.md](docs/PHASE-10-SPIFFE.md)
-
 ---
 
-## RHCL OAuth (Phase 11, optional)
+## RHCL OAuth (Optional)
 
 Enterprise Control UI login via OpenShift OAuth. **Not required** for Slack/MCP demos.
 
@@ -204,16 +197,47 @@ Enterprise Control UI login via OpenShift OAuth. **Not required** for Slack/MCP 
 
 Test: incognito → `https://openclaw-rhcl.apps.<ingress>/`
 
-Full runbook: [docs/PHASE-11-RHCL.md](docs/PHASE-11-RHCL.md)
-
 ---
 
-## After install — demo day
+## Trial Run
+
+Phase 12 checks each component on its own. Run the whole demo end to end once before you rely on it — from this folder:
 
 ```bash
 export DEMO_KIT_ROOT="${DEMO_KIT_ROOT:-$(cd ../demo-4-platform-kit && pwd)}"
 "$DEMO_KIT_ROOT/scripts/demo-cluster-preflight.sh" check
 "$DEMO_KIT_ROOT/scripts/netobserv-e2e-openclaw-test.sh" demo-a-fast
 ```
+`demo-cluster-preflight.sh check` is read-only; if it reports drift, run it again with `heal`.
+`demo-a-fast` injects a real latency fault on the todo → PostgreSQL path and takes about three minutes.
 
-Cluster wake / heal: [CLUSTER-WAKE.md](CLUSTER-WAKE.md)
+What to expect next:
+- With the event path (Phase 9): a Grafana alert opens a Slack incident thread two to three
+  minutes after the fault, and the agent starts investigating on its own.
+- Without it: ask the agent in Slack or the OpenClaw UI why the todo app is slow.
+
+Either way, confirm the heal when the agent offers it. If you stop before that, clear the fault yourself:
+
+```bash
+"$DEMO_KIT_ROOT/scripts/netobserv-e2e-openclaw-test.sh" restore
+```
+
+If the trial works, the install is done. All scenarios, proof scripts and day-2 helpers:
+demo-4-platform-kit/README.md.
+
+---
+
+## Reference
+
+| Topic | Doc |
+|---|---|
+| Starting from a brand-new cluster | [`docs/START-NEW-CLUSTER.md`](docs/START-NEW-CLUSTER.md) |
+| Cluster powered off mid-install or between demos | [`CLUSTER-WAKE.md`](CLUSTER-WAKE.md) |
+| How the installer finds and syncs the platform kit | [`docs/PLATFORM-KIT.md`](docs/PLATFORM-KIT.md) |
+| Disconnected or mirrored registries | [`docs/IMAGE-MIRRORS.md`](docs/IMAGE-MIRRORS.md) |
+
+---
+
+## Next Step
+
+Installed? Run the demos: [`demo-4-platform-kit/README.md`](../demo-4-platform-kit/README.md).
