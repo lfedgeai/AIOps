@@ -20,7 +20,7 @@ cp config/.env.example config/.env
 |-------|--------------|-------------|-------|
 | `deepseek_agent` | `DEEPSEEK_API_BASE` | `DEEPSEEK_API_KEY` | deepseek-r1-distill-qwen-14b |
 | `qwen3_agent` | `QWEN3_API_BASE` | `QWEN3_API_KEY` | qwen3-14b |
-| `qwen35_9b_agent` | `QWEN35_API_BASE` | `QWEN35_API_KEY` | qwen35-9b |
+| `qwen38_27b_agent` | `QWEN38_API_BASE` | `QWEN38_API_KEY` | qwen38-27b |
 | `qwen36_27b_agent` | `QWEN36_API_BASE` | `QWEN36_API_KEY` | qwen36-27b |
 | `kimi_k2_agent` | `KIMI_API_BASE` | `KIMI_API_KEY` | kimi-k2-7 |
 | `nemotron_agent` | `NEMOTRON_API_BASE` | `NEMOTRON_API_KEY` | nemotron-cascade-2-30b |

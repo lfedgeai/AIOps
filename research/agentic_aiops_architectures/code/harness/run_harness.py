@@ -26,8 +26,23 @@ if str(ROOT) not in sys.path:
 
 from code.agents.mlflow_agent_logging import log_mlflow_dataset_inputs_for_harness_summary
 from code.agents.mlflow_config import DEFAULT_MLFLOW_TRACKING_URI
-from code.harness.evaluation import score_rca, score_remediation, score_scenario_roles
+from code.agents.remediation_signals import parse_agent_signals
+from code.harness.evaluation import (
+    flatten_suggested_remediations,
+    score_hybrid,
+    score_scenario_roles,
+)
+from code.harness.fault_verification import poll_recovery_verified
+from code.harness.remediation_judge import run_oracle_judge
 from code.harness.scenarios import get_scenario, list_scenario_ids
+from code.tools.context_engineering import (
+    apply_context_to_agent_env,
+    context_c_label,
+    ensure_context_corpora_ready,
+    last_context_metadata,
+    parse_context_c,
+)
+from code.tools.rag_context import EmptyCorpusError
 
 
 def _print_mlflow_tracking_banner(uri: str, insecure: bool) -> None:
@@ -42,7 +57,7 @@ def _print_mlflow_tracking_banner(uri: str, insecure: bool) -> None:
         else "TLS: use default certificate verification"
     )
     print("\n\n" + bar, flush=True)
-    print("MLFLOW  TRACKING  SERVER  (  O P E N S H I F T  )".center(w), flush=True)
+    print("MLFLOW  TRACKING  SERVER  (  L O C A L  )".center(w), flush=True)
     print(bar, flush=True)
     print("", flush=True)
     # URI in “large” block: extra vertical space + full-width emphasis
@@ -117,14 +132,14 @@ def _resolve_agent_timeout_seconds() -> int:
 
 
 def _resolve_max_tool_iterations_for_subprocess() -> str:
-    """MAX_TOOL_ITERATIONS env > harness.yaml harness.max_tool_iterations > default 8 (faster than 15)."""
+    """MAX_TOOL_ITERATIONS env > harness.yaml harness.max_tool_iterations > default 20."""
     if os.environ.get("MAX_TOOL_ITERATIONS"):
         return str(max(1, int(os.environ["MAX_TOOL_ITERATIONS"])))
     cfg = _load_harness_config()
     h = cfg.get("harness")
     if isinstance(h, dict) and h.get("max_tool_iterations") is not None:
         return str(max(1, int(h["max_tool_iterations"])))
-    return "8"
+    return "20"
 
 
 def _strip_mlflow_status_from_agent_stdout(raw: str) -> str:
@@ -189,10 +204,125 @@ FLAGD_READ_URL = os.environ.get("FLAGD_READ_URL", "http://localhost:8080/feature
 FLAGD_WRITE_URL = os.environ.get("FLAGD_WRITE_URL", "http://localhost:8080/feature/api/write")
 FLAGD_USE_OPENSHIFT_CM, _ = _load_flagd_config()
 CLICKHOUSE_HTTP = os.environ.get("CLICKHOUSE_HTTP", "http://localhost:8123")
+CLICKHOUSE_NAMESPACE = os.environ.get("CLICKHOUSE_NAMESPACE", "agentic-aiops")
 MLFLOW_TRACKING_URI, MLFLOW_INSECURE_TLS = _load_mlflow_config()
 if MLFLOW_INSECURE_TLS and "MLFLOW_TRACKING_INSECURE_TLS" not in os.environ:
     os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"
 EVENT_LEDGER_PATH = os.environ.get("EVENT_LEDGER_PATH", str(ROOT / "data" / "event_ledger.jsonl"))
+
+
+def _check_clickhouse_reachable() -> bool:
+    """Return True if ClickHouse HTTP responds to SELECT 1."""
+    try:
+        import urllib.error
+        import urllib.request
+
+        url = f"{CLICKHOUSE_HTTP.rstrip('/')}/?query=SELECT%201"
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
+def _check_kubernetes_reachable() -> bool:
+    """Return True if the active kubeconfig can reach the API server."""
+    try:
+        from kubernetes import client, config
+
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            config.load_kube_config()
+        cfg = client.Configuration.get_default_copy()
+        cfg.verify_ssl = False
+        api = client.CoreV1Api(client.ApiClient(cfg))
+        api.get_api_resources(_request_timeout=5)
+        return True
+    except Exception:
+        return False
+
+
+def _try_oc_login() -> bool:
+    """Run oc login using OCP_API_URL + KUBEADMIN_PASSWORD from the environment."""
+    api_url = (os.environ.get("OCP_API_URL") or os.environ.get("OPENSHIFT_API_URL") or "").strip()
+    password = (os.environ.get("KUBEADMIN_PASSWORD") or "").strip()
+    if not api_url or not password:
+        print(
+            "[harness] cannot auto oc login: set OCP_API_URL and KUBEADMIN_PASSWORD in config/.env",
+            flush=True,
+        )
+        return False
+    oc = shutil.which("oc")
+    if not oc:
+        print("[harness] cannot auto oc login: oc not found in PATH", flush=True)
+        return False
+    print(f"[harness] attempting oc login to {api_url}", flush=True)
+    try:
+        r = subprocess.run(
+            [
+                oc,
+                "login",
+                api_url,
+                "--username=kubeadmin",
+                f"--password={password}",
+                "--insecure-skip-tls-verify",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout or "").strip()[:300]
+            print(f"[harness] oc login failed: {err}", flush=True)
+            return False
+        who = subprocess.run(
+            [oc, "whoami"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if who.returncode == 0:
+            print(f"[harness] oc login OK ({(who.stdout or '').strip()})", flush=True)
+        return True
+    except subprocess.TimeoutExpired:
+        print("[harness] oc login timed out", flush=True)
+        return False
+    except Exception as e:
+        print(f"[harness] oc login error: {e}", flush=True)
+        return False
+
+
+def _refresh_kubernetes_session() -> bool:
+    """Always oc login before a run that needs K8s, then verify API reachability."""
+    if not _try_oc_login():
+        return False
+    ok = _check_kubernetes_reachable()
+    if not ok:
+        print("[harness] Kubernetes API still unreachable after oc login", flush=True)
+    return ok
+
+
+def _scenario_uses_kubernetes_tools(scenario_id: str) -> bool:
+    """True when the scenario grants K8s API tools to any agent role."""
+    k8s_profiles = {"telemetry_k8s", "platform_k8s", "full"}
+    try:
+        spec = get_scenario(scenario_id)
+    except ValueError:
+        return False
+    if spec.get("mode") == "multi":
+        for role in spec.get("roles") or []:
+            if role.get("tool_profile") in k8s_profiles:
+                return True
+        return False
+    return (spec.get("tool_profile") or "") in k8s_profiles
+
+
+def _needs_kubernetes_for_run(scenario_id: str, fault_flag: str, skip_fault_injection: bool) -> bool:
+    if _scenario_uses_kubernetes_tools(scenario_id):
+        return True
+    if not skip_fault_injection and fault_flag in K8S_FAULT_TYPES:
+        return True
+    return False
 
 
 # MLflow experiment name and description (UI: experiment notes / description)
@@ -318,10 +448,13 @@ def _resolve_classifier_script(
 
 # All agents: (approach_name, script_path). Approach name states the LLM.
 AGENTS = [
-    ("nemotron-nano-3", ROOT / "code" / "agents" / "nemotron_agent" / "agent.py"),
+    ("nemotron-cascade-2", ROOT / "code" / "agents" / "nemotron_agent" / "agent.py"),
     ("maas_deepseek", ROOT / "code" / "agents" / "deepseek_agent" / "agent.py"),
     ("maas_qwen3", ROOT / "code" / "agents" / "qwen3_agent" / "agent.py"),
-    ("maas_llama-scout", ROOT / "code" / "agents" / "llama_scout_agent" / "agent.py"),
+    ("maas_qwen38-27b", ROOT / "code" / "agents" / "qwen38_27b_agent" / "agent.py"),
+    ("maas_qwen36-27b", ROOT / "code" / "agents" / "qwen36_27b_agent" / "agent.py"),
+    ("maas_granite", ROOT / "code" / "agents" / "granite_agent" / "agent.py"),
+    ("maas_glm-53-flash", ROOT / "code" / "agents" / "glm_53_flash_agent" / "agent.py"),
 ]
 
 
@@ -344,13 +477,31 @@ class HarnessRun:
     llm_invoked: bool = False
     agent_error: str | None = None  # e.g. timeout, connection failure
     agent_output: str | None = None  # raw JSON the agent printed to stdout
+    remediation_start_time: str | None = None
+    remediation_end_time: str | None = None
+    recovery_verified_time: str | None = None
+    recovery_verified: bool = False
+    remediation_duration_seconds: float | None = None
+    mttr_verified_seconds: float | None = None
     scenario: str = "a"
     tool_profiles: list[str] | None = None
     expected_root_cause: str | None = None
     rca_correct: bool | None = None
     remediation_correct: bool | None = None
+    rca_declared: bool | None = None
+    rca_inferred: bool | None = None
+    rca_judge_correct: bool | None = None
+    remediation_declared: bool | None = None
+    remediation_executed: bool | None = None
+    remediation_judge_correct: bool | None = None
+    recovery_appropriate: bool | None = None
+    judge_rationale: str | None = None
+    judge_model: str | None = None
+    judge_error: str | None = None
+    judge_fallback_same_family: bool | None = None
     fault_injection_mode: str = "kubernetes"
     role_scores: list[dict[str, Any]] | None = None
+    context_c: str = "0"
 
 
 K8S_FAULT_TYPES = {
@@ -540,7 +691,15 @@ def recover_k8s_fault(fault_type: str, target: str) -> bool:
             dep = apps.read_namespaced_deployment(target, ns)
             for c in dep.spec.template.spec.containers:
                 if c.env:
-                    c.env = [e for e in c.env if e.name not in ("DATABASE_HOST", "HARNESS_INJECTED_FAULT") or e.value != "invalid-host-that-does-not-exist.local"]
+                    c.env = [
+                        e
+                        for e in c.env
+                        if e.name != "HARNESS_INJECTED_FAULT"
+                        and not (
+                            e.name == "DATABASE_HOST"
+                            and e.value == "invalid-host-that-does-not-exist.local"
+                        )
+                    ]
             apps.replace_namespaced_deployment(target, ns, dep)
             print(f"[harness] K8s recovery: restored config on {target} in {ns}", flush=True)
             return True
@@ -641,6 +800,19 @@ def _set_flag_http(flag_name: str, variant: str) -> bool:
         return False
 
 
+def _agent_effective_detection(result: dict[str, Any]) -> bool:
+    """Treat remediation execution as detection when the agent JSON omits detected=true."""
+    if result.get("detected"):
+        return True
+    signals = result.get("signals") or {}
+    if signals.get("remediation_executed_time"):
+        return True
+    raw = result.get("agent_output_raw") or ""
+    if raw and "remediation_executed_time" in raw:
+        return True
+    return False
+
+
 def invoke_classifier(
     since_ts: str,
     script: Path | None = None,
@@ -679,6 +851,24 @@ def invoke_classifier(
     rid = os.environ.get("MLFLOW_RUN_ID")
     if rid:
         env["MLFLOW_RUN_ID"] = rid
+    try:
+        spec = get_scenario(scenario_id)
+        is_multi = spec.get("mode") == "multi"
+    except ValueError:
+        is_multi = False
+    env["CONTEXT_C"] = context_c_label()
+    env["FAULT_INJECTION_TIME"] = since_ts
+    env["HARNESS_FAULT_FLAG"] = os.environ.get("HARNESS_FAULT_FLAG", "")
+    env["HARNESS_FAULT_VARIANT"] = os.environ.get("HARNESS_FAULT_VARIANT", "")
+    if not is_multi:
+        apply_context_to_agent_env(
+            env,
+            fault_injection_ts=since_ts,
+            scenario_id=scenario_id,
+            role_id=None,
+            fault_flag=env.get("HARNESS_FAULT_FLAG", ""),
+            fault_variant=env.get("HARNESS_FAULT_VARIANT", ""),
+        )
     py = _python_for_subprocess()
     args = [py, "-u", str(script), "--since", since_ts, "--json"]
     err_thresh = os.environ.get("CLASSIFIER_ERROR_THRESHOLD")
@@ -702,6 +892,8 @@ def invoke_classifier(
         parsed = _parse_agent_json_stdout(stdout_clean)
         if parsed is not None:
             parsed["agent_output_raw"] = stdout_clean.strip()
+            if r.stderr:
+                parsed["agent_stderr"] = r.stderr[:4000]
             if "llm_invoked" not in parsed:
                 parsed["llm_invoked"] = False
             if "suggested_remediations" not in parsed:
@@ -726,6 +918,8 @@ def invoke_classifier(
         parsed = _parse_agent_json_stdout(stdout_clean)
         if parsed is not None:
             parsed["agent_output_raw"] = stdout_clean.strip()
+            if stderr:
+                parsed["agent_stderr"] = stderr[:4000]
             parsed.setdefault("llm_invoked", parsed.get("llm_invoked", False))
             parsed["agent_error"] = (
                 f"subprocess timeout after {agent_timeout}s (JSON recovered from partial stdout)"
@@ -757,6 +951,14 @@ def _log_run_to_mlflow(run: HarnessRun, log_mlflow: bool, mlflow_run=None, skip_
 
         mttd_str = f"{run.mttd_seconds:.1f}s" if run.mttd_seconds is not None else "N/A"
         mttr_str = f"{run.mttr_seconds:.1f}s" if run.mttr_seconds is not None else "N/A"
+        mttr_verified_str = (
+            f"{run.mttr_verified_seconds:.1f}s" if run.mttr_verified_seconds is not None else "N/A"
+        )
+        rem_dur_str = (
+            f"{run.remediation_duration_seconds:.1f}s"
+            if run.remediation_duration_seconds is not None
+            else "N/A"
+        )
         fault_mode = (
             "skip_fault_injection (analyzing existing telemetry)"
             if skip_fault_injection
@@ -765,18 +967,38 @@ def _log_run_to_mlflow(run: HarnessRun, log_mlflow: bool, mlflow_run=None, skip_
         desc = f"""**MTTD/MTTR Agentic AIOps Experiment**
 - **Approach**: {run.approach}
 - **Scenario**: {run.scenario}
+- **Context (CONTEXT_C)**: {run.context_c}
 - **Tool profiles**: {", ".join(run.tool_profiles or [])}
 - **Fault mode**: {fault_mode}
 - **Detection**: {'Yes' if run.detected else 'No'}
 - **MTTD** (fault → detection): {mttd_str}
-- **MTTR** (fault → system restored): {mttr_str}
+- **MTTR** (fault → first successful write): {mttr_str}
+- **Remediation duration** (start → end write phase): {rem_dur_str}
+- **MTTR verified** (fault → verified on correct target): {mttr_verified_str}
+- **Recovery verified**: {run.recovery_verified}
 - **LLM invoked**: {run.llm_invoked}"""
         if run.expected_root_cause:
             desc += f"\n- **Expected root cause**: {run.expected_root_cause}"
         if run.rca_correct is not None:
-            desc += f"\n- **RCA correct**: {run.rca_correct}"
+            desc += f"\n- **RCA correct (combined)**: {run.rca_correct}"
+        if run.rca_declared is not None:
+            desc += f"\n- **RCA declared**: {run.rca_declared}"
+        if run.rca_inferred is not None:
+            desc += f"\n- **RCA inferred**: {run.rca_inferred}"
+        if run.rca_judge_correct is not None:
+            desc += f"\n- **RCA judge (oracle)**: {run.rca_judge_correct}"
         if run.remediation_correct is not None:
-            desc += f"\n- **Remediation correct**: {run.remediation_correct}"
+            desc += f"\n- **Remediation correct (combined)**: {run.remediation_correct}"
+        if run.remediation_declared is not None:
+            desc += f"\n- **Remediation declared**: {run.remediation_declared}"
+        if run.remediation_executed is not None:
+            desc += f"\n- **Remediation executed**: {run.remediation_executed}"
+        if run.remediation_judge_correct is not None:
+            desc += f"\n- **Remediation judge (oracle)**: {run.remediation_judge_correct}"
+        if run.judge_model:
+            desc += f"\n- **Judge model**: {run.judge_model}"
+        if run.judge_rationale:
+            desc += f"\n- **Judge rationale**: {run.judge_rationale[:500]}"
         if run.role_scores:
             desc += "\n- **Per-role RCA**:"
             for rs in run.role_scores:
@@ -792,6 +1014,22 @@ def _log_run_to_mlflow(run: HarnessRun, log_mlflow: bool, mlflow_run=None, skip_
             desc += f"\n- **Remediations**: {len(run.suggested_remediations)} step(s)"
         if run.agent_error:
             desc += f"\n- **Agent error**: {run.agent_error[:300]}..."
+        if run.agent_output:
+            try:
+                agent_json = json.loads(run.agent_output)
+                ai_m = agent_json.get("ai_metrics") or (agent_json.get("signals") or {}).get("ai_metrics")
+                if isinstance(ai_m, dict) and ai_m.get("ai_peak_prompt_tokens"):
+                    desc += (
+                        f"\n- **Context window**: peak={int(ai_m['ai_peak_prompt_tokens'])} tokens"
+                    )
+                    if ai_m.get("ai_model_context_limit"):
+                        desc += (
+                            f", limit={int(ai_m['ai_model_context_limit'])}, "
+                            f"available={int(ai_m.get('ai_context_tokens_available', 0))}, "
+                            f"util={ai_m.get('ai_context_utilization_pct', 0):.1f}%"
+                        )
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         # Dataset metadata (telemetry source for this run)
         dataset_meta = {
@@ -812,19 +1050,42 @@ def _log_run_to_mlflow(run: HarnessRun, log_mlflow: bool, mlflow_run=None, skip_
                 "fault_injection_mode": run.fault_injection_mode,
                 "approach": run.approach,
                 "scenario": run.scenario,
+                "context_c": run.context_c,
                 "tool_profiles": ",".join(run.tool_profiles or []),
                 "llm_invoked": str(run.llm_invoked).lower(),
+                **{
+                    k: str(v)
+                    for k, v in (
+                        ("judge_model", run.judge_model),
+                    )
+                    if v not in (None, "", 0)
+                },
             })
             metrics: dict[str, float] = {
                 "mttd_seconds": run.mttd_seconds if run.mttd_seconds is not None else -1,
                 "mttr_seconds": run.mttr_seconds if run.mttr_seconds is not None else -1,
                 "remediation_time_seconds": run.remediation_time_seconds if run.remediation_time_seconds is not None else -1,
+                "remediation_duration_seconds": run.remediation_duration_seconds if run.remediation_duration_seconds is not None else -1,
+                "mttr_verified_seconds": run.mttr_verified_seconds if run.mttr_verified_seconds is not None else -1,
+                "recovery_verified": 1.0 if run.recovery_verified else 0.0,
                 "detected": 1.0 if run.detected else 0.0,
             }
             if run.rca_correct is not None:
                 metrics["rca_correct"] = 1.0 if run.rca_correct else 0.0
             if run.remediation_correct is not None:
                 metrics["remediation_correct"] = 1.0 if run.remediation_correct else 0.0
+            for key in (
+                "rca_declared",
+                "rca_inferred",
+                "rca_judge_correct",
+                "remediation_declared",
+                "remediation_executed",
+                "remediation_judge_correct",
+                "recovery_appropriate",
+            ):
+                val = getattr(run, key, None)
+                if val is not None:
+                    metrics[key] = 1.0 if val else 0.0
             for rs in run.role_scores or []:
                 role_id = str(rs.get("role") or "unknown").replace("-", "_")
                 if rs.get("detected") is not None:
@@ -839,6 +1100,7 @@ def _log_run_to_mlflow(run: HarnessRun, log_mlflow: bool, mlflow_run=None, skip_
             mlflow.set_tag("scenario", run.scenario)
             if run.tool_profiles:
                 mlflow.set_tag("tool_profiles", ",".join(run.tool_profiles))
+            mlflow.set_tag("context_c", run.context_c)
             if run.agent_output:
                 try:
                     agent_json = json.loads(run.agent_output)
@@ -854,10 +1116,32 @@ def _log_run_to_mlflow(run: HarnessRun, log_mlflow: bool, mlflow_run=None, skip_
                     "artifacts/role_rca_scores.json",
                 )
             mlflow.log_dict(dataset_meta, "artifacts/dataset_metadata.json")
+            ctx_meta = last_context_metadata()
+            if ctx_meta:
+                mlflow.log_dict(ctx_meta, "artifacts/context_c.json")
             if run.agent_error:
                 mlflow.log_dict({"agent_error": run.agent_error}, "artifacts/agent_error.json")
             if run.agent_output:
                 mlflow.log_text(run.agent_output, "artifacts/agent_output.json")
+            if run.judge_rationale or run.judge_model:
+                judge_artifact = {
+                    "judge_model": run.judge_model,
+                    "rca_judge_correct": run.rca_judge_correct,
+                    "remediation_judge_correct": run.remediation_judge_correct,
+                    "recovery_appropriate": run.recovery_appropriate,
+                    "rca_declared": run.rca_declared,
+                    "rca_inferred": run.rca_inferred,
+                    "remediation_declared": run.remediation_declared,
+                    "remediation_executed": run.remediation_executed,
+                    "rca_correct": run.rca_correct,
+                    "remediation_correct": run.remediation_correct,
+                    "judge_rationale": run.judge_rationale,
+                    "judge_error": run.judge_error,
+                    "judge_fallback_same_family": run.judge_fallback_same_family,
+                }
+                mlflow.log_dict(judge_artifact, "artifacts/remediation_judge.json")
+                if run.judge_rationale:
+                    mlflow.log_text(run.judge_rationale, "artifacts/remediation_judge.txt")
 
             ar = mlflow.active_run()
             if ar and ar.info.run_id:
@@ -880,6 +1164,13 @@ def _log_run_to_mlflow(run: HarnessRun, log_mlflow: bool, mlflow_run=None, skip_
                         "expected_root_cause": run.expected_root_cause or "",
                         "rca_correct": run.rca_correct,
                         "remediation_correct": run.remediation_correct,
+                        "rca_declared": run.rca_declared,
+                        "rca_inferred": run.rca_inferred,
+                        "rca_judge_correct": run.rca_judge_correct,
+                        "remediation_declared": run.remediation_declared,
+                        "remediation_executed": run.remediation_executed,
+                        "remediation_judge_correct": run.remediation_judge_correct,
+                        "judge_model": run.judge_model,
                         "scenario": run.scenario,
                         "tool_profiles": run.tool_profiles or [],
                         "role_scores": run.role_scores or [],
@@ -914,9 +1205,12 @@ def run_single_experiment(
     skip_fault_injection: bool = False,
     scenario_id: str = "a",
     use_flagd: bool = False,
+    enable_judge: bool = True,
 ) -> HarnessRun:
     """Run one fault injection experiment; return HarnessRun."""
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    os.environ["HARNESS_FAULT_FLAG"] = fault_flag
+    os.environ["HARNESS_FAULT_VARIANT"] = fault_variant
     base_agent_script = classifier_script or AGENTS[0][1]
     invoke_script, _scenario_spec = _resolve_classifier_script(scenario_id, base_agent_script)
     tool_profiles = _tool_profiles_for_scenario(scenario_id)
@@ -945,6 +1239,39 @@ def run_single_experiment(
         except Exception as e:
             print(f"[harness] MLflow start_run error: {e}")
 
+    # Validate RAG corpora BEFORE fault injection (empty corpus => abort cell)
+    try:
+        ensure_context_corpora_ready(parse_context_c(), force=False)
+    except EmptyCorpusError as e:
+        print(f"[harness] ABORT (empty/invalid corpus): {e}", flush=True)
+        run = HarnessRun(
+            run_id=run_id,
+            fault_flag=fault_flag,
+            fault_variant=fault_variant,
+            fault_injection_time=fault_injection_time,
+            first_alert_time=None,
+            remediation_suggested_time=None,
+            fault_recovery_time=datetime.now(timezone.utc).isoformat(),
+            mttd_seconds=None,
+            mttr_seconds=None,
+            detected=False,
+            suggested_remediations=[],
+            suggested_root_cause=None,
+            approach=approach,
+            scenario=scenario_id,
+            tool_profiles=tool_profiles,
+            fault_injection_mode=fault_injection_mode,
+            context_c=context_c_label(),
+            agent_error=f"corpus_empty:{e}",
+        )
+        _log_run_to_mlflow(run, log_mlflow, mlflow_run=mlflow_run, skip_fault_injection=True)
+        if mlflow_run:
+            try:
+                del os.environ["MLFLOW_RUN_ID"]
+            except KeyError:
+                pass
+        return run
+
     append_ledger({
         "event": "fault_injection",
         "run_id": run_id,
@@ -957,6 +1284,54 @@ def run_single_experiment(
     })
 
     is_k8s_fault = fault_flag in K8S_FAULT_TYPES
+    needs_k8s = _needs_kubernetes_for_run(scenario_id, fault_flag, skip_fault_injection)
+    if needs_k8s:
+        _refresh_kubernetes_session()
+    if not _check_clickhouse_reachable():
+        print(
+            f"[harness] WARNING: ClickHouse unreachable at {CLICKHOUSE_HTTP} "
+            f"(start `oc port-forward -n {CLICKHOUSE_NAMESPACE} svc/clickhouse 38123:8123` or set CLICKHOUSE_HTTP)",
+            flush=True,
+        )
+    if not skip_fault_injection:
+        from code.harness.cluster_health import enforce_cluster_baseline
+
+        baseline_ok, baseline_issues = enforce_cluster_baseline(
+            fault_variant,
+            K8S_FAULT_NAMESPACE,
+            auto_recover=True,
+            wait_ready=True,
+        )
+        if not baseline_ok:
+            msg = "; ".join(baseline_issues) or "cluster baseline check failed"
+            print(f"[harness] ABORT (cluster baseline): {msg}", flush=True)
+            run = HarnessRun(
+                run_id=run_id,
+                fault_flag=fault_flag,
+                fault_variant=fault_variant,
+                fault_injection_time=fault_injection_time,
+                first_alert_time=None,
+                remediation_suggested_time=None,
+                fault_recovery_time=datetime.now(timezone.utc).isoformat(),
+                mttd_seconds=None,
+                mttr_seconds=None,
+                detected=False,
+                suggested_remediations=[],
+                suggested_root_cause=None,
+                approach=approach,
+                scenario=scenario_id,
+                tool_profiles=tool_profiles,
+                fault_injection_mode=fault_injection_mode,
+                context_c=context_c_label(),
+                agent_error=f"cluster_baseline_failed:{msg[:200]}",
+            )
+            _log_run_to_mlflow(run, log_mlflow, mlflow_run=mlflow_run, skip_fault_injection=True)
+            if mlflow_run:
+                try:
+                    del os.environ["MLFLOW_RUN_ID"]
+                except KeyError:
+                    pass
+            return run
     if not skip_fault_injection:
         if use_flagd:
             inject_ok = set_flag(fault_flag, fault_variant)
@@ -989,6 +1364,8 @@ def run_single_experiment(
             scenario=scenario_id,
             tool_profiles=tool_profiles,
             fault_injection_mode=fault_injection_mode,
+            context_c=context_c_label(),
+            agent_error="fault_injection_failed",
         )
         _log_run_to_mlflow(run, log_mlflow, mlflow_run=mlflow_run, skip_fault_injection=skip_fault_injection)
         if mlflow_run:
@@ -1038,6 +1415,8 @@ def run_single_experiment(
             base_agent_script=base_agent_script,
         )
         last_result = result
+        if _agent_effective_detection(result):
+            result["detected"] = True
         if result.get("llm_invoked"):
             ever_llm_invoked = True
         if result.get("detected"):
@@ -1063,6 +1442,27 @@ def run_single_experiment(
             break
         time.sleep(poll_interval)
 
+    src_after_agent = agent_result if agent_result else last_result
+    agent_signals = parse_agent_signals(src_after_agent)
+    remediation_start_time = agent_signals.get("remediation_start_time")
+    remediation_end_time = agent_signals.get("remediation_end_time")
+    recovery_verified_time: str | None = None
+    recovery_verified = False
+
+    # Verify recovery on correct target before harness auto-recovery
+    if not skip_fault_injection and is_k8s_fault and remediation_start_time:
+        verify_timeout = float(os.environ.get("RECOVERY_VERIFY_TIMEOUT_SEC", "120"))
+        verify_timeout = min(verify_timeout, float(fault_duration))
+        verify_timeout = max(verify_timeout, 30.0)
+        recovery_verified_time, recovery_verified = poll_recovery_verified(
+            fault_flag,
+            fault_variant,
+            remediation_writes=agent_signals.get("remediation_writes"),
+            timeout_sec=verify_timeout,
+            poll_interval_sec=5.0,
+            namespace=K8S_FAULT_NAMESPACE,
+        )
+
     # Keep fault active until ~fault_duration seconds after injection (then recover)
     if first_alert_time:
         t_inj = datetime.fromisoformat(fault_injection_time.replace("Z", "+00:00"))
@@ -1084,25 +1484,31 @@ def run_single_experiment(
     })
 
     # MTTD = fault_injection → first detection (when agent notices)
-    # MTTR = fault_injection → remediation executed (when system is fixed)
-    # Remediation Time = detection → remediation executed (time spent fixing)
+    # mttr_seconds = fault_injection → first successful write (legacy)
+    # remediation_duration_seconds = remediation_end - remediation_start
+    # mttr_verified_seconds = fault_injection → recovery_verified_time
     mttd_seconds = None
     mttr_seconds = None
     remediation_time_seconds = None
     remediation_time = None
+    remediation_duration_seconds = None
+    mttr_verified_seconds = None
     if first_alert_time:
         t0 = datetime.fromisoformat(fault_injection_time.replace("Z", "+00:00"))
         t1 = datetime.fromisoformat(first_alert_time.replace("Z", "+00:00"))
         mttd_seconds = (t1 - t0).total_seconds()
-        src_rem = agent_result if agent_result else last_result
-        rem_exec_ts = None
-        agent_out_str = src_rem.get("agent_output_raw") or ""
-        if agent_out_str:
-            try:
-                agent_out_parsed = json.loads(agent_out_str)
-                rem_exec_ts = (agent_out_parsed.get("signals") or {}).get("remediation_executed_time")
-            except (json.JSONDecodeError, TypeError):
-                pass
+        src_rem = src_after_agent
+        rem_exec_ts = agent_signals.get("remediation_executed_time")
+        if not rem_exec_ts:
+            agent_out_str = src_rem.get("agent_output_raw") or ""
+            if agent_out_str:
+                try:
+                    agent_out_parsed = json.loads(agent_out_str)
+                    rem_exec_ts = (agent_out_parsed.get("signals") or {}).get(
+                        "remediation_executed_time"
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    pass
         if rem_exec_ts:
             t_rem = datetime.fromisoformat(rem_exec_ts.replace("Z", "+00:00"))
             mttr_seconds = (t_rem - t0).total_seconds()
@@ -1110,9 +1516,50 @@ def run_single_experiment(
             remediation_time = rem_exec_ts
         elif src_rem.get("suggested_remediations"):
             remediation_time = datetime.now(timezone.utc).isoformat()
-    src = agent_result if agent_result else last_result
-    rca = score_rca(fault_flag, fault_variant, src.get("suggested_root_cause"))
-    rem = score_remediation(fault_flag, fault_variant, src.get("suggested_remediations"))
+    if remediation_start_time and remediation_end_time:
+        try:
+            t_start = datetime.fromisoformat(remediation_start_time.replace("Z", "+00:00"))
+            t_end = datetime.fromisoformat(remediation_end_time.replace("Z", "+00:00"))
+            remediation_duration_seconds = (t_end - t_start).total_seconds()
+        except ValueError:
+            pass
+    if recovery_verified_time:
+        try:
+            t0 = datetime.fromisoformat(fault_injection_time.replace("Z", "+00:00"))
+            t_ver = datetime.fromisoformat(recovery_verified_time.replace("Z", "+00:00"))
+            mttr_verified_seconds = (t_ver - t0).total_seconds()
+        except ValueError:
+            pass
+    src = dict(src_after_agent)
+    # Nested list-of-lists from some models must not crash score_remediation
+    src["suggested_remediations"] = flatten_suggested_remediations(
+        src.get("suggested_remediations")
+    )
+    judge_result: dict[str, Any] = {}
+    if enable_judge and not skip_fault_injection:
+        print(f"[harness] running oracle judge for {approach}…", flush=True)
+        judge_result = run_oracle_judge(
+            fault_flag=fault_flag,
+            fault_variant=fault_variant,
+            agent_approach=approach,
+            agent_result=src,
+            agent_signals=agent_signals,
+            recovery_verified=recovery_verified,
+            mlflow_run_id=os.environ.get("MLFLOW_RUN_ID"),
+            mlflow_tracking_uri=MLFLOW_TRACKING_URI,
+        )
+        if judge_result.get("judge_error") and not judge_result.get("judge_skipped"):
+            print(f"[harness] judge warning: {judge_result['judge_error']}", flush=True)
+        elif judge_result.get("judge_model"):
+            print(
+                f"[harness] judge ({judge_result['judge_model']}): "
+                f"rca={judge_result.get('rca_judge_correct')} "
+                f"remediation={judge_result.get('remediation_judge_correct')}",
+                flush=True,
+            )
+    hybrid = score_hybrid(
+        fault_flag, fault_variant, src, agent_signals, judge_result or None
+    )
     role_scores = score_scenario_roles(fault_flag, fault_variant, src)
     run = HarnessRun(
         run_id=run_id,
@@ -1129,16 +1576,34 @@ def run_single_experiment(
         suggested_remediations=src.get("suggested_remediations", []),
         suggested_root_cause=src.get("suggested_root_cause"),
         approach=approach,
+        remediation_start_time=remediation_start_time,
+        remediation_end_time=remediation_end_time,
+        recovery_verified_time=recovery_verified_time,
+        recovery_verified=recovery_verified,
+        remediation_duration_seconds=remediation_duration_seconds,
+        mttr_verified_seconds=mttr_verified_seconds,
         llm_invoked=bool(ever_llm_invoked or src.get("llm_invoked", False)),
         agent_error=src.get("agent_error"),
         agent_output=src.get("agent_output_raw"),
         scenario=scenario_id,
         tool_profiles=tool_profiles,
-        expected_root_cause=rca.get("expected_root_cause"),
-        rca_correct=rca.get("rca_correct"),
-        remediation_correct=rem.get("remediation_correct"),
+        expected_root_cause=hybrid.get("expected_root_cause"),
+        rca_correct=hybrid.get("rca_correct"),
+        remediation_correct=hybrid.get("remediation_correct"),
+        rca_declared=hybrid.get("rca_declared"),
+        rca_inferred=hybrid.get("rca_inferred"),
+        rca_judge_correct=hybrid.get("rca_judge_correct"),
+        remediation_declared=hybrid.get("remediation_declared"),
+        remediation_executed=hybrid.get("remediation_executed"),
+        remediation_judge_correct=hybrid.get("remediation_judge_correct"),
+        recovery_appropriate=hybrid.get("recovery_appropriate"),
+        judge_rationale=hybrid.get("judge_rationale"),
+        judge_model=hybrid.get("judge_model"),
+        judge_error=hybrid.get("judge_error"),
+        judge_fallback_same_family=hybrid.get("judge_fallback_same_family"),
         fault_injection_mode=fault_injection_mode,
         role_scores=role_scores or None,
+        context_c=context_c_label(),
     )
 
     _log_run_to_mlflow(run, log_mlflow, mlflow_run=mlflow_run, skip_fault_injection=skip_fault_injection)
@@ -1195,11 +1660,27 @@ def main() -> int:
         help="Run scenarios a, b, and c sequentially for each agent",
     )
     ap.add_argument(
+        "--context-c",
+        default=os.environ.get("CONTEXT_C", os.environ.get("CONTEXT_LEVEL", "0")),
+        help="Context corpora: 0 or comma-separated 1–4 (e.g. 1,4). C1=source, C2=docs, C3=architecture, C4=dependencies",
+    )
+    ap.add_argument(
         "--use-flagd",
         action="store_true",
         help="Inject fault via flagd instead of Kubernetes API (non-default)",
     )
+    ap.add_argument(
+        "--agents",
+        default="",
+        help="Comma-separated agent approach names (e.g. nemotron-nano-3,maas_deepseek,maas_qwen3)",
+    )
+    ap.add_argument(
+        "--no-judge",
+        action="store_true",
+        help="Disable oracle LLM judge for hybrid RCA/remediation scoring",
+    )
     args = ap.parse_args()
+    os.environ["CONTEXT_C"] = context_c_label(parse_context_c(args.context_c))
 
     if not args.no_mlflow:
         _print_mlflow_tracking_banner(MLFLOW_TRACKING_URI, MLFLOW_INSECURE_TLS)
@@ -1213,6 +1694,12 @@ def main() -> int:
         agents_to_run = [(name, script)]
     elif args.single_agent:
         agents_to_run = [AGENTS[0]]
+    elif args.agents.strip():
+        names = {n.strip() for n in args.agents.split(",") if n.strip()}
+        agents_to_run = [(a, s) for a, s in AGENTS if a in names]
+        if not agents_to_run:
+            print(f"[harness] ERROR: no agents matched --agents {args.agents!r}", file=sys.stderr)
+            return 1
     else:
         agents_to_run = AGENTS
 
@@ -1262,6 +1749,7 @@ def main() -> int:
                 skip_fault_injection=args.skip_fault_injection,
                 scenario_id=scenario_id,
                 use_flagd=args.use_flagd,
+                enable_judge=not args.no_judge,
             )
             runs.append(run)
             print(json.dumps(asdict(run), indent=2))

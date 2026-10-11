@@ -7,12 +7,12 @@ cd "$ROOT"
 
 set -a && source config/.env && set +a
 export CLICKHOUSE_HTTP="http://127.0.0.1:38123"
-export AGENT_TIMEOUT=300
+export AGENT_TIMEOUT="${AGENT_TIMEOUT:-420}"
 export K8S_FAULT_NAMESPACE=otel-demo
 export MLFLOW_TRACKING_URI=http://localhost:5050
 
 FAULTS="scale_zero kill_pod memory_limit network_partition readiness_probe_fail config_corruption dependency_removal replica_overload"
-AGENTS="code/agents/nemotron_agent/agent.py code/agents/qwen3_agent/agent.py code/agents/deepseek_agent/agent.py code/agents/llama_scout_agent/agent.py"
+AGENTS="code/agents/nemotron_agent/agent.py code/agents/qwen3_agent/agent.py code/agents/qwen38_27b_agent/agent.py code/agents/qwen36_27b_agent/agent.py code/agents/deepseek_agent/agent.py code/agents/granite_agent/agent.py code/agents/glm_53_flash_agent/agent.py"
 SCENARIOS="0 a b c"
 
 # Count total runs
@@ -49,7 +49,7 @@ refresh_infra() {
   if ! curl -sf "http://127.0.0.1:38123/" --data "SELECT 1" >/dev/null 2>&1; then
     pkill -f "port-forward.*38123" 2>/dev/null || true
     sleep 2
-    oc port-forward -n otel-demo svc/clickhouse 38123:8123 &
+    oc port-forward -n agentic-aiops svc/clickhouse 38123:8123 &
     sleep 5
   fi
 }

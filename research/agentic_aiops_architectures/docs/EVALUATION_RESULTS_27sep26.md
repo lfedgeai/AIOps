@@ -11,9 +11,25 @@
 **Run notes:** [RUN_NOTES_25Sep26.md](RUN_NOTES_25Sep26.md)  
 **Learnings:** [Learnings_across_runs_report.md](Learnings_across_runs_report.md)
 
-> **Lineup:** `maas_deepseek`, `maas_qwen3`, `maas_qwen35-9b`, `maas_qwen36-27b`, `maas_granite`, `maas_llama31-70b`, `maas_glm-53-flash`.  
-> **Experiment deltas vs Sep 22–23:** shared AIOps skills in system prompt (`AGENT_SKILLS=1`); CHANGELOG removed from C2 docs corpus (`INDEX_VERSION=no-changelog-v1`); `AGENT_TIMEOUT=900` / detection window 1200s.  
-> **Missing cell:** `C2-3` × `kill_pod` × `maas_qwen35-9b` — harness crashed in `score_remediation` (`TypeError`: nested `suggested_remediations` list-of-lists). An incomplete MLflow run exists for that cell (no outcome metrics).
+> **Lineup:** `maas_deepseek`, `maas_qwen3`, `maas_qwen38-27b`, `maas_qwen36-27b`, `maas_granite`, `maas_llama31-70b`, `maas_glm-53-flash`.  
+> **Missing cell:** `C2-3` × `kill_pod` × `maas_qwen38-27b` — harness crashed in `score_remediation` (`TypeError`: nested `suggested_remediations` list-of-lists). An incomplete MLflow run exists for that cell (no outcome metrics).
+
+---
+
+## Changes before this run (vs Sep 22–23 baseline)
+
+Same Option 2 design (scenario A × 16 CONTEXT_C subsets × 7 agents × 3 faults). These deltas were intentional experiment axes — **not** a pure model bake-off against [EVALUATION_RESULTS_23sep26.md](EVALUATION_RESULTS_23sep26.md). See also [RUN_NOTES_25Sep26.md](RUN_NOTES_25Sep26.md).
+
+| Change | Detail | Why |
+|--------|--------|-----|
+| **Shared AIOps skills** | `AGENT_SKILLS=1` — `prompts.py` appends detect / diagnose / remediate / verify from `code/agents/skills/` to `BASE_SYSTEM_PROMPT` for **every** agent | Close the diagnose→execute gap seen in Sep 22–23 |
+| **Playbook reference** | `code/agents/playbooks/scenario_a_cart.md` appended after skills (fault→tool table; not a skill) | Reduce wrong fix class (e.g. restart when replicas=0) |
+| **C2 corpus hygiene** | `CHANGELOG.md` removed from docs RAG; `INDEX_VERSION=no-changelog-v1` | Changelog noise hurt RCA more than it helped |
+| **Agent timeout** | `AGENT_TIMEOUT` **900s** (was 600s) | Qwen36 had 32/48 timeouts at 600s |
+| **Detection window** | `--detection-timeout` **1200s** (was 720s) | Match longer agent wall-clock |
+| **Unchanged** | Scenario A, variant `cart`, 3 faults, 16 contexts, same 7-agent lineup, forced RAG for C≠0 | Keep matrix axes comparable |
+
+**Not in this run:** diagnose→execute gate (`AGENT_EXECUTE_GATE`) — that was introduced later (Oct 2026 matrix).
 
 ---
 
@@ -62,8 +78,8 @@ Rates verified against harness JSON **and** MLflow (335 matched cells, **0** met
 
 1. **Skills + corpus hygiene correlated with large RCA/exec lifts** vs Sep 22–23 (same agents/faults/contexts). Not a pure model bake-off — prompts and C2 index changed.
 2. **Detection vs execution:** detect **79%**; exec **25%**. DeepSeek/Granite still **0% exec** given detect∧RCA (0/45 and 0/46).
-3. **When executors get RCA right, they usually act:** Qwen36 **37/38 (97%)**, GLM **30/33 (91%)**, Qwen35 **15/18 (83%)** conditional exec.
-4. **Primary executors:** **qwen36-27b** 37/48, **glm-53-flash** 30/48, **qwen35-9b** 15/47; qwen3 still near-zero exec (1/48).
+3. **When executors get RCA right, they usually act:** Qwen36 **37/38 (97%)**, GLM **30/33 (91%)**, Qwen38 **15/18 (83%)** conditional exec.
+4. **Primary executors:** **qwen36-27b** 37/48, **glm-53-flash** 30/48, **qwen38-27b** 15/47; qwen3 still near-zero exec (1/48).
 5. **qwen36 reliability:** `agent_error` **32→8**/48 after timeout raise; detect/RCA/exec all **~79%** when the cell completes.
 6. **Llama** still dead for practical use (detect **1/48**).
 7. **One harness crash** (nested remediations) — fix `score_remediation` to flatten/coerce before `" ".join`.
@@ -77,7 +93,7 @@ Rates verified against harness JSON **and** MLflow (335 matched cells, **0** met
 | `maas_granite` | 48/48 (100%) | 46/48 (96%) | 0/48 (0%) | 40s |
 | `maas_llama31-70b` | 1/48 (2%) | 0/48 (0%) | 0/48 (0%) | 597s |
 | `maas_qwen3` | 47/48 (98%) | 15/48 (31%) | 1/48 (2%) | 97s |
-| `maas_qwen35-9b` | 37/47 (79%) | 18/47 (38%) | 15/47 (32%) | 140s |
+| `maas_qwen38-27b` | 37/47 (79%) | 18/47 (38%) | 15/47 (32%) | 140s |
 | `maas_qwen36-27b` | 38/48 (79%) | 38/48 (79%) | 37/48 (77%) | 192s |
 
 ## Model family comparison
@@ -89,12 +105,12 @@ Rates verified against harness JSON **and** MLflow (335 matched cells, **0** met
 | `nemotron-nano-3` (Aug) | 38/96 (40%) | 37/96 (39%) | 34/96 (35%) | prior batch |
 | `nemotron-cascade-2` (this run) | n/a | n/a | n/a | not in this batch |
 
-### Qwen family (`qwen3-14b` vs `qwen35-9b` vs `qwen36-27b`)
+### Qwen family (`qwen3-14b` vs `qwen38-27b` vs `qwen36-27b`)
 
 | Model | Detect | RCA | Exec | MTTD med |
 |---|---|---|---|---|
 | qwen3 (RHDP) | 47/48 (98%) | 15/48 (31%) | 1/48 (2%) | 97s |
-| qwen35-9b (MaaS) | 37/47 (79%) | 18/47 (38%) | 15/47 (32%) | 140s |
+| qwen38-27b (MaaS) | 37/47 (79%) | 18/47 (38%) | 15/47 (32%) | 140s |
 | qwen36-27b (MaaS) | 38/48 (79%) | 38/48 (79%) | 37/48 (77%) | 192s |
 | qwen3 (Aug 11 MLflow) | 26/48 (54%) | 16/48 (33%) | 7/48 (15%) | 140s |
 
@@ -102,7 +118,7 @@ Rates verified against harness JSON **and** MLflow (335 matched cells, **0** met
 
 ### This run — best cells (detect ∧ RCA ∧ exec)
 
-**Full wins:** **83/335** (maas_qwen36-27b 37, maas_glm-53-flash 30, maas_qwen35-9b 15, maas_qwen3 1)
+**Full wins:** **83/335** (maas_qwen36-27b 37, maas_glm-53-flash 30, maas_qwen38-27b 15, maas_qwen3 1)
 
 | Context | Agent | Fault | MTTD |
 |---------|-------|-------|------|
@@ -199,7 +215,7 @@ Rates verified against harness JSON **and** MLflow (335 matched cells, **0** met
 | MLflow runs in kickoff→complete window | **336** |
 | Matched by `run_id` with outcome metrics | **335** |
 | Mismatches on `detected` / `rca_correct` / `remediation_correct` / `remediation_executed` / `recovery_verified` | **0** |
-| Orphan MLflow run | `20260925104620_maas_qwen35-9b_scenarioa_kill_pod_cart` — **no** outcome metrics; params show nested `remediation_steps` `[[...]]` (same TypeError). This is the missing C2-3 `kill_pod` qwen35 cell. |
+| Orphan MLflow run | `20260925104620_maas_qwen38-27b_scenarioa_kill_pod_cart` — **no** outcome metrics; params show nested `remediation_steps` `[[...]]` (same TypeError). This is the missing C2-3 `kill_pod` qwen38 cell. |
 
 **Verdict:** Report headline rates are **aligned with MLflow** for all scored cells. The +1 MLflow count is the crashed cell, not a silent metric drift.
 
@@ -226,7 +242,7 @@ Rates verified against harness JSON **and** MLflow (335 matched cells, **0** met
 
 ## Agent errors
 
-- `maas_qwen35-9b`: 10/47
+- `maas_qwen38-27b`: 10/47
 - `maas_qwen36-27b`: 8/48
 - `maas_llama31-70b`: 1/48
 - `maas_glm-53-flash`: 1/48

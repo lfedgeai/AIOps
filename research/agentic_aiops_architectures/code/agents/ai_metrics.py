@@ -106,7 +106,11 @@ class RoundMetrics:
         }
 
 
-def aggregate_metrics(rounds: list[RoundMetrics]) -> dict[str, float]:
+def aggregate_metrics(
+    rounds: list[RoundMetrics],
+    *,
+    model_context_limit: int | None = None,
+) -> dict[str, float]:
     """Aggregate per-round metrics into a flat dict for mlflow.log_metrics()."""
     if not rounds:
         return {}
@@ -117,6 +121,7 @@ def aggregate_metrics(rounds: list[RoundMetrics]) -> dict[str, float]:
     total_llm_latency = sum(r.llm_latency_sec for r in rounds)
     total_tool_time = sum(r.total_tool_exec_sec for r in rounds)
     total_tool_calls = sum(len(r.tool_execs) for r in rounds)
+    peak_prompt = max((r.prompt_tokens for r in rounds), default=0)
 
     ttfts = [r.ttft_sec for r in rounds if r.ttft_sec is not None]
     avg_ttft = sum(ttfts) / len(ttfts) if ttfts else -1.0
@@ -124,7 +129,7 @@ def aggregate_metrics(rounds: list[RoundMetrics]) -> dict[str, float]:
     tps_vals = [r.tokens_per_second for r in rounds if r.tokens_per_second > 0]
     avg_tps = sum(tps_vals) / len(tps_vals) if tps_vals else 0.0
 
-    return {
+    out: dict[str, float] = {
         "ai_rounds": float(len(rounds)),
         "ai_avg_ttft_sec": round(avg_ttft, 3),
         "ai_total_llm_latency_sec": round(total_llm_latency, 3),
@@ -134,18 +139,36 @@ def aggregate_metrics(rounds: list[RoundMetrics]) -> dict[str, float]:
         "ai_completion_tokens": float(total_completion),
         "ai_total_tokens": float(total_tokens),
         "ai_avg_tokens_per_sec": round(avg_tps, 1),
+        "ai_peak_prompt_tokens": float(peak_prompt),
     }
+    if model_context_limit and model_context_limit > 0:
+        out["ai_model_context_limit"] = float(model_context_limit)
+        out["ai_context_tokens_available"] = float(max(0, model_context_limit - peak_prompt))
+        out["ai_context_utilization_pct"] = (
+            round(100.0 * peak_prompt / model_context_limit, 2) if peak_prompt else 0.0
+        )
+    return out
 
 
-def render_ai_metrics_text(rounds: list[RoundMetrics]) -> str:
+def render_ai_metrics_text(
+    rounds: list[RoundMetrics],
+    agg: dict[str, float] | None = None,
+) -> str:
     """Human-readable text for MLflow artifact."""
     lines: list[str] = []
     lines.append("=" * 60)
     lines.append("AI METRICS")
     lines.append("=" * 60)
 
-    agg = aggregate_metrics(rounds)
+    agg = agg or aggregate_metrics(rounds)
     lines.append(f"\nRounds:              {int(agg.get('ai_rounds', 0))}")
+    if agg.get("ai_model_context_limit", 0) > 0:
+        lines.append(f"Context limit:       {int(agg['ai_model_context_limit'])} tokens")
+        lines.append(f"Peak prompt tokens:  {int(agg.get('ai_peak_prompt_tokens', 0))}")
+        lines.append(f"Context available:   {int(agg.get('ai_context_tokens_available', 0))}")
+        lines.append(f"Context utilization: {agg.get('ai_context_utilization_pct', 0):.1f}%")
+    elif agg.get("ai_peak_prompt_tokens", 0) > 0:
+        lines.append(f"Peak prompt tokens:  {int(agg['ai_peak_prompt_tokens'])} (limit unknown)")
     lines.append(f"Avg TTFT:            {agg.get('ai_avg_ttft_sec', -1):.3f}s")
     lines.append(f"Total LLM latency:   {agg.get('ai_total_llm_latency_sec', 0):.3f}s")
     lines.append(f"Total tool exec:     {agg.get('ai_total_tool_exec_sec', 0):.3f}s")

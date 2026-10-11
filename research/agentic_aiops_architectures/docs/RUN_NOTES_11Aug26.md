@@ -12,13 +12,13 @@
 
 | Approach | Model | Endpoint family |
 |----------|-------|-----------------|
-| `maas_qwen35-9b` | `qwen35-9b` | prelude-maas |
+| `maas_qwen38-27b` | `qwen38-27b` | prelude-maas |
 | `maas_qwen36-27b` | `qwen36-27b` | prelude-maas |
 | `maas_kimi-k2-7` | `kimi-k2-7` | prelude-maas |
 
 **Kept:** `maas_deepseek`, `maas_qwen3`, `maas_granite`, `maas_llama31-70b`
 
-**Default matrix agents (8):** cascade, deepseek, qwen3, qwen35-9b, qwen36-27b, kimi-k2-7, granite, llama31-70b
+**Default matrix agents (8):** cascade, deepseek, qwen3, qwen38-27b, qwen36-27b, kimi-k2-7, granite, llama31-70b
 
 **Fairness notes (this run):**
 - Shared prompts via `code/agents/prompts.py` (fixes Aug Granite/Llama prompt skew)
@@ -40,7 +40,7 @@ Prior report: [EVALUATION_RESULTS_11Aug26.md](EVALUATION_RESULTS_11Aug26.md)
 ## Preflight at kickoff
 
 - All 8 agent APIs: PASS (chat)
-- Chat + native tools smoke (cascade, qwen35, qwen36, kimi): PASS
+- Chat + native tools smoke (cascade, qwen38, qwen36, kimi): PASS
 - MLflow local `:5050` up; ClickHouse PF up; `cart` 1/1
 
 ## Kickoff fix (approach naming)
@@ -50,6 +50,6 @@ First start used `--classifier` which tagged MLflow/`approach` as directory name
 ## Planned analysis (post-run)
 
 1. Harness JSON vs MLflow metrics congruence — **done** (384/384 matched, 0 mismatches)  
-2. Family comparisons: Nemotron (nano Aug vs cascade now); Qwen (qwen3 vs qwen35 vs qwen36) — **done**  
+2. Family comparisons: Nemotron (nano Aug vs cascade now); Qwen (qwen3 vs qwen38 vs qwen36) — **done**  
 3. Top CONTEXT_C × agent × fault combinations — Aug leaders vs this run — **done**  
 4. Report: [EVALUATION_RESULTS_12Aug26.md](EVALUATION_RESULTS_12Aug26.md) — **done**

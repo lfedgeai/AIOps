@@ -25,14 +25,29 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from code.agents.ai_metrics import RoundMetrics, aggregate_metrics, render_ai_metrics_text
+from code.agents.ai_metrics import RoundMetrics, render_ai_metrics_text
+from code.agents.model_context import build_ai_metrics
 from code.agents.mlflow_agent_logging import (
     log_agent_trace_error_to_mlflow,
     log_agent_trace_to_mlflow,
+    mlflow_context_fields,
     serialize_messages_for_mlflow,
 )
 from code.agents.mlflow_config import mlflow_tracking_uri
+from code.agents.remediation_signals import finalize_remediation_timings, remediation_into_signals
 from code.agents.tracing import trace_llm_call, trace_tool_call
+from code.agents.rag_force import (
+    block_final_json_during_rag_phase,
+    execute_forced_rag,
+    filter_prompt_tool_calls,
+    rag_phase_user_nudge,
+)
+from code.agents.execute_gate import (
+    flatten_suggested_remediations,
+    maybe_block_final_for_execute_gate,
+)
+from code.agents.prompts import BASE_SYSTEM_PROMPT, resolve_user_prompt
+from code.tools.rag_policy import default_rag_arguments, forced_rag_tool_for_round
 from code.tools.tool_profiles import (
     active_profile_name,
     execute_tool_gated,
@@ -47,7 +62,7 @@ CLICKHOUSE_HTTP = os.environ.get("CLICKHOUSE_HTTP", "http://127.0.0.1:8123")
 DEEPSEEK_API_BASE = os.environ.get("DEEPSEEK_API_BASE", "")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-r1-distill-qwen-14b")
-MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "8"))
+MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "20"))
 
 
 @dataclass
@@ -78,8 +93,9 @@ def _build_tool_descriptions() -> str:
     return "\n\n".join(parts)
 
 
-_BASE_SYSTEM_PROMPT = """You are an autonomous AIOps agent managing a microservices application.
-Your job is to DETECT faults, DIAGNOSE root cause, FIX the problem, and REPORT what you did.
+# Prompt-based tool-call syntax only (DeepSeek API has no native tools param).
+# Task framing MUST stay identical to other agents via BASE_SYSTEM_PROMPT.
+_DEEPSEEK_TOOL_CALL_SYNTAX = """
 
 ## CRITICAL: You MUST call tools before answering
 
@@ -101,7 +117,10 @@ The system will reply with <tool_result> blocks containing tool output.
 def _get_system_prompt() -> str:
     return system_prompt_for_profile(
         active_profile_name(),
-        _BASE_SYSTEM_PROMPT + _build_tool_descriptions() + """
+        BASE_SYSTEM_PROMPT
+        + _DEEPSEEK_TOOL_CALL_SYNTAX
+        + _build_tool_descriptions()
+        + """
 
 ## Final answer
 
@@ -235,12 +254,7 @@ def run_agentic_loop(
 
     system_prompt = _get_system_prompt()
 
-    user_msg = (
-        f"Analyze telemetry since {since_ts}. "
-        "Use the tools (search_logs, search_traces, search_metrics) to gather data first, "
-        "then determine if there is a failure and suggest remediations. "
-        "Start by searching logs for errors."
-    )
+    user_msg = resolve_user_prompt(since_ts)
 
     def _mlflow_preview(text: str, max_chars: int = 12_000) -> str:
         if len(text) <= max_chars:
@@ -265,6 +279,7 @@ def run_agentic_loop(
             "openai_api_base": (DEEPSEEK_API_BASE or "").rstrip("/"),
             "registered_tool_names": [t.get("function", {}).get("name") for t in resolve_tool_definitions()],
             "conversation_messages": serialize_messages_for_mlflow(messages),
+            **mlflow_context_fields(),
         }
         if prompts:
             prompts_payload.update(prompts)
@@ -307,7 +322,9 @@ def run_agentic_loop(
     all_round_metrics: list[RoundMetrics] = []
 
     def _finalize(result: dict[str, Any]) -> dict[str, Any]:
-        result["ai_metrics"] = aggregate_metrics(all_round_metrics)
+        finalize_remediation_timings(tool_ctx, result)
+        metrics = build_ai_metrics(all_round_metrics, DEEPSEEK_API_BASE, DEEPSEEK_API_KEY, DEEPSEEK_MODEL)
+        result["ai_metrics"] = metrics
         result["ai_metrics_rounds"] = [rm.to_dict() for rm in all_round_metrics]
         if tool_ctx.get("remediation_executed_time"):
             result["remediation_executed_time"] = tool_ctx["remediation_executed_time"]
@@ -321,12 +338,13 @@ def run_agentic_loop(
                 _ensure_mlflow_tls_env()
                 uri = mlflow_tracking_uri()
                 _c = MlflowClient(uri)
-                _log_text_artifact(_c, run_id, render_ai_metrics_text(all_round_metrics), "agent_ai_metrics.txt")
+                _log_text_artifact(_c, run_id, render_ai_metrics_text(all_round_metrics, metrics), "agent_ai_metrics.txt")
             except Exception as e:
                 print(f"[agent] ai_metrics artifact failed: {e}", file=sys.stderr, flush=True)
         return result
 
     for round_idx in range(MAX_TOOL_ITERATIONS):
+        rag_phase_user_nudge(messages, round_idx, tool_ctx.get("tool_calls_log", []))
         req_messages_snapshot = serialize_messages_for_mlflow(messages)
         rm = RoundMetrics(round_idx=round_idx + 1, model=DEEPSEEK_MODEL)
         all_round_metrics.append(rm)
@@ -376,14 +394,52 @@ def run_agentic_loop(
 
         messages.append({"role": "assistant", "content": raw_content})
 
-        parsed_tool_calls = _parse_tool_calls(visible_content)
+        parsed_tool_calls = filter_prompt_tool_calls(
+            _parse_tool_calls(visible_content),
+            round_idx,
+            tool_ctx.get("tool_calls_log", []),
+        )
 
         has_used_tools = len(tool_ctx.get("tool_calls_log", [])) > 0
 
         if not parsed_tool_calls:
+            if block_final_json_during_rag_phase(tool_ctx.get("tool_calls_log", [])):
+                if execute_forced_rag(
+                    tool_ctx,
+                    messages,
+                    execute_tool_gated,
+                    mlflow_preview_fn=_mlflow_preview,
+                ):
+                    tool_ctx["llm_rounds"].append({
+                        "round": round_idx + 1,
+                        "model": DEEPSEEK_MODEL,
+                        "request_messages": req_messages_snapshot,
+                        "note": "forced_rag_harness_fallback",
+                    })
+                    _log_to_mlflow(
+                        tool_calls=tool_ctx.get("tool_calls_log"),
+                        thinking=tool_ctx.get("thinking_log"),
+                    )
+                    continue
+
             parsed_json = _try_parse_final_json(raw_content)
             if parsed_json and "detected" in parsed_json and has_used_tools:
-                remediations = tool_ctx.get("remediation_steps") or parsed_json.get("suggested_remediations", [])
+                if maybe_block_final_for_execute_gate(parsed_json, tool_ctx, messages):
+                    tool_ctx["llm_rounds"].append({
+                        "round": round_idx + 1,
+                        "model": DEEPSEEK_MODEL,
+                        "request_messages": req_messages_snapshot,
+                        "assistant_content": visible_content[:100_000],
+                        "note": "execute_gate_blocked_final_json",
+                    })
+                    _log_to_mlflow(
+                        tool_calls=tool_ctx.get("tool_calls_log"),
+                        thinking=tool_ctx.get("thinking_log"),
+                    )
+                    continue
+                remediations = flatten_suggested_remediations(
+                    tool_ctx.get("remediation_steps") or parsed_json.get("suggested_remediations", [])
+                )
                 tool_ctx["llm_rounds"].append({
                     "round": round_idx + 1,
                     "model": DEEPSEEK_MODEL,
@@ -399,7 +455,7 @@ def run_agentic_loop(
                     "detected": bool(parsed_json.get("detected", False)),
                     "confidence": float(parsed_json.get("confidence", 0.0)),
                     "suggested_root_cause": parsed_json.get("suggested_root_cause"),
-                    "suggested_remediations": remediations if remediations else list(parsed_json.get("suggested_remediations", [])),
+                    "suggested_remediations": remediations,
                     "llm_invoked": True,
                 })
 
@@ -419,12 +475,20 @@ def run_agentic_loop(
                         '{"detected": true_or_false, "confidence": 0.0-1.0, "suggested_root_cause": "service or null", "suggested_remediations": ["step1", ...]}'
                     )
                 else:
-                    nudge = (
-                        "You MUST call tools first. Do NOT give a final answer until you have gathered real data.\n"
-                        f"Call search_logs now:\n"
-                        f'<tool_call>{{"name": "search_logs", "arguments": {{"query": "error", "since_ts": "{tool_ctx["since_ts"]}"}}}}</tool_call>\n'
-                        "Copy and emit the <tool_call> block above (you may adjust the query)."
-                    )
+                    forced = forced_rag_tool_for_round(round_idx, tool_ctx.get("tool_calls_log", []))
+                    if forced:
+                        args = default_rag_arguments(forced)
+                        nudge = (
+                            f"You MUST call `{forced}` first before other tools.\n"
+                            f'<tool_call>{{"name": "{forced}", "arguments": {json.dumps(args)}}}</tool_call>'
+                        )
+                    else:
+                        nudge = (
+                            "You MUST call tools first. Do NOT give a final answer until you have gathered real data.\n"
+                            f"Call search_logs now:\n"
+                            f'<tool_call>{{"name": "search_logs", "arguments": {{"query": "error", "since_ts": "{tool_ctx["since_ts"]}"}}}}</tool_call>\n'
+                            "Copy and emit the <tool_call> block above (you may adjust the query)."
+                        )
                 messages.append({"role": "user", "content": nudge})
                 print(f"[agent] round {round_idx+1}: no tool calls, nudging ({'conclude' if has_used_tools else 'call tools'})", file=sys.stderr, flush=True)
                 continue
@@ -514,6 +578,7 @@ def run_detection(
         signals["ai_metrics_rounds"] = llm_result["ai_metrics_rounds"]
     if llm_result.get("remediation_executed_time"):
         signals["remediation_executed_time"] = llm_result["remediation_executed_time"]
+    remediation_into_signals(llm_result, signals)
     detection_timestamp = llm_result.get("detection_timestamp")
     if not detection_timestamp and detected:
         detection_timestamp = datetime.now(timezone.utc).isoformat()

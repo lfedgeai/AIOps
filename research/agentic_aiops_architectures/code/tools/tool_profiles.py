@@ -7,15 +7,19 @@ for multi-agent scenarios) and only receive matching OpenAI tool definitions.
 from __future__ import annotations
 
 import os
-import re
 from typing import Any
 
 from code.tools.agent_tools import TOOL_DEFINITIONS as _ALL_TOOL_DEFINITIONS
 from code.tools import agent_tools
+from code.tools.context_engineering import (
+    STANDARD_TELEMETRY_TOOLS,
+    context_tool_names,
+    profile_has_telemetry,
+)
+from code.tools.rag_policy import in_rag_phase, required_rag_tools
 
 # Profile name -> allowed tool names
 TOOL_PROFILES: dict[str, list[str]] = {
-    # Scenario 0: baseline — telemetry only (no K8s)
     "telemetry_only": [
         "search_logs",
         "search_traces",
@@ -23,7 +27,6 @@ TOOL_PROFILES: dict[str, list[str]] = {
         "query_clickhouse",
         "log_action",
     ],
-    # Scenario A: telemetry + Kubernetes tools (detect + diagnose + fix)
     "telemetry_k8s": [
         "search_logs",
         "search_traces",
@@ -37,11 +40,9 @@ TOOL_PROFILES: dict[str, list[str]] = {
         "delete_pod",
         "log_action",
     ],
-    # Scenario B: signal specialists
     "logs_only": ["search_logs", "query_clickhouse", "log_action"],
     "traces_only": ["search_traces", "log_action"],
     "metrics_only": ["search_metrics", "log_action"],
-    # Scenario C: domain specialists
     "hardware_metrics": ["search_metrics", "query_clickhouse", "log_action"],
     "platform_k8s": [
         "get_pod_status",
@@ -53,7 +54,6 @@ TOOL_PROFILES: dict[str, list[str]] = {
         "log_action",
     ],
     "application_telemetry": ["search_logs", "search_traces", "log_action"],
-    # Backward compatibility: all tools (pre-refactor agents)
     "full": [
         "query_clickhouse",
         "search_logs",
@@ -72,48 +72,44 @@ TOOL_PROFILES: dict[str, list[str]] = {
 PROFILE_PROMPTS: dict[str, str] = {
     "telemetry_only": (
         "You analyze logs, traces, and metrics from ClickHouse only. "
-        "You do NOT have Kubernetes API access — you cannot check pod status, "
-        "events, or execute remediation actions. "
-        "Identify the failing microservice from observability signals."
+        "You do NOT have Kubernetes API access. "
+        "Use compare_telemetry to see what changed after fault injection at T0."
     ),
     "telemetry_k8s": (
         "You have full telemetry AND Kubernetes cluster access. "
-        "Use search_logs + get_pod_status + get_events to detect and diagnose faults. "
+        "Use compare_telemetry, search_logs, get_pod_status, and get_events to diagnose. "
         "When you find a fault, FIX it using restart_deployment, scale_deployment, or delete_pod. "
         "You MUST call K8s remediation tools when a fault is found — do not just suggest."
     ),
     "logs_only": (
-        "You are a logs-only specialist. Use search_logs and query_clickhouse. "
-        "Report whether logs indicate a failure and which service is affected."
+        "You are a logs-only specialist. Use search_logs, query_clickhouse, and compare_telemetry."
     ),
-    "traces_only": (
-        "You are a traces-only specialist. Use search_traces to find latency errors, "
-        "failed spans, or slow services since the fault window."
-    ),
-    "metrics_only": (
-        "You are a metrics-only specialist. Use search_metrics for SLI anomalies "
-        "(latency, errors, saturation) since the fault window."
-    ),
+    "traces_only": "You are a traces-only specialist. Use search_traces.",
+    "metrics_only": "You are a metrics-only specialist. Use search_metrics.",
     "hardware_metrics": (
-        "You are a hardware/host metrics specialist. Use search_metrics and query_clickhouse "
-        "for node-level signals: CPU, memory, disk, network saturation. "
-        "Do NOT use Kubernetes API tools."
+        "You are a hardware/host metrics specialist. Use search_metrics and query_clickhouse."
     ),
     "platform_k8s": (
         "You are a Kubernetes platform specialist. Use get_pod_status, get_events, get_pod_logs, "
-        "and remediation tools (restart_deployment, scale_deployment, delete_pod). "
-        "Do NOT query ClickHouse logs/traces/metrics."
+        "and remediation tools. Do NOT query ClickHouse logs/traces/metrics."
     ),
     "application_telemetry": (
-        "You are an application-layer specialist. Use search_logs and search_traces only. "
-        "Focus on microservice errors and request failures. Do NOT use Kubernetes API tools."
+        "You are an application-layer specialist. Use search_logs and search_traces."
     ),
     "full": "You have full telemetry and Kubernetes tools.",
 }
 
+REMEDIATION_VERIFY_RULES = """
+## Verify remediation worked
+
+After calling restart_deployment, scale_deployment, or delete_pod:
+- Re-check the affected service with your available read tools.
+- Do NOT finish with detected=true or claim success until verification shows recovery.
+- Use log_action to record what you verified and the outcome.
+"""
+
 
 def active_profile_name() -> str:
-    """TOOL_PROFILE env, else SCENARIO_ROLE mapped via caller, else 'full'."""
     explicit = (os.environ.get("TOOL_PROFILE") or "").strip()
     if explicit:
         return explicit
@@ -135,7 +131,15 @@ def allowed_tool_names(profile: str | None = None) -> list[str]:
     name = profile or active_profile_name()
     if name not in TOOL_PROFILES:
         raise ValueError(f"Unknown tool profile: {name}. Known: {list(TOOL_PROFILES)}")
-    return list(TOOL_PROFILES[name])
+    base = list(TOOL_PROFILES[name])
+    for t in context_tool_names():
+        if t not in base:
+            base.append(t)
+    if profile_has_telemetry(name):
+        for t in STANDARD_TELEMETRY_TOOLS:
+            if t not in base:
+                base.append(t)
+    return base
 
 
 def resolve_tool_definitions(profile: str | None = None) -> list[dict[str, Any]]:
@@ -152,13 +156,36 @@ def system_prompt_for_profile(profile: str | None = None, base_prompt: str = "")
     hint = PROFILE_PROMPTS.get(name, "")
     role = (os.environ.get("SCENARIO_ROLE") or "").strip()
     role_line = f"\nYour role in this run: **{role}**.\n" if role else ""
+    ctx_c = (os.environ.get("CONTEXT_C") or "0").strip()
+    if ctx_c != "0":
+        rag_tools = ", ".join(required_rag_tools())
+        ctx_line = (
+            f"\nContext corpora enabled (CONTEXT_C): {ctx_c}.\n"
+            f"Round 0 MUST start with a call to the enabled RAG tool(s): {rag_tools}.\n"
+            "Other tools unlock after each required RAG tool has been called.\n"
+        )
+    else:
+        ctx_line = ""
     tools_line = f"\nAllowed tools: {', '.join(allowed_tool_names(name))}.\n"
-    return f"{base_prompt.strip()}\n{role_line}{tools_line}{hint}\n".strip()
+    verify_block = ""
+    remediation_tools = {"restart_deployment", "scale_deployment", "delete_pod"}
+    if remediation_tools.intersection(allowed_tool_names(name)):
+        verify_block = f"\n{REMEDIATION_VERIFY_RULES.strip()}\n"
+    return f"{base_prompt.strip()}\n{role_line}{ctx_line}{tools_line}{hint}{verify_block}\n".strip()
 
 
 def execute_tool_gated(name: str, arguments: dict[str, Any], ctx: dict[str, Any]) -> str:
-    """Execute tool only if permitted by active profile."""
     profile = ctx.get("tool_profile") or active_profile_name()
+    tool_log = ctx.get("tool_calls_log") or []
+    if in_rag_phase(tool_log):
+        pending = required_rag_tools()
+        called = {tc.get("name") for tc in tool_log}
+        still = [t for t in pending if t not in called]
+        if still and name not in still:
+            return (
+                f"Error: call `{still[0]}` first (CONTEXT_C RAG phase). "
+                f"Pending RAG tools: {still}"
+            )
     allowed = set(allowed_tool_names(profile))
     if name not in allowed:
         return (

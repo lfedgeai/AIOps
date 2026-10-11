@@ -3,8 +3,8 @@
 #
 # Prerequisites:
 # - OTEL demo running (frontend, services, load-generator)
-# - ClickHouse receiving logs/traces (verify: oc exec -n otel-demo deploy/clickhouse -- wget -qO- 'http://127.0.0.1:8123/?query=SELECT%20count()%20FROM%20otel.otel_logs')
-# - MLflow deployed on OpenShift; set MLFLOW_TRACKING_URI to the Route HTTPS URL (or rely on discovery below)
+# - ClickHouse receiving logs/traces (verify: oc exec -n agentic-aiops deploy/clickhouse -- wget -qO- 'http://127.0.0.1:8123/?query=SELECT%20count()%20FROM%20otel.otel_logs')
+# - Local MLflow on :5050 (started automatically via scripts/ensure_local_mlflow.sh)
 #
 # Usage:
 #   export FLAGD_READ_URL="https://$(oc get route flagd-ui-api -n otel-demo -o jsonpath='{.spec.host}')/api/read"
@@ -22,6 +22,26 @@ if [[ -f config/.env ]]; then
   set +a
 fi
 
+# When the MaaS LiteLLM gateway is down, route maas_* agents through local Ollama.
+# Set HARNESS_OLLAMA_MAAS_FALLBACK=1 to force; otherwise probe DEEPSEEK_API_BASE.
+_apply_ollama_maas_fallback() {
+  local probe_url="${DEEPSEEK_API_BASE:-}"
+  [[ -z "$probe_url" ]] && return 0
+  if [[ "${HARNESS_OLLAMA_MAAS_FALLBACK:-}" =~ ^(1|true|yes)$ ]] \
+    || ! curl -sf --max-time 5 -o /dev/null -w "" \
+      -H "Authorization: Bearer ${DEEPSEEK_API_KEY:-x}" \
+      "${probe_url%/}/models" 2>/dev/null; then
+    echo "MaaS LiteLLM unreachable at ${probe_url}; using Ollama fallback for maas_* agents." >&2
+    export DEEPSEEK_API_BASE="${HARNESS_OLLAMA_BASE:-http://127.0.0.1:11434/v1}"
+    export DEEPSEEK_MODEL="${HARNESS_OLLAMA_DEEPSEEK_MODEL:-mistral}"
+    export DEEPSEEK_API_KEY="${HARNESS_OLLAMA_API_KEY:-ollama}"
+    export QWEN3_API_BASE="${HARNESS_OLLAMA_BASE:-http://127.0.0.1:11434/v1}"
+    export QWEN3_MODEL="${HARNESS_OLLAMA_QWEN_MODEL:-qwen2.5}"
+    export QWEN3_API_KEY="${HARNESS_OLLAMA_API_KEY:-ollama}"
+  fi
+}
+_apply_ollama_maas_fallback
+
 # Flagd: prefer ConfigMap patch on OpenShift (flagd-ui write often returns 404)
 if [[ -z "${FLAGD_USE_OPENSHIFT_CM}" ]] && oc get configmap flagd-config -n otel-demo &>/dev/null; then
   export FLAGD_USE_OPENSHIFT_CM=1
@@ -29,41 +49,52 @@ if [[ -z "${FLAGD_USE_OPENSHIFT_CM}" ]] && oc get configmap flagd-config -n otel
   echo "Using flagd ConfigMap (FLAGD_USE_OPENSHIFT_CM=1)"
 fi
 
-# Port-forward ClickHouse (if not already exposed)
-if ! curl -s "${CLICKHOUSE_HTTP:-http://localhost:8123}/?query=SELECT%201" >/dev/null 2>&1; then
-  echo "Starting port-forward for ClickHouse (background)..."
-  oc port-forward -n otel-demo svc/clickhouse 8123:8123 &
-  PF_PID=$!
-  sleep 3
-  export CLICKHOUSE_HTTP="http://localhost:8123"
+if [[ -z "${CLICKHOUSE_HTTP}" ]]; then
+  export CLICKHOUSE_HTTP="http://127.0.0.1:38123"
 fi
+CLICKHOUSE_NAMESPACE="${CLICKHOUSE_NAMESPACE:-agentic-aiops}"
 
-# MLflow: OpenShift tracking server only (no embedded local MLflow process).
-# Discover Route when MLFLOW_TRACKING_URI is unset and oc + route exist.
-if [[ -z "${MLFLOW_TRACKING_URI}" ]] && oc get route mlflow -n agentic-aiops -o jsonpath='{.spec.host}' &>/dev/null; then
-  MLFLOW_HOST=$(oc get route mlflow -n agentic-aiops -o jsonpath='{.spec.host}')
-  export MLFLOW_TRACKING_URI="https://${MLFLOW_HOST}"
-  export MLFLOW_TRACKING_INSECURE_TLS=true
-  echo "Using MLflow (OpenShift route): $MLFLOW_TRACKING_URI"
-fi
-
-if [[ -z "${MLFLOW_TRACKING_URI}" ]]; then
-  echo "ERROR: MLFLOW_TRACKING_URI is not set." >&2
-  echo "Set it to your OpenShift MLflow tracking URL (HTTPS route), e.g. from config/harness.yaml key mlflow.tracking_uri," >&2
-  echo "or ensure 'oc get route mlflow -n agentic-aiops' works for automatic discovery." >&2
-  exit 1
-fi
-
-# Optional: reachability check (self-signed routes need -k)
-if [[ "${MLFLOW_TRACKING_INSECURE_TLS}" =~ ^(1|true|yes)$ ]]; then
-  if ! curl -sf -k "${MLFLOW_TRACKING_URI}/health" >/dev/null 2>&1; then
-    echo "WARNING: MLflow health check failed at ${MLFLOW_TRACKING_URI} (TLS skipped). Check VPN/cluster access." >&2
+# Refresh OpenShift session + ClickHouse port-forward (same pattern as run_context_matrix.sh)
+refresh_infra() {
+  if [[ -n "${OCP_API_URL:-}" && -n "${KUBEADMIN_PASSWORD:-}" ]]; then
+    timeout 20 oc login "$OCP_API_URL" \
+      --username=kubeadmin --password="$KUBEADMIN_PASSWORD" \
+      --insecure-skip-tls-verify >/dev/null 2>&1 || \
+      echo "WARNING: oc login failed or timed out (cluster API may be down)." >&2
   fi
-else
-  if ! curl -sf "${MLFLOW_TRACKING_URI}/health" >/dev/null 2>&1; then
-    echo "WARNING: MLflow health check failed at ${MLFLOW_TRACKING_URI}. For self-signed certs set MLFLOW_TRACKING_INSECURE_TLS=true" >&2
+  if ! curl -sf --max-time 5 "$CLICKHOUSE_HTTP/" --data "SELECT 1" >/dev/null 2>&1; then
+    echo "Starting port-forward for ClickHouse on ${CLICKHOUSE_HTTP} (background)..."
+    pkill -f "port-forward.*38123:8123" 2>/dev/null || true
+    sleep 1
+    if timeout 10 oc get svc clickhouse -n "$CLICKHOUSE_NAMESPACE" >/dev/null 2>&1; then
+      oc port-forward -n "$CLICKHOUSE_NAMESPACE" svc/clickhouse 38123:8123 &
+      sleep 6
+    else
+      echo "WARNING: cannot reach OpenShift API to port-forward ClickHouse (ns=$CLICKHOUSE_NAMESPACE)." >&2
+    fi
+    if ! curl -sf --max-time 5 "$CLICKHOUSE_HTTP/" --data "SELECT 1" >/dev/null 2>&1; then
+      echo "WARNING: ClickHouse still unreachable at $CLICKHOUSE_HTTP." >&2
+    fi
+  fi
+  "${HARNESS_PYTHON:-python3}" "$ROOT/scripts/pre_run_health_gate.py" || exit 1
+}
+refresh_infra
+
+# Port-forward ClickHouse (legacy path when CLICKHOUSE_HTTP points at :8123)
+if ! curl -s "${CLICKHOUSE_HTTP}/?query=SELECT%201" >/dev/null 2>&1; then
+  if [[ "$CLICKHOUSE_HTTP" == *":8123"* ]]; then
+    echo "Starting port-forward for ClickHouse on :8123 (background)..."
+    oc port-forward -n "$CLICKHOUSE_NAMESPACE" svc/clickhouse 8123:8123 &
+    PF_PID=$!
+    sleep 3
+    export CLICKHOUSE_HTTP="http://localhost:8123"
   fi
 fi
+
+# Local MLflow only (never auto-discover OpenShift route)
+# shellcheck source=ensure_local_mlflow.sh
+source "$ROOT/scripts/ensure_local_mlflow.sh"
+_ensure_local_mlflow || exit 1
 
 # Ensure deps
 pip install -q -r requirements.txt -r code/harness/requirements.txt 2>/dev/null || true

@@ -24,15 +24,30 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from code.agents.ai_metrics import RoundMetrics, aggregate_metrics, render_ai_metrics_text
+from code.agents.ai_metrics import RoundMetrics, render_ai_metrics_text
+from code.agents.model_context import build_ai_metrics
 from code.agents.mlflow_agent_logging import (
     log_agent_trace_error_to_mlflow,
     log_agent_trace_to_mlflow,
+    mlflow_context_fields,
     serialize_messages_for_mlflow,
     serialize_tool_calls_for_mlflow,
 )
 from code.agents.mlflow_config import mlflow_tracking_uri
+from code.agents.remediation_signals import finalize_remediation_timings, remediation_into_signals
 from code.agents.tracing import trace_tool_call
+from code.agents.rag_force import (
+    block_final_json_during_rag_phase,
+    execute_forced_rag,
+    rag_phase_user_nudge,
+    resolve_tools_for_round,
+)
+from code.agents.execute_gate import (
+    flatten_suggested_remediations,
+    maybe_block_final_for_execute_gate,
+)
+from code.tools.rag_policy import openai_tool_choice_for_round
+from code.agents.prompts import BASE_SYSTEM_PROMPT, resolve_user_prompt
 from code.tools.tool_profiles import (
     active_profile_name,
     execute_tool_gated,
@@ -45,7 +60,7 @@ CLICKHOUSE_HTTP = os.environ.get("CLICKHOUSE_HTTP", "http://127.0.0.1:8123")
 LLAMA_SCOUT_API_BASE = os.environ.get("LLAMA_SCOUT_API_BASE", "")
 LLAMA_SCOUT_API_KEY = os.environ.get("LLAMA_SCOUT_API_KEY", "")
 LLAMA_SCOUT_MODEL = os.environ.get("LLAMA_SCOUT_MODEL", "llama-scout-17b")
-MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "8"))
+MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "20"))
 
 
 @dataclass
@@ -59,22 +74,12 @@ class DetectionResult:
     llm_invoked: bool = False
 
 
-_BASE_SYSTEM_PROMPT = """You are an autonomous AIOps agent managing a microservices application.
-Your job is to DETECT faults, DIAGNOSE root cause, and REPORT remediations via log_action.
-
-Use ONLY the tools listed in your profile. Do not invent tools you cannot call.
-
-Output final JSON (no markdown):
-{"detected": true|false, "confidence": 0.0-1.0, "suggested_root_cause": "service", "suggested_remediations": ["steps taken or recommended"]}
-"""
-
-
 def _get_tools() -> list:
     return resolve_tool_definitions()
 
 
 def _get_system_prompt() -> str:
-    return system_prompt_for_profile(active_profile_name(), _BASE_SYSTEM_PROMPT)
+    return system_prompt_for_profile(active_profile_name(), BASE_SYSTEM_PROMPT)
 
 
 def _truncate_tool_result(text: str, max_chars: int = 14_000) -> str:
@@ -102,11 +107,7 @@ def run_agentic_loop(
     tools = _get_tools()
     system_prompt = _get_system_prompt()
 
-    user_msg = (
-        f"Analyze telemetry since {since_ts}. Use the tools to search logs, traces, "
-        "and metrics. Determine if there is a failure and suggest remediations. "
-        "Respond with JSON when done."
-    )
+    user_msg = resolve_user_prompt(since_ts)
 
     def _mlflow_preview(text: str, max_chars: int = 12_000) -> str:
         if len(text) <= max_chars:
@@ -131,6 +132,7 @@ def run_agentic_loop(
             "openai_api_base": (LLAMA_SCOUT_API_BASE or "").rstrip("/"),
             "registered_tool_names": [t.get("function", {}).get("name") for t in tools],
             "conversation_messages": serialize_messages_for_mlflow(messages),
+            **mlflow_context_fields(),
         }
         if prompts:
             prompts_payload.update(prompts)
@@ -196,7 +198,9 @@ def run_agentic_loop(
     all_round_metrics: list[RoundMetrics] = []
 
     def _finalize(result: dict[str, Any]) -> dict[str, Any]:
-        result["ai_metrics"] = aggregate_metrics(all_round_metrics)
+        finalize_remediation_timings(tool_ctx, result)
+        metrics = build_ai_metrics(all_round_metrics, LLAMA_SCOUT_API_BASE, LLAMA_SCOUT_API_KEY, LLAMA_SCOUT_MODEL)
+        result["ai_metrics"] = metrics
         result["ai_metrics_rounds"] = [rm.to_dict() for rm in all_round_metrics]
         if tool_ctx.get("remediation_executed_time"):
             result["remediation_executed_time"] = tool_ctx["remediation_executed_time"]
@@ -210,7 +214,7 @@ def run_agentic_loop(
                 _ensure_mlflow_tls_env()
                 uri = mlflow_tracking_uri()
                 _c = MlflowClient(uri)
-                _log_text_artifact(_c, run_id, render_ai_metrics_text(all_round_metrics), "agent_ai_metrics.txt")
+                _log_text_artifact(_c, run_id, render_ai_metrics_text(all_round_metrics, metrics), "agent_ai_metrics.txt")
             except Exception as e:
                 print(f"[agent] ai_metrics artifact failed: {e}", file=sys.stderr, flush=True)
         return result
@@ -225,13 +229,19 @@ def run_agentic_loop(
         rm = RoundMetrics(round_idx=round_idx + 1, model=LLAMA_SCOUT_MODEL)
         all_round_metrics.append(rm)
 
+        rag_phase_user_nudge(messages, round_idx, tool_ctx.get("tool_calls_log", []))
+        round_tools = resolve_tools_for_round(
+            round_idx, tool_ctx.get("tool_calls_log", []), tool_ctx.get("tool_profile")
+        )
+        tool_choice = openai_tool_choice_for_round(round_idx, tool_ctx.get("tool_calls_log", []))
+
         try:
             rm.mark_request_start()
             response = client.chat.completions.create(
                 model=LLAMA_SCOUT_MODEL,
                 messages=messages,
-                tools=tools,
-                tool_choice="auto",
+                tools=round_tools if round_tools else None,
+                tool_choice=tool_choice if round_tools else "auto",
                 temperature=0.2,
             )
             rm.mark_response_end()
@@ -332,6 +342,21 @@ def run_agentic_loop(
             )
             continue
 
+        if block_final_json_during_rag_phase(tool_ctx.get("tool_calls_log", [])):
+            if execute_forced_rag(
+                tool_ctx,
+                messages,
+                execute_tool_gated,
+                truncate_fn=_truncate_tool_result,
+                mlflow_preview_fn=_mlflow_preview,
+            ):
+                _append_llm_round(note="forced_rag_harness_fallback")
+                _log_to_mlflow(
+                    tool_calls=tool_ctx.get("tool_calls_log"),
+                    thinking=tool_ctx.get("thinking_log"),
+                )
+                continue
+
         raw_content = (msg.content or "").strip()
         if raw_content:
             parse_content = re.sub(r"^```(?:json)?\s*", "", raw_content)
@@ -340,7 +365,16 @@ def run_agentic_loop(
                 parsed = json.loads(parse_content)
                 if not isinstance(parsed, dict):
                     raise json.JSONDecodeError("expected object", parse_content, 0)
-                remediations = tool_ctx.get("remediation_steps") or parsed.get("suggested_remediations", [])
+                if maybe_block_final_for_execute_gate(parsed, tool_ctx, messages):
+                    _append_llm_round(note="execute_gate_blocked_final_json")
+                    _log_to_mlflow(
+                        tool_calls=tool_ctx.get("tool_calls_log"),
+                        thinking=tool_ctx.get("thinking_log"),
+                    )
+                    continue
+                remediations = flatten_suggested_remediations(
+                    tool_ctx.get("remediation_steps") or parsed.get("suggested_remediations", [])
+                )
                 _append_llm_round(note="final_detection_json")
                 _log_to_mlflow(
                     tool_calls=tool_ctx.get("tool_calls_log"),
@@ -350,7 +384,7 @@ def run_agentic_loop(
                     "detected": bool(parsed.get("detected", False)),
                     "confidence": float(parsed.get("confidence", 0.0)),
                     "suggested_root_cause": parsed.get("suggested_root_cause") or None,
-                    "suggested_remediations": remediations if remediations else list(parsed.get("suggested_remediations", [])),
+                    "suggested_remediations": remediations,
                     "llm_invoked": True,
                 })
             except json.JSONDecodeError:
@@ -412,6 +446,7 @@ def run_detection(
         signals["ai_metrics_rounds"] = llm_result["ai_metrics_rounds"]
     if llm_result.get("remediation_executed_time"):
         signals["remediation_executed_time"] = llm_result["remediation_executed_time"]
+    remediation_into_signals(llm_result, signals)
     detection_timestamp = llm_result.get("detection_timestamp")
     if not detection_timestamp and detected:
         detection_timestamp = datetime.now(timezone.utc).isoformat()

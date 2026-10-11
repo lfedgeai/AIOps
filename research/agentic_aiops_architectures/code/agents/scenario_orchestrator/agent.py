@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 
 from code.harness.scenarios import get_scenario
 from code.tools.tool_profiles import allowed_tool_names
+from code.tools.context_engineering import apply_context_to_agent_env, context_c_label
 
 
 def _python() -> str:
@@ -85,6 +86,15 @@ def _invoke_role(
     env["TOOL_PROFILE"] = tool_profile
     env["SCENARIO_ROLE"] = role_id
     env["PYTHONUNBUFFERED"] = "1"
+    env["CONTEXT_C"] = context_c_label()
+    env["FAULT_INJECTION_TIME"] = since_ts
+    scenario_id = (os.environ.get("SCENARIO") or "b").strip()
+    apply_context_to_agent_env(
+        env,
+        fault_injection_ts=since_ts,
+        scenario_id=scenario_id,
+        role_id=role_id,
+    )
     args = [_python(), "-u", str(base_script), "--since", since_ts, "--json"]
     print(
         f"[orchestrator] role={role_id} profile={tool_profile} tools={allowed_tool_names(tool_profile)}",

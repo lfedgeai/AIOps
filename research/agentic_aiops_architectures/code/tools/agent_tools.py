@@ -384,7 +384,7 @@ TOOL_DEFINITIONS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "namespace": {"type": "string", "description": "Kubernetes namespace (default: otel-demo)."},
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default from harness env)."},
                 },
             },
         },
@@ -397,8 +397,8 @@ TOOL_DEFINITIONS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "pod_name": {"type": "string", "description": "Pod name (e.g. 'cartservice-7f4b8c9d-abc12')."},
-                    "namespace": {"type": "string", "description": "Kubernetes namespace (default: otel-demo)."},
+                    "pod_name": {"type": "string", "description": "Pod name (e.g. 'my-workload-7f4b8c9d-abc12')."},
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default from harness env)."},
                     "tail_lines": {"type": "integer", "description": "Number of recent log lines (default: 50)."},
                 },
                 "required": ["pod_name"],
@@ -413,7 +413,7 @@ TOOL_DEFINITIONS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "namespace": {"type": "string", "description": "Kubernetes namespace (default: otel-demo)."},
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default from harness env)."},
                 },
             },
         },
@@ -426,8 +426,8 @@ TOOL_DEFINITIONS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "deployment_name": {"type": "string", "description": "Deployment name (e.g. 'cartservice')."},
-                    "namespace": {"type": "string", "description": "Kubernetes namespace (default: otel-demo)."},
+                    "deployment_name": {"type": "string", "description": "Deployment name (as shown by cluster tools)."},
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default from harness env)."},
                 },
                 "required": ["deployment_name"],
             },
@@ -443,7 +443,7 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "deployment_name": {"type": "string", "description": "Deployment name."},
                     "replicas": {"type": "integer", "description": "Desired replica count."},
-                    "namespace": {"type": "string", "description": "Kubernetes namespace (default: otel-demo)."},
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default from harness env)."},
                 },
                 "required": ["deployment_name", "replicas"],
             },
@@ -458,7 +458,7 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {
                     "pod_name": {"type": "string", "description": "Pod name to delete."},
-                    "namespace": {"type": "string", "description": "Kubernetes namespace (default: otel-demo)."},
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default from harness env)."},
                 },
                 "required": ["pod_name"],
             },
@@ -466,9 +466,64 @@ TOOL_DEFINITIONS = [
     },
 ]
 
+from code.tools.context_engineering import (  # noqa: E402
+    COMPARE_TELEMETRY_TOOL_DEFINITION,
+    CONTEXT_TOOL_DEFINITIONS,
+)
+
+TOOL_DEFINITIONS.append(COMPARE_TELEMETRY_TOOL_DEFINITION)
+TOOL_DEFINITIONS.extend(CONTEXT_TOOL_DEFINITIONS)
+
 
 WRITE_TOOLS = {"restart_deployment", "scale_deployment", "delete_pod"}
 
+
+def _utc_now_z() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _on_write_tool_start(ctx: dict[str, Any], name: str, arguments: dict[str, Any]) -> None:
+    """Record first write-tool invocation (attempt) and append write log entry."""
+    now = _utc_now_z()
+    if "remediation_start_time" not in ctx:
+        ctx["remediation_start_time"] = now
+    writes = ctx.setdefault("remediation_writes", [])
+    writes.append(
+        {
+            "tool": name,
+            "arguments": dict(arguments),
+            "started_at": now,
+            "success": None,
+            "completed_at": None,
+        }
+    )
+
+
+def _on_write_tool_end(ctx: dict[str, Any], result: str) -> None:
+    """Record last write-tool completion and first successful remediation time."""
+    now = _utc_now_z()
+    ctx["remediation_end_time"] = now
+    writes = ctx.get("remediation_writes") or []
+    if writes:
+        writes[-1]["completed_at"] = now
+        writes[-1]["success"] = not str(result).startswith("Error")
+    if not str(result).startswith("Error"):
+        if "detection_timestamp" not in ctx:
+            ctx["detection_timestamp"] = now
+        if "remediation_executed_time" not in ctx:
+            ctx["remediation_executed_time"] = now
+
+
+def _run_write_tool(
+    ctx: dict[str, Any],
+    name: str,
+    arguments: dict[str, Any],
+    execute_fn,
+) -> str:
+    _on_write_tool_start(ctx, name, arguments)
+    result = execute_fn()
+    _on_write_tool_end(ctx, result)
+    return result
 
 
 def execute_tool(name: str, arguments: dict[str, Any], ctx: dict[str, Any]) -> str:
@@ -518,28 +573,48 @@ def execute_tool(name: str, arguments: dict[str, Any], ctx: dict[str, Any]) -> s
     if name == "get_events":
         return get_events(arguments.get("namespace"))
     if name == "restart_deployment":
-        if "detection_timestamp" not in ctx:
-            ctx["detection_timestamp"] = datetime.utcnow().isoformat() + "Z"
-        result = restart_deployment(arguments.get("deployment_name", ""), arguments.get("namespace"))
-        if not result.startswith("Error") and "remediation_executed_time" not in ctx:
-            ctx["remediation_executed_time"] = datetime.utcnow().isoformat() + "Z"
-        return result
-    if name == "scale_deployment":
-        if "detection_timestamp" not in ctx:
-            ctx["detection_timestamp"] = datetime.utcnow().isoformat() + "Z"
-        result = scale_deployment(
-            arguments.get("deployment_name", ""),
-            arguments.get("replicas", 1),
-            arguments.get("namespace"),
+        return _run_write_tool(
+            ctx,
+            name,
+            arguments,
+            lambda: restart_deployment(
+                arguments.get("deployment_name", ""), arguments.get("namespace")
+            ),
         )
-        if not result.startswith("Error") and "remediation_executed_time" not in ctx:
-            ctx["remediation_executed_time"] = datetime.utcnow().isoformat() + "Z"
-        return result
+    if name == "scale_deployment":
+        return _run_write_tool(
+            ctx,
+            name,
+            arguments,
+            lambda: scale_deployment(
+                arguments.get("deployment_name", ""),
+                arguments.get("replicas", 1),
+                arguments.get("namespace"),
+            ),
+        )
     if name == "delete_pod":
-        if "detection_timestamp" not in ctx:
-            ctx["detection_timestamp"] = datetime.utcnow().isoformat() + "Z"
-        result = delete_pod(arguments.get("pod_name", ""), arguments.get("namespace"))
-        if not result.startswith("Error") and "remediation_executed_time" not in ctx:
-            ctx["remediation_executed_time"] = datetime.utcnow().isoformat() + "Z"
-        return result
+        return _run_write_tool(
+            ctx,
+            name,
+            arguments,
+            lambda: delete_pod(arguments.get("pod_name", ""), arguments.get("namespace")),
+        )
+    # Context corpus tools (CONTEXT_C) and compare_telemetry
+    from code.tools import context_engineering as _ctx
+
+    fault_ts = arguments.get("fault_injection_ts") or ctx.get("fault_injection_ts") or since_ts
+    if name == "rag_search_source":
+        return _ctx.rag_search_source(arguments.get("query", ""), arguments.get("limit", 5))
+    if name == "rag_search_docs":
+        return _ctx.rag_search_docs(arguments.get("query", ""), arguments.get("limit", 5))
+    if name == "rag_search_architecture":
+        return _ctx.rag_search_architecture(arguments.get("query", ""), arguments.get("limit", 5))
+    if name == "rag_search_dependencies":
+        return _ctx.rag_search_dependencies(arguments.get("query", ""), arguments.get("limit", 5))
+    if name == "compare_telemetry":
+        return _ctx.compare_telemetry(
+            fault_ts,
+            arguments.get("minutes", 5),
+            ch_http,
+        )
     return f"Unknown tool: {name}"

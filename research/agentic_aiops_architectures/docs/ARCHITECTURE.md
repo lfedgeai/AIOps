@@ -155,7 +155,7 @@ Each agent under `code/agents/<name>/agent.py` implements the same contract: too
 |-------|-------|--------------|
 | `nemotron_agent` | Nemotron Cascade 2 30B | Native + reasoning |
 | `qwen3_agent` | Qwen3-14B | Native + streaming |
-| `qwen35_9b_agent` | Qwen3.5 9B | Native |
+| `qwen38_27b_agent` | Qwen3.8 27B | Native |
 | `qwen36_27b_agent` | Qwen3.6 27B | Native |
 | `kimi_k2_agent` | Kimi K2-7 | Native |
 | `deepseek_agent` | DeepSeek R1 Distill 14B | Prompt-based |
@@ -268,6 +268,8 @@ OpenShift notes: `docs/OPENSHIFT_OTEL_DEPLOYMENT.md`, `docs/OPENSHIFT_CREDENTIAL
 ## 12. Related Documents
 
 - [README.md](../README.md) — quick start and operational reference
+- [Learnings_across_runs_report.md](Learnings_across_runs_report.md) — cross-run synthesis: non-execution, context value, chunking, next tests
+- [EVALUATION_RESULTS_23sep26.md](EVALUATION_RESULTS_23sep26.md) — Option 2 (7 agents, 336 runs) + MLflow-aligned metrics
 - [EVALUATION_RESULTS_12Aug26.md](EVALUATION_RESULTS_12Aug26.md) — Option 2 expanded MaaS lineup (8 agents, 384 runs) + MLflow audit
 - [EVALUATION_RESULTS_11Aug26.md](EVALUATION_RESULTS_11Aug26.md) — Option 2 re-run (Granite + Llama31; Scout/GPT-OSS dropped) + MLflow audit
 - [RUN_NOTES_10Aug26.md](RUN_NOTES_10Aug26.md) — Aug 2026 lineup / smoke notes
@@ -277,3 +279,4 @@ OpenShift notes: `docs/OPENSHIFT_OTEL_DEPLOYMENT.md`, `docs/OPENSHIFT_CREDENTIAL
 - [EVALUATION_RESULTS_07July26.md](EVALUATION_RESULTS_07July26.md) / [EVALUATION_RESULTS_23June26.md](EVALUATION_RESULTS_23June26.md) — earlier campaign results
 - [CLICKHOUSE_QUERIES.md](CLICKHOUSE_QUERIES.md) — SQL against `otel.*` tables
 - [LLM_CREDENTIALS.md](LLM_CREDENTIALS.md) — API keys and endpoints
+- [`code/agents/skills/`](../code/agents/skills/) — shared detect/diagnose/remediate/verify skills

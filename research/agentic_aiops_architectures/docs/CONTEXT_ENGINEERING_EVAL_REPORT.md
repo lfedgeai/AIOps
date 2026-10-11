@@ -1,7 +1,8 @@
 # Context Engineering Evaluation Report
 
 *Generated 2026-07-25 — Option 1 re-run only (75 runs, mtime ≥ 2026-07-24 22:50)*  
-*Full narrative: [EVALUATION_RESULTS_25July26.md](EVALUATION_RESULTS_25July26.md)*
+*Full narrative: [EVALUATION_RESULTS_25July26.md](EVALUATION_RESULTS_25July26.md)*  
+*Later cross-run synthesis (Sep 336-run matrix + exec/context): [Learnings_across_runs_report.md](Learnings_across_runs_report.md)*
 
 ## Executive summary
 

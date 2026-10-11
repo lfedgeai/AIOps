@@ -29,7 +29,7 @@
 1. **Execution gap closed:** remediation executed rose from **3% → 21%** (82/384) after unified prompts and new MaaS models — primarily **qwen36-27b** (28/48) and **nemotron-cascade-2** (18/48).
 2. **RCA leaders unchanged, executor split:** **DeepSeek** (88% RCA) and **Granite** (67% RCA) still dominate diagnosis but execute **0%** remediations; **qwen36-27b** is the only model strong on both RCA and exec.
 3. **Nemotron fixed:** cascade-2 replaces invalid nano-3 (0/48 Aug) with **38% detect / 42% RCA / 38% exec** — first usable Nemotron in the matrix.
-4. **Qwen36 > Qwen3 > Qwen35:** MaaS **qwen36-27b** (62% RCA, 58% exec) beats RHDP **qwen3** (29% RCA, 12% exec) and **qwen35-9b** (29% each) on this cart workload.
+4. **Qwen36 > Qwen3 > Qwen38:** MaaS **qwen36-27b** (62% RCA, 58% exec) beats RHDP **qwen3** (29% RCA, 12% exec) and **qwen38-27b** (29% each) on this cart workload.
 5. **Llama still broken:** **maas_llama31-70b** 0/48 detect with 12 `agent_error` — connection/API failures persist.
 6. **Best CONTEXT_C cells:** **C2**, **C2-3**, **C2-3-4** with **qwen36-27b** hit **3/3 RCA + exec** across all three faults.
 
@@ -42,7 +42,7 @@
 | `maas_kimi-k2-7` | 17/48 (35%) | 18/48 (38%) | 16/48 (33%) | 27s |
 | `maas_llama31-70b` | 0/48 (0%) | 0/48 (0%) | 0/48 (0%) | — |
 | `maas_qwen3` | 26/48 (54%) | 14/48 (29%) | 6/48 (12%) | 157s |
-| `maas_qwen35-9b` | 14/48 (29%) | 14/48 (29%) | 14/48 (29%) | 45s |
+| `maas_qwen38-27b` | 14/48 (29%) | 14/48 (29%) | 14/48 (29%) | 45s |
 | `maas_qwen36-27b` | 30/48 (62%) | 30/48 (62%) | 28/48 (58%) | 82s |
 | `nemotron-cascade-2` | 18/48 (38%) | 20/48 (42%) | 18/48 (38%) | 49s |
 
@@ -55,12 +55,12 @@
 | `nemotron-nano-3` (Aug) | 0/48 (0%) | 0/48 (0%) | 0/48 (0%) | 48/48 API HTML — invalid |
 | `nemotron-cascade-2` (now) | 18/48 (38%) | 20/48 (42%) | 18/48 (38%) | Healthy MaaS |
 
-### Qwen family (`qwen3-14b` vs `qwen35-9b` vs `qwen36-27b`)
+### Qwen family (`qwen3-14b` vs `qwen38-27b` vs `qwen36-27b`)
 
 | Model | Detect | RCA | Exec | MTTD med |
 |---|---|---|---|---|
 | qwen3 (RHDP) | 26/48 (54%) | 14/48 (29%) | 6/48 (12%) | 157s |
-| qwen35-9b (MaaS) | 14/48 (29%) | 14/48 (29%) | 14/48 (29%) | 45s |
+| qwen38-27b (MaaS) | 14/48 (29%) | 14/48 (29%) | 14/48 (29%) | 45s |
 | qwen36-27b (MaaS) | 30/48 (62%) | 30/48 (62%) | 28/48 (58%) | 82s |
 | qwen3 (Aug 11 MLflow) | 26/48 (54%) | 16/48 (33%) | 7/48 (15%) | 140s |
 

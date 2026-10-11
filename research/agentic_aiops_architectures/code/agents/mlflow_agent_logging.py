@@ -28,6 +28,29 @@ CTX_AGENT_LLM_ROUNDS = "agent_llm_rounds"
 CTX_HARNESS_SUMMARY = "harness_run_summary"
 
 
+def mlflow_context_fields() -> dict[str, Any]:
+    """Context-engineering metadata merged into agent prompts_payload for MLflow artifacts."""
+    fields: dict[str, Any] = {}
+    ctx_c = (os.environ.get("CONTEXT_C") or "0").strip()
+    if ctx_c:
+        fields["context_c"] = ctx_c
+    if (os.environ.get("AGENT_USER_PROMPT_OVERRIDE") or "").strip():
+        fields["user_prompt_override_applied"] = True
+    for key, env_name in (
+        ("fault_injection_time", "FAULT_INJECTION_TIME"),
+        ("context_repo_path", "CONTEXT_REPO_PATH"),
+        ("tool_profile", "TOOL_PROFILE"),
+        ("scenario_role", "SCENARIO_ROLE"),
+    ):
+        val = (os.environ.get(env_name) or "").strip()
+        if val:
+            fields[key] = val
+    rag_q = (os.environ.get("RAG_QUERY") or "").strip()
+    if rag_q:
+        fields["rag_query"] = rag_q
+    return fields
+
+
 def serialize_messages_for_mlflow(
     messages: list[dict[str, Any]],
     *,
@@ -120,6 +143,8 @@ def _prompts_to_dataframe(prompts: dict[str, Any], *, max_cell: int = 8_000) -> 
             f"model: {model}\n"
             f"api_base: {api_base}\n"
             f"since_ts: {prompts.get('since_ts', '')}\n"
+            f"context_c: {prompts.get('context_c', '0')}\n"
+            f"fault_injection_time: {prompts.get('fault_injection_time', '')}\n"
             f"tools: {tools}"
         ),
     })
@@ -379,6 +404,14 @@ def _render_prompts_text(prompts: dict[str, Any]) -> str:
     lines.append(f"Model:    {model}")
     lines.append(f"API Base: {api_base}")
     lines.append(f"Since:    {prompts.get('since_ts', '')}")
+    ctx_c = prompts.get("context_c")
+    if ctx_c is not None:
+        lines.append(f"Context:  C={ctx_c}")
+    fit = prompts.get("fault_injection_time")
+    if fit:
+        lines.append(f"T0:       {fit}")
+    if prompts.get("user_prompt_override_applied"):
+        lines.append("user_prompt_override applied (harness task prompt)")
     lines.append(f"Tools:    {', '.join(tools)}")
     lines.append("")
 
