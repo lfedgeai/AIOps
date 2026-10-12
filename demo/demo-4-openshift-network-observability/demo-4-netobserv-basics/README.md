@@ -145,7 +145,7 @@ Note that we can also run wire-level capture and feed the information to AI Mode
 $ oc netobserv packets --protocol=TCP --port=5432
 ```
 
-Lastly, make use of AI models such as Qwen 3.6 to analyze the `evidence.json` and/or wireshark traces
+Lastly, make use of AI models such as `Qwen3.8-27B` to analyze the `evidence.json` and/or wireshark traces
 
 ---
 
@@ -178,7 +178,7 @@ Fault injection and AI Analysis Demo inserts:  todo → toxiproxy → postgresql
 
 ## Notes & gotchas
 
-- **Non-STS by design.** This kit uses static S3 credentials for a demo. For a production/STS cluster, use the [Cloud Credential Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/authentication_and_authorization/managing-cloud-provider-credentials) token flow instead.
+- **Non-STS by design.** This kit uses static S3 credentials for a demo. For a production/STS cluster, use the [Cloud Credential Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/authentication_and_authorization/managing-cloud-provider-credentials) token flow instead.
 - **PostgreSQL image** (`registry.redhat.io/rhel8/postgresql-10`) pulls via the cluster's global pull secret — present on a standard install. An `ImagePullBackOff` on `postgresql` means the pull secret, not the manifest.
 - **Advanced eBPF features are optional.** The dropped-flow, DNS, and RTT demo moments require PacketDrop / DNSTracking / FlowRTT — enable them at install time.
 - **Pool exhaustion is an application-layer condition.** NetObserv shows its *network fingerprint* (rising RTT to :5432, connections plateauing, drops) — strong corroborating evidence. The application logs provide the evidence.
