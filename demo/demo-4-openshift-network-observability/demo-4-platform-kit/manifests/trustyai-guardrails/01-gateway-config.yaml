@@ -1,0 +1,44 @@
+# Guardrails Gateway presets for NetObserv OpenClaw (TrustyAI).
+# Apply after fms-orchestrator Helm install; reference from GuardrailsOrchestrator CR.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netobserv-guardrails-gateway-config
+  namespace: netobserv-guardrails
+  labels:
+    app.kubernetes.io/part-of: netobserv-demo
+data:
+  config.yaml: |
+    detectors:
+      - name: netobserv-k8s-regex
+        server: built-in-detector
+        input: true
+        output: false
+        detector_params:
+          regex:
+            - 'CUSTOM_REGEX:(?i)(\b(?:oc|kubectl)\s+delete\b|\bdelete\b.*\b(?:namespace|ns)\b|cluster[\s-]?admin|clusterrolebinding.*admin|:6443\b|\bport\s+6443\b|ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions)'
+        custom_params:
+          pattern: '(?i)(\b(?:oc|kubectl)\s+delete\b|\bdelete\b.*\b(?:namespace|ns)\b|cluster[\s-]?admin|clusterrolebinding.*admin|:6443\b|\bport\s+6443\b|ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions)'
+          threshold: 0.5
+      - name: hap-input
+        server: hap
+        input: true
+        output: false
+        detector_params: {}
+      - name: prompt-injection-input
+        server: prompt_injection
+        input: true
+        output: false
+        detector_params: {}
+      - name: hap-output
+        server: hap
+        input: false
+        output: true
+        detector_params: {}
+    routes:
+      - name: netobserv-sre
+        detectors:
+          - netobserv-k8s-regex
+        fallback_message: "Blocked by NetObserv guardrails (TrustyAI Guardrails, rule netobserv-k8s-regex): destructive cluster commands and prompt-injection patterns are not allowed."
+      - name: passthrough
+        detectors: []

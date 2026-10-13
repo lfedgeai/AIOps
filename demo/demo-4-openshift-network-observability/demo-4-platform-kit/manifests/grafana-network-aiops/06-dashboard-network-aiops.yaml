@@ -1,0 +1,331 @@
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: network-aiops-openclaw
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
+  json: |
+    {
+      "uid": "network-aiops-openclaw",
+      "title": "Network AIOps — Gateway Diagnostics",
+      "tags": ["netobserv", "openclaw", "platform-merge"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 16,
+      "refresh": "30s",
+      "time": { "from": "now-6h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "current": { "selected": true, "text": "0.40", "value": "0.40" },
+            "hide": 0,
+            "label": "Input $/1M tokens",
+            "name": "input_price_per_1m",
+            "options": [{ "selected": true, "text": "0.40", "value": "0.40" }],
+            "query": "0.40",
+            "type": "textbox"
+          },
+          {
+            "current": { "selected": true, "text": "1.20", "value": "1.20" },
+            "hide": 0,
+            "label": "Output $/1M tokens",
+            "name": "output_price_per_1m",
+            "options": [{ "selected": true, "text": "1.20", "value": "1.20" }],
+            "query": "1.20",
+            "type": "textbox"
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "row",
+          "title": "Network flows & packets",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Avg flow RTT — todo-demo (seconds)",
+          "description": "NetObserv namespace RTT from flowlogs-pipeline Prometheus metrics. Spikes during Kraken fault / demo-a.",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            {
+              "expr": "sum(rate(netobserv_namespace_rtt_seconds_sum{SrcK8S_Namespace=\"todo-demo\"}[2m])) / sum(rate(netobserv_namespace_rtt_seconds_count{SrcK8S_Namespace=\"todo-demo\"}[2m]))",
+              "legendFormat": "avg RTT"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Flow rate — todo-demo",
+          "description": "Packets/flows per second for the demo application namespace.",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+          "fieldConfig": { "defaults": { "unit": "ops" } },
+          "targets": [
+            {
+              "expr": "sum(rate(netobserv_namespace_flows_total{SrcK8S_Namespace=\"todo-demo\"}[2m]))",
+              "legendFormat": "flows/s"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Packet drops — todo-demo",
+          "description": "Dropped packets per second (loss / congestion signal).",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+          "fieldConfig": { "defaults": { "unit": "ops" } },
+          "targets": [
+            {
+              "expr": "sum(rate(netobserv_namespace_drop_packets_total{SrcK8S_Namespace=\"todo-demo\"}[2m]))",
+              "legendFormat": "drops/s"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "type": "row",
+          "title": "Agent economics & gateway",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+          "collapsed": false
+        },
+        {
+          "id": 23,
+          "type": "text",
+          "title": "Pricing legend",
+          "transparent": true,
+          "gridPos": { "h": 4, "w": 24, "x": 0, "y": 10 },
+          "options": {
+            "mode": "markdown",
+            "content": "**LLM token pricing (editable)** — **Input:** $${input_price_per_1m} / 1M prompt tokens · **Output:** $${output_price_per_1m} / 1M completion tokens\n\n**Cost formula:** `(input_tokens × input_rate) + (output_tokens × output_rate)` — illustrative defaults; change **Input $/1M tokens** and **Output $/1M tokens** at the top of this dashboard to match your enterprise contract."
+          }
+        },
+        {
+          "id": 19,
+          "type": "stat",
+          "title": "Estimated LLM cost (selected range)",
+          "description": "USD for the selected time range using rates in Pricing legend: input @ $${input_price_per_1m}/1M + output @ $${output_price_per_1m}/1M.",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 6, "w": 8, "x": 0, "y": 14 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "decimals": 2,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 1 },
+                  { "color": "red", "value": 10 }
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "orientation": "auto",
+            "textMode": "value_and_name",
+            "colorMode": "value"
+          },
+          "targets": [
+            {
+              "expr": "(sum(increase(openclaw_openclaw_tokens_total{openclaw_token=\"input\"}[$__range])) * ${input_price_per_1m} / 1000000) + (sum(increase(openclaw_openclaw_tokens_total{openclaw_token=\"output\"}[$__range])) * ${output_price_per_1m} / 1000000)",
+              "legendFormat": "est. cost"
+            }
+          ]
+        },
+        {
+          "id": 20,
+          "type": "stat",
+          "title": "Input tokens (selected range)",
+          "description": "Prompt tokens in range — priced at $${input_price_per_1m} per 1M in cost estimate.",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 6, "w": 5, "x": 8, "y": 14 },
+          "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "textMode": "value_and_name",
+            "colorMode": "none"
+          },
+          "targets": [
+            {
+              "expr": "sum(increase(openclaw_openclaw_tokens_total{openclaw_token=\"input\"}[$__range]))",
+              "legendFormat": "input"
+            }
+          ]
+        },
+        {
+          "id": 21,
+          "type": "stat",
+          "title": "Output tokens (selected range)",
+          "description": "Completion tokens in range — priced at $${output_price_per_1m} per 1M in cost estimate.",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 6, "w": 5, "x": 13, "y": 14 },
+          "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "textMode": "value_and_name",
+            "colorMode": "none"
+          },
+          "targets": [
+            {
+              "expr": "sum(increase(openclaw_openclaw_tokens_total{openclaw_token=\"output\"}[$__range]))",
+              "legendFormat": "output"
+            }
+          ]
+        },
+        {
+          "id": 22,
+          "type": "stat",
+          "title": "Est. burn rate ($/hour)",
+          "description": "Projected hourly spend at current token rate — uses input @ $${input_price_per_1m}/1M and output @ $${output_price_per_1m}/1M from Pricing legend.",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 6, "w": 6, "x": 18, "y": 14 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "decimals": 2
+            }
+          },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "textMode": "value_and_name",
+            "colorMode": "value"
+          },
+          "targets": [
+            {
+              "expr": "(sum(rate(openclaw_openclaw_tokens_total{openclaw_token=\"input\"}[5m])) * ${input_price_per_1m} / 1000000 + sum(rate(openclaw_openclaw_tokens_total{openclaw_token=\"output\"}[5m])) * ${output_price_per_1m} / 1000000) * 3600",
+              "legendFormat": "$/hr"
+            }
+          ]
+        },
+        {
+          "id": 14,
+          "type": "timeseries",
+          "title": "Token rate — input / output",
+          "description": "LLM token throughput from OpenClaw diagnostics-otel.",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+          "fieldConfig": { "defaults": { "unit": "tps", "decimals": 1 } },
+          "targets": [
+            {
+              "expr": "sum(rate(openclaw_openclaw_tokens_total{openclaw_token=\"input\"}[5m]))",
+              "legendFormat": "input tokens/s"
+            },
+            {
+              "expr": "sum(rate(openclaw_openclaw_tokens_total{openclaw_token=\"output\"}[5m]))",
+              "legendFormat": "output tokens/s"
+            }
+          ]
+        },
+        {
+          "id": 15,
+          "type": "timeseries",
+          "title": "Tokens consumed — by channel",
+          "description": "Cumulative tokens in the selected time range (Last 6 hours for demos).",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+          "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
+          "targets": [
+            {
+              "expr": "sum by (openclaw_channel) (increase(openclaw_openclaw_tokens_total{openclaw_token=\"total\"}[$__range]))",
+              "legendFormat": "{{openclaw_channel}}"
+            }
+          ]
+        },
+        {
+          "id": 16,
+          "type": "timeseries",
+          "title": "Time to first token p95 (TTFT, ms)",
+          "description": "Perceived responsiveness until the model streams the first token.",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 28 },
+          "fieldConfig": { "defaults": { "unit": "ms" } },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(openclaw_openclaw_model_call_time_to_first_byte_ms_milliseconds_bucket[5m])) by (le))",
+              "legendFormat": "p95 all channels"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(openclaw_openclaw_model_call_time_to_first_byte_ms_milliseconds_bucket{openclaw_channel=\"slack\"}[5m])) by (le))",
+              "legendFormat": "p95 slack"
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Gateway messages / s",
+          "description": "OpenClaw gateway message throughput (Control UI or Slack).",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+          "fieldConfig": { "defaults": { "unit": "ops" } },
+          "targets": [
+            {
+              "expr": "sum(rate(openclaw_openclaw_message_processed_total[5m]))",
+              "legendFormat": "processed/s"
+            },
+            {
+              "expr": "sum(rate(openclaw_openclaw_message_received_total[5m]))",
+              "legendFormat": "received/s"
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Model call latency p95 (ms)",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+          "fieldConfig": { "defaults": { "unit": "ms" } },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(openclaw_openclaw_model_call_duration_ms_milliseconds_bucket[5m])) by (le))",
+              "legendFormat": "p95 full call"
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "Model calls / s",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 44 },
+          "fieldConfig": { "defaults": { "unit": "ops" } },
+          "targets": [
+            {
+              "expr": "sum(rate(openclaw_openclaw_model_call_duration_ms_milliseconds_count[5m]))",
+              "legendFormat": "model calls/s"
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "Agent runs / s",
+          "datasource": { "type": "prometheus", "uid": "prometheus-openclaw-otel" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 44 },
+          "fieldConfig": { "defaults": { "unit": "ops" } },
+          "targets": [
+            {
+              "expr": "sum(rate(openclaw_openclaw_run_duration_ms_milliseconds_count[5m]))",
+              "legendFormat": "runs/s"
+            },
+            {
+              "expr": "sum(rate(openclaw_openclaw_session_turn_created_total[5m]))",
+              "legendFormat": "turns/s"
+            }
+          ]
+        }
+      ]
+    }

@@ -1,0 +1,1 @@
+SELECT service, count() AS err_count FROM telemetry.logs WHERE ts>=now()-INTERVAL 1 DAY AND (level='error' OR positionCaseInsensitive(message,'error')>0) GROUP BY service ORDER BY err_count DESC LIMIT 20

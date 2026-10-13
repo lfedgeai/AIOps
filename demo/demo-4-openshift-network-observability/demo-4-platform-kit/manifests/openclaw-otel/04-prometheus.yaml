@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw-otel-prometheus
+  labels:
+    app.kubernetes.io/name: openclaw-otel-prometheus
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-otel-prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openclaw-otel-prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.55.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=2h
+            - --web.enable-lifecycle
+          ports:
+            - name: http
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: thanos-token
+              mountPath: /etc/prometheus/thanos-token
+              readOnly: true
+            - name: data
+              mountPath: /prometheus
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: openclaw-otel-prometheus-config
+        - name: thanos-token
+          secret:
+            secretName: thanos-federate-token
+            optional: true
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-otel-prometheus
+  labels:
+    app.kubernetes.io/name: openclaw-otel-prometheus
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  selector:
+    app.kubernetes.io/name: openclaw-otel-prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http

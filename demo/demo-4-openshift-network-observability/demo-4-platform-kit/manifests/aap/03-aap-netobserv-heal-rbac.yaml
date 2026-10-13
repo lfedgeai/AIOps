@@ -1,0 +1,106 @@
+# Execution SA for AAP playbooks — same scoped heal permissions as openclaw-netobserv.
+# AAP Controller credential uses this SA token (not the agent/MCP launcher).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aap-netobserv-heal
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: aap-netobserv-heal
+    app.kubernetes.io/part-of: netobserv-aap
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aap-netobserv-default
+  namespace: default
+  labels:
+    app.kubernetes.io/name: aap-netobserv-heal
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aap-netobserv-default
+  namespace: default
+  labels:
+    app.kubernetes.io/name: aap-netobserv-heal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aap-netobserv-default
+subjects:
+  - kind: ServiceAccount
+    name: aap-netobserv-heal
+    namespace: openclaw
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aap-netobserv-probe
+  namespace: todo-client
+  labels:
+    app.kubernetes.io/name: aap-netobserv-heal
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aap-netobserv-probe
+  namespace: todo-client
+  labels:
+    app.kubernetes.io/name: aap-netobserv-heal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aap-netobserv-probe
+subjects:
+  - kind: ServiceAccount
+    name: aap-netobserv-heal
+    namespace: openclaw
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aap-netobserv-app
+  namespace: todo-demo
+  labels:
+    app.kubernetes.io/name: aap-netobserv-heal
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aap-netobserv-app
+  namespace: todo-demo
+  labels:
+    app.kubernetes.io/name: aap-netobserv-heal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aap-netobserv-app
+subjects:
+  - kind: ServiceAccount
+    name: aap-netobserv-heal
+    namespace: openclaw

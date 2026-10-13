@@ -1,0 +1,108 @@
+# =============================================================================
+# demo-4-platform-kit — use when this folder lives under a parent git repo
+# =============================================================================
+#
+# Safe to commit (NOT ignored):
+#   - scripts/supply-chain-pins.env  (pinned versions only — no credentials)
+#
+# If you copy site-secrets or env.local into this tree, they are ignored below.
+# Prefer keeping secrets in demo-4-greenfield-install/config/ only.
+# =============================================================================
+
+# --- Local config (if copied here by mistake) ---
+config/env.local
+config/site-secrets.local.yaml
+config/site-secrets.local.yml
+config/site-secrets.local.json
+config/*.local
+config/*.local.*
+env.local
+site-secrets.local.yaml
+site-secrets.local.yml
+site-secrets.local.json
+
+# --- Environment / dotenv ---
+.env
+.env.*
+!.env.example
+secrets.env
+.envrc
+
+# --- Cloud / cluster / registry credentials ---
+*credentials*
+*credential*.json
+*kubeconfig*
+kubeconfig
+auth/kubeconfig
+oc-login-*
+*dockerconfigjson*
+pull-secret.json
+pull-secret.txt
+redhat-io-pull.json
+registry.redhat.io*.json
+
+# --- TLS / SSH private material ---
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.ppk
+
+# --- AAP / license blobs ---
+*.automationplatform
+*aap*license*
+*.lic
+
+# --- Accidental token export filenames ---
+slack-tokens*
+hooks-token*
+*-tokens.local*
+*.token
+
+# --- Python virtualenvs & build artifacts ---
+.venv/
+.venv-*/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.whl
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# --- OS & editors ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+.idea/
+*.swp
+*.swo
+*~
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.cursor/
+
+# --- Demo / lab scratch ---
+evidence-*/
+nob-capture-*/
+tmp/
+*.log
+*.log.*
+*.bak
+*.orig
+*.tmp

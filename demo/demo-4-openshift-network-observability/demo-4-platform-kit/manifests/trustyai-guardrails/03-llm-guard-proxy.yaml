@@ -1,0 +1,460 @@
+# OpenClaw-facing LLM proxy:
+#   GET  /models           → LiteMaaS
+#   POST /chat/completions → input regex guard (Layer 0) → LiteMaaS
+# TrustyAI gateway cannot handle OpenAI tool-calling payloads (OpenClaw agents always send tools).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: netobserv-llm-guard-proxy
+  namespace: netobserv-guardrails
+  labels:
+    app.kubernetes.io/part-of: netobserv-demo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netobserv-llm-guard-proxy
+  namespace: netobserv-guardrails
+  labels:
+    app.kubernetes.io/part-of: netobserv-demo
+data:
+  proxy.py: |
+    #!/usr/bin/env python3
+    import http.client
+    import json
+    import os
+    import re
+    import ssl
+    import sys
+    import time
+    import traceback
+    import urllib.error
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    sys.path.insert(0, "/tracing")
+    try:
+        from mlflow_tracing import init_mlflow, trace_llm_chat
+        init_mlflow()
+    except ImportError:
+        trace_llm_chat = None
+
+    LITEMAAS_CHAT = os.environ.get(
+        "LITEMAAS_CHAT_URL",
+        "https://litemaas.example.com/v1/chat/completions",
+    )
+    MODELS = os.environ.get(
+        "LITEMAAS_MODELS_URL",
+        "https://litemaas.example.com/v1/models",
+    )
+    PRESET = os.environ.get("GATEWAY_PRESET", "netobserv-sre")
+    UPSTREAM_TIMEOUT = int(os.environ.get("UPSTREAM_TIMEOUT_SEC", "300"))
+    BLOCK_REGEX = re.compile(
+        os.environ.get(
+            "BLOCK_REGEX",
+            r"(?i)(\b(?:oc|kubectl)\s+delete\b|\bdelete\b.*\b(?:namespace|ns)\b|"
+            r"cluster[\s-]?admin|clusterrolebinding.*admin|:6443\b|\bport\s+6443\b|"
+            r"ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions)",
+        )
+    )
+    GUARDRAIL_NAME = os.environ.get("GUARDRAIL_NAME", "TrustyAI Guardrails")
+    GUARDRAIL_RULE = os.environ.get("GUARDRAIL_RULE", "netobserv-k8s-regex")
+    BLOCK_REASON = os.environ.get(
+        "BLOCK_REASON",
+        "destructive cluster commands and prompt-injection patterns are not allowed",
+    )
+    BLOCK_MESSAGE = os.environ.get(
+        "BLOCK_MESSAGE",
+        f"Blocked by NetObserv guardrails ({GUARDRAIL_NAME}, rule {GUARDRAIL_RULE}): {BLOCK_REASON}",
+    )
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt, *args):
+            print(fmt % args)
+
+        def _json_error(self, status, message):
+            body = json.dumps(
+                {"error": {"message": message, "type": "proxy_error", "code": status}}
+            ).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _forward(self, url, method, body=None, headers=None):
+            req = urllib.request.Request(url, data=body, method=method)
+            for k, v in (headers or {}).items():
+                if k.lower() not in ("host", "content-length", "connection"):
+                    req.add_header(k, v)
+            ctx = ssl.create_default_context()
+            last_err = None
+            for attempt in range(2):
+                try:
+                    with urllib.request.urlopen(req, context=ctx, timeout=UPSTREAM_TIMEOUT) as resp:
+                        return resp.status, dict(resp.headers), resp.read()
+                except urllib.error.HTTPError as e:
+                    return e.code, dict(e.headers), e.read()
+                except (urllib.error.URLError, http.client.RemoteDisconnected, ConnectionError) as e:
+                    last_err = e
+                    if attempt == 0:
+                        continue
+                    raise
+            raise last_err
+
+        def _write_upstream(self, status, hdrs, body):
+            if not body:
+                body = b""
+            content_type = hdrs.get("Content-Type") or hdrs.get("content-type") or "application/json"
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _user_texts(self, payload):
+            texts = []
+            for msg in payload.get("messages") or []:
+                if msg.get("role") != "user":
+                    continue
+                content = msg.get("content")
+                if isinstance(content, str):
+                    texts.append(content)
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            texts.append(part.get("text", ""))
+            return texts
+
+        def _normalize_user_text(self, text):
+            if not text:
+                return ""
+            t = text.strip()
+            # OpenClaw Slack may embed metadata in the same user message as the request.
+            t = re.sub(
+                r"Conversation info \(untrusted metadata\):\s*```(?:json)?\s*[\s\S]*?```\s*",
+                "",
+                t,
+                flags=re.IGNORECASE,
+            )
+            t = re.sub(
+                r"Sender \(untrusted metadata\):\s*```(?:json)?\s*[\s\S]*?```\s*",
+                "",
+                t,
+                flags=re.IGNORECASE,
+            )
+            t = re.sub(
+                r"Conversation info \(untrusted metadata\):[^\n]*\n?",
+                "",
+                t,
+                flags=re.IGNORECASE,
+            ).strip()
+            # Standalone metadata-only pseudo-user message (legacy separate user msg).
+            if not t or re.match(
+                r"^conversation info \(untrusted metadata\)",
+                t,
+                flags=re.IGNORECASE,
+            ):
+                return ""
+            # Slack envelope: [Sat ...] <@U...> (Display Name) message
+            m = re.match(r"^\[[^\]]+\]\s*(?:<@[^>]+>\s*)?(?:\([^)]+\)\s*)?", t)
+            if m:
+                t = t[m.end() :].strip()
+            # OpenClaw mention envelope: <@U...> (Display Name) message
+            m = re.match(r"^(?:<@[^>]+>\s*)?(?:\([^)]+\)\s*)?", t)
+            if m and m.end() > 0:
+                t = t[m.end() :].strip()
+            return t
+
+        def _guard_user_texts(self, payload):
+            """Texts to evaluate for Layer 0 regex.
+
+            GUARD_SCOPE:
+              latest_turn (default) — evaluate the last user message in the current
+              turn; if that message is metadata-only, scan all user messages in the
+              turn (catches delete + metadata split across messages).
+              latest_user — same as latest_turn (alias).
+              all — every user message in the payload (legacy).
+            """
+            messages = payload.get("messages") or []
+            scope = os.environ.get("GUARD_SCOPE", "latest_turn").lower()
+
+            def collect_user_strings(msgs):
+                out = []
+                for msg in msgs:
+                    if msg.get("role") != "user":
+                        continue
+                    content = msg.get("content")
+                    if isinstance(content, str):
+                        out.append(content)
+                    elif isinstance(content, list):
+                        for part in content:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                out.append(part.get("text", ""))
+                return out
+
+            if scope in ("all", "history", "full"):
+                candidates = collect_user_strings(messages)
+            elif scope in ("latest", "latest_user", "current"):
+                candidates = collect_user_strings(messages)
+                candidates = list(reversed(candidates))
+            else:
+                # latest_turn: user messages after the last assistant message
+                turn = []
+                for msg in reversed(messages):
+                    if msg.get("role") == "assistant":
+                        break
+                    if msg.get("role") == "user":
+                        content = msg.get("content")
+                        if isinstance(content, str):
+                            turn.append(content)
+                        elif isinstance(content, list):
+                            for part in content:
+                                if isinstance(part, dict) and part.get("type") == "text":
+                                    turn.append(part.get("text", ""))
+                candidates = list(reversed(turn))
+
+            normalized = []
+            for text in candidates:
+                norm = self._normalize_user_text(text)
+                if norm:
+                    normalized.append(norm)
+
+            if scope in ("all", "history", "full"):
+                return normalized
+
+            if not normalized:
+                return []
+
+            # One user message in this turn — evaluate it.
+            if len(candidates) <= 1:
+                return normalized
+
+            # Multiple user messages without an assistant reply (Slack batching).
+            # Evaluate only the chronologically last non-empty message so a follow-up
+            # like "proceed and fix the network" is not blocked by an earlier rogue
+            # prompt that never got an assistant reply. If the last message is
+            # metadata-only, scan the whole turn (delete + metadata split attack).
+            last_norm = normalized[-1]
+            last_raw_norm = self._normalize_user_text(candidates[-1])
+            if last_raw_norm:
+                return [last_norm]
+            return normalized
+
+        def _blocked_response(self, model):
+            body = json.dumps(
+                {
+                    "id": f"chatcmpl-blocked-{int(time.time())}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": model or "blocked",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": BLOCK_MESSAGE},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _normalize_payload(self, payload):
+            payload["stream"] = False
+            extra = payload.setdefault("extra_body", {})
+            kwargs = extra.setdefault("chat_template_kwargs", {})
+            kwargs["enable_thinking"] = False
+            return payload
+
+        def do_GET(self):
+            try:
+                if self.path.rstrip("/") == "/health":
+                    body = b'{"status":"ok"}'
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path.rstrip("/").endswith(f"/{PRESET}/v1/models"):
+                    status, hdrs, body = self._forward(
+                        MODELS, "GET", headers={"Authorization": self.headers.get("Authorization", "")}
+                    )
+                    self._write_upstream(status, hdrs, body)
+                    return
+                self.send_response(404)
+                self.send_header("Connection", "close")
+                self.end_headers()
+            except Exception as e:
+                print(f"GET error: {e}")
+                traceback.print_exc()
+                self._json_error(502, f"upstream unavailable: {e}")
+
+        def do_POST(self):
+            try:
+                if not self.path.rstrip("/").endswith(f"/{PRESET}/v1/chat/completions"):
+                    self.send_response(404)
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    return
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = self.rfile.read(length) if length else b"{}"
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    self._json_error(400, "invalid JSON body")
+                    return
+                payload = self._normalize_payload(payload)
+                for text in self._guard_user_texts(payload):
+                    if BLOCK_REGEX.search(text):
+                        print(f"blocked user input: {text[:120]!r}")
+                        self._blocked_response(payload.get("model"))
+                        return
+                body = json.dumps(payload).encode("utf-8")
+                fwd_headers = {
+                    "Authorization": self.headers.get("Authorization", ""),
+                    "Content-Type": "application/json",
+                }
+
+                def _forward_llm():
+                    return self._forward(
+                        LITEMAAS_CHAT,
+                        "POST",
+                        body=body,
+                        headers=fwd_headers,
+                    )
+
+                if trace_llm_chat is not None:
+                    status, hdrs, out = trace_llm_chat(
+                        model=str(payload.get("model") or ""),
+                        user_texts=self._guard_user_texts(payload),
+                        tool_count=len(payload.get("tools") or []),
+                        blocked=False,
+                        forward=_forward_llm,
+                    )
+                else:
+                    status, hdrs, out = _forward_llm()
+                self._write_upstream(status, hdrs, out)
+            except Exception as e:
+                print(f"POST error: {e}")
+                traceback.print_exc()
+                self._json_error(502, f"upstream unavailable: {e}")
+
+    if __name__ == "__main__":
+        ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netobserv-llm-guard-proxy
+  namespace: netobserv-guardrails
+  labels:
+    app: netobserv-llm-guard-proxy
+    app.kubernetes.io/part-of: netobserv-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: netobserv-llm-guard-proxy
+  template:
+    metadata:
+      labels:
+        app: netobserv-llm-guard-proxy
+      annotations:
+        netobserv.demo/proxy-mode: litemaas-direct-with-regex-guard
+    spec:
+      serviceAccountName: netobserv-llm-guard-proxy
+      containers:
+        - name: proxy
+          image: registry.redhat.io/ubi9/python-311:latest
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              python3 -m pip install -q 'mlflow>=3.1,<4'
+              exec python3 /config/proxy.py
+          env:
+            - name: MLFLOW_TRACE_CONTEXT_URL
+              value: http://netobserv-grafana-bridge.openclaw.svc.cluster.local:8080/mlflow/trace-context
+            - name: LITEMAAS_CHAT_URL
+              value: https://litemaas.example.com/v1/chat/completions
+            - name: LITEMAAS_MODELS_URL
+              value: https://litemaas.example.com/v1/models
+            - name: GATEWAY_PRESET
+              value: netobserv-sre
+            - name: GUARDRAIL_NAME
+              value: TrustyAI Guardrails
+            - name: GUARDRAIL_RULE
+              value: netobserv-k8s-regex
+            - name: GUARD_SCOPE
+              value: latest_turn
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: mlflow-tracing
+              mountPath: /tracing
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: config
+          configMap:
+            name: netobserv-llm-guard-proxy
+            defaultMode: 0755
+        - name: mlflow-tracing
+          configMap:
+            name: netobserv-mlflow-tracing
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netobserv-llm-guard-proxy
+  namespace: netobserv-guardrails
+  labels:
+    app: netobserv-llm-guard-proxy
+    app.kubernetes.io/part-of: netobserv-demo
+spec:
+  selector:
+    app: netobserv-llm-guard-proxy
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

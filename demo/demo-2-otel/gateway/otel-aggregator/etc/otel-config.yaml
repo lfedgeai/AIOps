@@ -1,0 +1,24 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317" # Ensure this port is open
+      http:
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  batch:
+    timeout: 10s
+exporters:
+  debug:
+    verbosity: detailed
+  otlp:
+    endpoint: "http://edge-exporter:50051"
+    tls:
+      insecure: true
+service:
+  pipelines:
+    metrics:
+      receivers: [ otlp ]
+      processors: [ batch ]
+      exporters: [ debug, otlp ] # persistance exporter needs to added to store edge metrics to S3 storage

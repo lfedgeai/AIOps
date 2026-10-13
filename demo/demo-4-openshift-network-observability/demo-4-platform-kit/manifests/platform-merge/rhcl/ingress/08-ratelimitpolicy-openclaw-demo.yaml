@@ -1,0 +1,19 @@
+apiVersion: kuadrant.io/v1
+kind: RateLimitPolicy
+metadata:
+  name: openclaw-ui-demo-limit
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: openclaw-ui
+  limits:
+    openclaw-demo:
+      rates:
+        - limit: 300
+          window: 1m
+      when:
+        - predicate: "true"

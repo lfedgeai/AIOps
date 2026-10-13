@@ -1,0 +1,27 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Doris vs ClickHouse benchmark</title>
+<style>table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:6px 10px}</style>
+</head><body>
+  <h1>Doris vs ClickHouse benchmark</h1>
+  <div>Generated at 2026-02-27T15:18:10.027410</div>
+  <h2>Ingest</h2>
+  <p><b>Doris:</b> {"status": "ok"}</p>
+  <p><b>ClickHouse:</b> {"status": "ok"}</p>
+  <h2>Query comparison</h2>
+  <table>
+    <tr><th>query</th><th>Doris latency (s)</th><th>Doris rows</th><th>Doris error</th>
+        <th>ClickHouse latency (s)</th><th>ClickHouse rows</th><th>ClickHouse error</th>
+        <th>faster</th></tr>
+    <tr><td>correlation_by_timestamp</td><td>0.7058131694793701</td><td>20</td><td></td><td>0.015631675720214844</td><td>20</td><td></td><td>ClickHouse</td></tr>
+<tr><td>correlation_by_trace_id</td><td>0.3475916385650635</td><td>0</td><td></td><td>0.006018400192260742</td><td>0</td><td></td><td>ClickHouse</td></tr>
+<tr><td>logs_errors_by_service</td><td>0.673438549041748</td><td>1</td><td></td><td>0.15256309509277344</td><td>1</td><td></td><td>ClickHouse</td></tr>
+<tr><td>logs_recent</td><td>0.6235940456390381</td><td>100</td><td></td><td>0.10995149612426758</td><td>100</td><td></td><td>ClickHouse</td></tr>
+<tr><td>logs_search_error</td><td>0.8071784973144531</td><td>73</td><td></td><td>0.12897443771362305</td><td>73</td><td></td><td>ClickHouse</td></tr>
+<tr><td>metrics_by_service_hourly</td><td>0.5068984031677246</td><td>1</td><td></td><td>0.007645606994628906</td><td>1</td><td></td><td>ClickHouse</td></tr>
+<tr><td>metrics_p95_latency</td><td>0.46968626976013184</td><td>1</td><td></td><td>0.0038924217224121094</td><td>1</td><td></td><td>ClickHouse</td></tr>
+<tr><td>sla_latency_compliance</td><td>0.4157743453979492</td><td>1</td><td></td><td>0.004948616027832031</td><td>1</td><td></td><td>ClickHouse</td></tr>
+<tr><td>spans_error_by_service</td><td>0.4892439842224121</td><td>0</td><td></td><td>0.02828216552734375</td><td>2</td><td></td><td>ClickHouse</td></tr>
+<tr><td>trace_by_id</td><td>0.4515700340270996</td><td>4</td><td></td><td>0.0066509246826171875</td><td>4</td><td></td><td>ClickHouse</td></tr>
+<tr><td>traces_slow_by_service</td><td>0.5109615325927734</td><td>0</td><td></td><td>0.004368305206298828</td><td>0</td><td></td><td>ClickHouse</td></tr>
+  </table>
+</body></html>

@@ -1,0 +1,256 @@
+---
+# Scenario A — cluster-side heal (chaos jobs, residual netem, idle probe).
+# Bastion Kraken / loadgen-heavy are out of scope (presenter restores separately).
+- name: NetObserv heal DB path (Scenario A)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    app_ns: todo-demo
+    client_ns: todo-client
+    target_app: todo
+    probe_path: /api
+    krkn_tools_image: quay.io/krkn-chaos/krkn:tools
+    probe_image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+  tasks:
+    - name: Confirm gate
+      ansible.builtin.assert:
+        that:
+          - confirmed | default(false) | bool
+        fail_msg: "refused: confirmed must be true (human approval required)"
+
+    - name: Scope banner
+      ansible.builtin.debug:
+        msg: >-
+          SCOPE: cluster-side heal only (delete chaos Jobs, best-effort clear host netem,
+          idle probe). Does NOT stop bastion Kraken or remove loadgen-heavy.
+
+    - name: List chaos jobs in default
+      kubernetes.core.k8s_info:
+        api_version: batch/v1
+        kind: Job
+        namespace: default
+      register: default_jobs
+
+    - name: Delete chaos / tc cleanup jobs
+      kubernetes.core.k8s:
+        state: absent
+        api_version: batch/v1
+        kind: Job
+        namespace: default
+        name: "{{ item.metadata.name }}"
+        delete_options:
+          propagationPolicy: Background
+      loop: "{{ default_jobs.resources }}"
+      when: item.metadata.name is match('^(chaos|netobserv-tc).*')
+      loop_control:
+        label: "{{ item.metadata.name }}"
+
+    - name: List chaos pods in default
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: default
+      register: default_pods
+
+    - name: Delete residual chaos pods
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Pod
+        namespace: default
+        name: "{{ item.metadata.name }}"
+        delete_options:
+          gracePeriodSeconds: 0
+      loop: "{{ default_pods.resources }}"
+      when: >-
+        'chaos' in item.metadata.name | lower or
+        'krkn' in item.metadata.name | lower or
+        'network-chaos' in item.metadata.name | lower or
+        'netobserv-tc' in item.metadata.name | lower
+      loop_control:
+        label: "{{ item.metadata.name }}"
+
+    - name: Find running todo pod
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ app_ns }}"
+        label_selectors:
+          - app={{ target_app }}
+      register: todo_pods
+
+    - name: Resolve target node
+      ansible.builtin.set_fact:
+        target_node: "{{ (todo_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | first).spec.nodeName | default('') }}"
+
+    - name: Skip tc cleanup when no node
+      ansible.builtin.debug:
+        msg: "No running todo pod — skip residual tc clear"
+      when: target_node | length == 0
+
+    - name: Remove prior tc cleanup job
+      kubernetes.core.k8s:
+        state: absent
+        api_version: batch/v1
+        kind: Job
+        namespace: default
+        name: netobserv-tc-cleanup
+        delete_options:
+          propagationPolicy: Background
+      when: target_node | length > 0
+
+    - name: Run privileged tc cleanup job on target node
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: netobserv-tc-cleanup
+            namespace: default
+          spec:
+            ttlSecondsAfterFinished: 60
+            backoffLimit: 1
+            template:
+              spec:
+                hostNetwork: true
+                hostPID: true
+                restartPolicy: Never
+                nodeName: "{{ target_node }}"
+                containers:
+                  - name: cleanup
+                    image: "{{ krkn_tools_image }}"
+                    securityContext:
+                      privileged: true
+                    command: ["/bin/bash", "-c"]
+                    args:
+                      - |
+                        set +e
+                        for i in $(ls /sys/class/net 2>/dev/null); do
+                          tc qdisc show dev "$i" 2>/dev/null | grep -q netem || continue
+                          echo clearing netem on $i
+                          tc qdisc del dev "$i" root 2>/dev/null
+                        done
+                        echo DONE
+      when: target_node | length > 0
+      register: tc_job
+
+    - name: Wait for tc cleanup job
+      kubernetes.core.k8s_info:
+        api_version: batch/v1
+        kind: Job
+        namespace: default
+        name: netobserv-tc-cleanup
+      register: tc_status
+      until: >-
+        (tc_status.resources[0].status.succeeded | default(0) | int > 0) or
+        (tc_status.resources[0].status.failed | default(0) | int > 0)
+      retries: 30
+      delay: 3
+      when: target_node | length > 0
+
+    - name: Delete tc cleanup job
+      kubernetes.core.k8s:
+        state: absent
+        api_version: batch/v1
+        kind: Job
+        namespace: default
+        name: netobserv-tc-cleanup
+        delete_options:
+          propagationPolicy: Background
+      when: target_node | length > 0
+
+    - name: Launch idle latency probe job
+      ansible.builtin.set_fact:
+        probe_job_name: "netobserv-latency-probe-{{ lookup('pipe', 'date +%s') }}"
+
+    - name: Create probe job
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: "{{ probe_job_name }}"
+            namespace: "{{ client_ns }}"
+          spec:
+            ttlSecondsAfterFinished: 60
+            backoffLimit: 1
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: probe
+                    image: "{{ probe_image }}"
+                    command: ["/bin/bash", "-c"]
+                    args:
+                      - |
+                        set +e
+                        URL="http://todo.{{ app_ns }}:8080{{ probe_path }}"
+                        for i in 1 2 3; do
+                          curl -s -o /dev/null -w "sample=$i code=%{http_code} time=%{time_total}\n" -m 15 "$URL" || echo "sample=$i probe_failed"
+                        done
+      register: probe_job
+
+    - name: Wait for probe pod completion
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ client_ns }}"
+        label_selectors:
+          - job-name={{ probe_job_name }}
+      register: probe_pods
+      until: >-
+        probe_pods.resources | length > 0 and
+        probe_pods.resources[0].status.phase in ['Succeeded', 'Failed']
+      retries: 40
+      delay: 2
+
+    - name: Fetch probe logs
+      kubernetes.core.k8s_log:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ client_ns }}"
+        name: "{{ probe_pods.resources[0].metadata.name }}"
+      register: probe_logs
+      when: probe_pods.resources | length > 0
+
+    - name: Print probe output
+      ansible.builtin.debug:
+        msg: "{{ probe_logs.log | default('(empty probe log)') }}"
+      when: probe_logs is defined
+
+    - name: Delete probe job
+      kubernetes.core.k8s:
+        state: absent
+        api_version: batch/v1
+        kind: Job
+        namespace: "{{ client_ns }}"
+        name: "{{ probe_job_name }}"
+        delete_options:
+          propagationPolicy: Background
+
+    - name: Compute verdict from probe timings
+      ansible.builtin.set_fact:
+        probe_times: >-
+          {{
+            probe_logs.log | default('') | regex_findall('time=([0-9.]+)', multiline=True)
+          }}
+      when: probe_logs is defined
+
+    - name: Emit VERDICT
+      ansible.builtin.debug:
+        msg: >-
+          {% if probe_times is defined and probe_times | length > 0 %}
+          {% set mx = probe_times | map('float') | max %}
+          VERDICT: idle todo→API path {{ 'looks healthy' if mx < 0.25 else 'still elevated' }}
+          (max idle sample {{ '%.3f' | format(mx) }}s).
+          {% else %}
+          VERDICT: idle probe did not return parseable timings.
+          {% endif %}
+
+    - name: Heal complete
+      ansible.builtin.debug:
+        msg: >-
+          HEAL_RESULT: cluster-side cleanup finished via AAP.
+          Quote VERDICT in plain language — do not name bastion scripts or Kraken to the user.

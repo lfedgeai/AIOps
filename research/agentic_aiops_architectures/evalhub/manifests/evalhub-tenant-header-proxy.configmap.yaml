@@ -1,0 +1,46 @@
+# Nginx forwards to the real EvalHub Service and sets X-Tenant from ?namespace= when
+# the header is absent (fixes RHOAI eval-hub-ui /bff federated list jobs → EvalHub 500).
+# Apply with scripts/patch-rhods-dashboard-evalhub-ui-tenant-proxy.sh (substitutes __EVALHUB_NAMESPACE__).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: evalhub-tenant-header-proxy
+  namespace: __EVALHUB_NAMESPACE__
+  labels:
+    app: evalhub-tenant-header-proxy
+data:
+  proxy-nginx.conf: |
+    worker_processes 1;
+    error_log /dev/stderr warn;
+    pid /tmp/nginx.pid;
+    events { worker_connections 256; }
+    http {
+      default_type application/octet-stream;
+      map $http_x_tenant $evalhub_tenant {
+          default $http_x_tenant;
+          ""      $arg_namespace;
+      }
+      server {
+        listen 8443 ssl;
+        ssl_certificate     /etc/tls/tls.crt;
+        ssl_certificate_key /etc/tls/tls.key;
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        location / {
+          proxy_pass https://evalhub.__EVALHUB_NAMESPACE__.svc.cluster.local:8443;
+          proxy_http_version 1.1;
+          proxy_ssl_server_name on;
+          proxy_ssl_name evalhub.__EVALHUB_NAMESPACE__.svc.cluster.local;
+          # EvalHub uses the OpenShift service-serving CA; the default pod CA bundle can still
+          # fail verification (self-signed in chain). This hop is in-cluster only.
+          proxy_ssl_verify off;
+          proxy_set_header Host evalhub.__EVALHUB_NAMESPACE__.svc.cluster.local;
+          proxy_set_header X-Tenant $evalhub_tenant;
+          proxy_set_header Authorization $http_authorization;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_connect_timeout 30s;
+          proxy_send_timeout 120s;
+          proxy_read_timeout 120s;
+        }
+      }
+    }

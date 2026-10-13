@@ -1,0 +1,10 @@
+apiVersion: oauth.openshift.io/v1
+kind: OAuthClient
+metadata:
+  name: openclaw-rhcl
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+grantMethod: auto
+redirectURIs:
+  - https://PLACEHOLDER_OPENCLAW_RHCL_HOST/auth/callback
+secret: PLACEHOLDER_OAUTH_CLIENT_SECRET

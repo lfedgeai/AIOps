@@ -1,0 +1,51 @@
+# LLM API Credentials
+
+Each hosted agent requires an API key for its LiteLLM endpoint. Local agents (Ollama) need no key.
+
+## Quick Setup
+
+1. Copy `config/.env.example` to `config/.env`
+2. Add your API keys
+3. Run `./scripts/run_harness.sh` — it sources `config/.env` automatically
+
+```bash
+cp config/.env.example config/.env
+# Edit config/.env with your keys
+./scripts/run_harness.sh --flag cartFailure --variant on
+```
+
+## Agent API Keys
+
+| Agent | API base env | API key env | Model |
+|-------|--------------|-------------|-------|
+| `deepseek_agent` | `DEEPSEEK_API_BASE` | `DEEPSEEK_API_KEY` | deepseek-r1-distill-qwen-14b |
+| `qwen3_agent` | `QWEN3_API_BASE` | `QWEN3_API_KEY` | qwen3-14b |
+| `qwen38_27b_agent` | `QWEN38_API_BASE` | `QWEN38_API_KEY` | qwen38-27b |
+| `qwen36_27b_agent` | `QWEN36_API_BASE` | `QWEN36_API_KEY` | qwen36-27b |
+| `kimi_k2_agent` | `KIMI_API_BASE` | `KIMI_API_KEY` | kimi-k2-7 |
+| `nemotron_agent` | `NEMOTRON_API_BASE` | `NEMOTRON_API_KEY` | nemotron-cascade-2-30b |
+| `llama_scout_agent` | `LLAMA_SCOUT_API_BASE` | `LLAMA_SCOUT_API_KEY` | llama-scout-17b |
+| `gpt_oss_agent` | `GPT_OSS_API_BASE` | `GPT_OSS_API_KEY` | gpt-oss-120b |
+| `granite_agent` | `GRANITE_API_BASE` | `GRANITE_API_KEY` | granite-3-2-8b-instruct |
+| `llama31_70b_agent` | `LLAMA31_70B_API_BASE` | `LLAMA31_70B_API_KEY` | llama-31-70b-cpu |
+| `ollama_qwen2` | `OPENAI_API_BASE` (default: `http://127.0.0.1:11434/v1`) | `OPENAI_API_KEY` (default: `ollama`) | qwen2.5 |
+
+Set `*_API_BASE` and `*_API_KEY` in `config/.env` for hosted agents. There is no default gateway URL in the repository.
+
+## MLflow Logging
+
+When `MLFLOW_RUN_ID` is set (the harness does this automatically), agents upload:
+
+| Artifact | Contents |
+|----------|----------|
+| `agent_prompts.txt` | Human-readable conversation transcript |
+| `agent_tool_calls.txt` | Each tool call with arguments and results |
+| `agent_llm_rounds.txt` | Round-by-round LLM reasoning summary |
+| `agent_llm_prompts.json` | Machine-readable prompts + conversation |
+| `agent_llm_tool_calls.json` | Machine-readable tool call log |
+| `agent_llm_rounds.json` | Machine-readable per-round data |
+
+## Security
+
+- **Do not** commit `config/.env` — it is gitignored
+- For CI/CD, inject keys as environment variables or secrets

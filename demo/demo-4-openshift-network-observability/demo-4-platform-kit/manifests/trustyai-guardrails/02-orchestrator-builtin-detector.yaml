@@ -1,0 +1,63 @@
+# Patch lemonade-stand orchestrator config: register built-in-detector for regex API.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fms-orchestr8-config-nlp
+  namespace: netobserv-guardrails
+  labels:
+    app.kubernetes.io/part-of: netobserv-demo
+data:
+  config.yaml: |
+    chunkers:
+      sentence:
+        type: sentence
+        service:
+            hostname: chunker-service
+            port: 8085
+    passthrough_headers:
+      - authorization
+    openai:
+      service:
+        hostname: litemaas.example.com
+        port: 443
+        tls: external_llm
+    tls:
+      external_llm:
+        insecure: true
+        cert_path: /dev/null
+    detectors:
+      built-in-detector:
+        type: text_contents
+        service:
+          hostname: "127.0.0.1"
+          port: 8080
+        chunker_id: sentence
+        default_threshold: 0.5
+      regex_competitor:
+        type: text_contents
+        service:
+            hostname: "127.0.0.1"
+            port: 8080
+        chunker_id: sentence
+        default_threshold: 0.5
+      hap:
+        type: text_contents
+        service:
+          hostname: guardrails-detector-ibm-hap-predictor
+          port: 80
+        chunker_id: sentence
+        default_threshold: 0.5
+      prompt_injection:
+        type: text_contents
+        service:
+          hostname: prompt-injection-detector-predictor
+          port: 80
+        chunker_id: sentence
+        default_threshold: 0.5
+      language_detection:
+        type: text_contents
+        service:
+          hostname: lingua-detector
+          port: 8080
+        chunker_id: sentence
+        default_threshold: 0.88

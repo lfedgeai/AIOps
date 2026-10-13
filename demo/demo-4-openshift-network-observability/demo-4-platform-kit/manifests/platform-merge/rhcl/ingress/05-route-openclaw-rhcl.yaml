@@ -1,0 +1,21 @@
+# Edge Route → dedicated openclaw-gateway (Authorino OIDC at gateway, not RHOAI kube-auth-proxy).
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: openclaw-rhcl
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: openclaw
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  host: PLACEHOLDER_OPENCLAW_RHCL_HOST
+  to:
+    kind: Service
+    name: openclaw-gateway-data-science-gateway-class
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

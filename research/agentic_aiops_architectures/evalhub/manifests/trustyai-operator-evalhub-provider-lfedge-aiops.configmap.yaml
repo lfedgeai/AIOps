@@ -1,0 +1,54 @@
+# Tenant-agnostic copy: apply to redhat-ods-applications so TrustyAI EvalHub operator can reconcile it.
+# (EvalHub CR spec.providers entry: lfedge-aiops)
+# Image must be pullable from evaluation Job pods (same cluster internal registry is OK).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trustyai-service-operator-evalhub-provider-lfedge-aiops
+  namespace: redhat-ods-applications
+  labels:
+    app.kubernetes.io/part-of: trustyai
+    app.opendatahub.io/trustyai: "true"
+    platform.opendatahub.io/part-of: trustyai
+    trustyai.opendatahub.io/evalhub-provider-name: lfedge-aiops
+    trustyai.opendatahub.io/evalhub-provider-type: system
+data:
+  lfedge_aiops.yaml: |
+    id: lfedge_aiops
+    name: LF Edge AIOps (MTTD/MTTR)
+    description: >
+      Reports mttd_seconds and mttr_seconds from ClickHouse telemetry window heuristics
+      (or synthetic timing when CH is unreachable). Optional parameters mttd_seconds / mttr_seconds override.
+    type: builtin
+    runtime:
+      k8s:
+        image: __IMAGE__
+        entrypoint:
+          - python3
+          - "-u"
+          - /app/main.py
+        cpu_request: 100m
+        memory_request: 256Mi
+        cpu_limit: "1"
+        memory_limit: 1Gi
+        env:
+          - name: LFEDGE_AIOPS_CLICKHOUSE_HTTP
+            value: http://clickhouse.otel-demo.svc.cluster.local:8123
+    benchmarks:
+      - id: mttd_mttr_clickhouse
+        name: MTTD / MTTR (ClickHouse-backed)
+        description: >
+          Emits mttd_seconds, mttr_seconds, incident_log_span_seconds, otel_log_rows, otel_trace_rows.
+        category: aiops
+        metrics:
+          - mttd_seconds
+          - mttr_seconds
+          - incident_log_span_seconds
+          - otel_log_rows
+          - otel_trace_rows
+        num_few_shot: 0
+        dataset_size: 0
+        tags:
+          - lfedge
+          - aiops
+          - clickhouse

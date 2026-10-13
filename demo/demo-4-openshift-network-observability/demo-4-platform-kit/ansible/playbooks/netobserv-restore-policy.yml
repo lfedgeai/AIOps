@@ -1,0 +1,54 @@
+---
+# Scenario B — restore canonical allow-db-from-todo NetworkPolicy.
+- name: NetObserv restore network policy (Scenario B)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    app_ns: todo-demo
+    policy_name: allow-db-from-todo-only
+  tasks:
+    - name: Confirm gate
+      ansible.builtin.assert:
+        that:
+          - confirmed | default(false) | bool
+        fail_msg: "refused: confirmed must be true (human approval required)"
+
+    - name: Apply canonical NetworkPolicy
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: "{{ policy_name }}"
+            namespace: "{{ app_ns }}"
+            labels:
+              app.kubernetes.io/part-of: netobserv-demo
+          spec:
+            podSelector:
+              matchLabels:
+                app: postgresql
+            policyTypes:
+              - Ingress
+            ingress:
+              - from:
+                  - podSelector:
+                      matchLabels:
+                        app: todo
+                ports:
+                  - protocol: TCP
+                    port: 5432
+
+    - name: Verify policy allows todo ingress
+      kubernetes.core.k8s_info:
+        api_version: networking.k8s.io/v1
+        kind: NetworkPolicy
+        namespace: "{{ app_ns }}"
+        name: "{{ policy_name }}"
+      register: pol
+
+    - name: Policy verdict
+      ansible.builtin.debug:
+        msg: >-
+          POLICY_VERDICT: restored {{ policy_name }} in {{ app_ns }}.
+          PostgreSQL should accept todo pods on :5432.

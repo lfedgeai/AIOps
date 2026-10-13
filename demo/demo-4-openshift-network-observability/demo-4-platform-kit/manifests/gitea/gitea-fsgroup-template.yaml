@@ -1,0 +1,278 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+labels:
+    template: gitea-fsgroup
+message: |-
+  A gitea application has been created in your project: ${APPLICATION_NAME}.
+metadata:
+  annotations:
+    description: |-
+      Deploy a Gitea git service, mounting the persistent volume with gid 0.
+    iconClass: icon-git
+    openshift.io/display-name: Gitea Git Server
+    openshift.io/long-description: This template deploys the Gitea web-based Git service.
+    tags: git
+  name: gitea
+objects:
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+    namespace: ${PROJECT}
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRoleBinding
+  metadata:
+    name: system:openshift:scc:root-fsgroup
+  roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: system:openshift:scc:root-fsgroup
+  subjects:
+  - kind: ServiceAccount
+    name: ${APPLICATION_NAME}
+    namespace: ${PROJECT}
+- apiVersion: apps/v1
+  kind: StatefulSet
+  metadata:
+    annotations:
+      template.alpha.openshift.io/wait-for-ready: "true"
+    labels:
+      app: ${APPLICATION_NAME}
+      app.kubernetes.io/component: ${APPLICATION_NAME}
+      app.kubernetes.io/instance: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+    namespace: ${PROJECT}
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: ${APPLICATION_NAME}
+    strategy: {}
+    template:
+      metadata:
+        creationTimestamp: null
+        labels:
+          app: ${APPLICATION_NAME}
+      spec:
+        serviceAccountName: ${APPLICATION_NAME}
+        securityContext:
+          fsGroup: 0
+        containers:
+        - image: ${IMAGE}:${TAG}
+          imagePullPolicy: IfNotPresent
+          name: ${APPLICATION_NAME}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /api/healthz
+              port: ${{HTTP_PORT}}
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /api/healthz
+              port: ${{HTTP_PORT}}
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          ports:
+            - containerPort: ${{HTTP_PORT}}
+              protocol: TCP
+          env:
+          - name: HOME
+            value: ${HOME}
+          - name: GITEA_WORK_DIR
+            value: ${GITEA_WORK_DIR}
+          - name: GITEA_CUSTOM
+            value: ${GITEA_CUSTOM}
+          - name: GITEA_APP_INI
+            value: ${GITEA_APP_INI}
+          - name: DISABLE_REGISTRATION
+            value: ${DISABLE_REGISTRATION}
+          - name: DISABLE_SSH
+            value: ${DISABLE_SSH}
+          - name: PROTOCOL
+            value: ${PROTOCOL}
+          - name: DOMAIN
+            value: ${DOMAIN}
+          - name: INSTALL_LOCK
+            value: ${INSTALL_LOCK}
+          - name: ROOT_URL
+            value: ${ROOT_URL}
+          - name: RUN_MODE
+            value: "prod"
+          - name: SECRET_KEY
+            value: ${SECRET_KEY}
+          - name: DB_TYPE
+            value: ${DB_TYPE}
+          - name: DB_HOST
+            value: ${DB_HOST}
+          - name: DB_NAME
+            value: ${DB_NAME}
+          - name: DB_USER
+            value: ${DB_USER}
+          - name: DB_PASSWD
+            value: ${DB_PASSWD}
+          - name: GITEA__LOG__LEVEL
+            value: ${LOG_LEVEL}
+          volumeMounts:
+          - name: data
+            mountPath: ${GITEA_WORK_DIR}
+          resources: {}
+    volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: ${PVC_SIZE}
+  status: {}
+- apiVersion: v1
+  kind: Service
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+      app.kubernetes.io/component: ${APPLICATION_NAME}
+      app.kubernetes.io/instance: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+    namespace: ${PROJECT}
+  spec:
+    ports:
+    - name: http
+      port: ${{HTTP_PORT}}
+      protocol: TCP
+      targetPort: ${{HTTP_PORT}}
+    selector:
+      app: ${APPLICATION_NAME}
+    sessionAffinity: None
+    type: ClusterIP
+  status: {}
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+      app.kubernetes.io/component: ${APPLICATION_NAME}
+      app.kubernetes.io/instance: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+    namespace: ${PROJECT}
+  spec:
+    port:
+      targetPort: ${{HTTP_PORT}}
+    to:
+      kind: Service
+      name: ${APPLICATION_NAME}
+      weight: 100
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+    wildcardPolicy: None
+parameters:
+- description: The name for this application.
+  displayName: Application Name
+  name: APPLICATION_NAME
+  value: "gitea"
+  required: true
+- description: Project to deploy gitea to.
+  displayName: Project
+  name: PROJECT
+  required: true
+- description: The of the Persistent Volume Claim.
+  displayName: PVC Size
+  name: PVC_SIZE
+  value: "10Gi"
+  required: true
+- description: Gitea container image.
+  displayName: Container Image
+  name: IMAGE
+  value: "quay.io/your-org/gitea-openshift"
+- description: Gitea container image tag.
+  display: Container Image Tag
+  name: TAG
+  value: "gitea-openshift-v1"
+- description: Home directory of the git user.
+  displayName: Home
+  name: HOME
+  value: "/var/lib/gitea/git"
+- description: Gitea working directory.
+  displayName: Gitea work directory
+  name: GITEA_WORK_DIR
+  value: "/var/lib/gitea"
+- description: Gitea custom directory.
+  displayName: Gitea custom directory
+  name: GITEA_CUSTOM
+  value: "/var/lib/gitea/custom"
+- description: Gitea configuration file
+  displayName: Gitea app.ini
+  name: GITEA_APP_INI
+  value: "/var/lib/gitea/custom/conf/app.ini"
+- description: Disable self-registration screen.
+  displayName: Disable self-registration
+  name: DISABLE_REGISTRATION
+  value: "true"
+- description: Disable SSH.
+  displayName: Disable SSH
+  name: DISABLE_SSH
+  value: "true"
+- description: Web Server protocol.
+  displayName: Protocol
+  name: PROTOCOL
+  value: "http"
+- description: HTTP listen port.
+  displayName: HTTP Port
+  name: HTTP_PORT
+  value: "3000"
+- description: "Domain name of the Gitea server, used for the displayed http clone URL in Gitea’s UI."
+  displayName: Domain
+  name: DOMAIN
+  required: true
+- description: Disallow access to the install page.
+  displayName: Install Lock
+  name: INSTALL_LOCK
+  value: "true"
+- description: "Overwrite the automatically generated public URL. This is useful if the internal and the external URL don’t match."
+  displayName: Root URL
+  name: ROOT_URL
+- description: "Global secret key."
+  displayName: Secret Key
+  name: SECRET_KEY
+- description: "The database type in use [mysql, postgres, mssql, sqlite3]."
+  displayName: DB Type
+  name: DB_TYPE
+  value: "sqlite3"
+- description: "Database host address and port."
+  displayName: DB Host
+  name: DB_HOST
+  value: "localhost:3306"
+- description: "Database name."
+  displayName: DB Name
+  name: DB_NAME
+  value: "gitea"
+- description: "Database username."
+  displayName: DB User
+  name: DB_USER
+  value: "root"
+- description: "Database user password. Use `your password` for quoting if you use special characters in the password."
+  displayName: DB Password
+  name: DB_PASSWD
+- description: "Log level [TRACE, DEBUG, INFO, WARN, ERROR, CRITICAL, FATAL, NONE]."
+  displayName: Log Level
+  name: LOG_LEVEL
+  value: "WARN"
+  required: true

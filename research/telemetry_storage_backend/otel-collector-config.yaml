@@ -1,0 +1,50 @@
+# OpenTelemetry Collector: OTLP receiver -> Doris + ClickHouse
+# Receives on 4317 (gRPC) and 4318 (HTTP)
+# Requires contrib 0.116+ for Doris exporter
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1000
+
+exporters:
+  doris:
+    # Use BE (8040) directly; FE (8030) redirects to 127.0.0.1:8040 which fails from collector container
+    endpoint: http://tsb-doris:8040
+    database: otel
+    username: root
+    password: ""
+    create_schema: true
+    mysql_endpoint: tsb-doris:9030
+    table:
+      logs: otel_logs
+      traces: otel_traces
+      metrics: otel_metrics
+  clickhouse:
+    endpoint: tcp://tsb-clickhouse:9000?dial_timeout=10s
+    database: otel
+    username: default
+    password: changeme
+    create_schema: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [doris, clickhouse]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [doris, clickhouse]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [doris, clickhouse]

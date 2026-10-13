@@ -1,0 +1,6 @@
+SELECT metric_name, APPROX_QUANTILE_DS("value", 0.95) AS p95
+FROM "telemetry_metrics"
+WHERE __time >= CURRENT_TIMESTAMP - INTERVAL '365' DAY
+GROUP BY metric_name
+ORDER BY p95 DESC
+LIMIT 20

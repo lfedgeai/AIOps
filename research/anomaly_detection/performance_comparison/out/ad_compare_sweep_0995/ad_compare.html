@@ -1,0 +1,91 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Anomaly Detector Comparison</title>
+<style>table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:6px 10px;text-align:center}</style>
+</head><body>
+  <h1>Anomaly Detector Comparison</h1>
+  
+  <div style="margin:10px 0 16px 0;padding:10px;border:1px solid #e5e7eb;border-radius:6px;">
+    <h2 style="margin:0 0 8px 0;font-size:16px;">What this report shows</h2>
+    <div>This compares anomaly detectors on the selected dataset. Training uses baseline windows (train* labels). Evaluation uses all other windows (baselines not marked train + faults). Thresholds are calibrated on train scores at a fixed quantile; metrics (precision/recall/F1) are at that operating point, and PR/ROC AUCs are computed from continuous scores.</div>
+  </div>
+  
+  <div style="margin:10px 0 16px 0;padding:10px;border:1px solid #e5e7eb;border-radius:6px;">
+    <h2 style="margin:0 0 8px 0;font-size:16px;">Threshold quantile</h2>
+    <div><b>THRESHOLD_QUANTILE</b> = <b>0.9950</b>. We set the anomaly threshold so that this fraction of baseline (train) scores fall below it. Lowering it (e.g., 0.980 → 0.970) typically increases recall at the cost of precision.</div>
+  </div>
+  
+  <div style="margin:10px 0 16px 0;padding:10px;border:1px solid #e5e7eb;border-radius:6px;">
+    <h2 style="margin:0 0 8px 0;font-size:16px;">Metric definitions</h2>
+    <ul style="margin:0 0 0 18px;">
+      <li><b>Precision</b>: TP / (TP + FP) — of predicted anomalies, how many are true faults.</li>
+      <li><b>Recall</b>: TP / (TP + FN) — of true faults, how many were detected.</li>
+      <li><b>F1</b>: harmonic mean of precision and recall — balances both.</li>
+      <li><b>PR-AUC</b>: area under Precision–Recall curve — ranking quality for the positive class.</li>
+      <li><b>ROC-AUC</b>: area under ROC curve — overall separability between classes.</li>
+    </ul>
+  </div>
+  
+  
+  <div style="margin:10px 0 16px 0;padding:10px;border:1px solid #e5e7eb;border-radius:6px;">
+    <h2 style="margin:0 0 8px 0;font-size:16px;">Detectors in this report</h2>
+    <ul style="margin:0 0 0 18px;">
+      <li><b>IsolationForest (sklearn)</b>: tree-based isolation; higher score ⇒ more anomalous.</li>
+      <li><b>Extended IsolationForest (isotree)</b>: enhanced IF (if installed); higher score ⇒ more anomalous.</li>
+      <li><b>COPOD (pyod)</b>: copula-based outlier degree; higher score ⇒ more anomalous.</li>
+      <li><b>RRCF (rrcf)</b>: random cut forest; CoDisp score; higher score ⇒ more anomalous.</li>
+    </ul>
+  </div>
+  <table>
+    <tr><th>detector</th><th>precision</th><th>recall</th><th>f1</th><th>PR-AUC</th><th>ROC-AUC</th><th>threshold</th></tr>
+    <tr><td>IsolationForest(sklearn)</td><td>0.0000</td><td>0.0000</td><td>0.0000</td><td>n/a</td><td>n/a</td><td>0.195877</td></tr><tr><td>COPOD(pyod)</td><td>0.0000</td><td>0.0000</td><td>0.0000</td><td>n/a</td><td>n/a</td><td>26.068774</td></tr><tr><td>RRCF(rrcf)</td><td>1.0000</td><td>0.3289</td><td>0.4950</td><td>n/a</td><td>n/a</td><td>8.355262</td></tr>
+  </table>
+  
+        <h3>IsolationForest(sklearn)</h3>
+        <div>precision=0.0000 &nbsp; recall=0.0000 &nbsp; f1=0.0000 &nbsp;
+             PR-AUC=n/a &nbsp;
+             ROC-AUC=n/a
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(320px,1fr));gap:16px;margin:8px 0 20px 0">
+          <div><h4>Precision–Recall</h4><div style="color:#666">n/a</div></div>
+          <div><h4>ROC</h4><div style="color:#666">n/a</div></div>
+        </div>
+        
+        <div style="margin:6px 0 4px 0">Per-flag metrics (injected faults only):</div>
+        <table>
+          <tr><th>flag</th><th>injected faults</th><th>P</th><th>R</th><th>F1</th></tr>
+          <tr><td>adFailure</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>adHighCpu</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>adManualGc</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>cartFailure</td><td>30</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>emailMemoryLeak</td><td>20</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>imageSlowLoad</td><td>20</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>kafkaQueueProblems</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>llmInaccurateResponse</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>llmRateLimitError</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>loadGeneratorFloodHomepage</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>paymentFailure</td><td>58</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>paymentUnreachable</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>productCatalogFailure</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>recommendationCacheFailure</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr>
+        </table>
+        
+        <h3>COPOD(pyod)</h3>
+        <div>precision=0.0000 &nbsp; recall=0.0000 &nbsp; f1=0.0000 &nbsp;
+             PR-AUC=n/a &nbsp;
+             ROC-AUC=n/a
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(320px,1fr));gap:16px;margin:8px 0 20px 0">
+          <div><h4>Precision–Recall</h4><div style="color:#666">n/a</div></div>
+          <div><h4>ROC</h4><div style="color:#666">n/a</div></div>
+        </div>
+        
+        <div style="margin:6px 0 4px 0">Per-flag metrics (injected faults only):</div>
+        <table>
+          <tr><th>flag</th><th>injected faults</th><th>P</th><th>R</th><th>F1</th></tr>
+          <tr><td>adFailure</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>adHighCpu</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>adManualGc</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>cartFailure</td><td>30</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>emailMemoryLeak</td><td>20</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>imageSlowLoad</td><td>20</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>kafkaQueueProblems</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>llmInaccurateResponse</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>llmRateLimitError</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>loadGeneratorFloodHomepage</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>paymentFailure</td><td>58</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>paymentUnreachable</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>productCatalogFailure</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr><tr><td>recommendationCacheFailure</td><td>10</td><td>0.0000</td><td>0.0000</td><td>0.0000</td></tr>
+        </table>
+        
+        <h3>RRCF(rrcf)</h3>
+        <div>precision=1.0000 &nbsp; recall=0.3289 &nbsp; f1=0.4950 &nbsp;
+             PR-AUC=n/a &nbsp;
+             ROC-AUC=n/a
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(320px,1fr));gap:16px;margin:8px 0 20px 0">
+          <div><h4>Precision–Recall</h4><div style="color:#666">n/a</div></div>
+          <div><h4>ROC</h4><div style="color:#666">n/a</div></div>
+        </div>
+        
+        <div style="margin:6px 0 4px 0">Per-flag metrics (injected faults only):</div>
+        <table>
+          <tr><th>flag</th><th>injected faults</th><th>P</th><th>R</th><th>F1</th></tr>
+          <tr><td>adFailure</td><td>10</td><td>1.0000</td><td>0.5000</td><td>0.6667</td></tr><tr><td>adHighCpu</td><td>10</td><td>1.0000</td><td>0.4000</td><td>0.5714</td></tr><tr><td>adManualGc</td><td>10</td><td>1.0000</td><td>0.3000</td><td>0.4615</td></tr><tr><td>cartFailure</td><td>30</td><td>1.0000</td><td>0.1667</td><td>0.2857</td></tr><tr><td>emailMemoryLeak</td><td>20</td><td>1.0000</td><td>0.6500</td><td>0.7879</td></tr><tr><td>imageSlowLoad</td><td>20</td><td>1.0000</td><td>0.4500</td><td>0.6207</td></tr><tr><td>kafkaQueueProblems</td><td>10</td><td>1.0000</td><td>0.3000</td><td>0.4615</td></tr><tr><td>llmInaccurateResponse</td><td>10</td><td>1.0000</td><td>0.2000</td><td>0.3333</td></tr><tr><td>llmRateLimitError</td><td>10</td><td>1.0000</td><td>0.3000</td><td>0.4615</td></tr><tr><td>loadGeneratorFloodHomepage</td><td>10</td><td>1.0000</td><td>0.5000</td><td>0.6667</td></tr><tr><td>paymentFailure</td><td>58</td><td>1.0000</td><td>0.1897</td><td>0.3188</td></tr><tr><td>paymentUnreachable</td><td>10</td><td>1.0000</td><td>0.5000</td><td>0.6667</td></tr><tr><td>productCatalogFailure</td><td>10</td><td>1.0000</td><td>0.2000</td><td>0.3333</td></tr><tr><td>recommendationCacheFailure</td><td>10</td><td>1.0000</td><td>0.5000</td><td>0.6667</td></tr>
+        </table>
+        
+</body></html>

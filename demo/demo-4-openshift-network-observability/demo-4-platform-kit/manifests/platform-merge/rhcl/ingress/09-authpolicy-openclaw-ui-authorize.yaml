@@ -1,0 +1,20 @@
+# Route-level authorization override: allow traffic after Authorino OIDC authentication.
+# Required when using gateway deny-all (defaults + route overrides pattern from RHCL docs).
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: openclaw-ui-authorize
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: openclaw-ui
+  overrides:
+    rules:
+      authorization:
+        allow-authenticated:
+          opa:
+            rego: "allow = true"

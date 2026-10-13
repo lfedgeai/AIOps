@@ -1,0 +1,29 @@
+# Credentials (API keys, passwords — never commit)
+config/.env
+config/openshift.local.yaml
+
+# Local MLflow data (persistent local server)
+/mlartifacts/
+/mlruns/
+mlflow.db
+mlflow_local.db
+
+# Harness run artifacts (may contain cluster hostnames and agent traces)
+out/
+
+# Scratch / working notes (may contain debug output with credentials)
+/scratch/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE / editor
+.vscode/
+.idea/
+.cursor/
+
+# Local Python environments
+venv/
+.venv/

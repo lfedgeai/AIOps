@@ -1,0 +1,23 @@
+# OIDC callback path — Authorino (via OIDCPolicy) handles the code exchange before upstream.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  # Must match Kuadrant OIDCPolicy naming: AuthPolicy openclaw-ui-oidc-callback targets this route.
+  name: openclaw-ui-oidc-callback
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/part-of: netobserv-platform-merge
+spec:
+  parentRefs:
+    - name: openclaw-gateway
+      namespace: openclaw
+  hostnames:
+    - PLACEHOLDER_OPENCLAW_RHCL_HOST
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /auth/callback
+      backendRefs:
+        - name: openclaw
+          port: 18789

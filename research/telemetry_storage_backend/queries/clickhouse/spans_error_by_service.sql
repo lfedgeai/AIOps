@@ -1,0 +1,1 @@
+SELECT service, count() AS error_span_count FROM telemetry.spans WHERE ts_start>=now()-INTERVAL 30 DAY AND (toInt64OrZero(JSONExtractString(attributes,'http.status_code'))>=500 OR duration_ms>5000) GROUP BY service ORDER BY error_span_count DESC LIMIT 20

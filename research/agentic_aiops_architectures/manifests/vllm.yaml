@@ -1,0 +1,139 @@
+# vLLM serving Qwen2.5-7B-Instruct on OpenShift (RTX 3500 Ada, 12GB VRAM)
+# Use: oc apply -f manifests/vllm.yaml
+# Model downloads on first start (~5 min for 7B).
+# For 14B use AWQ quantized: Qwen/Qwen2.5-14B-Instruct-AWQ
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentic-aiops
+  labels:
+    app.kubernetes.io/name: agentic-aiops
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: agentic-aiops
+  labels:
+    app: vllm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          args:
+            - --model
+            - Qwen/Qwen2.5-7B-Instruct
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+            - --max-model-len
+            - "16384"
+            - --gpu-memory-utilization
+            - "0.90"
+            - --enable-auto-tool-choice
+            - --tool-call-parser
+            - hermes
+            - --dtype
+            - half
+          env:
+            - name: HF_HOME
+              value: /model-cache
+            - name: VLLM_WORKER_MULTIPROC_METHOD
+              value: spawn
+          ports:
+            - containerPort: 8000
+              name: http
+          volumeMounts:
+            - name: model-cache
+              mountPath: /model-cache
+            - name: shm
+              mountPath: /dev/shm
+          resources:
+            requests:
+              memory: 4Gi
+              cpu: 250m
+              nvidia.com/gpu: "1"
+            limits:
+              memory: 16Gi
+              cpu: "4"
+              nvidia.com/gpu: "1"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 20
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 180
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 60
+      volumes:
+        - name: model-cache
+          emptyDir: {}
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+  namespace: agentic-aiops
+  labels:
+    app: vllm
+spec:
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+      protocol: TCP
+  selector:
+    app: vllm
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: vllm
+  namespace: agentic-aiops
+  labels:
+    app: vllm
+spec:
+  to:
+    kind: Service
+    name: vllm
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+  wildcardPolicy: None

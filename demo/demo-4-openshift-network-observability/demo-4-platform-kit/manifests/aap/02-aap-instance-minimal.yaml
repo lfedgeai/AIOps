@@ -1,0 +1,70 @@
+# AnsibleAutomationPlatform instance for NetObserv demo.
+# Override storage class at apply time:
+#   AAP_STORAGE_CLASS=gp3-csi ./scripts/install-aap.sh install
+#
+# AAP_MINIMAL=1 disables hub + eda (controller + gateway only — lighter for lab nodes).
+apiVersion: aap.ansible.com/v1alpha1
+kind: AnsibleAutomationPlatform
+metadata:
+  name: netobserv-aap
+  namespace: ansible-automation-platform
+  labels:
+    app.kubernetes.io/part-of: netobserv-aap
+spec:
+  image_pull_policy: IfNotPresent
+  api:
+    replicas: 1
+    resource_requirements:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+  redis:
+    replicas: 1
+    resource_requirements:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 512Mi
+  database:
+    resource_requirements:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 800Mi
+  controller:
+    disabled: false
+    uwsgi_processes: 2
+    task_resource_requirements:
+      requests:
+        cpu: 100m
+        memory: 150Mi
+      limits:
+        cpu: 1000m
+        memory: 1200Mi
+    web_resource_requirements:
+      requests:
+        cpu: 100m
+        memory: 200Mi
+      limits:
+        cpu: 500m
+        memory: 1600Mi
+    ee_resource_requirements:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+  eda:
+    disabled: true
+  hub:
+    disabled: true
+  lightspeed:
+    disabled: true

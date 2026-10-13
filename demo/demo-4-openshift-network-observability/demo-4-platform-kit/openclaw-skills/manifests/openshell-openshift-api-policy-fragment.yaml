@@ -1,0 +1,29 @@
+# Fragment to merge under network_policies: in OpenShell managed-policy.yaml
+# (lab-only).
+#
+# OpenShell hard-blocks control-plane port 6443 (SSRF engine) and cannot
+# complete tunnels to kubernetes.default.svc. Sandboxes must call the in-cluster
+# netobserv-heal-proxy Service on :8080 instead.
+  openshift_api:
+    endpoints:
+      - host: netobserv-heal-proxy.openclaw.svc
+        port: 8080
+      - host: netobserv-heal-proxy.openclaw.svc.cluster.local
+        port: 8080
+      - host: kubernetes.default.svc
+        port: 443
+      - host: kubernetes.default.svc.cluster.local
+        port: 443
+    binaries:
+      - { path: /usr/bin/python3 }
+      - { path: /usr/bin/python3.12 }
+      - { path: /usr/local/bin/python3 }
+      - { path: /usr/bin/python }
+      - { path: /bin/bash }
+      - { path: /usr/bin/bash }
+      - { path: /bin/sh }
+      - { path: /usr/bin/sh }
+      - { path: /usr/bin/curl }
+      - { path: /usr/local/bin/curl }
+      - { path: "/opt/openclaw/**" }
+      - { path: "/sandbox/**" }

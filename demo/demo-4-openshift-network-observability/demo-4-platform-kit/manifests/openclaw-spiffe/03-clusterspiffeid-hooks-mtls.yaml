@@ -1,0 +1,15 @@
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: openclaw-hooks-mtls
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  dnsNameTemplates:
+    - openclaw-hooks-mtls.openclaw.svc
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: openclaw
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-hooks-mtls
+  spiffeIDTemplate: 'spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}'
