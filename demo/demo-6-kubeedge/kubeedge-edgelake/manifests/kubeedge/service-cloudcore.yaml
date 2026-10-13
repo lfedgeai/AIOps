@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudcore
+  namespace: kubeedge
+spec:
+  ports:
+  - name: cloudhub
+    port: 10000
+    protocol: TCP
+    targetPort: 10000
+  - name: cloudhub-quic
+    port: 10001
+    protocol: UDP
+    targetPort: 10001
+  - name: cloudhub-https
+    port: 10002
+    protocol: TCP
+    targetPort: 10002
+  - name: cloudstream
+    port: 10003
+    protocol: TCP
+    targetPort: 10003
+  - name: tunnelport
+    port: 10004
+    protocol: TCP
+    targetPort: 10004
+  selector:
+    k8s-app: kubeedge
+    kubeedge: cloudcore
+  sessionAffinity: None
+  type: ClusterIP

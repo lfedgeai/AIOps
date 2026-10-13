@@ -1,0 +1,16 @@
+[
+  {
+    "table": {
+      "dbms": "monitoring",
+      "name": "node_insight",
+      "create": "CREATE TABLE IF NOT EXISTS node_insight( row_id SERIAL PRIMARY KEY, insert_timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, tsd_name CHAR(3), tsd_id INT, node_name varchar, status varchar, operational_time TIME NOT NULL DEFAULT '00:00:00', processing_time TIME NOT NULL DEFAULT '00:00:00', elapsed_time TIME NOT NULL DEFAULT '00:00:00', new_rows INT, total_rows INT, new_errors INT, total_errors INT, avg_rows_sec FLOAT, timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, node_type char(9) NOT NULL default 'generic', free_space_percent FLOAT, cpu_percent FLOAT, packets_recv INT, packets_sent INT, network_error INT ); CREATE INDEX node_insight_timestamp_index ON node_insight(timestamp); CREATE INDEX node_insight_tsd_index ON node_insight(tsd_name, tsd_id); CREATE INDEX node_insight_insert_timestamp_index ON node_insight(insert_timestamp); CREATE INDEX node_insight_node_name_index ON node_insight(node_name);"
+    }
+  },
+  {
+    "table": {
+      "dbms": "monitoring",
+      "name": "otel_edge_metrics",
+      "create": "CREATE TABLE IF NOT EXISTS otel_edge_metrics( row_id SERIAL PRIMARY KEY, insert_timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, edge_node VARCHAR, cpu_percent FLOAT, memory_used_bytes BIGINT, memory_free_bytes BIGINT, memory_total_bytes BIGINT, memory_percent FLOAT, disk_used_bytes BIGINT, disk_free_bytes BIGINT, disk_total_bytes BIGINT, disk_percent FLOAT, network_recv_bytes BIGINT, network_sent_bytes BIGINT, load_1 FLOAT, load_5 FLOAT, load_15 FLOAT ); CREATE INDEX otel_edge_metrics_timestamp_index ON otel_edge_metrics(timestamp); CREATE INDEX otel_edge_metrics_node_index ON otel_edge_metrics(edge_node);"
+    }
+  }
+]

@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EdgeLake Observability</title>
+
+  <script src="/vendor/chart.umd.min.js"></script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg: #07111f;
+      --surface: #0d1b2a;
+      --surface2: #132338;
+      --border: #22364e;
+      --text: #e8eef7;
+      --muted: #8fa3ba;
+      --good: #38d996;
+      --warning: #f5c451;
+      --danger: #ff6b6b;
+      --accent: #5ba7ff;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont,
+                   "Segoe UI", sans-serif;
+    }
+
+    .header {
+      min-height: 72px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 28px;
+      gap: 20px;
+    }
+
+    .title {
+      font-size: 21px;
+      font-weight: 700;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 4px;
+    }
+
+    .node-status {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-size: 14px;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      background: var(--good);
+      border-radius: 50%;
+      box-shadow: 0 0 10px var(--good);
+    }
+
+    .container {
+      max-width: 1600px;
+      margin: auto;
+      padding: 24px;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(160px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .card,
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+
+    .card {
+      padding: 18px;
+    }
+
+    .card-label {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+
+    .card-value {
+      font-size: 28px;
+      font-weight: 700;
+    }
+
+    .card-unit {
+      color: var(--muted);
+      font-size: 13px;
+      margin-left: 3px;
+    }
+
+    .charts {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .panel {
+      padding: 18px;
+      min-height: 330px;
+    }
+
+    .panel-title {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }
+
+    .chart-container {
+      height: 260px;
+    }
+
+    .load-values {
+      display: flex;
+      gap: 24px;
+      margin-bottom: 15px;
+      color: var(--muted);
+    }
+
+    .load-values strong {
+      color: var(--text);
+    }
+
+    .table-panel {
+      margin-top: 16px;
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th {
+      text-align: left;
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    th, td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    .footer-status {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 16px;
+      text-align: right;
+    }
+
+    @media (max-width: 1000px) {
+      .cards {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .charts {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 600px) {
+      .cards {
+        grid-template-columns: 1fr;
+      }
+
+      .header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+<header class="header">
+  <div>
+    <div class="title">EdgeLake Edge Observability</div>
+    <div class="subtitle">
+      Edge telemetry powered by OpenTelemetry + EdgeLake
+    </div>
+  </div>
+
+  <div class="node-status">
+    <span class="status-dot" id="statusDot"></span>
+    <span id="nodeStatus">Loading...</span>
+  </div>
+</header>
+
+<main class="container">
+
+  <section class="cards">
+
+    <div class="card">
+      <div class="card-label">CPU Utilization</div>
+      <span class="card-value" id="cpu">--</span>
+      <span class="card-unit">%</span>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Memory Utilization</div>
+      <span class="card-value" id="memory">--</span>
+      <span class="card-unit">%</span>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Disk Utilization</div>
+      <span class="card-value" id="disk">--</span>
+      <span class="card-unit">%</span>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Network RX</div>
+      <span class="card-value" id="rx">--</span>
+      <span class="card-unit">KB/s</span>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Network TX</div>
+      <span class="card-value" id="tx">--</span>
+      <span class="card-unit">KB/s</span>
+    </div>
+
+  </section>
+
+  <section class="charts">
+
+    <div class="panel">
+      <div class="panel-title">CPU / Memory / Disk</div>
+      <div class="chart-container">
+        <canvas id="resourceChart"></canvas>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Network Throughput</div>
+      <div class="chart-container">
+        <canvas id="networkChart"></canvas>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">System Load</div>
+
+      <div class="load-values">
+        <span>1m <strong id="load1">--</strong></span>
+        <span>5m <strong id="load5">--</strong></span>
+        <span>15m <strong id="load15">--</strong></span>
+      </div>
+
+      <div class="chart-container">
+        <canvas id="loadChart"></canvas>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Edge Node</div>
+
+      <table>
+        <tbody>
+          <tr>
+            <th>Node</th>
+            <td id="nodeName">--</td>
+          </tr>
+          <tr>
+            <th>Last Telemetry</th>
+            <td id="lastTelemetry">--</td>
+          </tr>
+          <tr>
+            <th>Memory Used</th>
+            <td id="memoryUsed">--</td>
+          </tr>
+          <tr>
+            <th>Memory Total</th>
+            <td id="memoryTotal">--</td>
+          </tr>
+          <tr>
+            <th>Disk Used</th>
+            <td id="diskUsed">--</td>
+          </tr>
+          <tr>
+            <th>Disk Total</th>
+            <td id="diskTotal">--</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+  </section>
+
+  <section class="panel table-panel">
+
+    <div class="panel-title">Recent EdgeLake Telemetry</div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>CPU</th>
+          <th>Memory</th>
+          <th>Disk</th>
+          <th>RX</th>
+          <th>TX</th>
+          <th>Load 1m</th>
+        </tr>
+      </thead>
+
+      <tbody id="telemetryTable"></tbody>
+    </table>
+
+  </section>
+
+  <div class="footer-status" id="refreshStatus">
+    Waiting for EdgeLake...
+  </div>
+
+</main>
+
+<script>
+let resourceChart;
+let networkChart;
+let loadChart;
+
+function formatBytes(value) {
+  const n = Number(value || 0);
+
+  if (n >= 1024 ** 3)
+    return (n / 1024 ** 3).toFixed(2) + " GB";
+
+  if (n >= 1024 ** 2)
+    return (n / 1024 ** 2).toFixed(2) + " MB";
+
+  if (n >= 1024)
+    return (n / 1024).toFixed(2) + " KB";
+
+  return n.toFixed(0) + " B";
+}
+
+function kbps(value) {
+  return Number(value || 0) / 1024;
+}
+
+function pct(value) {
+  return Number(value || 0).toFixed(2);
+}
+
+function shortTime(value) {
+  if (!value) return "--";
+
+  const parts = value.split(" ");
+  return parts.length > 1 ? parts[1] : value;
+}
+
+function makeChart(canvas, datasets, yTitle) {
+  return new Chart(canvas, {
+    type: "line",
+
+    data: {
+      labels: [],
+      datasets
+    },
+
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+
+      interaction: {
+        mode: "index",
+        intersect: false
+      },
+
+      scales: {
+        x: {
+          ticks: {
+            color: "#8fa3ba",
+            maxTicksLimit: 8
+          },
+
+          grid: {
+            color: "rgba(143,163,186,.08)"
+          }
+        },
+
+        y: {
+          beginAtZero: true,
+
+          title: {
+            display: true,
+            text: yTitle,
+            color: "#8fa3ba"
+          },
+
+          ticks: {
+            color: "#8fa3ba"
+          },
+
+          grid: {
+            color: "rgba(143,163,186,.08)"
+          }
+        }
+      },
+
+      plugins: {
+        legend: {
+          labels: {
+            color: "#e8eef7"
+          }
+        }
+      }
+    }
+  });
+}
+
+function initializeCharts() {
+  resourceChart = makeChart(
+    document.getElementById("resourceChart"),
+    [
+      {
+        label: "CPU %",
+        data: [],
+        borderColor: "#5ba7ff",
+        tension: .25
+      },
+      {
+        label: "Memory %",
+        data: [],
+        borderColor: "#38d996",
+        tension: .25
+      },
+      {
+        label: "Disk %",
+        data: [],
+        borderColor: "#f5c451",
+        tension: .25
+      }
+    ],
+    "%"
+  );
+
+  networkChart = makeChart(
+    document.getElementById("networkChart"),
+    [
+      {
+        label: "RX KB/s",
+        data: [],
+        borderColor: "#38d996",
+        tension: .25
+      },
+      {
+        label: "TX KB/s",
+        data: [],
+        borderColor: "#5ba7ff",
+        tension: .25
+      }
+    ],
+    "KB/s"
+  );
+
+  loadChart = makeChart(
+    document.getElementById("loadChart"),
+    [
+      {
+        label: "1m",
+        data: [],
+        borderColor: "#5ba7ff",
+        tension: .25
+      },
+      {
+        label: "5m",
+        data: [],
+        borderColor: "#38d996",
+        tension: .25
+      },
+      {
+        label: "15m",
+        data: [],
+        borderColor: "#f5c451",
+        tension: .25
+      }
+    ],
+    "Load"
+  );
+}
+
+async function refreshDashboard() {
+  try {
+    const [latestResponse, historyResponse] =
+      await Promise.all([
+        fetch("/api/latest"),
+        fetch("/api/history?limit=60")
+      ]);
+
+    if (!latestResponse.ok || !historyResponse.ok)
+      throw new Error("Dashboard API request failed");
+
+    const latest = await latestResponse.json();
+    const history = await historyResponse.json();
+
+    if (!latest.edge_node)
+      throw new Error("No EdgeLake telemetry available");
+
+    const last = history[history.length - 1] || {};
+
+    document.getElementById("cpu").textContent =
+      pct(latest.cpu_percent);
+
+    document.getElementById("memory").textContent =
+      pct(latest.memory_percent);
+
+    document.getElementById("disk").textContent =
+      pct(latest.disk_percent);
+
+    document.getElementById("rx").textContent =
+      kbps(last.rx_bytes_sec).toFixed(2);
+
+    document.getElementById("tx").textContent =
+      kbps(last.tx_bytes_sec).toFixed(2);
+
+    document.getElementById("load1").textContent =
+      Number(latest.load_1 || 0).toFixed(2);
+
+    document.getElementById("load5").textContent =
+      Number(latest.load_5 || 0).toFixed(2);
+
+    document.getElementById("load15").textContent =
+      Number(latest.load_15 || 0).toFixed(2);
+
+    document.getElementById("nodeName").textContent =
+      latest.edge_node;
+
+    document.getElementById("lastTelemetry").textContent =
+      latest.timestamp;
+
+    document.getElementById("memoryUsed").textContent =
+      formatBytes(latest.memory_used_bytes);
+
+    document.getElementById("memoryTotal").textContent =
+      formatBytes(latest.memory_total_bytes);
+
+    document.getElementById("diskUsed").textContent =
+      formatBytes(latest.disk_used_bytes);
+
+    document.getElementById("diskTotal").textContent =
+      formatBytes(latest.disk_total_bytes);
+
+    document.getElementById("nodeStatus").textContent =
+      latest.edge_node + " / Online";
+
+    document.getElementById("statusDot").style.background =
+      "#38d996";
+
+    const labels = history.map(
+      row => shortTime(row.timestamp)
+    );
+
+    resourceChart.data.labels = labels;
+    resourceChart.data.datasets[0].data =
+      history.map(row => Number(row.cpu_percent || 0));
+    resourceChart.data.datasets[1].data =
+      history.map(row => Number(row.memory_percent || 0));
+    resourceChart.data.datasets[2].data =
+      history.map(row => Number(row.disk_percent || 0));
+    resourceChart.update();
+
+    networkChart.data.labels = labels;
+    networkChart.data.datasets[0].data =
+      history.map(row => kbps(row.rx_bytes_sec));
+    networkChart.data.datasets[1].data =
+      history.map(row => kbps(row.tx_bytes_sec));
+    networkChart.update();
+
+    loadChart.data.labels = labels;
+    loadChart.data.datasets[0].data =
+      history.map(row => Number(row.load_1 || 0));
+    loadChart.data.datasets[1].data =
+      history.map(row => Number(row.load_5 || 0));
+    loadChart.data.datasets[2].data =
+      history.map(row => Number(row.load_15 || 0));
+    loadChart.update();
+
+    const table = document.getElementById("telemetryTable");
+
+    table.innerHTML = history
+      .slice(-10)
+      .reverse()
+      .map(row => `
+        <tr>
+          <td>${row.timestamp}</td>
+          <td>${pct(row.cpu_percent)}%</td>
+          <td>${pct(row.memory_percent)}%</td>
+          <td>${pct(row.disk_percent)}%</td>
+          <td>${kbps(row.rx_bytes_sec).toFixed(2)} KB/s</td>
+          <td>${kbps(row.tx_bytes_sec).toFixed(2)} KB/s</td>
+          <td>${Number(row.load_1 || 0).toFixed(2)}</td>
+        </tr>
+      `)
+      .join("");
+
+    document.getElementById("refreshStatus").textContent =
+      "EdgeLake updated: " + latest.timestamp;
+
+  } catch (error) {
+    console.error(error);
+
+    document.getElementById("nodeStatus").textContent =
+      "EdgeLake unavailable";
+
+    document.getElementById("statusDot").style.background =
+      "#ff6b6b";
+
+    document.getElementById("refreshStatus").textContent =
+      error.message;
+  }
+}
+
+initializeCharts();
+refreshDashboard();
+
+setInterval(refreshDashboard, 10000);
+</script>
+
+</body>
+</html>

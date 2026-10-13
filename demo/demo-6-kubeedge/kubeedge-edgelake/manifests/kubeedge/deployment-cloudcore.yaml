@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudcore
+  namespace: kubeedge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      k8s-app: kubeedge
+      kubeedge: cloudcore
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        k8s-app: kubeedge
+        kubeedge: cloudcore
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/edge
+                operator: DoesNotExist
+      containers:
+      - image: kubeedge/cloudcore:v1.19.0
+        imagePullPolicy: IfNotPresent
+        name: cloudcore
+        ports:
+        - containerPort: 10000
+          name: cloudhub
+          protocol: TCP
+        - containerPort: 10001
+          name: cloudhub-quic
+          protocol: TCP
+        - containerPort: 10002
+          name: cloudhub-https
+          protocol: TCP
+        - containerPort: 10003
+          name: cloudstream
+          protocol: TCP
+        - containerPort: 10004
+          name: tunnelport
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 200m
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 512Mi
+        securityContext:
+          privileged: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /etc/kubeedge/config
+          name: conf
+        - mountPath: /etc/kubeedge
+          name: certs
+        - mountPath: /var/lib/kubeedge
+          name: sock
+        - mountPath: /etc/localtime
+          name: host-time
+          readOnly: true
+      dnsPolicy: ClusterFirstWithHostNet
+      hostNetwork: true
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: cloudcore
+      serviceAccountName: cloudcore
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: cloudcore
+        name: conf
+      - name: certs
+        secret:
+          defaultMode: 420
+          items:
+          - key: stream.crt
+            path: certs/stream.crt
+          - key: stream.key
+            path: certs/stream.key
+          - key: streamCA.crt
+            path: ca/streamCA.crt
+          secretName: cloudcore
+      - hostPath:
+          path: /var/lib/kubeedge
+          type: DirectoryOrCreate
+        name: sock
+      - hostPath:
+          path: /etc/localtime
+          type: ''
+        name: host-time

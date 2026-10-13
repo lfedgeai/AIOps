@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edgelake
+  namespace: edgelake
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: edgelake
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: edgelake
+        component: edge-data
+    spec:
+      containers:
+      - image: quay.io/jpaulraj_se_jboss/edgelake:1.5.2606
+        imagePullPolicy: IfNotPresent
+        name: edgelake
+        ports:
+        - containerPort: 32158
+          hostPort: 32158
+          name: server
+          protocol: TCP
+        - containerPort: 32159
+          hostPort: 32159
+          name: rest
+          protocol: TCP
+        - containerPort: 32160
+          hostPort: 32160
+          name: broker
+          protocol: TCP
+        resources:
+          limits:
+            cpu: '2'
+            memory: 2Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /app/AnyLog-Network/anylog
+          name: anylog
+        - mountPath: /app/AnyLog-Network/blockchain
+          name: blockchain
+        - mountPath: /app/EdgeLake/data
+          name: data
+      dnsPolicy: ClusterFirstWithHostNet
+      hostNetwork: true
+      nodeSelector:
+        kubernetes.io/hostname: rhel-edge-us
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - hostPath:
+          path: /var/lib/edgelake/anylog
+          type: DirectoryOrCreate
+        name: anylog
+      - hostPath:
+          path: /var/lib/edgelake/blockchain
+          type: DirectoryOrCreate
+        name: blockchain
+      - hostPath:
+          path: /var/lib/edgelake/data
+          type: DirectoryOrCreate
+        name: data

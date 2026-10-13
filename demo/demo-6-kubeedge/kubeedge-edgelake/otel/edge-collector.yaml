@@ -1,0 +1,30 @@
+receivers:
+  hostmetrics:
+    collection_interval: 10s
+    scrapers:
+      cpu:
+      memory:
+      disk:
+      filesystem:
+      network:
+      load:
+processors:
+  batch:
+  resource:
+    attributes:
+      - key: edge_node
+        value: rhel-edge-us
+        action: upsert
+exporters:
+  otlp:
+    endpoint: CONTROL_PLANE_IP:30317
+    tls:
+      insecure: true
+  otlphttp/edgelake:
+    endpoint: http://127.0.0.1:4318
+service:
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      processors: [resource, batch]
+      exporters: [otlp, otlphttp/edgelake]

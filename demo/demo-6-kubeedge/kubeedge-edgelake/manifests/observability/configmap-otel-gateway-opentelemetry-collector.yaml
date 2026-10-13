@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-gateway-opentelemetry-collector
+  namespace: observability
+data:
+  relay: "exporters:\n  debug: {}\n  prometheus:\n    endpoint: 0.0.0.0:8889\n   \
+    \ resource_to_telemetry_conversion:\n      enabled: true\n\nextensions:\n  health_check:\n\
+    \    endpoint: ${env:MY_POD_IP}:13133\n\nprocessors:\n  batch: {}\n  memory_limiter:\n\
+    \    check_interval: 5s\n    limit_percentage: 80\n    spike_limit_percentage:\
+    \ 25\n\nreceivers:\n  otlp:\n    protocols:\n      grpc:\n        endpoint: 0.0.0.0:4317\n\
+    \      http:\n        endpoint: 0.0.0.0:4318\n\n  prometheus:\n    config:\n \
+    \     scrape_configs:\n      - job_name: opentelemetry-collector\n        scrape_interval:\
+    \ 10s\n        static_configs:\n        - targets:\n          - ${env:MY_POD_IP}:8888\n\
+    \nservice:\n  extensions:\n  - health_check\n\n  pipelines:\n    metrics:\n  \
+    \    receivers:\n      - otlp\n      processors:\n      - batch\n      exporters:\n\
+    \      - prometheus\n      - debug\n\n    logs:\n      receivers:\n      - otlp\n\
+    \      processors:\n      - batch\n      exporters:\n      - debug\n\n    traces:\n\
+    \      receivers:\n      - otlp\n      processors:\n      - batch\n      exporters:\n\
+    \      - debug\n\n  telemetry:\n    metrics:\n      readers:\n      - pull:\n\
+    \          exporter:\n            prometheus:\n              host: ${env:MY_POD_IP}\n\
+    \              port: 8888\n"
