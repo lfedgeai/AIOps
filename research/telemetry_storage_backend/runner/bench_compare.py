@@ -9,10 +9,13 @@ import argparse
 import json
 import os
 import socket
+import statistics
 import subprocess
 import time
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urlparse
+import pymysql
 import requests
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +29,9 @@ OB_SCHEMA = ROOT / "schemas" / "oceanbase.sql"
 
 DORIS_FE_HTTP = os.getenv("DORIS_FE_HTTP", "http://localhost:8030")
 DORIS_PASS = os.getenv("DORIS_PASS", "")
+DORIS_BE_HTTP = os.getenv("DORIS_BE_HTTP", "http://127.0.0.1:8040")
+DORIS_HOST = os.getenv("DORIS_HOST", "127.0.0.1")
+DORIS_MYSQL_PORT = int(os.getenv("DORIS_MYSQL_PORT", "9030"))
 CH_HTTP = os.getenv("CLICKHOUSE_HTTP", "http://localhost:8123")
 CH_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "")
 DRUID_HTTP = os.getenv("DRUID_HTTP", "http://localhost:8888")
@@ -34,6 +40,55 @@ OB_PORT = int(os.getenv("OCEANBASE_PORT", "2881"))
 OB_CONTAINER = os.getenv("OCEANBASE_CONTAINER", "tsb-oceanbase")
 LOKI_HTTP = os.getenv("LOKI_HTTP", "http://localhost:3100")
 DB = "telemetry"
+ALL_BACKENDS = ("doris", "clickhouse", "druid", "oceanbase", "loki")
+
+# One HTTP session per process so ClickHouse/Druid reuse TCP connections, matching the
+# persistent MySQL-protocol connections used for Doris/OceanBase below.
+HTTP = requests.Session()
+_MYSQL_CONNS: dict[str, pymysql.connections.Connection] = {}
+
+
+def _split_sql(sql: str) -> list[str]:
+    """Split a .sql file into statements, dropping full-line `--` comments."""
+    body = "\n".join(ln for ln in sql.splitlines() if not ln.lstrip().startswith("--"))
+    return [st.strip() for st in body.split(";") if st.strip()]
+
+
+def _mysql_conn(key: str, host: str, port: int, password: str, db: str | None) -> pymysql.connections.Connection:
+    """Persistent MySQL-protocol connection (Doris FE 9030 / OceanBase 2881).
+
+    Previously each query ran `docker run --rm mysql:8 ... mysql -e`, so every Doris/OceanBase
+    latency included ~0.4-0.5s of container start-up. A reused client connection measures the
+    database, not Docker.
+    """
+    conn = _MYSQL_CONNS.get(key)
+    if conn is None or not conn.open:
+        conn = pymysql.connect(host=host, port=port, user="root", password=password, database=db,
+                               autocommit=True, connect_timeout=10, read_timeout=300)
+        _MYSQL_CONNS[key] = conn
+    return conn
+
+
+def _doris_conn(db: str | None = DB) -> pymysql.connections.Connection:
+    return _mysql_conn(f"doris:{db}", DORIS_HOST, DORIS_MYSQL_PORT, DORIS_PASS, db)
+
+
+def _oceanbase_conn(db: str | None = DB) -> pymysql.connections.Connection:
+    return _mysql_conn(f"oceanbase:{db}", OB_HOST, OB_PORT, "", db)
+
+
+def _run_mysql_query(conn: pymysql.connections.Connection, sql: str) -> tuple[dict, list]:
+    """Time the statements of one query file on an open connection (USE is skipped; the
+    connection is already bound to the telemetry database)."""
+    stmts = [st for st in _split_sql(sql) if not st.upper().startswith("USE ")]
+    rows: list = []
+    with conn.cursor() as cur:
+        t0 = time.perf_counter()
+        for st in stmts:
+            cur.execute(st)
+            rows = list(cur.fetchall())
+        dt = time.perf_counter() - t0
+    return {"latency_s": dt, "rows": len(rows)}, rows
 
 def _ch_params(extra: dict | None = None) -> dict:
     params = dict(extra) if extra else {}
@@ -69,14 +124,10 @@ def wait_doris_be_ready(timeout_s: int = 300) -> bool:
         time.sleep(5)
     return False
 
-def _run_doris_sql(sql: str, db: str = "information_schema") -> None:
-    pass_arg = f"-p{DORIS_PASS}" if DORIS_PASS else ""
-    cmd = [
-        "docker", "run", "--rm", "--network", "tsb-net",
-        "mysql:8", "sh", "-lc",
-        f"echo '{sql}' | mysql -h tsb-doris -P 9030 -uroot {pass_arg} -D {db}"
-    ]
-    subprocess.run(cmd, check=True)
+def _run_doris_sql(sql: str, db: str | None = None) -> None:
+    with _doris_conn(db).cursor() as cur:
+        for st in _split_sql(sql):
+            cur.execute(st)
 
 def _run_oceanbase_sql(sql: str, db: str | None = DB) -> None:
     cmd = ["docker", "run", "--rm", "-i", "--network", "tsb-net",
@@ -85,8 +136,14 @@ def _run_oceanbase_sql(sql: str, db: str | None = DB) -> None:
         cmd.extend(["-D", db])
     subprocess.run(cmd, input=sql.encode(), check=True)
 
-def apply_doris_schema() -> None:
+def apply_doris_schema(recreate: bool = False) -> None:
     sql = DORIS_SCHEMA.read_text()
+    if recreate:
+        # CREATE TABLE IF NOT EXISTS would silently keep an older table layout (no partitions /
+        # indexes), so drop the benchmark tables before a full run.
+        _run_doris_sql(f"CREATE DATABASE IF NOT EXISTS {DB}")
+        for t in ("logs", "spans", "metrics"):
+            _run_doris_sql(f"DROP TABLE IF EXISTS {DB}.{t} FORCE")
     _run_doris_sql(sql)
     print("[schema] Doris applied")
 
@@ -94,6 +151,45 @@ def truncate_doris_tables() -> None:
     for t in ("logs", "spans", "metrics"):
         _run_doris_sql(f"TRUNCATE TABLE {DB}.{t};", db=DB)
     print("[truncate] Doris tables cleared")
+
+def compact_doris_tables(timeout_s: int = 600) -> None:
+    """Run a full compaction on every telemetry tablet and wait until each has <= 2 rowsets.
+
+    Each Stream Load batch creates a rowset. With compaction_policy=time_series, Doris waits for
+    size/time thresholds before merging, so right after a bulk load every query has to merge many
+    small rowsets (18 per span tablet in our runs), which added 5-80 ms per query. Queries are
+    measured at merged steady state, the same as optimize_clickhouse_tables() does for ClickHouse.
+    """
+    tablets = []
+    with _doris_conn().cursor() as cur:
+        for t in ("logs", "spans", "metrics"):
+            cur.execute(f"SHOW TABLETS FROM {DB}.{t}")
+            cols = [d[0] for d in cur.description]
+            tablets += [r[cols.index("TabletId")] for r in cur.fetchall()]
+    for tid in tablets:
+        HTTP.post(f"{DORIS_BE_HTTP}/api/compaction/run", params={"tablet_id": tid, "compact_type": "full"},
+                  auth=("root", DORIS_PASS), timeout=30)
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        pending = 0
+        with _doris_conn().cursor() as cur:
+            for t in ("logs", "spans", "metrics"):
+                cur.execute(f"SHOW TABLETS FROM {DB}.{t}")
+                cols = [d[0] for d in cur.description]
+                pending += sum(1 for r in cur.fetchall() if int(r[cols.index("VersionCount")]) > 2)
+        if not pending:
+            print(f"[compact] Doris full compaction done ({len(tablets)} tablets)")
+            return
+        time.sleep(3)
+    print(f"[compact] Doris compaction still pending on {pending} tablets after {timeout_s}s")
+
+def optimize_clickhouse_tables() -> None:
+    """Merge all parts (OPTIMIZE ... FINAL) so ClickHouse is also measured at steady state."""
+    for t in ("logs", "spans", "metrics"):
+        r = HTTP.post(CH_HTTP, params=_ch_params({"query": f"OPTIMIZE TABLE {DB}.{t} FINAL"}), timeout=1800)
+        if r.status_code != 200:
+            print(f"[compact] ClickHouse {t}: {r.text[:200]}")
+    print("[compact] ClickHouse OPTIMIZE FINAL done")
 
 def apply_clickhouse_schema() -> None:
     sql = CH_SCHEMA.read_text()
@@ -171,38 +267,29 @@ def truncate_oceanbase_tables() -> None:
     print("[truncate] OceanBase tables cleared")
 
 def run_doris_query(sql: str) -> dict:
-    pass_arg = f"-p{DORIS_PASS}" if DORIS_PASS else ""
-    sh_script = (
-        "cat > /tmp/bench.sql <<'EOSQL'\n" + sql + "\nEOSQL\n"
-        f"mysql -h tsb-doris -P 9030 -uroot {pass_arg} -D {DB} -N -B < /tmp/bench.sql\n"
-    )
-    cmd = ["docker", "run", "--rm", "--network", "tsb-net", "mysql:8", "sh", "-lc", sh_script]
-    t0 = time.time()
-    out = subprocess.run(cmd, capture_output=True, text=True)
-    dt = time.time() - t0
-    if out.returncode != 0:
-        return {"error": (out.stderr or out.stdout or "").strip()[:500]}
-    rows = [ln for ln in (out.stdout or "").splitlines() if ln.strip()]
-    return {"latency_s": dt, "rows": len(rows)}
+    try:
+        return _run_mysql_query(_doris_conn(), sql)[0]
+    except pymysql.MySQLError as e:
+        return {"error": str(e)[:500]}
 
 def run_clickhouse_query(sql: str) -> dict:
-    t0 = time.time()
-    r = requests.post(CH_HTTP, params=_ch_params({"query": sql}), timeout=120)
-    dt = time.time() - t0
+    t0 = time.perf_counter()
+    r = HTTP.post(CH_HTTP, params=_ch_params({"query": sql}), timeout=120)
+    dt = time.perf_counter() - t0
     if r.status_code != 200:
         return {"error": r.text[:500]}
     rows = [ln for ln in r.text.strip().splitlines() if ln.strip()]
     return {"latency_s": dt, "rows": len(rows)}
 
 def run_druid_query(sql: str) -> dict:
-    t0 = time.time()
-    r = requests.post(
+    t0 = time.perf_counter()
+    r = HTTP.post(
         f"{DRUID_HTTP}/druid/v2/sql",
         json={"query": sql, "resultFormat": "array"},
         headers={"Content-Type": "application/json"},
         timeout=120,
     )
-    dt = time.time() - t0
+    dt = time.perf_counter() - t0
     if r.status_code != 200:
         return {"error": r.text[:500]}
     try:
@@ -213,15 +300,10 @@ def run_druid_query(sql: str) -> dict:
         return {"latency_s": dt, "rows": 0, "error": r.text[:200]}
 
 def run_oceanbase_query(sql: str) -> dict:
-    cmd = ["docker", "run", "--rm", "-i", "--network", "tsb-net",
-           "mysql:8", "mysql", "-h", OB_CONTAINER, "-P", "2881", "-uroot", "-N", "-B", "-D", DB]
-    t0 = time.time()
-    out = subprocess.run(cmd, input=sql, capture_output=True, text=True, timeout=120)
-    dt = time.time() - t0
-    if out.returncode != 0:
-        return {"error": (out.stderr or out.stdout or "").strip()[:500]}
-    rows = [ln for ln in (out.stdout or "").splitlines() if ln.strip()]
-    return {"latency_s": dt, "rows": len(rows)}
+    try:
+        return _run_mysql_query(_oceanbase_conn(), sql)[0]
+    except pymysql.MySQLError as e:
+        return {"error": str(e)[:500]}
 
 
 # Loki LogQL queries (logs only) - filter by run_id for isolation
@@ -279,20 +361,35 @@ def bench_loki_logs(run_id: str) -> dict:
     return res
 
 
-def bench_backend(qdir: Path, run_fn) -> dict:
+def bench_backend(qdir: Path, run_fn, runs: int = 5, warmup: int = 1) -> dict:
+    """Run every query `warmup` times untimed, then `runs` times; report the median latency.
+
+    A single cold run mostly measures plan/metadata caches and connection set-up, which is
+    noise at the benchmark's data sizes.
+    """
     results = {}
     for f in sorted(qdir.glob("*.sql")):
         name = f.stem
         sql = f.read_text()
         try:
-            m = run_fn(sql)
+            for _ in range(warmup):
+                run_fn(sql)
+            samples, m = [], {}
+            for _ in range(max(runs, 1)):
+                m = run_fn(sql)
+                if "error" in m:
+                    break
+                samples.append(m["latency_s"])
+            if samples and "error" not in m:
+                m = {**m, "latency_s": statistics.median(samples), "latency_min_s": min(samples),
+                     "latency_max_s": max(samples), "runs": len(samples)}
         except Exception as e:
             m = {"error": str(e)}
         results[name] = m
     return results
 
 
-def get_data_volume(use_doris: bool, use_oceanbase: bool = True) -> tuple:
+def get_data_volume(use_doris: bool, use_oceanbase: bool = True, use_druid: bool = True) -> tuple:
     """Run full-scan COUNT on each backend; return (doris_vol, ch_vol, druid_vol, ob_vol)."""
     doris_vol = {}
     ch_vol = {}
@@ -315,28 +412,16 @@ def get_data_volume(use_doris: bool, use_oceanbase: bool = True) -> tuple:
 
     if use_doris:
         try:
-            pass_arg = f"-p{DORIS_PASS}" if DORIS_PASS else ""
-            sh_script = (
-                "cat > /tmp/dv.sql <<'EOSQL'\n" + sql_doris + "\nEOSQL\n"
-                f"mysql -h tsb-doris -P 9030 -uroot {pass_arg} -D {DB} -N -B < /tmp/dv.sql\n"
-            )
-            t0 = time.time()
-            out = subprocess.run(
-                ["docker", "run", "--rm", "--network", "tsb-net", "mysql:8", "sh", "-lc", sh_script],
-                capture_output=True, text=True, timeout=120,
-            )
-            dt = time.time() - t0
-            if out.returncode == 0:
-                lines = [ln for ln in (out.stdout or "").splitlines() if ln.strip()]
-                doris_vol = _parse_tsv(lines)
-                doris_vol["latency_s"] = dt
+            m, rows = _run_mysql_query(_doris_conn(), sql_doris)
+            doris_vol = _parse_tsv(["\t".join(str(c) for c in r) for r in rows])
+            doris_vol["latency_s"] = m["latency_s"]
         except Exception as e:
             doris_vol = {"error": str(e)[:200]}
 
     try:
-        t0 = time.time()
-        r = requests.post(CH_HTTP, params=_ch_params({"query": sql_ch}), timeout=120)
-        dt = time.time() - t0
+        t0 = time.perf_counter()
+        r = HTTP.post(CH_HTTP, params=_ch_params({"query": sql_ch}), timeout=120)
+        dt = time.perf_counter() - t0
         if r.status_code == 200:
             lines = [ln for ln in r.text.strip().splitlines() if ln.strip()]
             ch_vol = _parse_tsv(lines)
@@ -346,46 +431,37 @@ def get_data_volume(use_doris: bool, use_oceanbase: bool = True) -> tuple:
     except Exception as e:
         ch_vol = {"error": str(e)[:200]}
 
-    try:
-        t0 = time.time()
-        r = requests.post(
-            f"{DRUID_HTTP}/druid/v2/sql",
-            json={"query": sql_druid, "resultFormat": "array"},
-            headers={"Content-Type": "application/json"},
-            timeout=120,
-        )
-        dt = time.time() - t0
-        if r.status_code == 200:
-            arr = r.json()
-            counts = {}
-            for row in (arr or []):
-                if len(row) >= 2:
-                    tbl = str(row[0]).lower()
-                    cnt = int(row[1]) if isinstance(row[1], (int, float)) else 0
-                    counts[tbl] = cnt
-            counts["total"] = counts.get("logs", 0) + counts.get("spans", 0) + counts.get("metrics", 0)
-            counts["latency_s"] = dt
-            druid_vol = counts
-        else:
-            druid_vol = {"error": r.text[:200]}
-    except Exception as e:
-        druid_vol = {"error": str(e)[:200]}
+    if use_druid:
+        try:
+            t0 = time.time()
+            r = requests.post(
+                f"{DRUID_HTTP}/druid/v2/sql",
+                json={"query": sql_druid, "resultFormat": "array"},
+                headers={"Content-Type": "application/json"},
+                timeout=120,
+            )
+            dt = time.time() - t0
+            if r.status_code == 200:
+                arr = r.json()
+                counts = {}
+                for row in (arr or []):
+                    if len(row) >= 2:
+                        tbl = str(row[0]).lower()
+                        cnt = int(row[1]) if isinstance(row[1], (int, float)) else 0
+                        counts[tbl] = cnt
+                counts["total"] = counts.get("logs", 0) + counts.get("spans", 0) + counts.get("metrics", 0)
+                counts["latency_s"] = dt
+                druid_vol = counts
+            else:
+                druid_vol = {"error": r.text[:200]}
+        except Exception as e:
+            druid_vol = {"error": str(e)[:200]}
 
     if use_oceanbase:
         try:
-            t0 = time.time()
-            out = subprocess.run(
-                ["docker", "run", "--rm", "-i", "--network", "tsb-net",
-                 "mysql:8", "mysql", "-h", OB_CONTAINER, "-P", "2881", "-uroot", "-N", "-B", "-D", DB],
-                input=sql_ob, capture_output=True, text=True, timeout=120,
-            )
-            dt = time.time() - t0
-            if out.returncode == 0:
-                lines = [ln for ln in (out.stdout or "").splitlines() if ln.strip()]
-                ob_vol = _parse_tsv(lines)
-                ob_vol["latency_s"] = dt
-            else:
-                ob_vol = {"error": (out.stderr or out.stdout or "")[:200]}
+            m, rows = _run_mysql_query(_oceanbase_conn(), sql_ob)
+            ob_vol = _parse_tsv(["\t".join(str(c) for c in r) for r in rows])
+            ob_vol["latency_s"] = m["latency_s"]
         except Exception as e:
             ob_vol = {"error": str(e)[:200]}
 
@@ -629,20 +705,37 @@ def main() -> int:
                     help="Smaller batch size to simulate real-time ingestion (e.g. 500 = 100 batches of 500 rows)")
     ap.add_argument("--otlp", action="store_true", help="Also run OTLP ingestion via telemetrygen")
     ap.add_argument("--otlp-count", type=int, default=1000, help="Spans, logs, metrics each for OTLP (default 1000)")
+    ap.add_argument("--backends", type=str, default=",".join(ALL_BACKENDS),
+                    help=f"Comma-separated subset of {','.join(ALL_BACKENDS)} (default: all)")
+    ap.add_argument("--query-runs", type=int, default=5, help="Timed runs per query; median is reported (default 5)")
+    ap.add_argument("--warmup-runs", type=int, default=1, help="Untimed runs per query before timing (default 1)")
+    ap.add_argument("--no-compact", action="store_true",
+                    help="Skip Doris full compaction / ClickHouse OPTIMIZE FINAL before queries")
     args = ap.parse_args()
 
-    use_doris = not args.clickhouse_only
+    backends = {b.strip() for b in args.backends.split(",") if b.strip()}
+    unknown = backends - set(ALL_BACKENDS)
+    assert not unknown, f"Unknown backends: {sorted(unknown)}"
+    if args.clickhouse_only:
+        backends.discard("doris")
+    use_doris = "doris" in backends
+    use_druid = "druid" in backends
+    use_oceanbase = "oceanbase" in backends
     if use_doris:
         assert wait_port("127.0.0.1", 8030, 180), "Doris FE 8030 not ready"
-        assert wait_port("127.0.0.1", 9030, 180), "Doris MySQL 9030 not ready"
+        assert wait_port("127.0.0.1", DORIS_MYSQL_PORT, 180), f"Doris MySQL {DORIS_MYSQL_PORT} not ready"
         assert wait_doris_be_ready(300), "Doris BE not ready (no online backends). Use --clickhouse-only to run without Doris."
-    assert wait_port("127.0.0.1", 8123, 180), "ClickHouse 8123 not ready"
-    assert wait_port("127.0.0.1", 8888, 300), "Druid 8888 not ready"
-    assert wait_druid_ready(300), "Druid not ready"
-    assert wait_port("127.0.0.1", 2881, 360), "OceanBase 2881 not ready (bootstrap ~3-5 min)"
-    loki_available = wait_port("127.0.0.1", 3100, 60)
+    ch_url = urlparse(CH_HTTP)
+    ch_port = ch_url.port or 8123
+    assert wait_port(ch_url.hostname or "127.0.0.1", ch_port, 180), f"ClickHouse {ch_port} not ready"
+    if use_druid:
+        assert wait_port("127.0.0.1", 8888, 300), "Druid 8888 not ready"
+        assert wait_druid_ready(300), "Druid not ready"
+    if use_oceanbase:
+        assert wait_port("127.0.0.1", 2881, 360), "OceanBase 2881 not ready (bootstrap ~3-5 min)"
+    loki_available = "loki" in backends and wait_port("127.0.0.1", 3100, 60)
     if not loki_available:
-        print("[bench] Loki not available (port 3100), skipping logs-only backend")
+        print("[bench] Loki not selected or not available (port 3100), skipping logs-only backend")
 
     tsdir = args.out / f"storage_bench_compare_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_id = tsdir.name
@@ -659,15 +752,17 @@ def main() -> int:
 
     if args.init or args.all:
         if use_doris:
-            apply_doris_schema()
+            apply_doris_schema(recreate=args.all)
         apply_clickhouse_schema()
-        apply_oceanbase_schema()
+        if use_oceanbase:
+            apply_oceanbase_schema()
 
     if args.all:
         if use_doris:
             truncate_doris_tables()
         truncate_clickhouse_tables()
-        truncate_oceanbase_tables()
+        if use_oceanbase:
+            truncate_oceanbase_tables()
         stats_dir = tsdir / "ingest_stats"
         stats_dir.mkdir(parents=True, exist_ok=True)
         batch_arg = args.streaming_batch if getattr(args, "streaming_batch", None) else args.batch
@@ -698,32 +793,34 @@ def main() -> int:
             s = json.loads((stats_dir / "clickhouse.json").read_text())
             ch_ingest["rows"] = s.get("logs", 0) + s.get("spans", 0) + s.get("metrics", 0)
             ch_ingest["rows_per_sec"] = round(ch_ingest["rows"] / ch_ingest["duration_s"], 0) if ch_ingest["duration_s"] > 0 else 0
-        druid_cmd = ["python3", str(ROOT / "loaders" / "replay_druid.py"), "--data-dir", str(args.data_dir), "--batch", str(batch_arg),
-                     "--stats", str(stats_dir / "druid.json")]
-        if getattr(args, "scale_to", None):
-            druid_cmd.extend(["--scale-to", str(args.scale_to)])
-        t0 = time.time()
-        subprocess.run(druid_cmd, check=True, env={**os.environ})
-        druid_ingest["status"] = "ok"
-        druid_ingest["duration_s"] = round(time.time() - t0, 2)
-        druid_ingest["mechanism"] = f"Batch file load ({batch_arg} rows)"
-        if (stats_dir / "druid.json").exists():
-            s = json.loads((stats_dir / "druid.json").read_text())
-            druid_ingest["rows"] = s.get("logs", 0) + s.get("spans", 0) + s.get("metrics", 0)
-            druid_ingest["rows_per_sec"] = round(druid_ingest["rows"] / druid_ingest["duration_s"], 0) if druid_ingest["duration_s"] > 0 else 0
-        ob_cmd = ["python3", str(ROOT / "loaders" / "replay_oceanbase.py"), "--data-dir", str(args.data_dir), "--batch", str(batch_arg),
-                  "--stats", str(stats_dir / "oceanbase.json")]
-        if getattr(args, "scale_to", None):
-            ob_cmd.extend(["--scale-to", str(args.scale_to)])
-        t0 = time.time()
-        subprocess.run(ob_cmd, check=True, env={**os.environ, "OCEANBASE_HOST": "127.0.0.1", "OCEANBASE_PORT": "2881"})
-        ob_ingest["status"] = "ok"
-        ob_ingest["duration_s"] = round(time.time() - t0, 2)
-        ob_ingest["mechanism"] = f"Batch file load ({batch_arg} rows)"
-        if (stats_dir / "oceanbase.json").exists():
-            s = json.loads((stats_dir / "oceanbase.json").read_text())
-            ob_ingest["rows"] = s.get("logs", 0) + s.get("spans", 0) + s.get("metrics", 0)
-            ob_ingest["rows_per_sec"] = round(ob_ingest["rows"] / ob_ingest["duration_s"], 0) if ob_ingest["duration_s"] > 0 else 0
+        if use_druid:
+            druid_cmd = ["python3", str(ROOT / "loaders" / "replay_druid.py"), "--data-dir", str(args.data_dir), "--batch", str(batch_arg),
+                         "--stats", str(stats_dir / "druid.json")]
+            if getattr(args, "scale_to", None):
+                druid_cmd.extend(["--scale-to", str(args.scale_to)])
+            t0 = time.time()
+            subprocess.run(druid_cmd, check=True, env={**os.environ})
+            druid_ingest["status"] = "ok"
+            druid_ingest["duration_s"] = round(time.time() - t0, 2)
+            druid_ingest["mechanism"] = f"Batch file load ({batch_arg} rows)"
+            if (stats_dir / "druid.json").exists():
+                s = json.loads((stats_dir / "druid.json").read_text())
+                druid_ingest["rows"] = s.get("logs", 0) + s.get("spans", 0) + s.get("metrics", 0)
+                druid_ingest["rows_per_sec"] = round(druid_ingest["rows"] / druid_ingest["duration_s"], 0) if druid_ingest["duration_s"] > 0 else 0
+        if use_oceanbase:
+            ob_cmd = ["python3", str(ROOT / "loaders" / "replay_oceanbase.py"), "--data-dir", str(args.data_dir), "--batch", str(batch_arg),
+                      "--stats", str(stats_dir / "oceanbase.json")]
+            if getattr(args, "scale_to", None):
+                ob_cmd.extend(["--scale-to", str(args.scale_to)])
+            t0 = time.time()
+            subprocess.run(ob_cmd, check=True, env={**os.environ, "OCEANBASE_HOST": "127.0.0.1", "OCEANBASE_PORT": "2881"})
+            ob_ingest["status"] = "ok"
+            ob_ingest["duration_s"] = round(time.time() - t0, 2)
+            ob_ingest["mechanism"] = f"Batch file load ({batch_arg} rows)"
+            if (stats_dir / "oceanbase.json").exists():
+                s = json.loads((stats_dir / "oceanbase.json").read_text())
+                ob_ingest["rows"] = s.get("logs", 0) + s.get("spans", 0) + s.get("metrics", 0)
+                ob_ingest["rows_per_sec"] = round(ob_ingest["rows"] / ob_ingest["duration_s"], 0) if ob_ingest["duration_s"] > 0 else 0
         if loki_available:
             # Use smaller batch for Loki to avoid ingestion rate limit (default 4MB/s)
             loki_batch = min(25, batch_arg)  # Keep small to avoid Loki 4MB/s rate limit with large log lines
@@ -744,20 +841,21 @@ def main() -> int:
             except Exception as e:
                 loki_ingest["status"] = "error"
                 loki_ingest["error"] = str(e)[:200]
-        # Wait for Druid segments to be available for querying
-        print("[wait] Druid segments loading...")
-        for _ in range(24):
-            try:
-                r = requests.get(f"{DRUID_HTTP}/proxy/coordinator/druid/coordinator/v1/metadata/datasources", timeout=5)
-                if r.status_code == 200:
-                    ds = r.json()
-                    if "telemetry_logs" in ds and "telemetry_spans" in ds and "telemetry_metrics" in ds:
-                        print("[wait] Druid datasources ready")
-                        break
-            except Exception:
-                pass
-            time.sleep(5)
-        time.sleep(15)
+        if use_druid:
+            # Wait for Druid segments to be available for querying
+            print("[wait] Druid segments loading...")
+            for _ in range(24):
+                try:
+                    r = requests.get(f"{DRUID_HTTP}/proxy/coordinator/druid/coordinator/v1/metadata/datasources", timeout=5)
+                    if r.status_code == 200:
+                        ds = r.json()
+                        if "telemetry_logs" in ds and "telemetry_spans" in ds and "telemetry_metrics" in ds:
+                            print("[wait] Druid datasources ready")
+                            break
+                except Exception:
+                    pass
+                time.sleep(5)
+            time.sleep(15)
 
     otlp_ingest = None
     if getattr(args, "otlp", False):
@@ -776,14 +874,22 @@ def main() -> int:
         if stats_path.exists():
             otlp_ingest = json.loads(stats_path.read_text())
 
+    if not args.no_compact:
+        if use_doris:
+            compact_doris_tables()
+        optimize_clickhouse_tables()
+
+    runs = {"runs": args.query_runs, "warmup": args.warmup_runs}
     if use_doris:
-        doris_qres = bench_backend(DORIS_QDIR, run_doris_query)
-    ch_qres = bench_backend(CH_QDIR, run_clickhouse_query)
-    druid_qres = bench_backend(DRUID_QDIR, run_druid_query)
-    ob_qres = bench_backend(OB_QDIR, run_oceanbase_query)
+        doris_qres = bench_backend(DORIS_QDIR, run_doris_query, **runs)
+    ch_qres = bench_backend(CH_QDIR, run_clickhouse_query, **runs)
+    if use_druid:
+        druid_qres = bench_backend(DRUID_QDIR, run_druid_query, **runs)
+    if use_oceanbase:
+        ob_qres = bench_backend(OB_QDIR, run_oceanbase_query, **runs)
     loki_qres = bench_loki_logs(run_id) if loki_ingest.get("status") == "ok" else {}
 
-    data_vol = get_data_volume(use_doris, use_oceanbase=True)
+    data_vol = get_data_volume(use_doris, use_oceanbase=use_oceanbase, use_druid=use_druid)
 
     write_combined_report(tsdir, doris_ingest, ch_ingest, druid_ingest, doris_qres, ch_qres, druid_qres,
                           ob_ingest=ob_ingest, ob_qres=ob_qres, loki_ingest=loki_ingest, loki_qres=loki_qres,
