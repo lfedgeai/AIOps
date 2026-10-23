@@ -143,18 +143,18 @@ Harness design and resume model: [HARNESS_DESIGN.md](HARNESS_DESIGN.md). Full re
 
 ### Model identity — what each agent label actually serves
 
-Verified against the serving endpoints (`/v1/models`) and API preflight — labels do not always match the model:
+Verified against the serving endpoints (`/v1/models`) and API preflight. **Labels were renamed on 23 Oct 26** to `{serving-infra}_{exact-model}` so they always state what they serve; all data produced before that date (run JSONs, MLflow, earlier report tables) carries the old labels — the analyzer maps old→new automatically (`APPROACH_ALIASES`), and this table is the bridge for human readers:
 
-| Agent label | Model actually served | Platform |
-|---|---|---|
-| `maas_deepseek` | `deepseek-r1-distill-qwen-14b` | RHDP MaaS (shared, 8 models) |
-| `maas_qwen3` | **`qwen3-14b`** | RHDP MaaS (shared) |
-| `maas_qwen36-27b` | `Qwen3.8-27B` | LiteMaaS (dedicated, single model) |
-| `maas_qwen38-27b` | `qwen38-27b` | RHDP MaaS (shared) |
-| `maas_granite` | `granite-3-2-8b-instruct` | RHDP MaaS (shared) |
-| `maas_glm-53-flash` | `glm-53-flash` | prelude-MaaS (dedicated) |
+| Label through 22 Oct 26 (in all run data) | Model actually served | Platform | **Label from 23 Oct 26** |
+|---|---|---|---|
+| `maas_deepseek` | `deepseek-r1-distill-qwen-14b` | RHDP MaaS (shared, 8 models) | `rhdp_deepseek-r1-distill-qwen-14b` |
+| `maas_qwen3` | **`qwen3-14b`** | RHDP MaaS (shared) | `rhdp_qwen3-14b` |
+| `maas_qwen36-27b` | `Qwen3.8-27B` | LiteMaaS (dedicated, single model) | `litemaas_qwen3.8-27b` |
+| `maas_qwen38-27b` | `qwen38-27b` | RHDP MaaS (shared) | `rhdp_qwen38-27b` |
+| `maas_granite` | `granite-3-2-8b-instruct` | RHDP MaaS (shared) | `rhdp_granite-3-2-8b-instruct` |
+| `maas_glm-53-flash` | `glm-53-flash` | prelude-MaaS (dedicated) | `prelude_glm-53-flash` |
 
-So `maas_qwen3` is the dense **Qwen3 14B** instruct model — the only agent whose label matches what it serves. `maas_qwen36-27b` is *not* an older Qwen 3.6: it serves the newer **Qwen3.8-27B** (the env-var name is historical), while `maas_qwen38-27b` serves `qwen38-27b` — the same model generation on the shared RHDP platform at ~2–3× lower token throughput. The apparent "newer model performs worse" is primarily a serving-infrastructure gap, not a model-capability gap (§6.2).
+So `maas_qwen3` (now `rhdp_qwen3-14b`) is the dense **Qwen3 14B** instruct model — the only agent whose old label matched what it serves. `maas_qwen36-27b` was never an older Qwen 3.6: it serves the newer **Qwen3.8-27B** on a dedicated endpoint (the env-var name is historical), while `maas_qwen38-27b` serves `qwen38-27b` — the same model generation on the shared RHDP platform at ~2–3× lower token throughput. The apparent "newer model performs worse" is primarily a serving-infrastructure gap, not a model-capability gap (§6.2). Agent directories and env-var names are unchanged by the rename (labels only — registry, matrix/analysis scripts, and reports).
 
 **Judge:** the oracle-judge pool is `{deepseek-r1-distill-qwen-14b, qwen3-14b}`, **cross-paired** so no agent is judged by its own model (deepseek's runs are judged by qwen3-14b and vice versa; verified in the run records). Both judge models sit on the shared RHDP platform alongside three matrix agents — a resource-contention caveat, not a bias one.
 
@@ -168,7 +168,7 @@ So `maas_qwen3` is the dense **Qwen3 14B** instruct model — the only agent who
 6. **Latency trend hygiene:** re-derive Sep 25–27 MTTD/MTTR with the fixed pipeline before drawing cross-month trends.
 7. **`kill_pod` scoring:** separate self-healing from agent-attributable recovery, or score against a criterion the agent controls.
 8. **Supervision:** run all future matrices under systemd user units (dependency-ordered, kubeconfig-isolated), not session-attached shells.
-9. **Relabel `maas_qwen36-27b`** (e.g. `maas_qwen38-27b-litemaas`) to stop the model-identity confusion in future reports.
+9. **Relabel agents to `{infra}_{exact-model}`** — ✅ done 23 Oct 26: `maas_qwen36-27b` → `litemaas_qwen3.8-27b`, `maas_qwen38-27b` → `rhdp_qwen38-27b`, `maas_qwen3` → `rhdp_qwen3-14b`, `maas_deepseek` → `rhdp_deepseek-r1-distill-qwen-14b`, `maas_granite` → `rhdp_granite-3-2-8b-instruct`, `maas_glm-53-flash` → `prelude_glm-53-flash`, `nemotron-cascade-2` → `prelude_nemotron-cascade-2-30b`. Registry, matrix/analysis scripts updated; historical data keeps old labels, mapped by the analyzer (§6 identity table).
 
 ## 8. Validation and audit trail
 
