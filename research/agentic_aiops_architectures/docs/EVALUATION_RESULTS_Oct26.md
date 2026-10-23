@@ -85,16 +85,18 @@ Run B was killed mid-cell on its first launch: a batch started as a session back
 
 First full matrix on the fixed metric pipeline. Full tables: [EVALUATION_RESULTS_22oct26.md](EVALUATION_RESULTS_22oct26.md).
 
+> **Label note:** result tables in this consolidated report use the canonical `{infra}_{model}` labels (renamed 23 Oct 26). The underlying run data through 22 Oct — JSONs, MLflow run names, output filenames — carries the pre-rename labels; the identity table in §6 maps old → new. The detailed per-batch reports (linked throughout) keep the run-time labels to stay faithful to the data they cite.
+
 ### 4.1 By agent (48 cells each)
 
 | Agent | Detect | RCA | Exec | Recovery | MTTD med | Clean-run detect* |
 |---|---|---|---|---|---|---|
-| `maas_deepseek` | 48/48 | 43/48 (90%) | 0 | 0 | 64 s | 100% |
-| `maas_glm-53-flash` | 47/48 (98%) | 47/48 (98%) | 44/48 (92%) | 31/44 | 118 s | 100% |
-| `maas_granite` | 46/48 (96%) | 41/48 (85%) | 0 | 0 | 36 s | 96% |
-| `maas_qwen3` | 45/48 (94%) | 34/48 (71%) | 0 | 0 | 92 s | 100% |
-| `maas_qwen36-27b` | 28/48 (58%) | 27/48 (56%) | 27/48 (56%) | 23/27 | 81 s | **82%** |
-| `maas_qwen38-27b` | 17/48 (35%) | 17/48 (35%) | 16/48 (33%) | 16/16 | 93 s | **63%** |
+| `rhdp_deepseek-r1-distill-qwen-14b` | 48/48 | 43/48 (90%) | 0 | 0 | 64 s | 100% |
+| `prelude_glm-53-flash` | 47/48 (98%) | 47/48 (98%) | 44/48 (92%) | 31/44 | 118 s | 100% |
+| `rhdp_granite-3-2-8b-instruct` | 46/48 (96%) | 41/48 (85%) | 0 | 0 | 36 s | 96% |
+| `rhdp_qwen3-14b` | 45/48 (94%) | 34/48 (71%) | 0 | 0 | 92 s | 100% |
+| `litemaas_qwen3.8-27b` | 28/48 (58%) | 27/48 (56%) | 27/48 (56%) | 23/27 | 81 s | **82%** |
+| `rhdp_qwen38-27b` | 17/48 (35%) | 17/48 (35%) | 16/48 (33%) | 16/16 | 93 s | **63%** |
 
 \* rates over runs with no `agent_error`. qwen36/qwen38 carried 14/48 and 21/48 timeouts respectively (all on the two slow faults); their headline rates conflate endpoint reliability with capability — the clean-run column is the capability signal.
 
@@ -120,11 +122,11 @@ Harness design and resume model: [HARNESS_DESIGN.md](HARNESS_DESIGN.md). Full re
 
 | Agent | Detect | RCA | Exec | Recovery | MTTD med | MTTR med | Recovered med |
 |---|---|---|---|---|---|---|---|
-| `maas_deepseek` | 8/8 | 7/8 | 0/8 | 0/8 | 89 s | — | — |
-| `maas_qwen3` | 8/8 | 6/8 | 0/8 | 0/8 | 89 s | — | — |
-| `maas_qwen36-27b` | **8/8** | **8/8** | **8/8** | **8/8** | 58 s | 58 s | 84 s |
-| `maas_granite` | 8/8 | 4/8 | 0/8 | 0/8 | 46 s | — | — |
-| `maas_glm-53-flash` | **8/8** | **8/8** | **8/8** | **8/8** | 41 s | 41 s | 58 s |
+| `rhdp_deepseek-r1-distill-qwen-14b` | 8/8 | 7/8 | 0/8 | 0/8 | 89 s | — | — |
+| `rhdp_qwen3-14b` | 8/8 | 6/8 | 0/8 | 0/8 | 89 s | — | — |
+| `litemaas_qwen3.8-27b` | **8/8** | **8/8** | **8/8** | **8/8** | 58 s | 58 s | 84 s |
+| `rhdp_granite-3-2-8b-instruct` | 8/8 | 4/8 | 0/8 | 0/8 | 46 s | — | — |
+| `prelude_glm-53-flash` | **8/8** | **8/8** | **8/8** | **8/8** | 41 s | 41 s | 58 s |
 
 - **16/40 full wins, all by the two executors, at every context including C0** — context neither helps nor hinders the winnable path.
 - Diagnosis is faster via config inspection: glm's config-fault MTTD **154 s → 41 s** vs Run A.
@@ -135,8 +137,8 @@ Harness design and resume model: [HARNESS_DESIGN.md](HARNESS_DESIGN.md). Full re
 
 ## 6. Combined October picture
 
-1. **Executor pair:** `maas_glm-53-flash` (fastest, most complete) + `maas_qwen36-27b`. **Diagnoser pair:** `maas_deepseek` + `maas_qwen3`/`maas_granite`. Pairing recommendation unchanged from the Sep/Oct reports, now with config-fix capability proven.
-2. **"qwen36 vs qwen38" is a serving-infrastructure story, not a model story:** the `maas_qwen36-27b` agent actually serves **Qwen3.8-27B** on a single-model LiteMaaS endpoint (env var name is historical); `maas_qwen38-27b` serves `qwen38-27b` on the shared RHDP platform (also hosting the judge + two other matrix agents) at ~2–3× lower token throughput → 44% timeouts vs 29% → depressed headline rates. On clean runs the gap narrows (63% vs 82% detect).
+1. **Executor pair:** `prelude_glm-53-flash` (fastest, most complete) + `litemaas_qwen3.8-27b`. **Diagnoser pair:** `rhdp_deepseek-r1-distill-qwen-14b` + `rhdp_qwen3-14b`/`rhdp_granite-3-2-8b-instruct`. Pairing recommendation unchanged from the Sep/Oct reports, now with config-fix capability proven.
+2. **"qwen36 vs qwen38" is a serving-infrastructure story, not a model story:** the `litemaas_qwen3.8-27b` agent actually serves **Qwen3.8-27B** on a single-model LiteMaaS endpoint (env var name is historical); `rhdp_qwen38-27b` serves `qwen38-27b` on the shared RHDP platform (also hosting the judge + two other matrix agents) at ~2–3× lower token throughput → 44% timeouts vs 29% → depressed headline rates. On clean runs the gap narrows (63% vs 82% detect).
 3. **Environment sensitivity is the biggest confound in the series:** act-first agents swing tens of points with cluster health (§4.3). Cross-batch deltas must be read with the environment table, not as capability trends.
 4. **The C0 context cliff persists for diagnosers** (RCA ~33% at C0 vs 61–83% with corpora in Run A; 2/5 vs 4–5/5 in Run B) — but the executors win at C0 regardless.
 5. **Latency columns are trustworthy from 22 Oct onward only** (§3.1); Sep/Oct-early MTTD/MTTR need re-derivation before any trend claim.
