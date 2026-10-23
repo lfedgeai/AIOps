@@ -253,6 +253,28 @@ diagnosis-and-write completes — 0/32 exec on the hard faults vs 11/32 for lite
    `_maas-*` suffix labeling used here makes that explicit), and verify slot → model identity
    at preflight (this went unnoticed for three batches).
 
+### Endpoint characterization (probed 23 Oct 26, temp 0)
+
+Direct probes against both gateways to separate *model* differences from *serving* differences:
+
+| Probe | maas-litemaas | maas-rhdp | Verdict |
+|---|---|---|---|
+| Identical prompt, temp 0: reasoning trace | first **270 chars byte-identical**, then diverges | same | **Same weights** (a different checkpoint/finetune would diverge immediately; divergence-after-identical-prefix is the signature of numerical nondeterminism — or possibly different quantization, for which there is no positive evidence) |
+| Both are thinking models? | yes — `reasoning_content` + reasoning tokens, content only after thinking | yes, identically | same model behavior |
+| Context window | accepted **157k** prompt tokens, marker recalled | **rejected 157k** (`ContextWindowExceededError`), accepted 85k | different limits (litemaas ≥157k, rhdp in between) — but **irrelevant to this matrix**: harness peak requests were ≈37k (litemaas slot) / ≈25k (rhdp slot) tokens |
+| Throughput, identical 1200-reasoning-token task | 17.5s (**~69 tok/s**) | 69.0s (**~17 tok/s**) | **~4× serving throughput gap** (batch ai_metrics: 18 vs 6 effective tok/s) |
+| Gateway software | LiteLLM front-end ("litemaas") | **also LiteLLM** (revealed by its error message) | both proxy to different backends |
+
+**Bottom line:** the matrix deltas are **serving-stack throughput, not model identity,
+quantization (no evidence), or context size (never approached)**. The mechanism is
+compounding: Qwen3.8-27B is a thinking model that emits 1000+ reasoning tokens before any
+content, so each tool-loop round costs minutes at maas-rhdp's ~17 tok/s — and the
+round-hungry faults (config_corruption, kill_pod) exhaust the detection window. On
+scale_zero, where few rounds are needed, the two gateways are identical (16/16 exec both).
+One operational note from the probes: at small `max_tokens` values the entire budget is
+consumed by reasoning (`content: null`) — server-side output limits for thinking models
+should be verified when onboarding a gateway.
+
 ## Top performing combinations
 
 ### This run — best cells (detect ∧ RCA ∧ exec)
