@@ -295,6 +295,99 @@ def delete_pod(pod_name: str, namespace: str | None = None) -> str:
         return f"Error deleting {pod_name}: {e}"
 
 
+def get_deployment_config(deployment_name: str, namespace: str | None = None) -> str:
+    """Read a deployment's container configuration (image, replicas, env vars)."""
+    ns = namespace or K8S_NAMESPACE
+    try:
+        k = _get_k8s_client()
+        apps = k.AppsV1Api()
+        dep = apps.read_namespaced_deployment(deployment_name, ns, _request_timeout=15)
+        rows = [f"deployment={deployment_name} namespace={ns} replicas={dep.spec.replicas}"]
+        for c in dep.spec.template.spec.containers or []:
+            rows.append(f"container={c.name} image={c.image}")
+            for e in c.env or []:
+                if e.value is not None:
+                    rows.append(f"  env {e.name}={e.value}")
+                elif e.value_from is not None:
+                    src = getattr(e.value_from, "secret_key_ref", None) or getattr(
+                        e.value_from, "config_map_key_ref", None
+                    )
+                    rows.append(f"  env {e.name}=(from {getattr(src, 'name', '?')})")
+                else:
+                    rows.append(f"  env {e.name}=")
+        return "\n".join(rows) if len(rows) > 1 else f"No containers found for {deployment_name}."
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def patch_deployment(
+    deployment_name: str,
+    remove_env: list[str] | None = None,
+    set_env: dict[str, str] | None = None,
+    namespace: str | None = None,
+) -> str:
+    """Patch a deployment's env config: remove named env vars and/or set/override values.
+
+    Edits the deployment spec (read-modify-write, same mechanism the harness uses to
+    inject/recover config faults), which triggers a rolling update. Restarts and scaling
+    cannot fix a corrupted env var — this is the config-editing write path.
+    """
+    ns = namespace or K8S_NAMESPACE
+    remove = [str(x).strip() for x in (remove_env or []) if str(x).strip()]
+    sets: dict[str, str] = {str(kk): str(vv) for kk, vv in (set_env or {}).items()}
+    if not remove and not sets:
+        return "Error: patch_deployment requires remove_env and/or set_env."
+    import time as _time
+
+    last_err: Exception | None = None
+    for attempt in range(4):
+        try:
+            k = _get_k8s_client()
+            apps = k.AppsV1Api()
+            dep = apps.read_namespaced_deployment(deployment_name, ns, _request_timeout=15)
+            # set_env may only CORRECT existing vars — refuse to add brand-new env vars
+            # (hallucinated names must not mutate the deployment or score as writes).
+            existing = {e.name for c in dep.spec.template.spec.containers or [] for e in c.env or []}
+            new_names = sorted(set(sets) - existing)
+            if new_names:
+                return (
+                    f"Error: set_env may only override env vars that already exist on "
+                    f"{deployment_name}; refusing to add new var(s) {new_names}. "
+                    f"Existing vars: {sorted(existing)}. Use remove_env to drop a var."
+                )
+            changed: list[str] = []
+            for c in dep.spec.template.spec.containers or []:
+                kept = []
+                for e in list(c.env or []):
+                    if e.name in remove:
+                        changed.append(f"{c.name}: removed {e.name}")
+                        continue
+                    if e.name in sets:
+                        e.value = sets[e.name]
+                        changed.append(f"{c.name}: set {e.name}={sets[e.name]}")
+                    kept.append(e)
+                c.env = kept
+            if not changed:
+                return (
+                    f"Error: patch_deployment made no changes on {deployment_name} "
+                    f"(no env var matched remove_env={remove} or set_env={sorted(sets)})."
+                )
+            apps.replace_namespaced_deployment(deployment_name, ns, dep, _request_timeout=15)
+            return (
+                f"Deployment {deployment_name} patched in {ns}: "
+                + "; ".join(changed)
+                + ". Rolling update started."
+            )
+        except Exception as e:
+            last_err = e
+            # 409 Conflict: a rollout from a previous write bumped resourceVersion — retry
+            if "409" in str(e) or "Conflict" in str(e) or "has been modified" in str(e):
+                _time.sleep(2 + 2 * attempt)
+                continue
+            return f"Error patching {deployment_name}: {e}"
+    return f"Error patching {deployment_name} (conflict after retries): {last_err}"
+
+
 # OpenAI-style tool definitions for the LLM
 TOOL_DEFINITIONS = [
     {
@@ -421,6 +514,21 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "get_deployment_config",
+            "description": "Get a Kubernetes deployment's container configuration: image, replicas, and environment variables. Use to inspect a workload's config when you suspect corrupted or injected env settings — a rollout restart alone will not fix a bad env var.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "deployment_name": {"type": "string", "description": "Deployment name (as shown by cluster tools)."},
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default from harness env)."},
+                },
+                "required": ["deployment_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "restart_deployment",
             "description": "Restart a Kubernetes deployment (rolling restart). Use to remediate a failing service.",
             "parameters": {
@@ -464,6 +572,31 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "patch_deployment",
+            "description": "Patch a Kubernetes deployment's environment-variable configuration: remove corrupted/injected env vars and/or correct existing ones. This edits the deployment spec (triggering a rolling update). Use it when the workload's config itself is wrong — restarting or scaling keeps a bad env var. Only the named env vars change; set_env may only override vars that already exist (found via get_deployment_config); everything else is preserved.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "deployment_name": {"type": "string", "description": "Deployment name (as shown by cluster tools)."},
+                    "remove_env": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Env var names to remove from the deployment's containers (e.g. corrupted or injected values found via get_deployment_config).",
+                    },
+                    "set_env": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": "Existing env vars to correct, e.g. {\"VAR\": \"correct-value\"}. New vars cannot be added.",
+                    },
+                    "namespace": {"type": "string", "description": "Kubernetes namespace (default from harness env)."},
+                },
+                "required": ["deployment_name"],
+            },
+        },
+    },
 ]
 
 from code.tools.context_engineering import (  # noqa: E402
@@ -475,7 +608,7 @@ TOOL_DEFINITIONS.append(COMPARE_TELEMETRY_TOOL_DEFINITION)
 TOOL_DEFINITIONS.extend(CONTEXT_TOOL_DEFINITIONS)
 
 
-WRITE_TOOLS = {"restart_deployment", "scale_deployment", "delete_pod"}
+WRITE_TOOLS = {"restart_deployment", "scale_deployment", "delete_pod", "patch_deployment"}
 
 
 def _utc_now_z() -> str:
@@ -598,6 +731,22 @@ def execute_tool(name: str, arguments: dict[str, Any], ctx: dict[str, Any]) -> s
             name,
             arguments,
             lambda: delete_pod(arguments.get("pod_name", ""), arguments.get("namespace")),
+        )
+    if name == "get_deployment_config":
+        return get_deployment_config(
+            arguments.get("deployment_name", ""), arguments.get("namespace")
+        )
+    if name == "patch_deployment":
+        return _run_write_tool(
+            ctx,
+            name,
+            arguments,
+            lambda: patch_deployment(
+                arguments.get("deployment_name", ""),
+                arguments.get("remove_env") or [],
+                arguments.get("set_env") or {},
+                arguments.get("namespace"),
+            ),
         )
     # Context corpus tools (CONTEXT_C) and compare_telemetry
     from code.tools import context_engineering as _ctx

@@ -27,7 +27,19 @@ DETECTION_TIMEOUT="${DETECTION_TIMEOUT:-1200}"
 LOG="$ROOT/out/c_matrix_scenario_a_c_permutations_run.log"
 KICKOFF_FILE="$ROOT/out/.matrix_kickoff_aest"
 mkdir -p "$ROOT/out"
-date '+%Y-%m-%d %H:%M:%S' >"$KICKOFF_FILE"
+# MATRIX_RESUME=1 keeps the original kickoff timestamp and skips cells already
+# written for that kickoff (mtime >= kickoff). Used after infra aborts mid-matrix.
+if [[ "${MATRIX_RESUME:-0}" =~ ^(1|true|yes)$ ]] && [[ -f "$KICKOFF_FILE" ]]; then
+  echo "[c-matrix-sa-perm] RESUME kickoff=$(cat "$KICKOFF_FILE") (SKIP_EXISTING=1)" | tee -a "$LOG"
+  export SKIP_EXISTING=1
+else
+  date '+%Y-%m-%d %H:%M:%S' >"$KICKOFF_FILE"
+fi
+KICKOFF_EPOCH="$(date -d "$(cat "$KICKOFF_FILE")" +%s 2>/dev/null || true)"
+if [[ -z "${KICKOFF_EPOCH:-}" ]]; then
+  # macOS/busybox fallback unused on this host; keep portable-ish
+  KICKOFF_EPOCH="$(python3 -c "from datetime import datetime; print(int(datetime.strptime(open('$KICKOFF_FILE').read().strip(), '%Y-%m-%d %H:%M:%S').timestamp()))")"
+fi
 
 FAULTS="${FAULTS:-scale_zero config_corruption kill_pod}"
 
@@ -95,10 +107,15 @@ start_mlflow() {
 }
 
 refresh_infra() {
-  if [[ -n "${OCP_API_URL:-}" && -n "${KUBEADMIN_PASSWORD:-}" ]]; then
-    oc login "$OCP_API_URL" \
-      --username=kubeadmin --password="$KUBEADMIN_PASSWORD" \
-      --insecure-skip-tls-verify >/dev/null 2>&1 || true
+  # Login only when the current KUBECONFIG does not work (out/.matrix_kubeconfig may hold a
+  # long-lived SA token; unconditional login would overwrite it and expose the run to OAuth
+  # token eviction -> mid-cell 401s that abort the matrix).
+  if ! oc whoami >/dev/null 2>&1; then
+    if [[ -n "${OCP_API_URL:-}" && -n "${KUBEADMIN_PASSWORD:-}" ]]; then
+      oc login "$OCP_API_URL" \
+        --username=kubeadmin --password="$KUBEADMIN_PASSWORD" \
+        --insecure-skip-tls-verify >/dev/null 2>&1 || true
+    fi
   fi
   if ! curl -sf "$CLICKHOUSE_HTTP/" --data "SELECT 1" >/dev/null 2>&1; then
     pkill -f "port-forward.*38123" 2>/dev/null || true
@@ -108,7 +125,20 @@ refresh_infra() {
   fi
   # Keep cart writable across long matrix (valkey MISCONF)
   oc exec -n otel-demo deploy/valkey-cart -- redis-cli CONFIG SET stop-writes-on-bgsave-error no >/dev/null 2>&1 || true
-  "$HARNESS_PYTHON" "$ROOT/scripts/pre_run_health_gate.py" || exit 1
+  # Retry the health gate: a transient pod-scheduling race (node at pod capacity) must not
+  # abort a multi-day matrix. 3 attempts x (gate's own 120s wait + 60s backoff).
+  local gate_attempt
+  for gate_attempt in 1 2 3; do
+    if "$HARNESS_PYTHON" "$ROOT/scripts/pre_run_health_gate.py"; then
+      break
+    fi
+    if [[ "$gate_attempt" == "3" ]]; then
+      echo "[c-matrix-sa-perm] health gate failed 3x — aborting" | tee -a "$LOG"
+      exit 1
+    fi
+    echo "[c-matrix-sa-perm] health gate attempt $gate_attempt failed; retrying in 60s" | tee -a "$LOG"
+    sleep 60
+  done
 }
 
 # Preflight corpora (abort matrix early if empty)
@@ -122,6 +152,7 @@ PY
 start_mlflow
 count=0
 failures=0
+skipped=0
 
 for agent_entry in "${AGENTS[@]}"; do
   agent_name="${agent_entry%%:*}"
@@ -131,6 +162,14 @@ for agent_entry in "${AGENTS[@]}"; do
       count=$((count + 1))
       safe="$(safe_ctx "$level")"
       out="out/context_C${safe}_s${SCENARIO}_${fault}_${agent_name}.json"
+      if [[ "${SKIP_EXISTING:-0}" =~ ^(1|true|yes)$ ]] && [[ -f "$out" ]]; then
+        out_mtime="$(stat -c %Y "$out" 2>/dev/null || echo 0)"
+        if [[ "$out_mtime" -ge "$KICKOFF_EPOCH" ]]; then
+          skipped=$((skipped + 1))
+          echo "[c-matrix-sa-perm] SKIP $count/$total (exists this kickoff) C{$level} agent=$agent_name fault=$fault -> $out" | tee -a "$LOG"
+          continue
+        fi
+      fi
       echo "" | tee -a "$LOG"
       echo "========================================" | tee -a "$LOG"
       echo "[c-matrix-sa-perm] Run $count/$total C{$level} agent=$agent_name fault=$fault scenario=$SCENARIO" | tee -a "$LOG"
@@ -157,7 +196,7 @@ for agent_entry in "${AGENTS[@]}"; do
 done
 
 echo "" | tee -a "$LOG"
-echo "[c-matrix-sa-perm] COMPLETE: $(date) failures=$failures/$total" | tee -a "$LOG"
+echo "[c-matrix-sa-perm] COMPLETE: $(date) failures=$failures/$total skipped=$skipped" | tee -a "$LOG"
 
 REPORT_DATE="$(date '+%d%b%y' | tr '[:upper:]' '[:lower:]')"
 REPORT="docs/EVALUATION_RESULTS_${REPORT_DATE}.md"

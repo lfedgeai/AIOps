@@ -22,6 +22,20 @@ def finalize_remediation_timings(tool_ctx: dict[str, Any], result: dict[str, Any
             result[key] = tool_ctx[key]
 
 
+def stamp_detection_claim(parsed: dict[str, Any], tool_ctx: dict[str, Any]) -> None:
+    """Stamp detection_timestamp at the first mid-loop ``detected=true`` claim.
+
+    Without this, a declare-then-act agent's detection moment was recorded at
+    its first successful write (or at end of run), conflating detection with
+    remediation and inflating MTTD whenever the execute gate forced extra
+    rounds between the claim and the write.
+    """
+    if parsed.get("detected") and "detection_timestamp" not in tool_ctx:
+        tool_ctx["detection_timestamp"] = datetime.now(timezone.utc).isoformat().replace(
+            "+00:00", "Z"
+        )
+
+
 def remediation_into_signals(llm_result: dict[str, Any], signals: dict[str, Any]) -> None:
     """Merge remediation timing from LLM loop result into DetectionResult.signals."""
     for key in (

@@ -136,6 +136,38 @@ def _write_matches_fault_action(fault_flag: str, entry: dict[str, Any]) -> bool:
     return tool in ("restart_deployment", "scale_deployment", "delete_pod", "patch_deployment")
 
 
+def first_effective_remediation_write(
+    fault_flag: str,
+    fault_variant: str,
+    remediation_writes: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Earliest successful write that targets the expected component AND matches the fault action.
+
+    Single source of truth for both `remediation_executed` scoring and `mttr_seconds`:
+    MTTR must be present exactly when a fault-appropriate remediation was executed,
+    so the two can never diverge (the old mttr_seconds counted any successful write,
+    including wrong-target/wrong-action ones).
+    """
+    from code.harness.fault_verification import _write_targets_expected, _norm_target
+
+    expected, _ = expected_root_cause(fault_flag, fault_variant)
+    if not expected or not remediation_writes:
+        return None
+    target = _norm_target(fault_variant)
+    if not target:
+        return None
+    candidates = [
+        w
+        for w in remediation_writes
+        if w.get("success")
+        and _write_matches_fault_action(fault_flag, w)
+        and _write_targets_expected(w, target)
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda w: w.get("completed_at") or w.get("started_at") or "")
+
+
 def score_remediation_executed(
     fault_flag: str,
     fault_variant: str,
@@ -148,13 +180,16 @@ def score_remediation_executed(
     if not expected:
         return {"remediation_executed": None}
     writes = remediation_writes or []
+    effective = first_effective_remediation_write(fault_flag, fault_variant, writes)
     targeted = write_targeted_expected(writes, fault_variant)
     action_ok = any(_write_matches_fault_action(fault_flag, w) for w in writes)
-    executed = targeted and action_ok
+    executed = effective is not None
     return {
         "remediation_executed": executed,
         "remediation_write_targeted": targeted,
         "remediation_action_appropriate": action_ok,
+        "remediation_executed_write_time": (effective or {}).get("completed_at")
+        or (effective or {}).get("started_at"),
     }
 
 

@@ -34,7 +34,11 @@ from code.agents.mlflow_agent_logging import (
     serialize_tool_calls_for_mlflow,
 )
 from code.agents.mlflow_config import mlflow_tracking_uri
-from code.agents.remediation_signals import finalize_remediation_timings, remediation_into_signals
+from code.agents.remediation_signals import (
+    finalize_remediation_timings,
+    remediation_into_signals,
+    stamp_detection_claim,
+)
 from code.agents.tracing import trace_tool_call
 from code.agents.rag_force import (
     block_final_json_during_rag_phase,
@@ -365,6 +369,7 @@ def run_agentic_loop(
                 parsed = json.loads(parse_content)
                 if not isinstance(parsed, dict):
                     raise json.JSONDecodeError("expected object", parse_content, 0)
+                stamp_detection_claim(parsed, tool_ctx)
                 if maybe_block_final_for_execute_gate(parsed, tool_ctx, messages):
                     _append_llm_round(note="execute_gate_blocked_final_json")
                     _log_to_mlflow(

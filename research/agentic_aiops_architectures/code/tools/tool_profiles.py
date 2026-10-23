@@ -35,9 +35,11 @@ TOOL_PROFILES: dict[str, list[str]] = {
         "get_pod_status",
         "get_pod_logs",
         "get_events",
+        "get_deployment_config",
         "restart_deployment",
         "scale_deployment",
         "delete_pod",
+        "patch_deployment",
         "log_action",
     ],
     "logs_only": ["search_logs", "query_clickhouse", "log_action"],
@@ -48,9 +50,11 @@ TOOL_PROFILES: dict[str, list[str]] = {
         "get_pod_status",
         "get_pod_logs",
         "get_events",
+        "get_deployment_config",
         "restart_deployment",
         "scale_deployment",
         "delete_pod",
+        "patch_deployment",
         "log_action",
     ],
     "application_telemetry": ["search_logs", "search_traces", "log_action"],
@@ -63,9 +67,11 @@ TOOL_PROFILES: dict[str, list[str]] = {
         "get_pod_status",
         "get_pod_logs",
         "get_events",
+        "get_deployment_config",
         "restart_deployment",
         "scale_deployment",
         "delete_pod",
+        "patch_deployment",
     ],
 }
 
@@ -78,7 +84,9 @@ PROFILE_PROMPTS: dict[str, str] = {
     "telemetry_k8s": (
         "You have full telemetry AND Kubernetes cluster access. "
         "Use compare_telemetry, search_logs, get_pod_status, and get_events to diagnose. "
-        "When you find a fault, FIX it using restart_deployment, scale_deployment, or delete_pod. "
+        "When you find a fault, FIX it using restart_deployment, scale_deployment, delete_pod, "
+        "or patch_deployment (config corruption: inspect get_deployment_config, then remove the "
+        "bad env vars with patch_deployment — a restart keeps a corrupted env var). "
         "You MUST call K8s remediation tools when a fault is found — do not just suggest."
     ),
     "logs_only": (
@@ -102,8 +110,10 @@ PROFILE_PROMPTS: dict[str, str] = {
 REMEDIATION_VERIFY_RULES = """
 ## Verify remediation worked
 
-After calling restart_deployment, scale_deployment, or delete_pod:
+After calling restart_deployment, scale_deployment, delete_pod, or patch_deployment:
 - Re-check the affected service with your available read tools.
+- After patch_deployment, re-run get_deployment_config to confirm the bad env vars are gone
+  and get_pod_status to confirm the rollout completed.
 - Do NOT finish with detected=true or claim success until verification shows recovery.
 - Use log_action to record what you verified and the outcome.
 """
@@ -168,7 +178,7 @@ def system_prompt_for_profile(profile: str | None = None, base_prompt: str = "")
         ctx_line = ""
     tools_line = f"\nAllowed tools: {', '.join(allowed_tool_names(name))}.\n"
     verify_block = ""
-    remediation_tools = {"restart_deployment", "scale_deployment", "delete_pod"}
+    remediation_tools = {"restart_deployment", "scale_deployment", "delete_pod", "patch_deployment"}
     if remediation_tools.intersection(allowed_tool_names(name)):
         verify_block = f"\n{REMEDIATION_VERIFY_RULES.strip()}\n"
     return f"{base_prompt.strip()}\n{role_line}{ctx_line}{tools_line}{hint}{verify_block}\n".strip()

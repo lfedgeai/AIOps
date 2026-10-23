@@ -34,7 +34,11 @@ from code.agents.mlflow_agent_logging import (
     serialize_messages_for_mlflow,
 )
 from code.agents.mlflow_config import mlflow_tracking_uri
-from code.agents.remediation_signals import finalize_remediation_timings, remediation_into_signals
+from code.agents.remediation_signals import (
+    finalize_remediation_timings,
+    remediation_into_signals,
+    stamp_detection_claim,
+)
 from code.agents.tracing import trace_llm_call, trace_tool_call
 from code.agents.rag_force import (
     block_final_json_during_rag_phase,
@@ -424,6 +428,7 @@ def run_agentic_loop(
 
             parsed_json = _try_parse_final_json(raw_content)
             if parsed_json and "detected" in parsed_json and has_used_tools:
+                stamp_detection_claim(parsed_json, tool_ctx)
                 if maybe_block_final_for_execute_gate(parsed_json, tool_ctx, messages):
                     tool_ctx["llm_rounds"].append({
                         "round": round_idx + 1,

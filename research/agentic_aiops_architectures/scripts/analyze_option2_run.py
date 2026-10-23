@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 import statistics
+import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,6 +14,10 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from code.tools.rag_context import INDEX_VERSION as INDEX_VERSION_TAG
 
 METRICS = (
     "detected",
@@ -172,6 +177,16 @@ def median_mttr_n(runs: list[dict], *, key: str = "mttr_seconds") -> tuple[str, 
     return f"{statistics.median(vals):.0f}s", len(vals)
 
 
+def ctx_label(ctx: Any) -> str:
+    """Render a CONTEXT_C set in unambiguous comma notation: '1-4' (dash-joined) -> 'C1,4'.
+
+    The dash form in filenames ('C2-4') reads like a range; it is the SET {2,4}.
+    'C2,3,4' is the set {2,3,4}.
+    """
+    parts = [p for p in str(ctx).split("-") if p]
+    return "C" + ",".join(parts)
+
+
 def combo_key(r: dict) -> tuple[str, str, str]:
     return (str(r.get("context_c", "")), str(r.get("agent", "")), str(r.get("fault", "")))
 
@@ -254,6 +269,20 @@ def _agent_id(r: dict) -> str:
     return str(r.get("approach") or r.get("agent") or "")
 
 
+# Display labels: correct model + serving-infrastructure suffix. The raw slot ids are
+# historical misnomers (verified 23 Oct 26): both qwen slots run Qwen 3.8 27B —
+# `maas_qwen36-27b` via litemaas, `maas_qwen38-27b` via maas-rhdp. Labels keep the
+# raw ids discoverable in the slot-identity note of the generated report.
+AGENT_DISPLAY_LABELS: dict[str, str] = {
+    "maas_qwen36-27b": "qwen3.8-27b_maas-litemaas",
+    "maas_qwen38-27b": "qwen3.8-27b_maas-rhdp",
+}
+
+
+def _agent_label(r: dict) -> str:
+    return AGENT_DISPLAY_LABELS.get(_agent_id(r), _agent_id(r))
+
+
 def _filter_agent(runs: list[dict], agent_id: str) -> list[dict]:
     return [r for r in runs if _agent_id(r) == agent_id]
 
@@ -328,7 +357,7 @@ def _headline_takeaways(new_runs: list[dict], by_agent: dict[str, list[dict]]) -
     d_ok, _, _ = rate(new_runs, "detected")
     ex_ok, _, _ = rate(new_runs, "remediation_executed")
     bullets: list[str] = [
-        f"1. **Detection vs execution:** detect **{_pct(d_ok, n)}** ({d_ok}/{n}); "
+        f"**Detection vs execution:** detect **{_pct(d_ok, n)}** ({d_ok}/{n}); "
         f"remediation executed **{_pct(ex_ok, n)}** ({ex_ok}/{n}) — most models still stop at diagnosis.",
     ]
 
@@ -346,7 +375,7 @@ def _headline_takeaways(new_runs: list[dict], by_agent: dict[str, list[dict]]) -
     granite = agent_stats("maas_granite")
     if deepseek[4] or granite[4]:
         bullets.append(
-            "2. **RCA vs execute split:** "
+            f"**RCA vs execute split:** "
             f"**DeepSeek** RCA **{deepseek[1]}/{deepseek[4]}** / exec **{deepseek[2]}/{deepseek[4]}**; "
             f"**Granite** RCA **{granite[1]}/{granite[4]}** / exec **{granite[2]}/{granite[4]}**."
         )
@@ -360,36 +389,36 @@ def _headline_takeaways(new_runs: list[dict], by_agent: dict[str, list[dict]]) -
         key=lambda x: -x[1],
     )[:4]
     if executors:
-        bits = ", ".join(f"**{aid}** {ex}/{nn}" for aid, ex, nn in executors)
-        bullets.append(f"3. **Primary executors this run:** {bits}.")
+        bits = ", ".join(f"**{AGENT_DISPLAY_LABELS.get(aid, aid)}** {ex}/{nn}" for aid, ex, nn in executors)
+        bullets.append(f"**Primary executors this run:** {bits}.")
 
     q36 = agent_stats("maas_qwen36-27b")
     if q36[4]:
         bullets.append(
-            f"4. **qwen36-27b:** detect/RCA/exec **{q36[0]}/{q36[4]}** with **{q36[3]}/{q36[4]}** "
+            f"**qwen3.8-27b (maas-litemaas):** detect/RCA/exec **{q36[0]}/{q36[4]}** with **{q36[3]}/{q36[4]}** "
             "`agent_error` (when healthy, detect usually co-occurs with RCA+exec)."
         )
 
     llama = agent_stats("maas_llama31-70b")
     if llama[4]:
         bullets.append(
-            f"5. **Llama:** **maas_llama31-70b** detect **{llama[0]}/{llama[4]}**, "
+            f"**Llama:** **maas_llama31-70b** detect **{llama[0]}/{llama[4]}**, "
             f"`agent_error` **{llama[3]}/{llama[4]}** — keep out of default lineup until fixed."
         )
 
     glm = agent_stats("maas_glm-53-flash")
     if glm[4]:
         bullets.append(
-            f"6. **glm-53-flash:** detect **{glm[0]}/{glm[4]}**, RCA **{glm[1]}/{glm[4]}**, "
+            f"**glm-53-flash:** detect **{glm[0]}/{glm[4]}**, RCA **{glm[1]}/{glm[4]}**, "
             f"exec **{glm[2]}/{glm[4]}** (MTTD med {median_mttd(by_agent.get('maas_glm-53-flash', []))})."
         )
 
     if not any("cascade" in str(a) or "nemotron" in str(a) for a in by_agent):
         bullets.append(
-            f"{len(bullets) + 1}. **Nemotron / Kimi:** not in this batch "
+            f"**Nemotron / Kimi:** not in this batch "
             "(omit from headlines until preflight-green)."
         )
-    return bullets
+    return [f"{i}. {b}" for i, b in enumerate(bullets, 1)]
 
 
 def build_report(
@@ -404,10 +433,16 @@ def build_report(
     for r in new_runs:
         by_agent[_agent_id(r)].append(r)
     n_agents = len(by_agent)
+    # The two qwen slots run the same model (Qwen 3.8 27B) on different gateways — see
+    # AGENT_DISPLAY_LABELS / the slot-identity finding. Count distinct models accordingly.
+    n_distinct_models = n_agents - (
+        1 if {"maas_qwen36-27b", "maas_qwen38-27b"} <= set(by_agent) else 0
+    )
     n_contexts = len({str(r.get("context_c")) for r in new_runs})
     agents_per = sorted(len(v) for v in by_agent.values())
     per_agent = agents_per[0] if agents_per and agents_per[0] == agents_per[-1] else None
     lineup = ", ".join(f"`{a}`" for a in sorted(by_agent))
+    lineup_labeled = ", ".join(f"`{AGENT_DISPLAY_LABELS.get(a, a)}`" for a in sorted(by_agent))
 
     d_ok, d_n, d_s = rate(new_runs, "detected")
     r_ok, r_n, r_s = rate(new_runs, "rca_correct")
@@ -428,7 +463,7 @@ def build_report(
         "**Primary baseline:** [EVALUATION_RESULTS_27sep26.md](EVALUATION_RESULTS_27sep26.md) (Option 2, skills + no-CHANGELOG)  ",
         "**Run notes:** [RUN_NOTES_07Oct26.md](RUN_NOTES_07Oct26.md)  ",
         "",
-        f"> **Lineup (this run):** {lineup or '(none)'}.  ",
+        f"> **Lineup (this run):** {lineup_labeled or '(none)'}.  ",
         "> **Comparability:** Shared prompts (`code/agents/prompts.py`) and API preflight. "
         "Primary Δ table uses Sep 25–27; older Aug-11 (different design size) appears only in legacy combo sections.",
         "",
@@ -443,9 +478,24 @@ def build_report(
         "| Axis | Values |",
         "|------|--------|",
         "| Scenario | A (single-service fault) |",
-        f"| CONTEXT_C | {n_contexts} labels (`0` + subsets of {{1,2,3,4}}) |",
-        f"| Agent | {n_agents} models |",
+        f"| CONTEXT_C | {n_contexts} labels (`0` + subsets of {{1,2,3,4}}) — see corpus definitions below |",
+        f"| Agent | {n_agents} slots ({n_distinct_models} distinct models — two slots run Qwen3.8-27B on different gateways) |",
         "| Fault | `scale_zero`, `config_corruption`, `kill_pod` |",
+        "",
+        "**Context corpora (C1–C4).** A CONTEXT_C label is the *set* of RAG corpora enabled for that",
+        "cell (e.g. `C1,4` = corpora 1 and 4; `C0` = none). Each corpus is a slice of the git-SHA-pinned",
+        "OpenTelemetry demo repo, chunked at 900 chars / 120 overlap and exposed to the agent as its own",
+        "`rag_search_*` function tool (queried in a forced round-0 phase per enabled corpus; retrieval",
+        "mechanics in the retriever note under By context):",
+        "",
+        "| Context | Corpus | Content (file globs in the pinned repo) |",
+        "|---------|--------|------------------------------------------|",
+        "| C0 | — none | No RAG tools offered; the agent relies on telemetry + K8s tools only |",
+        "| C1 | `source` | Application source code: `src/**/*.{py,go,ts,js,rs,java,cs}` |",
+        "| C2 | `docs` | Product documentation: `README.md`, `docs/**/*.md`, `CONTRIBUTING.md`, `.github/**/*.md` (CHANGELOG.md deliberately excluded — noise for harness-injected K8s faults) |",
+        "| C3 | `architecture` | Service-topology material: README/compose plus files matching `*architecture*`/`*diagram*`/service-map, mermaid/flowchart blocks, and chunks mentioning service names — a chunk filter keeps only topology-relevant pieces |",
+        "| C4 | `dependencies` | Deployment/dependency configuration: `compose*.yaml`, `kubernetes/**`, `**/Dockerfile*`, otel-collector / prometheus / jaeger configs |",
+        "",
         "",
         "| Metric | Meaning |",
         "|--------|---------|",
@@ -500,7 +550,7 @@ def build_report(
         mttr_s, mttr_n = median_mttr_n(items)
         mttr_v_s, mttr_v_n = median_mttr_n(items, key="mttr_verified_seconds")
         agent_rows.append([
-            f"`{agent}`",
+            f"`{AGENT_DISPLAY_LABELS.get(agent, agent)}`",
             rate(items, "detected")[2],
             rate(items, "rca_correct")[2],
             rate(items, "remediation_executed")[2],
@@ -552,12 +602,12 @@ def build_report(
         )
         lines.append("")
 
-    lines.append("### Qwen family (`qwen3-14b` vs `qwen38-27b` vs `qwen36-27b`)")
+    lines.append("### Qwen family (`qwen3-14b` vs Qwen3.8-27B × two gateways)")
     lines.append("")
     qwen_specs = [
         ("qwen3 (RHDP)", "maas_qwen3"),
-        ("qwen38-27b (MaaS)", "maas_qwen38-27b"),
-        ("qwen36-27b (MaaS)", "maas_qwen36-27b"),
+        ("qwen3.8-27b_maas-rhdp", "maas_qwen38-27b"),
+        ("qwen3.8-27b_maas-litemaas", "maas_qwen36-27b"),
     ]
     qwen_rows = []
     for label, agent_id in qwen_specs:
@@ -605,7 +655,7 @@ def build_report(
     fw_by: dict[str, int] = defaultdict(int)
     for r in best:
         fw_by[_agent_id(r)] += 1
-    fw_bits = ", ".join(f"{a} {c}" for a, c in sorted(fw_by.items(), key=lambda x: -x[1]))
+    fw_bits = ", ".join(f"{AGENT_DISPLAY_LABELS.get(a, a)} {c}" for a, c in sorted(fw_by.items(), key=lambda x: -x[1]))
     lines.append(f"**Full wins:** **{len(best)}/{n}**" + (f" ({fw_bits})" if fw_bits else ""))
     lines.append("")
     if best:
@@ -620,7 +670,7 @@ def build_report(
             )
             mttd = f"{r['mttd_seconds']:.0f}s" if r.get("mttd_seconds") is not None else "—"
             lines.append(
-                f"| C{r['context_c']} | `{_agent_id(r)}` | {r['fault']} | {mttd} | {mttr} | {mttr_v} |"
+                f"| {ctx_label(r['context_c'])} | `{_agent_label(r)}` | {r['fault']} | {mttd} | {mttr} | {mttr_v} |"
             )
     lines.append("")
 
@@ -641,7 +691,7 @@ def build_report(
     lines.append("| Rank | Context | Agent | Detect | RCA | Exec |")
     lines.append("|------|---------|-------|--------|-----|------|")
     for i, (rca, ex, det, ctx, ag) in enumerate(top_ca[:15], 1):
-        lines.append(f"| {i} | C{ctx} | `{ag}` | {det}/3 | {rca}/3 | {ex}/3 |")
+        lines.append(f"| {i} | {ctx_label(ctx)} | `{AGENT_DISPLAY_LABELS.get(ag, ag)}` | {det}/3 | {rca}/3 | {ex}/3 |")
     lines.append("")
 
     lines.append("### Aug 11 top combos (from prior report — working agents only)")
@@ -654,7 +704,16 @@ def build_report(
     lines.append("| Full set C{1,2,3,4} | DeepSeek | 3/3 detect+RCA (Jul Option2) | 0 exec |")
     lines.append("")
 
-    lines.append("### Top combos: Aug 11 → this run (same context, comparable agents)")
+    lines.append(
+        "### Context × agent: this run vs Aug 11 legacy batch (comparable agents: deepseek, qwen3, granite)"
+    )
+    lines.append("")
+    lines.append(
+        "> Every (context × agent) cell for the three agents present in both batches — "
+        "**not a \"top\" ranking**. Aug 11 was a different design size (see comparability note "
+        "at the top of this report); it is shown for legacy continuity only. "
+        "Rows are ordered by best current RCA, then current exec."
+    )
     lines.append("")
     compare_agents = [
         ("maas_deepseek", "deepseek"),
@@ -680,12 +739,23 @@ def build_report(
             aug_rca = sum(1 for x in aug_items if x.get("rca_correct"))
             aug_ex = sum(1 for x in aug_items if x.get("remediation_executed"))
             comp_rows.append([
-                f"C{ctx}",
+                ctx_label(ctx),
                 label,
-                f"{new_rca}/{len(new_items)} RCA" if new_items else "—",
-                f"{new_ex}/{len(new_items)} exec" if new_items else "—",
+                (new_rca, len(new_items)),
+                (new_ex, len(new_items)),
                 f"{aug_rca}/{len(aug_items)} RCA, {aug_ex}/{len(aug_items)} exec" if aug_items else "—",
             ])
+    # Order by best current RCA, then current exec (as the heading implies), not by context.
+    comp_rows.sort(key=lambda row: (-(row[2][0] / row[2][1] if row[2][1] else 0),
+                                    -(row[3][0] / row[3][1] if row[3][1] else 0),
+                                    row[0], row[1]))
+    comp_rows = [
+        [r[0], r[1],
+         f"{r[2][0]}/{r[2][1]} RCA" if r[2][1] else "—",
+         f"{r[3][0]}/{r[3][1]} exec" if r[3][1] else "—",
+         r[4]]
+        for r in comp_rows
+    ]
     lines.append(render_table(["Context", "Agent", "Now RCA", "Now exec", "Aug 11 (MLflow)"], comp_rows))
     lines.append("")
 
@@ -707,6 +777,16 @@ def build_report(
     per_ctx = n_agents * 3
     lines.append(f"## By context ({per_ctx} runs each = {n_agents} agents × 3 faults)")
     lines.append("")
+    lines.append(
+        f"> **Retriever note:** CONTEXT_C corpora (C1–C4) are served by a **lexical TF-IDF RAG** "
+        "(sklearn `TfidfVectorizer`, unigrams+bigrams, 50k features, cosine top-k=5) over the "
+        "git-SHA-pinned OpenTelemetry demo repo, chunked at 900 chars / 120 overlap "
+        f"(`code/tools/rag_context.py`, `INDEX_VERSION={INDEX_VERSION_TAG}`). "
+        "No embeddings or vector store are involved: retrieval matches keyword overlap only, "
+        "and the agent formulates its own queries (RAG-as-tool with a forced round-0 phase per "
+        "enabled corpus). Interpret by-context deltas with this in mind."
+    )
+    lines.append("")
     by_ctx: dict[str, list[dict]] = defaultdict(list)
     for r in new_runs:
         by_ctx[str(r["context_c"])].append(r)
@@ -716,7 +796,7 @@ def build_report(
         mttr_s, mttr_n = median_mttr_n(items)
         mttr_v_s, mttr_v_n = median_mttr_n(items, key="mttr_verified_seconds")
         ctx_rows.append([
-            f"C{ctx}",
+            ctx_label(ctx),
             rate(items, "detected")[2],
             rate(items, "rca_correct")[2],
             rate(items, "remediation_executed")[2],
@@ -749,8 +829,8 @@ def build_report(
         mttr_s, mttr_n = median_mttr_n(items)
         mttr_v_s, mttr_v_n = median_mttr_n(items, key="mttr_verified_seconds")
         ac_rows.append([
-            f"`{ag}`",
-            f"C{ctx}",
+            f"`{AGENT_DISPLAY_LABELS.get(ag, ag)}`",
+            ctx_label(ctx),
             f"{sum(1 for x in items if x.get('detected'))}/{len(items)}",
             f"{sum(1 for x in items if x.get('rca_correct'))}/{len(items)}",
             f"{sum(1 for x in items if x.get('remediation_executed'))}/{len(items)}",
@@ -775,7 +855,7 @@ def build_report(
         lines.append("")
         for ag, cnt in sorted(err_agents.items(), key=lambda x: -x[1]):
             denom = len(by_agent.get(ag, [])) or per_agent or "?"
-            lines.append(f"- `{ag}`: {cnt}/{denom}")
+            lines.append(f"- `{AGENT_DISPLAY_LABELS.get(ag, ag)}`: {cnt}/{denom}")
         lines.append("")
 
     exec_ranked = sorted(
@@ -793,13 +873,13 @@ def build_report(
         "",
         "## Recommendations",
         "",
-        f"1. **Default RCA pair:** {' + '.join(f'**{a}**' for a in top_rca) or 'top RCA agents'} for diagnosis"
+        f"1. **Default RCA pair:** {' + '.join(f'**{AGENT_DISPLAY_LABELS.get(a, a)}**' for a in top_rca) or 'top RCA agents'} for diagnosis"
         + (
-            f"; pair with {' / '.join(f'**{a}**' for a in top_exec)} when execution is required."
+            f"; pair with {' / '.join(f'**{AGENT_DISPLAY_LABELS.get(a, a)}**' for a in top_exec)} when execution is required."
             if top_exec
             else "."
         ),
-        f"2. **Executors this run:** {', '.join(f'**{a}**' for a in top_exec) or 'none with exec>0'}.",
+        f"2. **Executors this run:** {', '.join(f'**{AGENT_DISPLAY_LABELS.get(a, a)}**' for a in top_exec) or 'none with exec>0'}.",
         "3. **Llama:** Dropped from default lineup after 0% detect (optional agent code remains).",
         "4. **Context:** Prefer high-RCA contexts from the by-context / agent×context tables.",
         "5. **Re-add omitted models** (Nemotron/Kimi) only after MaaS preflight is green.",

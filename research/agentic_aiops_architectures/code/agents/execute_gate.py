@@ -9,6 +9,7 @@ Identical for every matrix agent (fairness). Disable with AGENT_EXECUTE_GATE=0.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 from code.tools.tool_profiles import allowed_tool_names
@@ -34,8 +35,9 @@ _CANNOT_REMEDIATE_MARKERS = (
 EXECUTE_GATE_NUDGE = (
     "[execute-gate]\n"
     "You reported detected=true but have not called a Kubernetes remediation tool yet.\n"
-    "You MUST call one of: scale_deployment, restart_deployment, delete_pod "
-    "(choose the action that matches the fault — e.g. replicas=0 → scale_deployment).\n"
+    "You MUST call one of: scale_deployment, restart_deployment, delete_pod, patch_deployment "
+    "(choose the action that matches the fault — e.g. replicas=0 → scale_deployment; "
+    "corrupted env/config → patch_deployment after checking get_deployment_config).\n"
     "Do NOT output final JSON until after a remediation tool call "
     "(or state clearly in suggested_remediations that you cannot remediate)."
 )
@@ -119,9 +121,12 @@ def maybe_block_final_for_execute_gate(
         return False
     tool_ctx["execute_gate_nudges"] = nudges + 1
     messages.append({"role": "user", "content": EXECUTE_GATE_NUDGE})
+    # IMPORTANT: file=sys.stderr — a plain print() would corrupt the agent's
+    # JSON stdout protocol (harness parses stdout for the final result JSON).
     print(
         f"[execute_gate] blocked final JSON (detected=true, no rem write yet) "
         f"nudge={nudges + 1}/{max_nudges}",
+        file=sys.stderr,
         flush=True,
     )
     return True

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import ssl
+import sys
 import urllib.error
 import urllib.request
 from typing import Any
@@ -55,14 +56,18 @@ def build_ai_metrics(
     if limit and limit > 0:
         avail = max(0, limit - peak)
         util = round(100.0 * peak / limit, 2) if peak else 0.0
+        # IMPORTANT: file=sys.stderr — a plain print() would corrupt the agent's
+        # JSON stdout protocol (harness parses stdout for the final result JSON).
         print(
             f"[agent] context window: peak_prompt={peak} limit={limit} "
             f"available={avail} utilization={util}%",
+            file=sys.stderr,
             flush=True,
         )
     elif peak:
         print(
             f"[agent] context window: peak_prompt={peak} limit=unknown (endpoint did not expose max_model_len)",
+            file=sys.stderr,
             flush=True,
         )
     return metrics

@@ -28,6 +28,7 @@ from code.agents.mlflow_agent_logging import log_mlflow_dataset_inputs_for_harne
 from code.agents.mlflow_config import DEFAULT_MLFLOW_TRACKING_URI
 from code.agents.remediation_signals import parse_agent_signals
 from code.harness.evaluation import (
+    first_effective_remediation_write,
     flatten_suggested_remediations,
     score_hybrid,
     score_scenario_roles,
@@ -1420,15 +1421,11 @@ def run_single_experiment(
         if result.get("llm_invoked"):
             ever_llm_invoked = True
         if result.get("detected"):
-            # Use agent's internal detection timestamp if available (more accurate than harness clock)
-            agent_det_ts = None
-            agent_out_raw = result.get("agent_output_raw") or ""
-            if agent_out_raw:
-                try:
-                    _ao = json.loads(agent_out_raw)
-                    agent_det_ts = (_ao.get("signals") or {}).get("detection_timestamp")
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            # Use agent's internal detection timestamp if available (more accurate than harness clock).
+            # parse_agent_signals uses the same tolerant parser as the result pipeline; a strict
+            # json.loads(agent_output_raw) here silently fell back to the harness clock whenever
+            # the agent stdout carried diagnostic lines, corrupting MTTD.
+            agent_det_ts = parse_agent_signals(result).get("detection_timestamp")
             first_alert_time = agent_det_ts or datetime.now(timezone.utc).isoformat()
             agent_result = result
             append_ledger({
@@ -1484,7 +1481,9 @@ def run_single_experiment(
     })
 
     # MTTD = fault_injection → first detection (when agent notices)
-    # mttr_seconds = fault_injection → first successful write (legacy)
+    # mttr_seconds = fault_injection → first successful write that is targeted at the
+    #   expected component AND action-appropriate for the fault (same selector as
+    #   `remediation_executed` scoring — see first_effective_remediation_write).
     # remediation_duration_seconds = remediation_end - remediation_start
     # mttr_verified_seconds = fault_injection → recovery_verified_time
     mttd_seconds = None
@@ -1497,24 +1496,16 @@ def run_single_experiment(
         t0 = datetime.fromisoformat(fault_injection_time.replace("Z", "+00:00"))
         t1 = datetime.fromisoformat(first_alert_time.replace("Z", "+00:00"))
         mttd_seconds = (t1 - t0).total_seconds()
-        src_rem = src_after_agent
-        rem_exec_ts = agent_signals.get("remediation_executed_time")
-        if not rem_exec_ts:
-            agent_out_str = src_rem.get("agent_output_raw") or ""
-            if agent_out_str:
-                try:
-                    agent_out_parsed = json.loads(agent_out_str)
-                    rem_exec_ts = (agent_out_parsed.get("signals") or {}).get(
-                        "remediation_executed_time"
-                    )
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        if rem_exec_ts:
+        effective_write = first_effective_remediation_write(
+            fault_flag, fault_variant, agent_signals.get("remediation_writes")
+        )
+        if effective_write:
+            rem_exec_ts = effective_write.get("completed_at") or effective_write.get("started_at")
             t_rem = datetime.fromisoformat(rem_exec_ts.replace("Z", "+00:00"))
             mttr_seconds = (t_rem - t0).total_seconds()
             remediation_time_seconds = (t_rem - t1).total_seconds()
             remediation_time = rem_exec_ts
-        elif src_rem.get("suggested_remediations"):
+        elif src_after_agent.get("suggested_remediations"):
             remediation_time = datetime.now(timezone.utc).isoformat()
     if remediation_start_time and remediation_end_time:
         try:

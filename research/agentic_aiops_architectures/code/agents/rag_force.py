@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import uuid
 from typing import Any, Callable
 
@@ -70,7 +71,9 @@ def execute_forced_rag(
         return None
     forced = pending[0]
     args = default_rag_arguments(forced)
-    print(f"[rag_force] harness executing forced {forced}", flush=True)
+    # IMPORTANT: file=sys.stderr — a plain print() would corrupt the agent's
+    # JSON stdout protocol (harness parses stdout for the final result JSON).
+    print(f"[rag_force] harness executing forced {forced}", file=sys.stderr, flush=True)
     raw = execute_fn(forced, args, tool_ctx)
     preview = (mlflow_preview_fn or (lambda x: x))(raw)
     if truncate_fn:
