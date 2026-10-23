@@ -24,6 +24,16 @@
 | Llama removed | `maas_llama31-70b` dropped from default matrix scripts (0/48 detect) |
 | Next design total | 6 agents × 16 contexts × 3 faults = **288** cells |
 
+## Next matrix (generic prompts − playbook − llama)
+
+| Parameter | Value |
+|-----------|--------|
+| Agents | deepseek, qwen3, qwen38-27b, qwen36-27b, granite, glm-53-flash (**6**) |
+| Design total | 6 × 16 × 3 = **288** |
+| Prompts | Application-agnostic (`prompts.py` / skills); no playbook inject |
+| Execute gate | `AGENT_EXECUTE_GATE=1` (unchanged) |
+| Baseline for Δ | [EVALUATION_RESULTS_09oct26.md](EVALUATION_RESULTS_09oct26.md) — **not** a pure re-run |
+
 ```bash
 systemctl --user start aiops-c-matrix-sa-c-permutations.service
 tail -f out/c_matrix_scenario_a_c_permutations_run.log

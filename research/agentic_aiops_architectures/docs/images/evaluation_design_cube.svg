@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 560" width="920" height="560" role="img" aria-labelledby="title desc">
+  <title id="title">AIOps evaluation design cube</title>
+  <desc id="desc">Three-axis design cube: Agent, CONTEXT_C RAG corpora, and Kubernetes fault. Scenario A and cart variant are fixed.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f8fa; }
+      .title { font: 700 22px system-ui,Segoe UI,sans-serif; fill: #1a1d23; }
+      .sub { font: 400 13px system-ui,Segoe UI,sans-serif; fill: #5c6570; }
+      .axis { font: 600 14px system-ui,Segoe UI,sans-serif; fill: #1a1d23; }
+      .tick { font: 400 12px system-ui,Segoe UI,sans-serif; fill: #3d4654; }
+      .note { font: 400 12px system-ui,Segoe UI,sans-serif; fill: #5c6570; }
+      .face-top { fill: #dbeafe; stroke: #1e3a5f; stroke-width: 1.5; }
+      .face-left { fill: #e0e7ff; stroke: #1e3a5f; stroke-width: 1.5; }
+      .face-right { fill: #cffafe; stroke: #1e3a5f; stroke-width: 1.5; }
+      .grid { stroke: #64748b; stroke-width: 0.8; opacity: 0.45; }
+      .arrow { stroke: #0f172a; stroke-width: 2; fill: none; marker-end: url(#ah); }
+      .pill { fill: #fff; stroke: #334155; stroke-width: 1; }
+      .pill-t { font: 600 12px system-ui,Segoe UI,sans-serif; fill: #0f172a; }
+      .opt1 { fill: #fef3c7; stroke: #b45309; stroke-width: 2; stroke-dasharray: 6 3; }
+      .opt2 { fill: none; stroke: #0369a1; stroke-width: 2.5; }
+      .legend-t { font: 500 12px system-ui,Segoe UI,sans-serif; fill: #1a1d23; }
+    </style>
+    <marker id="ah" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#0f172a"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="920" height="560" rx="8"/>
+  <text class="title" x="40" y="42">Evaluation design cube</text>
+  <text class="sub" x="40" y="64">Scenario A fixed · cart workload · one cell = Agent × CONTEXT_C × Fault</text>
+
+  <!-- Isometric cube centered around (420, 290) -->
+  <!-- Vectors: right=(110,-40), up=(0,-150), depth=(-110,-40) -->
+  <!-- Origin (front-bottom-left of cube space) at O -->
+  <!-- Actually classic iso: 
+       x (Agent) right: (120, 50)
+       y (CONTEXT) up: (0, -160)  
+       z (Fault) left-down-ish: (-120, 50)
+  -->
+
+  <!-- Cube faces: origin O = front-lower-near corner at (460, 340) -->
+  <!-- Better O at (480, 360) -->
+
+  <polygon class="face-top" points="500.0,180.0 640.0,235.0 500.0,290.0 360.0,235.0"/>
+  <polygon class="face-left" points="360.0,405.0 360.0,235.0 500.0,290.0 500.0,460.0"/>
+  <polygon class="face-right" points="640.0,405.0 640.0,235.0 500.0,290.0 500.0,460.0"/>
+<line class="grid" x1="546.7" y1="198.3" x2="406.7" y2="253.3"/>
+<line class="grid" x1="453.3" y1="198.3" x2="593.3" y2="253.3"/>
+<line class="grid" x1="360.0" y1="348.3" x2="500.0" y2="403.3"/>
+<line class="grid" x1="406.7" y1="423.3" x2="406.7" y2="253.3"/>
+<line class="grid" x1="640.0" y1="348.3" x2="500.0" y2="403.3"/>
+<line class="grid" x1="593.3" y1="423.3" x2="593.3" y2="253.3"/>
+<line class="grid" x1="593.3" y1="216.7" x2="453.3" y2="271.7"/>
+<line class="grid" x1="406.7" y1="216.7" x2="546.7" y2="271.7"/>
+<line class="grid" x1="360.0" y1="291.7" x2="500.0" y2="346.7"/>
+<line class="grid" x1="453.3" y1="441.7" x2="453.3" y2="271.7"/>
+<line class="grid" x1="640.0" y1="291.7" x2="500.0" y2="346.7"/>
+<line class="grid" x1="546.7" y1="441.7" x2="546.7" y2="271.7"/>
+  <line class="arrow" x1="500.0" y1="350.0" x2="703.0" y2="429.8"/>
+  <line class="arrow" x1="500.0" y1="350.0" x2="500.0" y2="120.5"/>
+  <line class="arrow" x1="500.0" y1="350.0" x2="297.0" y2="429.8"/>
+
+  <text class="axis" x="711.0" y="435.8">Agent (LLM)</text>
+  <text class="tick" x="711.0" y="453.8">DeepSeek · Qwen · Granite · GLM · …</text>
+  <text class="axis" x="480.0" y="108.5">CONTEXT_C (RAG)</text>
+  <text class="tick" x="480.0" y="126.5">C0 · C1 · C2 · C3 · C4 · combinations</text>
+  <text class="axis" x="167.0" y="437.8">Fault (Kubernetes)</text>
+  <text class="tick" x="167.0" y="455.8">scale_zero · config_corruption · kill_pod</text>
+
+  <!-- Legend Option 1 vs 2 -->
+  <rect class="opt1" x="40" y="100" width="220" height="56" rx="6"/>
+  <text class="legend-t" x="52" y="122">Option 1 (singles)</text>
+  <text class="note" x="52" y="140">Only C0 and one corpus at a time</text>
+  <text class="note" x="52" y="156">e.g. 5 agents × 5 contexts × 3 faults = 75</text>
+
+  <rect class="opt2" x="40" y="170" width="220" height="56" rx="6"/>
+  <text class="legend-t" x="52" y="192">Option 2 (all subsets)</text>
+  <text class="note" x="52" y="210">All 16 CONTEXT_C labels</text>
+  <text class="note" x="52" y="226">e.g. 6 agents × 16 × 3 faults = 288</text>
+
+  <rect class="pill" x="40" y="250" width="220" height="70" rx="6"/>
+  <text class="legend-t" x="52" y="272">Fixed outside the cube</text>
+  <text class="note" x="52" y="290">Scenario A (one agent, full tools)</text>
+  <text class="note" x="52" y="306">Variant: cart workload</text>
+
+  <text class="note" x="280" y="520">Each grid cell inside the cube is one harness trial, scored Detect · Diagnose · Remediate · Verify.</text>
+
+</svg>

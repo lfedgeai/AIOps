@@ -1,6 +1,6 @@
 # Learnings Across Runs — Execution Gap, Context, Skills, Next Tests
 
-**Generated:** 2026-10-09 (post-matrix refresh)
+**Generated:** 2026-10-22 (post-matrix refresh)
 **Primary evidence:**
 - Option 2 baseline 2026-09-22 → 23 (336/336) — [EVALUATION_RESULTS_23sep26.md](EVALUATION_RESULTS_23sep26.md)
 - Option 2 re-run 2026-09-25 → 27 (335/336 scored) — [EVALUATION_RESULTS_27sep26.md](EVALUATION_RESULTS_27sep26.md) · [COMPARE_27sep26_vs_23sep26.md](COMPARE_27sep26_vs_23sep26.md)
@@ -168,22 +168,23 @@ Do **not** expect chunking alone to fix DeepSeek/Granite 0% exec.
 ---
 
 <!-- AUTO:POST_MATRIX_LEARNINGS -->
-## Post-matrix update — 07 Oct 2026
+## Post-matrix update — 20 Oct 2026
 
-**Kickoff:** `2026-10-07 20:58:06` · **New runs:** 336 · **Baseline archive:** `out/archive_sep22_option2` (n=288)
-**Eval report:** [EVALUATION_RESULTS_09oct26.md](EVALUATION_RESULTS_09oct26.md)
+**Kickoff:** `2026-10-20 23:41:01` · **New runs:** 288 · **Baseline archive:** `out/archive_sep22_option2` (n=240)
+**Eval report:** [EVALUATION_RESULTS_22oct26.md](EVALUATION_RESULTS_22oct26.md)
 
-Experiment vs Sep 22–23 baseline: shared AIOps skills in system prompt (AGENT_SKILLS=1), CHANGELOG removed from C2 docs corpus (INDEX_VERSION=no-changelog-v1), AGENT_TIMEOUT=900 / detection=1200. See docs/COMPARE_09oct26_vs_23sep26.md and docs/EVALUATION_RESULTS_09oct26.md.
+> **Incomplete:** only 288/336 new cells — re-run this script when the matrix finishes.
+
+Experiment vs Sep 22–23 baseline: shared AIOps skills in system prompt (AGENT_SKILLS=1), CHANGELOG removed from C2 docs corpus (INDEX_VERSION=no-changelog-v1), AGENT_TIMEOUT=900 / detection=1200. See docs/COMPARE_22oct26_vs_23sep26.md and docs/EVALUATION_RESULTS_22oct26.md.
 
 | Scope | Detect | RCA | Exec | Recovery | agent_error |
 |-------|-------:|----:|-----:|---------:|------------:|
-| ALL | 69% → **70%** (+1) | 38% → **57%** (+19) | 12% → **31%** (+19) | 12% → **26%** (+14) | 40/288 → **20/336** |
-| maas_deepseek | 94% → **100%** (+6) | 85% → **94%** (+8) | 0% → **0%** (+0) | 0% → **0%** (+0) | 0/48 → **0/48** |
-| maas_glm-53-flash | 100% → **100%** (+0) | 38% → **73%** (+35) | 33% → **56%** (+23) | 33% → **54%** (+21) | 0/48 → **0/48** |
-| maas_granite | 88% → **77%** (-10) | 44% → **67%** (+23) | 0% → **6%** (+6) | 0% → **2%** (+2) | 1/48 → **1/48** |
-| maas_llama31-70b | 0% → **0%** (+0) | 0% → **0%** (+0) | 0% → **0%** (+0) | 0% → **0%** (+0) | 7/48 → **5/48** |
-| maas_qwen3 | 100% → **88%** (-12) | 25% → **44%** (+19) | 8% → **40%** (+31) | 6% → **27%** (+21) | 0/48 → **6/48** |
-| maas_qwen36-27b | 33% → **90%** (+56) | 33% → **85%** (+52) | 33% → **83%** (+50) | 33% → **65%** (+31) | 32/48 → **5/48** |
-| maas_qwen38-27b | 0% → **33%** (+33) | 0% → **35%** (+35) | 0% → **33%** (+33) | 0% → **33%** (+33) | 0/0 → **3/48** |
+| ALL | 83% → **80%** (-3) | 45% → **73%** (+28) | 15% → **30%** (+15) | 15% → **24%** (+10) | 33/240 → **39/288** |
+| maas_deepseek | 94% → **100%** (+6) | 85% → **90%** (+4) | 0% → **0%** (+0) | 0% → **0%** (+0) | 0/48 → **0/48** |
+| maas_glm-53-flash | 100% → **98%** (-2) | 38% → **98%** (+60) | 33% → **92%** (+58) | 33% → **65%** (+31) | 0/48 → **1/48** |
+| maas_granite | 88% → **96%** (+8) | 44% → **85%** (+42) | 0% → **0%** (+0) | 0% → **0%** (+0) | 1/48 → **0/48** |
+| maas_qwen3 | 100% → **94%** (-6) | 25% → **71%** (+46) | 8% → **0%** (-8) | 6% → **0%** (-6) | 0/48 → **3/48** |
+| maas_qwen36-27b | 33% → **58%** (+25) | 33% → **56%** (+23) | 33% → **56%** (+23) | 33% → **48%** (+15) | 32/48 → **14/48** |
+| maas_qwen38-27b | 0% → **35%** (+35) | 0% → **35%** (+35) | 0% → **33%** (+33) | 0% → **33%** (+33) | 0/0 → **21/48** |
 
 _Auto-appended by `scripts/update_learnings_across_runs_report.py` after Option 2 COMPLETE._
