@@ -275,6 +275,53 @@ One operational note from the probes: at small `max_tokens` values the entire bu
 consumed by reasoning (`content: null`) — server-side output limits for thinking models
 should be verified when onboarding a gateway.
 
+### Why serving delay degrades AIOps outcomes (causal chain)
+
+The mechanism connecting the ~4× throughput gap to the 21–23 point score deltas, step by step:
+
+1. **Fixed time budget.** Every cell runs inside a fixed detection window (1200s in this
+   batch) with a subprocess timeout. This mirrors operations reality: MTTD/MTTR are the
+   metrics, and a diagnosis arriving after the window (or after the fault self-recovered)
+   is a miss. The agent must fit its work inside the budget.
+
+2. **Agentic work is a serial loop, so latency compounds.** Each round is: send the
+   conversation so far → model thinks + emits a tool call → harness executes the tool →
+   append the result → repeat. Round N+1 cannot start before round N completes. A chat
+   model answers once; an agent answers 10–20 times *in sequence* — a 4× per-call slowdown
+   is not "4% worse," it is the difference between fitting and being killed mid-task.
+
+3. **Thinking models multiply the sensitivity.** Qwen3.8-27B emits ~900–1,200 reasoning
+   tokens before any content (measured). Time per round = tokens ÷ throughput:
+
+   | | throughput | ~900 tok/round | typical 16–18 round task |
+   |---|---|---|---|
+   | maas-litemaas | ~69 tok/s | ~13s | **~210–230s — fits easily** |
+   | maas-rhdp | ~17 tok/s | ~53s | **~850–950s + tool time → hits the 900s cap** |
+
+   Same model, same tokens, same decisions — one gateway finishes with room to spare, the
+   other is truncated.
+
+4. **Truncation converts slow success into scored failure.** When the window expires, the
+   loop is killed and the run falls back to `detected=false` / no RCA / no exec — even
+   though the model was mid-way through the correct work. This is why all 21 maas-rhdp
+   errors are subprocess timeouts, concentrated on the round-hungry faults
+   (config_corruption 19, kill_pod 20, scale_zero 0), and why the exec-by-fault table is the
+   proof of mechanism: where the budget suffices (scale_zero), the slow gateway is
+   indistinguishable (16/16 both); where it doesn't, it scores zero (0/16, 0/16).
+
+5. **Second-order effects even when a run finishes.** rhdp's *completed* runs used median 11
+   rounds / 15 tool calls vs litemaas's 16 / 28 — fewer affordable rounds means shallower
+   investigation (clean-run detect 63% vs 82%). The execute gate taxes slow agents
+   disproportionately: each nudge costs a full round, so a slow agent spends its remaining
+   budget re-emitting JSON and never reaches the write. And prompts grow every round (each
+   tool result is appended), so per-round latency rises through the loop.
+
+6. **Implication.** The model's *latent* capability — what it would produce given unlimited
+   time — is identical on both gateways (identical temp-0 reasoning traces, same weights).
+   What differs is **delivered performance within a deadline**, which is exactly what an
+   AIOps eval (and a production pager) measures. In this domain serving speed is not an
+   infrastructure detail: it is part of the model's effective capability.
+
 ## Top performing combinations
 
 ### This run — best cells (detect ∧ RCA ∧ exec)
