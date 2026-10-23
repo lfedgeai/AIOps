@@ -141,6 +141,23 @@ Harness design and resume model: [HARNESS_DESIGN.md](HARNESS_DESIGN.md). Full re
 4. **The C0 context cliff persists for diagnosers** (RCA ~33% at C0 vs 61–83% with corpora in Run A; 2/5 vs 4–5/5 in Run B) — but the executors win at C0 regardless.
 5. **Latency columns are trustworthy from 22 Oct onward only** (§3.1); Sep/Oct-early MTTD/MTTR need re-derivation before any trend claim.
 
+### Model identity — what each agent label actually serves
+
+Verified against the serving endpoints (`/v1/models`) and API preflight — labels do not always match the model:
+
+| Agent label | Model actually served | Platform |
+|---|---|---|
+| `maas_deepseek` | `deepseek-r1-distill-qwen-14b` | RHDP MaaS (shared, 8 models) |
+| `maas_qwen3` | **`qwen3-14b`** | RHDP MaaS (shared) |
+| `maas_qwen36-27b` | `Qwen3.8-27B` | LiteMaaS (dedicated, single model) |
+| `maas_qwen38-27b` | `qwen38-27b` | RHDP MaaS (shared) |
+| `maas_granite` | `granite-3-2-8b-instruct` | RHDP MaaS (shared) |
+| `maas_glm-53-flash` | `glm-53-flash` | prelude-MaaS (dedicated) |
+
+So `maas_qwen3` is the dense **Qwen3 14B** instruct model — the only agent whose label matches what it serves. `maas_qwen36-27b` is *not* an older Qwen 3.6: it serves the newer **Qwen3.8-27B** (the env-var name is historical), while `maas_qwen38-27b` serves `qwen38-27b` — the same model generation on the shared RHDP platform at ~2–3× lower token throughput. The apparent "newer model performs worse" is primarily a serving-infrastructure gap, not a model-capability gap (§6.2).
+
+**Judge:** the oracle-judge pool is `{deepseek-r1-distill-qwen-14b, qwen3-14b}`, **cross-paired** so no agent is judged by its own model (deepseek's runs are judged by qwen3-14b and vice versa; verified in the run records). Both judge models sit on the shared RHDP platform alongside three matrix agents — a resource-contention caveat, not a bias one.
+
 ## 7. Recommendations (consolidated)
 
 1. **Pairing:** deepseek + glm-53-flash for diagnosis-first; glm-53-flash / qwen36-27b when execution is required.

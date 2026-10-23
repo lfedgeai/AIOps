@@ -198,6 +198,6 @@ The matrix scripts are supervision-agnostic — the same script and resume seman
 - `restart`/`scale` count as action-appropriate writes for spec-level faults even though they cannot recover them — exec measures *intent*, recovery measures *effectiveness*; keep reading them as separate signals.
 - `kill_pod` recovery still partially measures the platform even with pre-recovery verification (the controller may recreate the pod during the verification window). Open: score against an agent-controlled criterion.
 - `memory_limit` / `readiness_probe_fail` are spec-level faults with the same P8 problem as `config_corruption` — candidates for the patch-tool path.
-- The oracle judge (`deepseek-r1-distill-qwen-14b`) shares an endpoint with matrix agents on the RHDP platform — known contention caveat.
+- The oracle-judge pool is `{deepseek-r1-distill-qwen-14b, qwen3-14b}`, cross-paired so no agent is judged by its own model (deepseek ⇄ qwen3 judge each other). Both judge models run on the shared RHDP platform alongside three matrix agents — resource contention during batches, not scoring bias.
 - Agent labels can outlive the model they point to (`maas_qwen36-27b` serves Qwen3.8-27B); lineup reports should include endpoint/model identity from `/v1/models`.
 - Pre-22-Oct latency figures (Aug/Sep/early Oct) were produced by the buggy pipeline; re-derive before any cross-month trend claim.
