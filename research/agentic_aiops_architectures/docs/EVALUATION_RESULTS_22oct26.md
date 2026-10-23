@@ -99,6 +99,39 @@ valkey-cart 13 / kafka 0** (48 writes). With the decoy gone and the fault signal
 (deepseek 85%→90% RCA), which is why the jump is agent-specific: **the Oct 10–12 environment
 specifically punished act-first agents**; glm's underlying capability likely did not change.
 
+### Act-first vs diagnose-first: why the environment penalty is agent-specific
+
+The agents in this matrix have two behavioral styles, and the scoring interacts with them
+very differently when the telemetry is dishonest:
+
+- **Act-first agents** (glm-53-flash, the Qwen3.8-27B slots) respond to the loudest error
+  signal by *immediately calling a write tool* to fix what looks broken.
+- **Diagnose-first agents** (deepseek, granite, qwen3) investigate and emit a prose
+  diagnosis; they rarely or never act (see [exec-gap decomposition](#why-agents-stop-before-remediation-execution-exec-gap-decomposition)).
+
+The metrics are computed largely **from actions**: `remediation_executed` and
+`rca_inferred` both key off successful writes targeted at the injected fault. So every
+act-first action is materialized into a score — a write to the right target earns exec and
+RCA credit; a write to the wrong target makes both false. A diagnose-first agent's output is
+only text: its worst case is "no exec," which was already its baseline — its downside is
+capped, while the act-first agent's is not.
+
+In Oct 10–12 that asymmetry became decisive. The sick kafka made kafka/checkout the loudest
+signal while the starved traffic made the actual cart fault nearly invisible (2–25 checkout
+spans/hour). Act-first agents did what their style does — acted on the loudest signal — and
+glm's 59 kafka writes were each scored `exec=false`/`rca_inferred=false` (→ RCA 48%,
+exec 35%). Diagnosers reasoning over the same noisy evidence mostly still landed on cart
+(deepseek: 85% RCA) — wrong prose costs nothing beyond the no-exec baseline. In the clean
+Oct 20–22 environment (no decoy, loud fault signal), the same agents scored glm 98%/92% and
+deepseek 90% — the +50-point vs +5-point asymmetry is the style × environment interaction,
+not a capability change.
+
+**Implication for reading these reports:** model rankings under this harness are partly a
+function of telemetry honesty. A batch run against a degraded cluster systematically demotes
+act-first agents relative to diagnosers — not because they are worse at remediation, but
+because they are the ones whose mistakes get written down. Environment health (this section)
+therefore belongs beside any cross-batch model comparison.
+
 Scoring nuance: `valkey-cart` writes count as cart-targeted (substring match in
 `write_targeted_expected`). Iteration budget was **not** a factor — both batches ran
 `max_tool_iterations=20` (median rounds used: 18 in both). Full details:
