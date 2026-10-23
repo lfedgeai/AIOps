@@ -71,7 +71,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--agents",
-        default="maas_deepseek,maas_qwen3,maas_qwen38-27b,maas_qwen36-27b,maas_granite,maas_glm-53-flash",
+        default="rhdp_deepseek-r1-distill-qwen-14b,rhdp_qwen3-14b,rhdp_qwen38-27b,litemaas_qwen3.8-27b,rhdp_granite-3-2-8b-instruct,prelude_glm-53-flash",
         help="Comma-separated agent ids to include (default: Sep22 7-agent lineup)",
     )
     ap.add_argument("--markdown", type=Path, default=None)

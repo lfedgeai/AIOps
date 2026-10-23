@@ -31,14 +31,14 @@ class AgentEndpoint:
 
 # Default matrix lineup (must stay in sync with scripts/run_c_matrix_*.sh AGENTS)
 DEFAULT_AGENTS: list[AgentEndpoint] = [
-    AgentEndpoint("nemotron-cascade-2", "NEMOTRON_API_BASE", "NEMOTRON_API_KEY", "NEMOTRON_MODEL", "nemotron-cascade-2-30b"),
-    AgentEndpoint("maas_deepseek", "DEEPSEEK_API_BASE", "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "deepseek-r1-distill-qwen-14b"),
-    AgentEndpoint("maas_qwen3", "QWEN3_API_BASE", "QWEN3_API_KEY", "QWEN3_MODEL", "qwen3-14b"),
-    AgentEndpoint("maas_qwen38-27b", "QWEN38_API_BASE", "QWEN38_API_KEY", "QWEN38_MODEL", "qwen38-27b"),
-    AgentEndpoint("maas_qwen36-27b", "QWEN36_API_BASE", "QWEN36_API_KEY", "QWEN36_MODEL", "Qwen3.8-27B"),
-    AgentEndpoint("maas_granite", "GRANITE_API_BASE", "GRANITE_API_KEY", "GRANITE_MODEL", "granite-3-2-8b-instruct"),
-    AgentEndpoint("maas_llama31-70b", "LLAMA31_70B_API_BASE", "LLAMA31_70B_API_KEY", "LLAMA31_70B_MODEL", "llama-31-70b-cpu"),
-    AgentEndpoint("maas_glm-53-flash", "GLM_API_BASE", "GLM_API_KEY", "GLM_MODEL", "glm-53-flash"),
+    AgentEndpoint("prelude_nemotron-cascade-2-30b", "NEMOTRON_API_BASE", "NEMOTRON_API_KEY", "NEMOTRON_MODEL", "prelude_nemotron-cascade-2-30b-30b"),
+    AgentEndpoint("rhdp_deepseek-r1-distill-qwen-14b", "DEEPSEEK_API_BASE", "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "deepseek-r1-distill-qwen-14b"),
+    AgentEndpoint("rhdp_qwen3-14b", "QWEN3_API_BASE", "QWEN3_API_KEY", "QWEN3_MODEL", "qwen3-14b"),
+    AgentEndpoint("rhdp_qwen38-27b", "QWEN38_API_BASE", "QWEN38_API_KEY", "QWEN38_MODEL", "qwen38-27b"),
+    AgentEndpoint("litemaas_qwen3.8-27b", "QWEN36_API_BASE", "QWEN36_API_KEY", "QWEN36_MODEL", "Qwen3.8-27B"),
+    AgentEndpoint("rhdp_granite-3-2-8b-instruct", "GRANITE_API_BASE", "GRANITE_API_KEY", "GRANITE_MODEL", "granite-3-2-8b-instruct"),
+    AgentEndpoint("rhdp_llama-31-70b-cpu", "LLAMA31_70B_API_BASE", "LLAMA31_70B_API_KEY", "LLAMA31_70B_MODEL", "llama-31-70b-cpu"),
+    AgentEndpoint("prelude_glm-53-flash", "GLM_API_BASE", "GLM_API_KEY", "GLM_MODEL", "glm-53-flash"),
 ]
 
 

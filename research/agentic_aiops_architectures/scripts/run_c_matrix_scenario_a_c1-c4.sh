@@ -24,13 +24,13 @@ if [[ "${INCLUDE_C0:-0}" =~ ^(1|true|yes)$ ]]; then
 fi
 
 AGENTS=(
-  "nemotron-cascade-2:code/agents/nemotron_agent/agent.py"
-  "maas_deepseek:code/agents/deepseek_agent/agent.py"
-  "maas_qwen3:code/agents/qwen3_agent/agent.py"
-  "maas_qwen38-27b:code/agents/qwen38_27b_agent/agent.py"
-  "maas_qwen36-27b:code/agents/qwen36_27b_agent/agent.py"
-  "maas_granite:code/agents/granite_agent/agent.py"
-  "maas_glm-53-flash:code/agents/glm_53_flash_agent/agent.py"
+  "prelude_nemotron-cascade-2-30b:code/agents/nemotron_agent/agent.py"
+  "rhdp_deepseek-r1-distill-qwen-14b:code/agents/deepseek_agent/agent.py"
+  "rhdp_qwen3-14b:code/agents/qwen3_agent/agent.py"
+  "rhdp_qwen38-27b:code/agents/qwen38_27b_agent/agent.py"
+  "litemaas_qwen3.8-27b:code/agents/qwen36_27b_agent/agent.py"
+  "rhdp_granite-3-2-8b-instruct:code/agents/granite_agent/agent.py"
+  "prelude_glm-53-flash:code/agents/glm_53_flash_agent/agent.py"
 )
 
 LOG="$ROOT/out/c_matrix_scenario_a_c1-c4_run.log"

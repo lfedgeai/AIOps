@@ -344,7 +344,7 @@ End-to-end comparison of LLM agents for **failure detection** and **autonomous r
 - `mttd_seconds`, `mttr_seconds`, `detected`, `rca_correct`, `remediation_correct` (per run)
 - Tags: `scenario`, `tool_profiles`, `fault_injection_mode`
 
-**Agents**: ollama_qwen (Ollama), maas_deepseek (DeepSeek R1), maas_qwen3 (Qwen3), maas_llama-scout (Llama Scout).
+**Agents**: ollama_qwen (Ollama), rhdp_deepseek-r1-distill-qwen-14b (DeepSeek R1), rhdp_qwen3-14b (Qwen3), rhdp_llama-scout-17b (Llama Scout).
 
 *(The section **This harness invocation** is appended at run start with the active CLI config: how many agents, which scripts, timeouts, fault flag.)*
 """
@@ -449,13 +449,13 @@ def _resolve_classifier_script(
 
 # All agents: (approach_name, script_path). Approach name states the LLM.
 AGENTS = [
-    ("nemotron-cascade-2", ROOT / "code" / "agents" / "nemotron_agent" / "agent.py"),
-    ("maas_deepseek", ROOT / "code" / "agents" / "deepseek_agent" / "agent.py"),
-    ("maas_qwen3", ROOT / "code" / "agents" / "qwen3_agent" / "agent.py"),
-    ("maas_qwen38-27b", ROOT / "code" / "agents" / "qwen38_27b_agent" / "agent.py"),
-    ("maas_qwen36-27b", ROOT / "code" / "agents" / "qwen36_27b_agent" / "agent.py"),
-    ("maas_granite", ROOT / "code" / "agents" / "granite_agent" / "agent.py"),
-    ("maas_glm-53-flash", ROOT / "code" / "agents" / "glm_53_flash_agent" / "agent.py"),
+    ("prelude_nemotron-cascade-2-30b", ROOT / "code" / "agents" / "nemotron_agent" / "agent.py"),
+    ("rhdp_deepseek-r1-distill-qwen-14b", ROOT / "code" / "agents" / "deepseek_agent" / "agent.py"),
+    ("rhdp_qwen3-14b", ROOT / "code" / "agents" / "qwen3_agent" / "agent.py"),
+    ("rhdp_qwen38-27b", ROOT / "code" / "agents" / "qwen38_27b_agent" / "agent.py"),
+    ("litemaas_qwen3.8-27b", ROOT / "code" / "agents" / "qwen36_27b_agent" / "agent.py"),
+    ("rhdp_granite-3-2-8b-instruct", ROOT / "code" / "agents" / "granite_agent" / "agent.py"),
+    ("prelude_glm-53-flash", ROOT / "code" / "agents" / "glm_53_flash_agent" / "agent.py"),
 ]
 
 
@@ -1663,7 +1663,7 @@ def main() -> int:
     ap.add_argument(
         "--agents",
         default="",
-        help="Comma-separated agent approach names (e.g. nemotron-nano-3,maas_deepseek,maas_qwen3)",
+        help="Comma-separated agent approach names (e.g. nemotron-nano-3,rhdp_deepseek-r1-distill-qwen-14b,rhdp_qwen3-14b)",
     )
     ap.add_argument(
         "--no-judge",

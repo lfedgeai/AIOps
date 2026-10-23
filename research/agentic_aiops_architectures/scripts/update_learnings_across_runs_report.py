@@ -20,8 +20,8 @@ from analyze_option2_run import load_harness_runs, rate  # noqa: E402
 LEARNINGS = ROOT / "docs" / "Learnings_across_runs_report.md"
 SECTION_MARK = "<!-- AUTO:POST_MATRIX_LEARNINGS -->"
 DEFAULT_AGENTS = (
-    "maas_deepseek,maas_qwen3,maas_qwen38-27b,maas_qwen36-27b,"
-    "maas_granite,maas_glm-53-flash"
+    "rhdp_deepseek-r1-distill-qwen-14b,rhdp_qwen3-14b,rhdp_qwen38-27b,litemaas_qwen3.8-27b,"
+    "rhdp_granite-3-2-8b-instruct,prelude_glm-53-flash"
 )
 
 

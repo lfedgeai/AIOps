@@ -59,26 +59,44 @@ AUG11_START_MS = int(datetime(2026, 8, 10, 3, 4, tzinfo=timezone.utc).timestamp(
 AUG11_END_MS = int(datetime(2026, 8, 10, 17, 43, tzinfo=timezone.utc).timestamp() * 1000)
 
 # MLflow note uses script dir names; harness JSON uses approach ids.
+# Values are the CANONICAL labels (23 Oct 26 rename: {infra}_{exact-model}).
 APPROACH_ALIASES: dict[str, str] = {
-    "deepseek_agent": "maas_deepseek",
-    "qwen3_agent": "maas_qwen3",
-    "granite_agent": "maas_granite",
-    "llama31_70b_agent": "maas_llama31-70b",
-    "nemotron_agent": "nemotron-nano-3",
-    "maas_deepseek": "maas_deepseek",
-    "maas_qwen3": "maas_qwen3",
-    "maas_granite": "maas_granite",
-    "maas_llama31-70b": "maas_llama31-70b",
+    "deepseek_agent": "rhdp_deepseek-r1-distill-qwen-14b",
+    "qwen3_agent": "rhdp_qwen3-14b",
+    "granite_agent": "rhdp_granite-3-2-8b-instruct",
+    "llama31_70b_agent": "rhdp_llama-31-70b-cpu",
+    "nemotron_agent": "prelude_nemotron-cascade-2-30b",
+    # pre-rename labels (all harness JSONs / MLflow runs before 23 Oct 26)
+    "maas_deepseek": "rhdp_deepseek-r1-distill-qwen-14b",
+    "maas_qwen3": "rhdp_qwen3-14b",
+    "maas_granite": "rhdp_granite-3-2-8b-instruct",
+    "maas_llama31-70b": "rhdp_llama-31-70b-cpu",
+    "maas_qwen38-27b": "rhdp_qwen38-27b",
+    "maas_qwen36-27b": "litemaas_qwen3.8-27b",
+    "maas_glm-53-flash": "prelude_glm-53-flash",
+    "nemotron-cascade-2": "prelude_nemotron-cascade-2-30b",
+    # post-rename labels (identity)
+    "rhdp_deepseek-r1-distill-qwen-14b": "rhdp_deepseek-r1-distill-qwen-14b",
+    "rhdp_qwen3-14b": "rhdp_qwen3-14b",
+    "rhdp_granite-3-2-8b-instruct": "rhdp_granite-3-2-8b-instruct",
+    "rhdp_llama-31-70b-cpu": "rhdp_llama-31-70b-cpu",
+    "rhdp_qwen38-27b": "rhdp_qwen38-27b",
+    "litemaas_qwen3.8-27b": "litemaas_qwen3.8-27b",
+    "prelude_glm-53-flash": "prelude_glm-53-flash",
+    "prelude_nemotron-cascade-2-30b": "prelude_nemotron-cascade-2-30b",
+    # legacy MLflow approach ids with no current equivalent
+    "maas_qwen35-9b": "maas_qwen35-9b",
+    "qwen35_9b_agent": "maas_qwen35-9b",
     "nemotron-nano-3": "nemotron-nano-3",
-    "maas_qwen38-27b": "maas_qwen38-27b",
-    "maas_qwen35-9b": "maas_qwen35-9b",  # legacy MLflow approach id
-    "maas_qwen36-27b": "maas_qwen36-27b",
-    "maas_glm-53-flash": "maas_glm-53-flash",
-    "qwen38_27b_agent": "maas_qwen38-27b",
-    "qwen35_9b_agent": "maas_qwen35-9b",  # legacy
-    "qwen36_27b_agent": "maas_qwen36-27b",
-    "glm_53_flash_agent": "maas_glm-53-flash",
+    "qwen38_27b_agent": "rhdp_qwen38-27b",
+    "qwen36_27b_agent": "litemaas_qwen3.8-27b",
+    "glm_53_flash_agent": "prelude_glm-53-flash",
 }
+
+
+def canonical_agent(label: str) -> str:
+    """Map any agent id (pre- or post-rename) to the canonical {infra}_{model} label."""
+    return APPROACH_ALIASES.get(label, label)
 
 
 def _ctx_file_to_tag(ctx: str) -> str:
@@ -100,7 +118,7 @@ def _parse_filename(path: Path) -> dict[str, str] | None:
     for fault in FAULTS:
         prefix = fault + "_"
         if rest.startswith(prefix):
-            return {"context_c": ctx, "fault": fault, "agent": rest[len(prefix) :]}
+            return {"context_c": ctx, "fault": fault, "agent": canonical_agent(rest[len(prefix) :])}
     return None
 
 
@@ -266,21 +284,13 @@ def load_mlflow_runs(start_ms: int, end_ms: int) -> list[dict[str, Any]]:
 
 
 def _agent_id(r: dict) -> str:
-    return str(r.get("approach") or r.get("agent") or "")
+    return canonical_agent(str(r.get("approach") or r.get("agent") or ""))
 
 
-# Display labels: correct model + serving-infrastructure suffix. The raw slot ids are
-# historical misnomers (verified 23 Oct 26): both qwen slots run Qwen 3.8 27B —
-# `maas_qwen36-27b` via litemaas, `maas_qwen38-27b` via maas-rhdp. Labels keep the
-# raw ids discoverable in the slot-identity note of the generated report.
-AGENT_DISPLAY_LABELS: dict[str, str] = {
-    "maas_qwen36-27b": "qwen3.8-27b_maas-litemaas",
-    "maas_qwen38-27b": "qwen3.8-27b_maas-rhdp",
-}
-
-
+# Agent labels are canonical since the 23 Oct 26 rename ({infra}_{exact-model});
+# APPROACH_ALIASES maps pre-rename ids found in historical JSONs/MLflow run names.
 def _agent_label(r: dict) -> str:
-    return AGENT_DISPLAY_LABELS.get(_agent_id(r), _agent_id(r))
+    return _agent_id(r)
 
 
 def _filter_agent(runs: list[dict], agent_id: str) -> list[dict]:
@@ -371,8 +381,8 @@ def _headline_takeaways(new_runs: list[dict], by_agent: dict[str, list[dict]]) -
             len(items),
         )
 
-    deepseek = agent_stats("maas_deepseek")
-    granite = agent_stats("maas_granite")
+    deepseek = agent_stats("rhdp_deepseek-r1-distill-qwen-14b")
+    granite = agent_stats("rhdp_granite-3-2-8b-instruct")
     if deepseek[4] or granite[4]:
         bullets.append(
             f"**RCA vs execute split:** "
@@ -392,7 +402,7 @@ def _headline_takeaways(new_runs: list[dict], by_agent: dict[str, list[dict]]) -
         bits = ", ".join(f"**{AGENT_DISPLAY_LABELS.get(aid, aid)}** {ex}/{nn}" for aid, ex, nn in executors)
         bullets.append(f"**Primary executors this run:** {bits}.")
 
-    q36 = agent_stats("maas_qwen36-27b")
+    q36 = agent_stats("litemaas_qwen3.8-27b")
     if q36[4]:
         bullets.append(
             f"**qwen3.8-27b (maas-litemaas):** detect/RCA/exec **{q36[0]}/{q36[4]}** with **{q36[3]}/{q36[4]}** "
@@ -402,15 +412,15 @@ def _headline_takeaways(new_runs: list[dict], by_agent: dict[str, list[dict]]) -
     llama = agent_stats("maas_llama31-70b")
     if llama[4]:
         bullets.append(
-            f"**Llama:** **maas_llama31-70b** detect **{llama[0]}/{llama[4]}**, "
+            f"**Llama:** **rhdp_llama-31-70b-cpu** detect **{llama[0]}/{llama[4]}**, "
             f"`agent_error` **{llama[3]}/{llama[4]}** — keep out of default lineup until fixed."
         )
 
-    glm = agent_stats("maas_glm-53-flash")
+    glm = agent_stats("prelude_glm-53-flash")
     if glm[4]:
         bullets.append(
             f"**glm-53-flash:** detect **{glm[0]}/{glm[4]}**, RCA **{glm[1]}/{glm[4]}**, "
-            f"exec **{glm[2]}/{glm[4]}** (MTTD med {median_mttd(by_agent.get('maas_glm-53-flash', []))})."
+            f"exec **{glm[2]}/{glm[4]}** (MTTD med {median_mttd(by_agent.get('prelude_glm-53-flash', []))})."
         )
 
     if not any("cascade" in str(a) or "nemotron" in str(a) for a in by_agent):
@@ -436,7 +446,7 @@ def build_report(
     # The two qwen slots run the same model (Qwen 3.8 27B) on different gateways — see
     # AGENT_DISPLAY_LABELS / the slot-identity finding. Count distinct models accordingly.
     n_distinct_models = n_agents - (
-        1 if {"maas_qwen36-27b", "maas_qwen38-27b"} <= set(by_agent) else 0
+        1 if {"litemaas_qwen3.8-27b", "rhdp_qwen38-27b"} <= set(by_agent) else 0
     )
     n_contexts = len({str(r.get("context_c")) for r in new_runs})
     agents_per = sorted(len(v) for v in by_agent.values())
@@ -605,9 +615,9 @@ def build_report(
     lines.append("### Qwen family (`qwen3-14b` vs Qwen3.8-27B × two gateways)")
     lines.append("")
     qwen_specs = [
-        ("qwen3 (RHDP)", "maas_qwen3"),
-        ("qwen3.8-27b_maas-rhdp", "maas_qwen38-27b"),
-        ("qwen3.8-27b_maas-litemaas", "maas_qwen36-27b"),
+        ("qwen3 (RHDP)", "rhdp_qwen3-14b"),
+        ("qwen3.8-27b @ rhdp", "rhdp_qwen38-27b"),
+        ("qwen3.8-27b @ litemaas", "litemaas_qwen3.8-27b"),
     ]
     qwen_rows = []
     for label, agent_id in qwen_specs:
@@ -716,9 +726,9 @@ def build_report(
     )
     lines.append("")
     compare_agents = [
-        ("maas_deepseek", "deepseek"),
-        ("maas_qwen3", "qwen3"),
-        ("maas_granite", "granite"),
+        ("rhdp_deepseek-r1-distill-qwen-14b", "deepseek"),
+        ("rhdp_qwen3-14b", "qwen3"),
+        ("rhdp_granite-3-2-8b-instruct", "granite"),
     ]
     ctx_order = ["0", "1", "2", "3", "4", "1-4", "2-4", "1-2-3-4", "2-3", "2-3-4"]
     comp_rows = []
