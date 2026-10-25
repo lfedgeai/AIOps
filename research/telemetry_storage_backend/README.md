@@ -140,13 +140,13 @@ All four backends get identical data. Ingest duration and rows/sec are measured 
 
 After ingestion (and OTLP mapping if `--otlp`), the runner executes the same set of SQL queries on each backend. Each query file in `queries/{doris,clickhouse,druid,oceanbase}/*.sql` is run once per backend via its native API:
 
-- **Doris** — `mysql` client over Docker (`telemetry.logs`, `telemetry.spans`, `telemetry.metrics`)
+- **Doris** — persistent `pymysql` connection to FE `:9030` (`telemetry.logs`, `telemetry.spans`, `telemetry.metrics`)
 - **ClickHouse** — HTTP POST to `:8123` with `?query=...`
 - **Druid** — HTTP POST to `:8888/druid/v2/sql` with JSON body
-- **OceanBase** — `mysql` client over Docker (port 2881, MySQL-compatible)
+- **OceanBase** — persistent `pymysql` connection to `:2881` (MySQL-compatible)
 
-**What is measured** — For each query, the runner records:
-- **Latency (s)** — Wall-clock time from query start to completion (includes network, parsing, execution)
+**What is measured** — Each query runs once untimed (warm-up), then `--query-runs` times (default 5). The runner records:
+- **Latency (s)** — Median client wall-clock time over the timed runs (includes network, parsing, execution); `latency_min_s` / `latency_max_s` are also stored in `*_queries.json`
 - **Rows** — Number of rows in the **result set** returned by the query (not rows scanned). Queries use `LIMIT 20` or `LIMIT 100`, so row counts are capped.
 
 **Report** — `compare.html` includes:
@@ -158,11 +158,14 @@ After ingestion (and OTLP mapping if `--otlp`), the runner executes the same set
 
 Some queries return different row counts across backends:
 
-- **spans_error_by_service** — Doris and ClickHouse both return 2 rows (Doris uses `$."http.status_code"` for JSON keys with dots). Druid omits or handles `http.status_code` differently (Druid SQL JSON support varies).
+- **spans_error_by_service** — `http.status_code` is a JSON number. ClickHouse now uses `JSONExtractInt` (the previous `JSONExtractString` returns `''` for numbers, so 5xx spans were never counted); Doris reads the indexed `http_status_code` column populated at load time. Druid omits or handles `http.status_code` differently (Druid SQL JSON support varies).
+- **logs_errors_by_service, logs_search_error** — Doris uses the full-text index (`message MATCH_ANY 'error'`, token match, case-insensitive); ClickHouse uses `positionCaseInsensitive` (substring match). Token vs substring matching can give different counts when `error` only appears inside a longer word.
 - **metrics_p95_latency, metrics_by_service_hourly** — Doris and ClickHouse include OTLP-mapped metrics (e.g. `gen` from telemetrygen); Druid does not, so it has fewer metric names. Hour bucketing also differs (date_trunc vs TIME_FLOOR).
 - **traces_slow_by_service** — Returns 0 when no spans have `duration_ms > 500`. Batch and telemetrygen spans are usually short, so empty results are expected.
 - **OceanBase on log-search queries** — `logs_errors_by_service` and `logs_search_error` scan the `message` column with `LIKE '%error%'`. OceanBase is row-oriented; these queries can be 10–50× slower than ClickHouse and may time out at scale. OceanBase is suited for OLTP and mixed workloads rather than analytical log search.
 
 ---
+
+See [docs/DORIS_TUNING.md](docs/DORIS_TUNING.md) for why Doris latencies were previously ~0.5s flat and how the Doris schema maps to each query shape.
 
 See [SCALING.md](SCALING.md) for scaling and tuning (50k rows, batch size, streaming simulation, infrastructure).
