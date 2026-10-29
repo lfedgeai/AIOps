@@ -9,6 +9,7 @@ For what the demo is and why, see the [top-level README](../README.md). To run t
 ## Prerequisites
 
 - OpenShift **4.21+** on AWS (IPI), OVN-Kubernetes, `cluster-admin`
+- Red Hat OpenShift AI 3.4
 - A RHEL 9 bastion with `oc`, `aws`, `jq` and `python3`, logged in to the cluster — [`docs/CLUSTER-LOGIN.md`](docs/CLUSTER-LOGIN.md)
 - An S3 bucket and AWS credentials for LokiStack
 - An OpenAI-compatible LLM endpoint — [`docs/PHASE-2-LLM-PROVIDERS.md`](docs/PHASE-2-LLM-PROVIDERS.md)
