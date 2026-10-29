@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiops-runtime-harness"
+version = "0.1.0"
+description = "Pluggable end-to-end AIOps runtime assembled from LF Edge evaluation winners."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.110.0",
+  "uvicorn[standard]>=0.27.0",
+  "httpx>=0.27.0",
+  "pydantic>=2.5.0",
+  "pyyaml>=6.0.1",
+  "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "respx>=0.21.0"]
+mcp = ["mcp>=1.9.0,<2"]
+k8s = ["kubernetes>=30.0.0"]
+
+[project.scripts]
+aiops-runtime = "runtime_harness.cli:main"
+aiops-runtime-mcp = "runtime_harness.mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["runtime_harness*"]

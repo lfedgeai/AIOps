@@ -1,0 +1,94 @@
+# Default AIOps runtime assembly — Oct-26 evidence lineups
+# Source: research/agentic_aiops_architectures/docs/EVALUATION_RESULTS_Oct26.md
+#
+# Lineup per user direction + Oct-26 consolidated findings:
+#   - Granite for anomaly detection (fast MTTD alternate, 96% detect clean)
+#   - GLM-5.3-Flash for signal correlation + RCA + remediation
+#     (Run A: 98% detect / 98% RCA / 92% exec; Run B: 8/8 full wins)
+
+name: oct26-granite-glm
+evidence:
+  report: research/agentic_aiops_architectures/docs/EVALUATION_RESULTS_Oct26.md
+  generated: 2026-10-23
+  matrix: "Run A 288 cells (Oct 20-22) + Run B 40 cells (Oct 22-23), fixed metric pipeline"
+
+# Prefer high-RCA contexts; C0 alone was weak on RCA for diagnosers.
+# Active sets are controlled live from the UI (C1–C4 buttons → PUT /context).
+enrichment:
+  plugin: context_c
+  corpus_root: "/home/redhat/git/LFEdge/AIOps/research/anomaly_detection/performance_comparison/chaos_engineering/otel-demo"
+  default_sets: ["2", "3", "4"]
+
+telemetry:
+  plugin: clickhouse_otel
+  # The runtime's OWN ClickHouse instance (fork of the otel-demo collector).
+  # Local access via: oc port-forward -n agentic-aiops svc/clickhouse-rt 38124:8123
+  clickhouse_url: "${CLICKHOUSE_RT_HTTP:-http://127.0.0.1:38124}"
+  database: otel
+
+# ---------------------------------------------------------------------------
+# Stage model selection (editable at runtime via UI / GET|PUT /models)
+# ---------------------------------------------------------------------------
+models:
+  anomaly_detection:
+    primary: maas_granite           # detect 96% clean, MTTD med 36s
+  rca:
+    primary: maas_glm-53-flash      # correlation + RCA (98% Run A, 8/8 Run B)
+  remediation:
+    primary: maas_glm-53-flash      # executor (92% exec Run A, 8/8 Run B)
+
+detector:
+  plugin: llm_detect
+  max_tool_iterations: 8        # bounded investigation rounds (agent.py)
+  primary:
+    id: maas_granite
+    role: detect
+    eval:
+      detect: "46/48 (96%)"
+      rca: "41/48 (85%)"
+      exec: "0/48 (0%)"
+      mttd_median_s: 36
+
+rca:
+  plugin: llm_rca
+  max_tool_iterations: 8        # bounded investigation rounds (agent.py)
+  primary:
+    id: maas_glm-53-flash
+    role: rca
+    eval:
+      detect: "47/48 (98%)"
+      rca: "47/48 (98%)"
+      exec: "44/48 (92%)"
+      mttd_median_s: 118
+  require_confirmation: false   # single-model RCA per lineup
+
+remediator:
+  plugin: llm_remediate
+  primary:
+    id: maas_glm-53-flash
+    role: remediate_execute
+    eval:
+      exec: "44/48 (92%)"
+      mttr_median_s: 112
+
+verifier:
+  plugin: k8s_health
+  poll_seconds: 15
+  timeout_seconds: 180
+
+pipeline:
+  mode: staged
+  dry_run: true
+  human_in_the_loop: true
+  max_steps: 20
+
+scheduler:
+  enabled: false
+  interval_s: 300   # UI-editable via PUT /scheduler
+
+status:
+  history_limit: 50
+
+providers:
+  # maas only (mock removed). Env vars: GRANITE_*, GLM_*
+  backend: "${RUNTIME_PROVIDER:-maas}"
