@@ -59,8 +59,11 @@ class LLMDetector(Slot):
             store.render_user()
             + "\n\nDETECT STAGE. Investigate the fleet telemetry with the tools to "
             "decide whether a fault is currently present. Start with "
-            "count_errors_by_service to see which service is failing, then drill "
-            "into logs/traces/metrics and deployment config for the suspect.\n"
+            "count_errors_by_service AND last_activity_by_service: services with "
+            "error spikes, or whose last activity is minutes older than the "
+            "fleet's, are suspects. Confirm a suspect with get_deployment_config "
+            "(replicas=0 means scaled to zero — a fault). Note: errors may appear "
+            "only as failed spans (traces), not as error logs.\n"
             "If the telemetry looks normal, return detected=false (component=null). "
             "If a fault is present, name the suspect service in 'component'.\n"
             f"adopted_services={ctx.get('adopted_services')}\n"

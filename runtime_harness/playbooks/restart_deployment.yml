@@ -6,9 +6,9 @@
   connection: local
   gather_facts: false
   vars:
-    kubectl_cmd: "{{ kubectl_cmd | default('oc') }}"
-    namespace: "{{ namespace | default('otel-demo') }}"
-    target: "{{ target | default('cart') }}"
+    kubectl_cmd: "oc"
+    namespace: "otel-demo"
+    target: "cart"
   tasks:
     - name: Restart deployment
       ansible.builtin.command: >

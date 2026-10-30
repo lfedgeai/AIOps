@@ -74,8 +74,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "count_errors_by_service",
-        "description": "Fleet-wide error counts per service since a timestamp — the fastest way to find WHICH service is failing.",
+        "description": "Fleet-wide error counts per service since a timestamp (error logs AND failed spans) — the fastest way to find WHICH service is failing.",
         "args": {"since_ts": "optional ISO timestamp (default: 30 minutes ago)"},
+    },
+    {
+        "name": "last_activity_by_service",
+        "description": "Last telemetry activity (max timestamp) per service. A service whose last activity is minutes older than the fleet's is likely DOWN (e.g. scaled to zero).",
+        "args": {},
     },
     {
         "name": "get_deployment_config",
@@ -97,18 +102,22 @@ def build_tool_executor(
     def count_errors_by_service(since_ts: Optional[str] = None) -> str:
         from runtime_harness.telemetry.clickhouse import _esc
 
-        since = since_ts or _default_since(30)
         try:
-            dt = datetime.fromisoformat(since_ts.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat((since_ts or _default_since(30)).replace("Z", "+00:00"))
             since_sql = dt.strftime("%Y-%m-%d %H:%M:%S")
         except (ValueError, AttributeError):
             since_sql = _default_since(30)[:19].replace("T", " ")
         sql = (
-            f"SELECT ServiceName, count() AS errors FROM {ch_client.database}.otel_logs "
+            f"SELECT service, sum(errors) FROM ("
+            f"SELECT ServiceName AS service, count() AS errors FROM {ch_client.database}.otel_logs "
             f"WHERE Timestamp >= '{since_sql}' AND ("
             f"positionCaseInsensitive(SeverityText, 'ERROR') > 0 "
-            f"OR positionCaseInsensitive(Body, 'error') > 0) "
-            f"AND ServiceName != '' GROUP BY ServiceName ORDER BY errors DESC LIMIT 25 "
+            f"OR positionCaseInsensitive(Body, 'error') > 0) AND ServiceName != '' "
+            f"GROUP BY ServiceName "
+            f"UNION ALL "
+            f"SELECT ServiceName, count() FROM {ch_client.database}.otel_traces "
+            f"WHERE Timestamp >= '{since_sql}' AND StatusCode = 'Error' AND ServiceName != '' "
+            f"GROUP BY ServiceName) GROUP BY service ORDER BY sum(errors) DESC LIMIT 25 "
             f"FORMAT TabSeparated"
         )
         out = ch_client.query(sql)
@@ -121,6 +130,31 @@ def build_tool_executor(
                 if len(parts) == 2:
                     rows.append({"service": parts[0], "errors": int(parts[1])})
         return json.dumps({"since": since_sql, "errors_by_service": rows}, indent=2)
+
+    def last_activity_by_service() -> str:
+        sql = (
+            f"SELECT service, max(ts) FROM ("
+            f"SELECT ServiceName AS service, max(Timestamp) AS ts FROM {ch_client.database}.otel_logs "
+            f"WHERE Timestamp >= now() - INTERVAL 2 HOUR AND ServiceName != '' GROUP BY ServiceName "
+            f"UNION ALL "
+            f"SELECT ServiceName, max(Timestamp) FROM {ch_client.database}.otel_traces "
+            f"WHERE Timestamp >= now() - INTERVAL 2 HOUR AND ServiceName != '' GROUP BY ServiceName) "
+            f"GROUP BY service ORDER BY max(ts) DESC LIMIT 30 FORMAT TabSeparated"
+        )
+        out = ch_client.query(sql)
+        if out.startswith("Error:"):
+            return out
+        rows = []
+        for ln in out.split("\n"):
+            if ln.strip():
+                parts = ln.split("\t")
+                if len(parts) == 2:
+                    rows.append({"service": parts[0], "last_activity": parts[1][:19]})
+        return json.dumps(
+            {"now": _default_since(0), "services": rows,
+             "note": "services with old last_activity vs the fleet are likely down"},
+            indent=2,
+        )
 
     def get_deployment_config(name: str, namespace: Optional[str] = None) -> str:
         ns = namespace or workload_namespace
@@ -194,6 +228,8 @@ def build_tool_executor(
                 )
             if name == "count_errors_by_service":
                 return count_errors_by_service(since_ts=args.get("since_ts"))
+            if name == "last_activity_by_service":
+                return last_activity_by_service()
             if name == "get_deployment_config":
                 return get_deployment_config(
                     name=str(args.get("name", "")), namespace=args.get("namespace")

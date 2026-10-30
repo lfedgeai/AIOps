@@ -6,10 +6,10 @@
   connection: local
   gather_facts: false
   vars:
-    kubectl_cmd: "{{ kubectl_cmd | default('oc') }}"
-    namespace: "{{ namespace | default('otel-demo') }}"
-    target: "{{ target | default('cart') }}"
-    replicas: "{{ replicas | default(1) }}"
+    kubectl_cmd: "oc"
+    namespace: "otel-demo"
+    target: "cart"
+    replicas: 1
   tasks:
     - name: Scale deployment back up
       ansible.builtin.command: >

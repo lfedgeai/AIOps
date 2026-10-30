@@ -7,10 +7,10 @@
   connection: local
   gather_facts: false
   vars:
-    kubectl_cmd: "{{ kubectl_cmd | default('oc') }}"
-    namespace: "{{ namespace | default('otel-demo') }}"
-    target: "{{ target | default('cart') }}"
-    env_names: "{{ env_names | default([]) }}"
+    kubectl_cmd: "oc"
+    namespace: "otel-demo"
+    target: "cart"
+    env_names: []
   tasks:
     - name: Remove each corrupted env var
       ansible.builtin.command: >
