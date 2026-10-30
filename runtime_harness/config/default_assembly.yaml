@@ -95,6 +95,34 @@ scheduler:
   enabled: false
   interval_s: 300   # UI-editable via PUT /scheduler
 
+# ---------------------------------------------------------------------------
+# Triggers — WHEN cycles run. Primary mode is EXCLUSIVE (UI / PUT /triggers):
+#   scheduler    interval polling (heartbeat safety net)
+#   alertmanager event-driven: POST /alert receives Alertmanager webhooks
+#                (firing alerts → targeted cycles, T0 from startsAt,
+#                fingerprint dedup, trust-but-verify)
+# The watcher is an INDEPENDENT cheap sensor (error bursts + service silence
+# on the runtime's own ClickHouse) that wakes full cycles on suspicion.
+# Namespace scope: where alerts/triggers apply (the adopted app's home).
+# ---------------------------------------------------------------------------
+triggers:
+  mode: scheduler
+  namespaces: ["otel-demo"]
+  alertmanager:
+    # Poll mode (default): the runtime pulls firing alerts from Alertmanager's
+    # v2 API — no inbound network needed (port-forward or in-cluster URL).
+    # Push mode: POST /alert webhook, requires cluster → runtime reachability
+    # (open firewalld 8085 or run the runtime in-cluster).
+    url: "${ALERTMANAGER_URL:-http://127.0.0.1:9093}"
+    poll_interval_s: 15
+  watcher:
+    enabled: false
+    interval_s: 20
+    error_window_m: 5
+    error_threshold: 25   # failed spans per service per window → breach
+    silence_s: 90         # no telemetry for this long → breach
+    cooldown_s: 300       # per-target refire cooldown
+
 status:
   history_limit: 50
 

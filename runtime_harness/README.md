@@ -53,6 +53,9 @@ The UI provides: **scheduler timing control** (interval + enable/disable), **liv
 | `GET\|PUT /prompts` · `POST /prompts/reset` | Editable prompts |
 | `GET\|PUT /scheduler` | Continuous cycle control `{enabled, interval_s}` |
 | `GET\|PUT /context` | Active C1–C4 RAG context sets (BM25) |
+| `GET\|PUT /triggers` | Trigger config: mode (`scheduler`\|`alertmanager`), watcher toggle |
+| `POST /alert` | Alertmanager webhook (push mode) — firing alerts → targeted cycles |
+| `POST /trigger` | Generic trigger `{target, t0, source}` |
 | `GET /telemetry-status` | Own-ClickHouse health (freshness, services, rate) |
 | `GET /trends` | Cycle history (MTTD/MTTR series) |
 | `POST /cycle` | One cycle; optional `{target, fault: {type, target, injected_at}}` for drills |

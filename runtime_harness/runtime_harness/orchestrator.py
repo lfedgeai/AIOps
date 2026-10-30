@@ -96,6 +96,8 @@ class Orchestrator:
         namespace: str = "otel-demo",
         context_c: Optional[str] = None,
         fault: Optional[FaultSpec] = None,
+        t0: Optional[Any] = None,
+        source: str = "manual",
     ) -> RuntimeStatus:
         a = self.assembly
         from runtime_harness.remediation import get_mode
@@ -118,6 +120,7 @@ class Orchestrator:
         stages: list[StageResult] = []
         incident = IncidentView()
         record = new_cycle_record(target or "(adopt)", "cycle-start")
+        record["source"] = source
         t_cycle = datetime.now(timezone.utc)
 
         self._publish(
@@ -134,7 +137,7 @@ class Orchestrator:
             stages.append(self._error_stage(Stage.TELEMETRY, f"telemetry stage failed: {exc}"))
             return self._finish(Stage.ERROR, Health.ERROR, str(exc), incident, stages, record)
 
-        # Resolve T0 for honest MTTD/MTTR (injected > telemetry evidence > cycle start)
+        # Resolve T0 for honest MTTD/MTTR (injected > trigger > evidence > cycle start)
         ch_cfg = a.config.get("telemetry") or {}
         from runtime_harness.telemetry.clickhouse import clickhouse_http_url_from_config
 
@@ -143,10 +146,15 @@ class Orchestrator:
             database=str(ch_cfg.get("database", "otel")),
         )
         focus = ctx.get("target")
-        t0 = resolve_t0(fault, ch_client, focus, t_cycle)
-        record["t0_source"] = t0.source
+        if fault is not None:
+            t0_resolved = resolve_t0(fault, ch_client, focus, t_cycle)
+        elif t0 is not None:
+            t0_resolved = t0
+        else:
+            t0_resolved = resolve_t0(None, ch_client, focus, t_cycle)
+        record["t0_source"] = t0_resolved.source
         record["target"] = focus or record["target"]
-        ctx["t0"] = t0
+        ctx["t0"] = t0_resolved
 
         # -- detect ---------------------------------------------------------
         self._publish(
@@ -165,7 +173,7 @@ class Orchestrator:
         incident.detected = bool(detection.get("detected"))
         record["detected"] = incident.detected
         if incident.detected:
-            incident.mttd_s = (datetime.now(timezone.utc) - t0.ts).total_seconds()
+            incident.mttd_s = (datetime.now(timezone.utc) - t0_resolved.ts).total_seconds()
             record["mttd_s"] = incident.mttd_s
 
         if not incident.detected:
@@ -231,7 +239,7 @@ class Orchestrator:
         incident.remediation_executed = bool(rem.get("executed"))
         record["remediation"] = rem.get("action")
         if rem.get("proposed") or rem.get("executed"):
-            incident.mttr_s = (datetime.now(timezone.utc) - t0.ts).total_seconds()
+            incident.mttr_s = (datetime.now(timezone.utc) - t0_resolved.ts).total_seconds()
             record["mttr_s"] = incident.mttr_s
             record["mttr_mode"] = "executed" if rem.get("executed") else "proposed"
 

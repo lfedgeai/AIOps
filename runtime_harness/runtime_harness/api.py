@@ -73,10 +73,75 @@ def _startup() -> None:
     a = get_assembly()
     sched_cfg = a.config.get("scheduler") or {}
     init_scheduler(
-        runner=lambda: get_orch().run_cycle(),
+        runner=lambda: get_orch().run_cycle(source="scheduler"),
         enabled=bool(sched_cfg.get("enabled", False)),
         interval_s=int(sched_cfg.get("interval_s", 300)),
+        gate=lambda: get_trigger_mode() == "scheduler",
     )
+    from runtime_harness.triggers import init_trigger_mode_from_config
+
+    init_trigger_mode_from_config(a.config)
+    _init_watcher(a)
+    _init_am_poller(a)
+
+
+def _init_watcher(assembly: Assembly):
+    global _watcher
+    from runtime_harness.telemetry.clickhouse import ClickHouseClient
+    from runtime_harness.triggers import StatisticalWatcher, record_trigger
+    from runtime_harness.faults import T0
+
+    w_cfg = (assembly.config.get("triggers") or {}).get("watcher") or {}
+
+    def fire(target: str, onset, reason: str) -> None:
+        record_trigger("watcher", target, reason, t0=onset.isoformat())
+        get_scheduler().try_run(
+            lambda: get_orch().run_cycle(
+                target=target, t0=T0(ts=onset, source=reason), source="watcher"
+            )
+        )
+
+    _watcher = StatisticalWatcher(
+        fire=fire,
+        client_factory=ClickHouseClient,
+        interval_s=int(w_cfg.get("interval_s", 20)),
+        error_window_m=int(w_cfg.get("error_window_m", 5)),
+        error_threshold=int(w_cfg.get("error_threshold", 25)),
+        silence_s=int(w_cfg.get("silence_s", 90)),
+        cooldown_s=int(w_cfg.get("cooldown_s", 300)),
+    )
+    _watcher.enabled = bool(w_cfg.get("enabled", False))
+    _watcher.start()
+
+
+_watcher = None
+_am_poller = None
+
+
+def _init_am_poller(assembly: Assembly):
+    global _am_poller
+    from runtime_harness.triggers import AlertmanagerPoller, record_trigger
+
+    t_cfg = assembly.config.get("triggers") or {}
+    am_cfg = t_cfg.get("alertmanager") or {}
+
+    def fire(target, t0, alertname, severity):
+        record_trigger(
+            "alertmanager-poll",
+            target,
+            f"{alertname} ({severity})",
+            t0=t0.ts.isoformat() if t0 else None,
+        )
+        get_scheduler().try_run(
+            lambda: get_orch().run_cycle(target=target, t0=t0, source="alertmanager")
+        )
+
+    _am_poller = AlertmanagerPoller(
+        fire=fire,
+        url=str(am_cfg.get("url", "http://127.0.0.1:9093")),
+        interval_s=int(am_cfg.get("poll_interval_s", 15)),
+    )
+    _am_poller.start()
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +310,107 @@ def remediation_status() -> dict[str, Any]:
     return mode_status()
 
 
+@app.get("/triggers")
+def triggers_status() -> dict[str, Any]:
+    from runtime_harness.triggers import (
+        TRIGGER_MODES,
+        get_trigger_mode,
+        get_trigger_namespaces,
+        trigger_history,
+    )
+
+    return {
+        "mode": get_trigger_mode(),
+        "modes": list(TRIGGER_MODES),
+        "namespaces": get_trigger_namespaces(get_assembly().config),
+        "scheduler": get_scheduler().status(),
+        "watcher": _watcher.status() if _watcher else {},
+        "alertmanager": _am_poller.status() if _am_poller else {},
+        "history": trigger_history(10),
+    }
+
+
+@app.put("/triggers")
+def triggers_update(body: dict[str, Any]) -> dict[str, Any]:
+    from runtime_harness.triggers import set_trigger_mode
+
+    mode = body.get("mode")
+    if mode is not None:
+        set_trigger_mode(mode)
+        if _am_poller:
+            _am_poller.enabled = mode == "alertmanager"
+    if "watcher_enabled" in body:
+        if _watcher:
+            _watcher.enabled = bool(body["watcher_enabled"])
+    return triggers_status()
+
+
+@app.post("/alert")
+def alertmanager_webhook(payload: dict[str, Any]) -> dict[str, Any]:
+    """Alertmanager webhook receiver: firing alerts → targeted cycles.
+
+    Trust-but-verify: the alert is a cue (target hint + T0 from startsAt);
+    the detector still investigates independently.
+    """
+    import threading
+
+    from runtime_harness.faults import T0
+    from runtime_harness.triggers import parse_alertmanager_payload, record_trigger
+
+    events = parse_alertmanager_payload(payload)
+    accepted = []
+    for ev in events:
+        record_trigger(
+            "alertmanager",
+            ev.target,
+            f"{ev.alertname} ({ev.severity})",
+            namespace=ev.namespace,
+            t0=ev.starts_at.isoformat() if ev.starts_at else None,
+        )
+        accepted.append(
+            {"target": ev.target, "alertname": ev.alertname, "severity": ev.severity}
+        )
+        t0 = T0(ts=ev.starts_at, source="alert") if ev.starts_at else None
+
+        def _run(ev=ev, t0=t0):
+            get_scheduler().try_run(
+                lambda: get_orch().run_cycle(
+                    target=ev.target, t0=t0, source="alertmanager"
+                )
+            )
+
+        threading.Thread(target=_run, daemon=True).start()
+    return {"accepted": accepted, "dropped": len((payload.get("alerts") or [])) - len(accepted)}
+
+
+@app.post("/trigger")
+def generic_trigger(body: dict[str, Any]) -> dict[str, Any]:
+    """Generic trigger: {target, t0 (ISO), source} → targeted cycle."""
+    import threading
+
+    from datetime import datetime as _dt
+    from runtime_harness.faults import T0
+    from runtime_harness.triggers import record_trigger
+
+    target = body.get("target")
+    if not target:
+        raise ValueError("target is required")
+    source = str(body.get("source", "external"))
+    t0 = None
+    if body.get("t0"):
+        ts = _dt.fromisoformat(str(body["t0"]).replace("Z", "+00:00"))
+        t0 = T0(ts=ts, source=source)
+    record_trigger(source, target, body.get("detail", ""), t0=body.get("t0"))
+
+    def _run():
+        get_scheduler().try_run(
+            lambda: get_orch().run_cycle(target=target, t0=t0, source=source)
+        )
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"accepted": True, "target": target, "source": source}
+
+
 @app.put("/remediation")
 def remediation_update(body: dict[str, Any]) -> dict[str, Any]:
     from runtime_harness.remediation import RemediationMode, mode_status, set_mode
@@ -369,19 +535,25 @@ _STATUS_HTML = """<!DOCTYPE html>
   </div>
 
   <div class="card">
-    <h2>Scheduler</h2>
-    <div class="row"><span class="k">state</span><span class="v" id="sched-state">—</span></div>
-    <div class="row"><span class="k">interval</span><span class="v" id="sched-interval">—</span></div>
-    <div class="row"><span class="k">cycle running</span><span class="v" id="sched-running">—</span></div>
-    <div class="row"><span class="k">cycles run</span><span class="v" id="sched-count">—</span></div>
-    <div class="row"><span class="k">last run</span><span class="v" id="sched-last">—</span></div>
-    <div class="row"><span class="k">last error</span><span class="v" id="sched-err">—</span></div>
+    <h2>Triggers</h2>
     <div class="controls">
-      <input id="interval-input" type="number" min="30" step="10" style="width:90px"> s
+      <button id="trig-scheduler" onclick="setTrigMode('scheduler')">Scheduler (interval)</button>
+      <button id="trig-alertmanager" onclick="setTrigMode('alertmanager')">Alertmanager (webhook)</button>
+      <button id="trig-watcher" onclick="toggleWatcher()">Watcher: off</button>
+    </div>
+    <div class="row"><span class="k">primary mode</span><span class="v" id="trig-mode">—</span></div>
+    <div class="row"><span class="k">namespaces</span><span class="v" id="trig-ns">—</span></div>
+    <div class="row"><span class="k">scheduler</span><span class="v" id="sched-state">—</span></div>
+    <div class="controls">
+      <input id="interval-input" type="number" min="30" step="10" style="width:80px"> s
       <button class="primary" onclick="setInterval2()">Set interval</button>
       <button class="ok" id="toggle-btn" onclick="toggleScheduler()">Enable</button>
     </div>
-    <div class="msg">Continuous cycles drive honest MTTD — detection latency is bounded by this interval.</div>
+    <div class="row"><span class="k">watcher checks</span><span class="v" id="watch-checks">—</span></div>
+    <div class="row"><span class="k">last breaches</span><span class="v" id="watch-breaches">—</span></div>
+    <div class="chart-title">recent triggers</div>
+    <table id="trig-history"><tr><th>time</th><th>source</th><th>target</th><th>detail</th></tr></table>
+    <div class="msg">Primary mode is exclusive: scheduler polls on an interval; alertmanager waits for POST /alert webhooks (T0 from startsAt). The watcher is an independent cheap sensor (error bursts + service silence) that wakes full cycles. Triggers are cues — the detector still verifies independently.</div>
   </div>
 
   <div class="card">
@@ -477,21 +649,46 @@ async function refreshStatus() {
 }
 
 async function refreshScheduler() {
-  const s = await jget("/scheduler");
-  document.getElementById("sched-state").textContent = s.enabled ? "enabled" : "disabled";
-  document.getElementById("sched-state").style.color = s.enabled ? "var(--green)" : "var(--dim)";
-  document.getElementById("sched-interval").textContent = s.interval_s + " s";
-  document.getElementById("sched-running").textContent = s.cycle_running ? "yes" : "no";
-  document.getElementById("sched-count").textContent = s.cycles_run;
-  document.getElementById("sched-last").textContent = s.last_run_at ? s.last_run_at.slice(11,19) + "Z" : "—";
-  const errEl = document.getElementById("sched-err");
-  errEl.textContent = s.last_error || "—";
-  errEl.className = "v " + (s.last_error ? "err" : "");
+  const t = await jget("/triggers");
+  document.getElementById("trig-mode").textContent = t.mode;
+  document.getElementById("trig-ns").textContent = (t.namespaces || []).join(", ");
+  for (const m of ["scheduler","alertmanager"]) {
+    const btn = document.getElementById("trig-" + m);
+    btn.className = (t.mode === m) ? "primary" : "";
+    btn.style.opacity = (t.mode === m) ? "1" : "0.55";
+  }
+  const wb = document.getElementById("trig-watcher");
+  const w = t.watcher || {};
+  wb.textContent = "Watcher: " + (w.enabled ? "on" : "off");
+  wb.className = w.enabled ? "primary" : "";
+  document.getElementById("watch-checks").textContent = w.checks_run != null ? w.checks_run : "—";
+  const br = (w.breaches || []).slice(-2).map(b => (b.service || "?") + " " + (b.reason || b.error || "")).join(" · ");
+  document.getElementById("watch-breaches").textContent = br || "—";
+  const s = t.scheduler || {};
+  document.getElementById("sched-state").textContent =
+    (s.enabled && t.mode === "scheduler" ? "enabled" : s.enabled ? "paused (mode=" + t.mode + ")" : "disabled");
+  document.getElementById("sched-state").style.color = (s.enabled && t.mode === "scheduler") ? "var(--green)" : "var(--dim)";
+  if (!document.getElementById("interval-input").value)
+    document.getElementById("interval-input").value = s.interval_s;
   const btn = document.getElementById("toggle-btn");
   btn.textContent = s.enabled ? "Disable" : "Enable";
   btn.className = s.enabled ? "danger" : "ok";
-  if (!document.getElementById("interval-input").value)
-    document.getElementById("interval-input").value = s.interval_s;
+  const th = document.getElementById("trig-history");
+  th.innerHTML = "<tr><th>time</th><th>source</th><th>target</th><th>detail</th></tr>" +
+    (t.history || []).slice().reverse().map(h =>
+      `<tr><td>${(h.ts||"").slice(11,19)}</td><td>${h.source}</td><td>${h.target || "—"}</td><td>${(h.detail||"").slice(0,40)}</td></tr>`).join("");
+}
+
+async function setTrigMode(m) {
+  await fetch("/triggers", { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ mode: m }) });
+  refreshScheduler();
+}
+
+async function toggleWatcher() {
+  const t = await jget("/triggers");
+  const on = !(t.watcher || {}).enabled;
+  await fetch("/triggers", { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ watcher_enabled: on }) });
+  refreshScheduler();
 }
 
 async function refreshTelemetry() {
