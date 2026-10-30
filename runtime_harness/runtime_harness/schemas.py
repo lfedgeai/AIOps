@@ -46,10 +46,37 @@ class RcaDecision(BaseModel):
 
 
 class RemediationPlan(BaseModel):
-    """Remediation stage output (proposal; execution is harness-gated)."""
+    """Remediation stage output in HIL mode (proposal; harness gates execution)."""
 
     action: str
     executed: bool = False  # model claim only — harness gates real execution
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    summary: str = ""
+
+
+class GovernedPlan(BaseModel):
+    """Remediation output in GOVERNED mode: SELECT a reviewed playbook.
+
+    The model never writes commands — it picks from the catalog and supplies
+    parameters. The harness validates the selection against the allowlist.
+    """
+
+    playbook: str
+    target: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    summary: str = ""
+
+
+class DirectPlan(BaseModel):
+    """Remediation output in DIRECT mode: SELECT a guarded write tool.
+
+    Structured tool selection (never parsed command strings); execution goes
+    through write_tools with the G1–G3 guardrails and requires arming.
+    """
+
+    tool: str
+    args: dict[str, Any] = Field(default_factory=dict)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     summary: str = ""
 

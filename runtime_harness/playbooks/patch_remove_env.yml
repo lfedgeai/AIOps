@@ -1,0 +1,27 @@
+---
+# Governed remediation: remove corrupted env vars from a deployment spec
+# (config_corruption faults). `oc set env KEY-` (trailing minus) removes
+# the variable; the rollout applies it via a rolling update.
+- name: Remove env vars from a deployment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    kubectl_cmd: "{{ kubectl_cmd | default('oc') }}"
+    namespace: "{{ namespace | default('otel-demo') }}"
+    target: "{{ target | default('cart') }}"
+    env_names: "{{ env_names | default([]) }}"
+  tasks:
+    - name: Remove each corrupted env var
+      ansible.builtin.command: >
+        {{ kubectl_cmd }} set env deployment/{{ target }} -n {{ namespace }} {{ item }}-
+      loop: "{{ env_names }}"
+      register: env_out
+      changed_when: env_out.rc == 0
+
+    - name: Wait for rollout to complete
+      ansible.builtin.command: >
+        {{ kubectl_cmd }} rollout status deployment/{{ target }}
+        -n {{ namespace }} --timeout=180s
+      register: rollout_out
+      changed_when: false

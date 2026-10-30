@@ -238,6 +238,24 @@ def context_sets_update(body: dict[str, Any]) -> dict[str, Any]:
     return {"active": get_active_sets()}
 
 
+@app.get("/remediation")
+def remediation_status() -> dict[str, Any]:
+    from runtime_harness.remediation import mode_status
+
+    return mode_status()
+
+
+@app.put("/remediation")
+def remediation_update(body: dict[str, Any]) -> dict[str, Any]:
+    from runtime_harness.remediation import RemediationMode, mode_status, set_mode
+
+    mode = body.get("mode")
+    if mode not in ("hil", "governed", "direct"):
+        raise ValueError("mode must be one of: hil, governed, direct")
+    set_mode(RemediationMode(mode))
+    return mode_status()
+
+
 @app.get("/telemetry-status")
 def telemetry() -> dict[str, Any]:
     a = get_assembly()
@@ -395,6 +413,20 @@ _STATUS_HTML = """<!DOCTYPE html>
     <div class="msg" id="m-evidence">—</div>
   </div>
 
+  <div class="card">
+    <h2>Remediation mode</h2>
+    <div class="controls">
+      <button id="rem-hil" onclick="setRemMode('hil')">HIL — proposals</button>
+      <button id="rem-governed" onclick="setRemMode('governed')">Governed — Ansible</button>
+      <button id="rem-direct" onclick="setRemMode('direct')">Direct — MCP tools</button>
+    </div>
+    <div class="row"><span class="k">active</span><span class="v" id="rem-active">—</span></div>
+    <div class="row"><span class="k">direct armed</span><span class="v" id="rem-armed">—</span></div>
+    <div class="row"><span class="k">playbook catalog</span><span class="v" id="rem-playbooks">—</span></div>
+    <div class="row"><span class="k">fault → playbook</span><span class="v" id="rem-map">—</span></div>
+    <div class="msg">Mutually exclusive. HIL: model proposes, human decides. Governed: model selects a reviewed playbook; harness runs it (model never writes commands). Direct: guarded K8s writes (G1–G3) — requires AIOPS_RT_ENABLE_WRITE_TOOLS=1.</div>
+  </div>
+
   <div class="card wide">
     <h2>MTTD / MTTR trends</h2>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
@@ -426,7 +458,7 @@ async function refreshStatus() {
   h.textContent = s.health; h.className = "badge b-" + s.health;
   document.getElementById("assembly").textContent = s.assembly;
   document.getElementById("dryrun").textContent =
-    (s.dry_run ? "dry-run" : "LIVE") + (s.human_in_the_loop ? " · HIL" : "");
+    "mode: " + (s.remediation_mode || "hil") + (s.human_in_the_loop ? " · gated" : "");
   const order = STAGES.indexOf(s.stage.value === "complete" || s.stage.value === "error" ? "" : s.stage.value);
   document.getElementById("stages").innerHTML = STAGES.map((st, i) => {
     let cls = "stage";
@@ -589,8 +621,28 @@ async function toggleCtx(i) {
   refreshContext();
 }
 
+async function refreshRemediation() {
+  const r = await jget("/remediation");
+  document.getElementById("rem-active").textContent = r.mode;
+  document.getElementById("rem-armed").textContent = r.direct_armed ? "yes" : "NO";
+  document.getElementById("rem-armed").style.color = r.direct_armed ? "var(--green)" : "var(--dim)";
+  document.getElementById("rem-playbooks").textContent = (r.playbooks || []).join(", ") || "—";
+  document.getElementById("rem-map").textContent = Object.entries(r.fault_playbook_map || {}).map(([k,v]) => k+"→"+v).join(" · ") || "—";
+  for (const m of ["hil","governed","direct"]) {
+    const btn = document.getElementById("rem-" + m);
+    btn.className = (r.mode === m) ? "primary" : "";
+    btn.style.opacity = (r.mode === m) ? "1" : "0.55";
+  }
+}
+
+async function setRemMode(m) {
+  const r = await fetch("/remediation", { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ mode: m }) });
+  if (!r.ok) { const e = await r.json(); alert(e.detail || "mode change failed"); }
+  refreshRemediation();
+}
+
 function refreshAll() {
-  refreshStatus(); refreshScheduler(); refreshTelemetry(); refreshModels(); refreshTrends(); refreshContext();
+  refreshStatus(); refreshScheduler(); refreshTelemetry(); refreshModels(); refreshTrends(); refreshContext(); refreshRemediation();
 }
 refreshAll();
 setInterval(refreshAll, 3000);

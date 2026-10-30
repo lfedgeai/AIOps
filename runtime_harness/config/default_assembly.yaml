@@ -78,9 +78,18 @@ verifier:
 
 pipeline:
   mode: staged
-  dry_run: true
-  human_in_the_loop: true
   max_steps: 20
+
+# ---------------------------------------------------------------------------
+# Remediation — three MUTUALLY EXCLUSIVE configurations (PUT /remediation, UI):
+#   hil       proposals only (default; model suggests, human decides)
+#   governed  execution via reviewed Ansible playbooks (playbooks/ catalog;
+#             the model only SELECTS a playbook + params, never writes commands)
+#   direct    execution via guarded MCP/K8s write tools (G1–G3); requires
+#             AIOPS_RT_ENABLE_WRITE_TOOLS=1 to arm
+# ---------------------------------------------------------------------------
+remediation:
+  mode: hil
 
 scheduler:
   enabled: false

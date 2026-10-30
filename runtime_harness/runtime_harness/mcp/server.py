@@ -186,7 +186,9 @@ def build_mcp():
             return f"Error: {exc}"
 
     # ------------------------------------------------------------------
-    # Kubernetes writes — GATED (harness owns execution)
+    # ------------------------------------------------------------------
+    # Kubernetes writes — GATED (harness owns execution; shared with the
+    # pipeline's Direct remediation mode via write_tools.py)
     # ------------------------------------------------------------------
 
     @mcp.tool(name="scale_deployment")
@@ -195,13 +197,9 @@ def build_mcp():
         refused = _guard_writes()
         if refused:
             return refused
-        ns = namespace or WORKLOAD_NAMESPACE
-        try:
-            apps = _k8s().AppsV1Api()
-            apps.patch_namespaced_deployment_scale(name, ns, {"spec": {"replicas": replicas}})
-            return f"scaled {name} to {replicas} replicas in {ns}"
-        except Exception as exc:  # noqa: BLE001
-            return f"Error: {exc}"
+        from runtime_harness.write_tools import execute_write
+
+        return execute_write("scale_deployment", {"name": name, "replicas": replicas}, namespace)
 
     @mcp.tool(name="restart_deployment")
     def restart_deployment(name: str, namespace: Optional[str] = None) -> str:
@@ -209,17 +207,9 @@ def build_mcp():
         refused = _guard_writes()
         if refused:
             return refused
-        ns = namespace or WORKLOAD_NAMESPACE
-        try:
-            apps = _k8s().AppsV1Api()
-            apps.patch_namespaced_deployment(
-                name, ns, {"spec": {"template": {"metadata": {"annotations": {
-                    "kubectl.kubernetes.io/restartedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ")
-                }}}}}
-            )
-            return f"restarted {name} in {ns}"
-        except Exception as exc:  # noqa: BLE001
-            return f"Error: {exc}"
+        from runtime_harness.write_tools import execute_write
+
+        return execute_write("restart_deployment", {"name": name}, namespace)
 
     @mcp.tool(name="delete_pod")
     def delete_pod(name: str, namespace: Optional[str] = None) -> str:
@@ -227,13 +217,9 @@ def build_mcp():
         refused = _guard_writes()
         if refused:
             return refused
-        ns = namespace or WORKLOAD_NAMESPACE
-        try:
-            core = _k8s().CoreV1Api()
-            core.delete_namespaced_pod(name, ns)
-            return f"deleted pod {name} in {ns}"
-        except Exception as exc:  # noqa: BLE001
-            return f"Error: {exc}"
+        from runtime_harness.write_tools import execute_write
+
+        return execute_write("delete_pod", {"name": name}, namespace)
 
     @mcp.tool(name="patch_deployment")
     def patch_deployment(
@@ -244,60 +230,22 @@ def build_mcp():
     ) -> str:
         """Patch a deployment's container env (read-modify-write, rolling update).
 
-        Guardrails (Oct-26 Run B, validated):
-        - set_env may only OVERRIDE env vars that already exist on the
-          deployment (hallucinated names must not mutate live state)
-        - a patch that changes nothing returns Error (no exec credit)
-        - 409 Conflict is retried with backoff (rollout resourceVersion bumps)
+        Guardrails (Oct-26 Run B, validated): G1 set_env only overrides
+        existing vars; G2 no-op patches return Error (no exec credit);
+        G3 409-Conflict retried with backoff.
 
         Write tool — harness-gated.
         """
         refused = _guard_writes()
         if refused:
             return refused
-        if not set_env and not remove_env:
-            return "Error: no-op patch — provide set_env and/or remove_env"
-        ns = namespace or WORKLOAD_NAMESPACE
-        apps = _k8s().AppsV1Api()
+        from runtime_harness.write_tools import execute_write
 
-        for attempt in range(4):
-            try:
-                dep = apps.read_namespaced_deployment(name, ns)
-                changed = False
-                for c in dep.spec.template.spec.containers:
-                    env = {(e.name or ""): e for e in (c.env or [])}
-                    if remove_env:
-                        for k in remove_env:
-                            if k in env:
-                                c.env = [e for e in c.env if e.name != k]
-                                changed = True
-                                env = {(e.name or ""): e for e in (c.env or [])}
-                    if set_env:
-                        from kubernetes.client import V1EnvVar
-
-                        for k, v in set_env.items():
-                            if k in env:  # G1: override existing only
-                                env[k].value = v
-                                changed = True
-                if not changed:
-                    return (
-                        "Error: patch changed nothing (G2: no-op patches do not "
-                        "count as remediation). set_env keys must already exist."
-                    )
-                apps.replace_namespaced_deployment(name, ns, dep)
-                return f"patched {name} in {ns} (set={list(set_env or [])}, removed={remove_env or []})"
-            except Exception as exc:  # noqa: BLE001
-                body = str(exc)
-                if "409" in body and attempt < 3:
-                    time.sleep(2 ** attempt)
-                    continue
-                if "404" in body or "not found" in body.lower():
-                    return (
-                        f"Error: no deployment '{name}' in namespace '{ns}' — "
-                        f"the workload namespace is '{WORKLOAD_NAMESPACE}'."
-                    )
-                return f"Error: {exc}"
-        return "Error: patch retries exhausted (409 conflicts)"
+        return execute_write(
+            "patch_deployment",
+            {"name": name, "set_env": set_env or {}, "remove_env": remove_env or []},
+            namespace,
+        )
 
     return mcp
 

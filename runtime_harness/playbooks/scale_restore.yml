@@ -1,0 +1,26 @@
+---
+# Governed remediation: restore a scaled-to-zero deployment.
+# Selected by the model in GOVERNED mode; params are harness-validated.
+- name: Restore a scaled deployment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    kubectl_cmd: "{{ kubectl_cmd | default('oc') }}"
+    namespace: "{{ namespace | default('otel-demo') }}"
+    target: "{{ target | default('cart') }}"
+    replicas: "{{ replicas | default(1) }}"
+  tasks:
+    - name: Scale deployment back up
+      ansible.builtin.command: >
+        {{ kubectl_cmd }} scale deployment/{{ target }}
+        -n {{ namespace }} --replicas={{ replicas }}
+      register: scale_out
+      changed_when: scale_out.rc == 0
+
+    - name: Wait for rollout to complete
+      ansible.builtin.command: >
+        {{ kubectl_cmd }} rollout status deployment/{{ target }}
+        -n {{ namespace }} --timeout=180s
+      register: rollout_out
+      changed_when: false

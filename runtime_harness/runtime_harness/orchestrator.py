@@ -44,9 +44,9 @@ class Orchestrator:
     def __init__(self, assembly: Assembly, store: Optional[StatusStore] = None):
         self.assembly = assembly
         self.store = store or get_store()
-        pipe = assembly.config.get("pipeline") or {}
-        self.dry_run = bool(pipe.get("dry_run", True))
-        self.hil = bool(pipe.get("human_in_the_loop", True))
+        from runtime_harness.remediation import init_mode_from_config
+
+        init_mode_from_config(assembly.config)  # hil | governed | direct (exclusive)
 
     def _publish(
         self,
@@ -57,13 +57,17 @@ class Orchestrator:
         incident: IncidentView,
         stages: list[StageResult],
     ) -> None:
+        from runtime_harness.remediation import get_mode
+
+        mode = get_mode()
         self.store.set(
             RuntimeStatus(
                 health=health,
                 stage=stage,
                 assembly=self.assembly.name,
-                dry_run=self.dry_run,
-                human_in_the_loop=self.hil,
+                remediation_mode=mode.value,
+                dry_run=mode.value == "hil",
+                human_in_the_loop=mode.value == "hil",
                 components=self.assembly.component_refs(),
                 incident=incident,
                 last_stages=stages[-20:],
@@ -94,11 +98,14 @@ class Orchestrator:
         fault: Optional[FaultSpec] = None,
     ) -> RuntimeStatus:
         a = self.assembly
+        from runtime_harness.remediation import get_mode
+
+        mode = get_mode()
         ctx = SlotContext(
             target=target or None,
             namespace=namespace,
-            dry_run=self.dry_run,
-            human_in_the_loop=self.hil,
+            dry_run=mode.value == "hil",
+            human_in_the_loop=mode.value == "hil",
             context_c=context_c,
         )
         if fault is not None:

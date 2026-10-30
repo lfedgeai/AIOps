@@ -255,12 +255,19 @@ class ToolLoopAgent:
                 args = obj.get("args") or {}
                 result = self.execute(name, args)
                 trace.append({"tool": name, "args": args, "result_len": len(result)})
+                degraded = result.startswith("Error:") or '"source": "stub"' in result[:300]
+                note = (
+                    "\n[note: this tool is DEGRADED — backend unreachable. Do not "
+                    "retry it; conclude with the best available evidence.]"
+                    if degraded
+                    else ""
+                )
                 messages.append({"role": "assistant", "content": content})
                 messages.append(
                     {
                         "role": "user",
                         "content": (
-                            f"<tool_result>\n{result[:6000]}\n</tool_result>\n\n"
+                            f"<tool_result>\n{result[:6000]}\n</tool_result>{note}\n\n"
                             "Continue investigating, or respond with ONLY your final "
                             "JSON decision."
                         ),
@@ -270,15 +277,24 @@ class ToolLoopAgent:
             # no tool call → final answer
             decision = self._validate(content, schema)
             return decision, trace
-        # budget exhausted — force a final answer
-        messages.append(
-            {
-                "role": "user",
-                "content": "Investigation budget exhausted. Respond with ONLY your final JSON decision now.",
-            }
+        # budget exhausted — force a final answer; models sometimes keep
+        # emitting tool calls, so re-ask firmly and tolerate a few failures
+        force = (
+            "Investigation budget exhausted. DO NOT call any more tools. Respond "
+            "with ONLY your final JSON decision now — nothing else."
         )
-        content = self.provider._chat_messages(agent_id, system, messages)
-        return self._validate(content, schema), trace
+        messages.append({"role": "user", "content": force})
+        for _ in range(3):
+            content = self.provider._chat_messages(agent_id, system, messages)
+            obj = extract_json(content)
+            if obj is not None and "tool" not in obj:
+                return self._validate(content, schema), trace
+            messages.append({"role": "assistant", "content": content[:2000]})
+            messages.append({"role": "user", "content": force})
+        raise ProviderError(
+            f"{agent_id}: model did not produce a final decision within budget "
+            f"({self.max_iterations} rounds + 3 forced finals)"
+        )
 
     @staticmethod
     def _validate(content: str, schema: Type[BaseModel]) -> BaseModel:
