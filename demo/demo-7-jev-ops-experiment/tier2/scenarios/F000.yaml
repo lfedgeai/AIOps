@@ -1,0 +1,19 @@
+experiment_id: F000
+application: otel-demo-3.1.0
+description: Healthy control, no fault injected
+rationale: >
+  No fault is injected and the load generator runs normally. Any incident Jev
+  reports is a false positive. Measures how often Jev raises an alarm on a
+  healthy distributed application.
+target_service: none
+fault_type: none
+duration_s: 240
+workload:
+  users: 10
+observation_window_s: 180
+baseline_window_s: 180
+expected:
+  incident: false
+  affected_service: none
+  diagnosis: none
+  acceptable_actions: [no_action]

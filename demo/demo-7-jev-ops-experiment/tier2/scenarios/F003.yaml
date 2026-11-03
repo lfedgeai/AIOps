@@ -1,0 +1,20 @@
+experiment_id: F003
+application: otel-demo-3.1.0
+description: Payment service rejects every charge
+rationale: >
+  Every payment request throws and the checkout flow fails at the payment step. Errors originate in payment and surface in checkout. Tests transaction failure where the user-visible symptom is in checkout but the cause is downstream.
+fault:
+  flag: paymentFailure
+  variant: "100%"
+target_service: payment
+fault_type: failure
+duration_s: 240
+workload:
+  users: 10
+observation_window_s: 180
+baseline_window_s: 180
+expected:
+  incident: true
+  affected_service: payment
+  diagnosis: application_failure
+  acceptable_actions: [investigate, rollback_change, restart_service]

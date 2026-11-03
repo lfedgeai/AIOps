@@ -1,0 +1,21 @@
+experiment_id: K000
+application: otel-demo-3.1.0-kind
+description: "Healthy control: no fault, same polling as a fault run"
+rationale: >
+  Nothing is injected. The demo runs under the same load as every fault run, so any incident Jev
+  reports is a false positive. Polling runs for the whole detection window and every poll is
+  scored for false alarms. This is the control the LF Edge harness does not score.
+fault: null
+target_component: none
+duration_s: 240
+detection_window_s: 240
+poll_interval_s: 15
+observation_window_s: 180
+baseline_window_s: 180
+workload:
+  users: 10
+expected:
+  incident: false
+  affected_component: none
+  diagnosis: none
+  acceptable_actions: [no_action]

@@ -1,0 +1,28 @@
+experiment_id: K006
+application: otel-demo-3.1.0-kind
+description: cart given an invalid DATABASE_HOST (a variable it does not read)
+rationale: >
+  The group's fault adds DATABASE_HOST pointing at a host that does not exist. No service in
+  demo 3.1.0 reads DATABASE_HOST (cart reads VALKEY_ADDR; checked in the source, task 1.8).
+  Measured on kind (2026-10-14): the only effect is the rolling update the template change
+  starts; the new cart pod is Ready within 15 s, user requests kept returning 200 and nothing
+  else changed. A routine rollout is not an incident and has no faulty component, so the
+  expected outcome matches the healthy control. Kept so the group's fault list stays complete,
+  and noted for the group as a no-op on this demo version. Changed from incident: true,
+  misconfiguration after task 1.8.
+fault:
+  type: config_corruption
+  target: cart
+target_component: cart
+duration_s: 240
+detection_window_s: 240
+poll_interval_s: 15
+observation_window_s: 180
+baseline_window_s: 180
+workload:
+  users: 10
+expected:
+  incident: false
+  affected_component: none
+  diagnosis: none
+  acceptable_actions: [no_action, investigate]

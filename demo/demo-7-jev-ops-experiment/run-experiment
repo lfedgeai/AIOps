@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Usage: ./run-experiment F001      (./run-experiment list shows the IDs)
+cd "$(dirname "$0")"
+[ "${1:-}" = "list" ] && exec .venv/bin/python -m tier2 list
+[ $# -ge 1 ] || { echo "usage: $0 <experiment-id>|list"; exit 2; }
+exec .venv/bin/python -m tier2 run "$@"

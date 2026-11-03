@@ -1,0 +1,26 @@
+experiment_id: F004
+application: otel-demo-3.1.0
+description: Checkout cannot reach payment
+rationale: >
+  Checkout dials a wrong address instead of payment. Measured on 3.1.0: checkout's
+  error ratio rises from 0 to about 22% (PlaceOrder and the Charge client call fail),
+  frontend /api/checkout fails, and payment receives no calls at all, so it shows
+  no errors. The obvious suspect (payment) is healthy. Ground truth is checkout:
+  the defect is in checkout's connection to payment, and payment itself is fine.
+  This is a judgement call, since an engineer could reasonably say "payment is
+  unreachable". It is recorded here so results are read with it in mind.
+fault:
+  flag: paymentUnreachable
+  variant: "on"
+target_service: checkout
+fault_type: failure
+duration_s: 240
+workload:
+  users: 10
+observation_window_s: 180
+baseline_window_s: 180
+expected:
+  incident: true
+  affected_service: checkout
+  diagnosis: dependency_unreachable
+  acceptable_actions: [investigate, rollback_change, escalate]

@@ -1,0 +1,58 @@
+# Hand-written candidate variant (jev-prompt-variants task 6.2, 2026-11-01), from
+# docs/prompt-variants-dev-notes.md. Never edit in place: bump `version` or add a variant.
+# v2 (2026-11-01): changed after the task 6.3 review, before any record used v1.
+# v3 (2026-11-01): changed after the second task 6.3 review, before any record used v2.
+name: evidence-options
+version: 3
+tier: tier1
+style: wording
+rationale: 'Wording only. Severity and cause options describe what each looks like in the observation.
+  Dev notes finding 5: the baseline names a specific cause where the evidence supports none, so `unknown`
+  says what weak or mixed signals look like. v2: dropped "Choose this rather than guessing" from
+  `unknown` (a decision bias, so policy, not wording); "one part of the service has stopped doing its
+  work" (a paraphrase of one case) became "a component is failing or stalled"; "or resources at their
+  limit" left `critical`, as it could push a high-resource case with contradictory signals to critical.
+  v3: `configuration` said "the errors start right after the change", which also fits a code deploy
+  followed by errors (expected application_bug); it now separates a setting from the code. Remaining
+  risks, not changed: "close to full" may not fit moderate resource use, and "while this server''s own
+  resources are fine" may pull such a case toward dependency_failure; a case with a service down but
+  contradictory signals may still read as high or critical rather than degraded, as with the baseline.
+  Questions, action and human-review wording are the baseline''s.'
+dev_records:
+- results/20261018-134025-70runs.jsonl
+questions:
+  severity:
+    instructions: How severe is the current condition of this server?
+    criteria:
+      normal: Metrics, service statuses and logs are within their normal ranges. No sign of a problem.
+      degraded: Some signals are worse than normal, or the evidence is weak, but the service still works
+        for its users.
+      high: 'Clear impairment that users would notice: errors, time-outs or slowness, or a component is
+        failing or stalled.'
+      critical: 'The service is down or about to fail: very high error rates or an outage.'
+  action:
+    instructions: What single operational action should be taken now?
+    criteria:
+      observe: Take no action. Keep watching.
+      investigate: Look into the cause before changing anything.
+      restart: Restart the affected service.
+      escalate: Hand the incident to a human on-call engineer immediately.
+  probable_cause:
+    instructions: What is the most likely cause of the current condition?
+    criteria:
+      none: Nothing is wrong.
+      resource_exhaustion: CPU, memory, disk or another capacity limit of this server is close to full,
+        and the problems grow with it.
+      dependency_failure: Calls from this server to another service fail or time out, while this server's
+        own resources are fine.
+      application_bug: Errors come from the application's own code, for example repeated exceptions in
+        the logs, while resources and dependencies are fine.
+      configuration: A configuration setting, not the code, is wrong or was changed, and the errors point
+        to that setting.
+      network: Connections between machines drop, time out or lose packets.
+      unknown: The signals are weak, mixed or point to different causes.
+  human_review:
+    instructions: Should a human review this situation before any action is taken?
+    criteria:
+      'true': A human should review it.
+      'false': No human review is needed.

@@ -1,0 +1,36 @@
+# Fixed NodePorts for the host (kind.yaml maps them to 127.0.0.1). Our own
+# Services selecting the chart's pods, so the chart's service values are not
+# needed. Selectors are the chart's pod labels, checked in task 1.4.
+apiVersion: v1
+kind: Service
+metadata: {name: host-frontend-proxy, namespace: otel-demo}
+spec:
+  type: NodePort
+  selector: {opentelemetry.io/name: frontend-proxy}
+  ports: [{port: 8080, targetPort: 8080, nodePort: 30080}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: host-prometheus, namespace: otel-demo}
+spec:
+  type: NodePort
+  selector: {app.kubernetes.io/name: prometheus, app.kubernetes.io/component: server}
+  ports: [{port: 9090, targetPort: 9090, nodePort: 30090}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: host-opensearch, namespace: otel-demo}
+spec:
+  type: NodePort
+  selector: {app.kubernetes.io/name: opensearch}
+  ports: [{port: 9200, targetPort: 9200, nodePort: 30920}]
+---
+# Jaeger query directly, not through frontend-proxy: frontend-proxy runs on an
+# app node, so node_taint can evict it and cut off trace collection (task 1.6).
+apiVersion: v1
+kind: Service
+metadata: {name: host-jaeger, namespace: otel-demo}
+spec:
+  type: NodePort
+  selector: {app.kubernetes.io/name: jaeger}
+  ports: [{port: 16686, targetPort: 16686, nodePort: 30686}]

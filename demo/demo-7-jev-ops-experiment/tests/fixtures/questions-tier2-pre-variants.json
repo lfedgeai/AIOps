@@ -1,0 +1,60 @@
+{
+  "incident_detected": {
+    "type": "noul",
+    "instructions": "Is there an operational incident in this application right now?",
+    "criteria": {
+      "true": "Yes, something is failing or clearly degraded compared with the baseline.",
+      "false": "No, the application is operating normally."
+    }
+  },
+  "affected_service": {
+    "type": "choice",
+    "instructions": "Which single service or component is the origin of the problem?",
+    "criteria": {
+      "none": "No service is affected.",
+      "accounting": "The problem originates in accounting.",
+      "ad": "The problem originates in ad.",
+      "cart": "The problem originates in cart.",
+      "checkout": "The problem originates in checkout.",
+      "currency": "The problem originates in currency.",
+      "email": "The problem originates in email.",
+      "fraud-detection": "The problem originates in fraud-detection.",
+      "frontend": "The problem originates in frontend.",
+      "frontend-proxy": "The problem originates in frontend-proxy.",
+      "image-provider": "The problem originates in image-provider.",
+      "kafka": "The problem originates in kafka.",
+      "payment": "The problem originates in payment.",
+      "postgresql": "The problem originates in postgresql.",
+      "product-catalog": "The problem originates in product-catalog.",
+      "quote": "The problem originates in quote.",
+      "recommendation": "The problem originates in recommendation.",
+      "shipping": "The problem originates in shipping.",
+      "valkey-cart": "The problem originates in valkey-cart."
+    }
+  },
+  "diagnosis": {
+    "type": "choice",
+    "instructions": "What is the most likely failure mode?",
+    "criteria": {
+      "none": "Nothing is wrong.",
+      "application_failure": "The service itself is returning errors.",
+      "latency_degradation": "Requests succeed but are much slower than normal.",
+      "dependency_unreachable": "A service cannot reach something it depends on.",
+      "database_contention": "A database or data store is slow or locked.",
+      "resource_exhaustion": "CPU, memory or capacity is running out.",
+      "unknown": "The evidence is too weak or conflicting to name a failure mode."
+    }
+  },
+  "recommended_action": {
+    "type": "choice",
+    "instructions": "What single operational action should be taken now?",
+    "criteria": {
+      "no_action": "Take no action. Keep watching.",
+      "investigate": "Look into the cause before changing anything.",
+      "restart_service": "Restart the affected service.",
+      "rollback_change": "Roll back a recent change or configuration.",
+      "scale_up": "Add capacity to the affected service.",
+      "escalate": "Hand the incident to a human on-call engineer immediately."
+    }
+  }
+}

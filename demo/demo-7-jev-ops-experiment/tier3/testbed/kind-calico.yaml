@@ -1,0 +1,22 @@
+# As kind.yaml, without kindnet, for Calico (CNI=calico in pins.env).
+# NodePorts 3008x/3009x/3092x are published on 127.0.0.1 through the control-plane;
+# kube-proxy forwards them to pods on any node.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: jev
+networking:
+  disableDefaultCNI: true      # Calico instead of kindnet (task 1.3)
+  podSubnet: 192.168.0.0/16
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - {containerPort: 30080, hostPort: 18080, listenAddress: "127.0.0.1"}  # frontend-proxy
+      - {containerPort: 30090, hostPort: 19090, listenAddress: "127.0.0.1"}  # prometheus
+      - {containerPort: 30920, hostPort: 19200, listenAddress: "127.0.0.1"}  # opensearch
+      - {containerPort: 30686, hostPort: 19686, listenAddress: "127.0.0.1"}  # jaeger query
+  - role: worker
+    labels: {jev-role: observability}
+  - role: worker
+    labels: {jev-role: app}
+  - role: worker
+    labels: {jev-role: app}

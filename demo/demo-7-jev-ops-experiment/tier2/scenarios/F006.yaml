@@ -1,0 +1,25 @@
+experiment_id: F006
+application: otel-demo-3.1.0
+description: Database lock contention under product-catalog
+rationale: >
+  A periodic exclusive lock on the Postgres products table makes product-catalog
+  queries wait and time out. Measured on 3.1.0: product-catalog's error ratio rises
+  from 0 to about 18% (failing astronomy-db query spans) and its p95 latency hits
+  the histogram ceiling, which propagates to frontend, checkout and recommendation.
+  The symptom shows in product-catalog but the cause is the database beneath it.
+  Ground truth is product-catalog with a database_contention diagnosis.
+fault:
+  flag: productCatalogLockContention
+  variant: "on"
+target_service: product-catalog
+fault_type: degradation
+duration_s: 240
+workload:
+  users: 10
+observation_window_s: 180
+baseline_window_s: 180
+expected:
+  incident: true
+  affected_service: product-catalog
+  diagnosis: database_contention
+  acceptable_actions: [investigate, rollback_change, escalate]

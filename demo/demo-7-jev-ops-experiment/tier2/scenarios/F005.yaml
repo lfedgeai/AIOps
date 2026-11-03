@@ -1,0 +1,26 @@
+experiment_id: F005
+application: otel-demo-3.1.0
+description: Product images load slowly through the proxy
+rationale: >
+  The frontend asks Envoy to delay image requests by 10 seconds. Measured on 3.1.0:
+  there are no errors anywhere. frontend-web (browser) p95 latency rises from about
+  1.0 s to 9 s and frontend-proxy p95 from about 1.8 s to 4.6 s, while image-provider
+  stays at 2 ms, so the delay is not in the image service itself. Ground truth is
+  frontend-proxy, where the delay is injected. The signal comes only from browser
+  traffic (a small share of the Locust load), so it needs the default browser users
+  to be enabled. Pure latency degradation with no failures.
+fault:
+  flag: imageSlowLoad
+  variant: "10sec"
+target_service: frontend-proxy
+fault_type: latency
+duration_s: 240
+workload:
+  users: 10
+observation_window_s: 180
+baseline_window_s: 180
+expected:
+  incident: true
+  affected_service: frontend-proxy
+  diagnosis: latency_degradation
+  acceptable_actions: [investigate, rollback_change]

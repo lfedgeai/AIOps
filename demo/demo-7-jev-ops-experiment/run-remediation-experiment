@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Usage: ./run-remediation-experiment K001   (./run-remediation-experiment list shows the IDs)
+# Tier 4: the harness carries out Jev's recommended action (allowlist only) and measures MTTR.
+cd "$(dirname "$0")"
+[ "${1:-}" = "list" ] && exec .venv/bin/python -m tier4 list
+[ $# -ge 1 ] || { echo "usage: $0 <experiment-id>|list"; exit 2; }
+exec .venv/bin/python -m tier4 run "$@"

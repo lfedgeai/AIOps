@@ -1,0 +1,26 @@
+experiment_id: K002
+application: otel-demo-3.1.0-kind
+description: cart pods deleted once
+rationale: >
+  The cart pod is deleted and the deployment replaces it. Measured on kind (2026-10-14): the
+  new pod was Ready within the first 15 s poll, user requests to the cart kept returning 200,
+  and the only other trace was a 1% frontend error rate in span metrics between about 60 s
+  and 105 s. The system heals itself before anyone could act, so there is no incident now.
+  What happened is still a cart pod restart, so localization and diagnosis are scored against
+  that; no_action and investigate are acceptable. Changed from incident: true after task 1.9.
+fault:
+  type: kill_pod
+  target: cart
+target_component: cart
+duration_s: 240
+detection_window_s: 240
+poll_interval_s: 15
+observation_window_s: 180
+baseline_window_s: 180
+workload:
+  users: 10
+expected:
+  incident: false
+  affected_component: cart
+  diagnosis: pod_restart
+  acceptable_actions: [no_action, investigate]

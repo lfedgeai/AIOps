@@ -1,0 +1,37 @@
+# Today's question set, unchanged. Do not edit: add a new variant instead.
+name: baseline
+version: 1
+tier: tier1
+rationale: The question set used for every Tier 1 run before prompt variants existed (jev/client.py, 2026-10-05
+  to 2026-11-01). Every earlier Tier 1 result is this variant.
+dev_records: []
+questions:
+  severity:
+    instructions: How severe is the current condition of this server?
+    criteria:
+      normal: Operating normally. No sign of a problem.
+      degraded: Minor or uncertain signs of trouble. Service still works.
+      high: Clear service impairment. Users are likely affected.
+      critical: Severe failure or imminent failure. Service is down or close to it.
+  action:
+    instructions: What single operational action should be taken now?
+    criteria:
+      observe: Take no action. Keep watching.
+      investigate: Look into the cause before changing anything.
+      restart: Restart the affected service.
+      escalate: Hand the incident to a human on-call engineer immediately.
+  probable_cause:
+    instructions: What is the most likely cause of the current condition?
+    criteria:
+      none: Nothing is wrong.
+      resource_exhaustion: CPU, memory, disk or capacity is running out.
+      dependency_failure: A service this one depends on is failing or unreachable.
+      application_bug: A defect in the application code.
+      configuration: A wrong or changed configuration setting.
+      network: Network connectivity or packet loss.
+      unknown: The evidence is too weak or conflicting to name a cause.
+  human_review:
+    instructions: Should a human review this situation before any action is taken?
+    criteria:
+      'true': A human should review it.
+      'false': No human review is needed.

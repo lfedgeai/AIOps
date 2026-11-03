@@ -1,0 +1,88 @@
+# OpenTelemetry Demo chart 0.42.4 (app 3.1.0) values for Tier 3 (design D2, D3).
+# Values only: the chart is never forked or patched. Key paths read from
+# `helm show values` of 0.42.4 and its subcharts on 2026-10-14.
+
+# Application services run on the two application workers.
+default:
+  schedulingRules:
+    nodeSelector:
+      jev-role: app
+
+components:
+  # Harness, load and collector-management infrastructure run on the observability
+  # worker, so faults on application nodes never break the load or the measurement.
+  load-generator:
+    schedulingRules:
+      nodeSelector:
+        jev-role: observability
+  flagd:
+    schedulingRules:
+      nodeSelector:
+        jev-role: observability
+  opamp-server:
+    schedulingRules:
+      nodeSelector:
+        jev-role: observability
+
+  # Trimmed to save memory (about 3 GB of limits). None is on the path of any
+  # Tier 3 scenario (all target cart, valkey-cart or an app node).
+  kafka: {enabled: false}
+  accounting: {enabled: false}       # Kafka consumer
+  fraud-detection: {enabled: false}  # Kafka consumer
+  agent: {enabled: false}            # LLM assistant (compose.agent.yaml, not run in Tier 2 either)
+  chatbot: {enabled: false}
+  mcp: {enabled: false}
+  telemetry-docs: {enabled: false}
+
+  # ad (Java) is OOMKilled at startup with the chart's 300Mi limit on kind
+  # (5 restarts in the first 5 minutes, 2026-10-14). A crash-looping service
+  # would be a fault in every baseline.
+  ad:
+    resources:
+      limits:
+        memory: 500Mi
+
+  # checkout publishes orders to Kafka only when KAFKA_ADDR is set
+  # (src/checkout/main.go), and waits for Kafka in an init container.
+  checkout:
+    envOverrides:
+      - {name: KAFKA_ADDR, value: ""}
+    initContainers: []
+
+# The collector is a DaemonSet. Pinned to the observability node, it runs as one
+# pod, so its Service must route cluster-wide: in daemonset mode the chart
+# defaults to internalTrafficPolicy Local, which silently dropped every span
+# from pods on jev-worker2/3 (only flagd and load-generator arrived, 2026-10-14).
+opentelemetry-collector:
+  nodeSelector:
+    jev-role: observability
+  service:
+    internalTrafficPolicy: Cluster
+  # Chart default metrics receivers minus kafkametrics (Kafka is disabled) and
+  # kubeletstats (TLS to the kubelet fails on kind; node metrics are not used on
+  # kind, design D9). Both only logged errors, which reached OpenSearch.
+  config:
+    service:
+      pipelines:
+        metrics:
+          receivers: [otlp, span_metrics, prometheus/ad, receiver_creator/metrics, hostmetrics, k8s_cluster]
+  presets:
+    kubeletMetrics:
+      enabled: false  # the preset re-adds kubeletstats to the pipeline
+
+jaeger:
+  jaeger:
+    nodeSelector:
+      jev-role: observability
+
+prometheus:
+  server:
+    nodeSelector:
+      jev-role: observability
+
+grafana:
+  enabled: false
+
+opensearch:
+  nodeSelector:
+    jev-role: observability

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Usage: ./run-k8s-experiment K001 [--mode single]   (./run-k8s-experiment list shows the IDs)
+cd "$(dirname "$0")"
+[ "${1:-}" = "list" ] && exec .venv/bin/python -m tier3 list
+[ $# -ge 1 ] || { echo "usage: $0 <experiment-id>|list [--mode poll|single]"; exit 2; }
+exec .venv/bin/python -m tier3 run "$@"
