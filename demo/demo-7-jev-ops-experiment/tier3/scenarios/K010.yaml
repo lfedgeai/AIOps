@@ -1,0 +1,29 @@
+experiment_id: K010
+application: otel-demo-3.1.0-kind
+description: 500 MB written to /tmp in one cart pod (no volume; the write is OOMKilled)
+rationale: >
+  As in the group's harness, 500 MB is written to /tmp in a cart pod. Measured on kind
+  (2026-10-14): cart has no PersistentVolumeClaim and /tmp is on the host disk, so no disk
+  fills. Instead the write fills page cache, which counts against cart's 160Mi memory limit,
+  and the container is OOMKilled mid-write and restarts (one BackOff Warning event). User
+  requests returned 500 at the first poll and 200 from 30 s; frontend errors reached about 8%
+  between about 75 s and 120 s, then baseline. The pod shows one restart with last
+  termination OOMKilled. It heals itself within seconds, so, as for K002, there is no incident
+  now; what happened is an out-of-memory kill of cart. no_action and investigate are
+  acceptable. Changed from incident: true, disk_full after task 1.9.
+fault:
+  type: pvc_full
+  target: cart
+target_component: cart
+duration_s: 240
+detection_window_s: 240
+poll_interval_s: 15
+observation_window_s: 180
+baseline_window_s: 180
+workload:
+  users: 10
+expected:
+  incident: false
+  affected_component: cart
+  diagnosis: oom_killed
+  acceptable_actions: [no_action, investigate]

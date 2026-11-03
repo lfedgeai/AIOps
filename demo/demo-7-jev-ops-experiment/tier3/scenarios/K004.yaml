@@ -1,0 +1,29 @@
+experiment_id: K004
+application: otel-demo-3.1.0-kind
+description: all ingress to cart blocked by a NetworkPolicy
+rationale: >
+  A NetworkPolicy denies all ingress to the cart pods. Measured on kind (2026-10-14): kindnet
+  enforces it for new connections (a new TCP connect to cart:8080 timed out), but the frontend
+  already holds a long-lived gRPC connection to cart, and established connections are let
+  through. User requests kept returning 200, error rates and latency stayed at baseline, and no
+  pod, deployment or event changed for the whole 240 s. The policy object itself is not in the
+  observation, so nothing observable separates this run from the healthy control: the expected
+  outcome is no incident. It stays in the catalogue as a latent fault (a second control with a
+  fault present); the group's harness should see the same unless the caller reconnects.
+  Changed from incident: true, network_blocked after task 1.6.
+fault:
+  type: network_partition
+  target: cart
+target_component: cart
+duration_s: 240
+detection_window_s: 240
+poll_interval_s: 15
+observation_window_s: 180
+baseline_window_s: 180
+workload:
+  users: 10
+expected:
+  incident: false
+  affected_component: none
+  diagnosis: none
+  acceptable_actions: [no_action, investigate]

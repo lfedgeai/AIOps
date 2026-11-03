@@ -1,0 +1,27 @@
+experiment_id: K005
+application: otel-demo-3.1.0-kind
+description: cart readiness probe always fails
+rationale: >
+  The cart pod template gets a readiness probe that always fails, which starts a rolling
+  update. Measured on kind (2026-10-14): the new pod never became Ready, the old pod kept
+  serving, and user requests kept returning 200 with error rates at baseline. The evidence is
+  an unready new cart pod, repeated Unhealthy (readiness probe failed) Warning events and a
+  rollout stuck in progress. Users are not hurt yet, but the deployment is broken and needs
+  attention, so this is an incident. The origin is cart; the failure mode is a failing
+  readiness check. Undoing the change fixes it.
+fault:
+  type: readiness_probe_fail
+  target: cart
+target_component: cart
+duration_s: 240
+detection_window_s: 240
+poll_interval_s: 15
+observation_window_s: 180
+baseline_window_s: 180
+workload:
+  users: 10
+expected:
+  incident: true
+  affected_component: cart
+  diagnosis: readiness_failure
+  acceptable_actions: [rollback_change, investigate, escalate]

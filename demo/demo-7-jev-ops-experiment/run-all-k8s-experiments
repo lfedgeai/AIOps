@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Usage: ./run-all-k8s-experiments [IDs...] [--repeats N] [--mode poll|single]
+cd "$(dirname "$0")"
+exec .venv/bin/python -m tier3 batch "$@"

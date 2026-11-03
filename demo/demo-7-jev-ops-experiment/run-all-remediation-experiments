@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Usage: ./run-all-remediation-experiments [IDs...] [--repeats N]
+cd "$(dirname "$0")"
+exec .venv/bin/python -m tier4 batch "$@"

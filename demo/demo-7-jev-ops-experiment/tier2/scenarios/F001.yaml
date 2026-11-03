@@ -1,0 +1,20 @@
+experiment_id: F001
+application: otel-demo-3.1.0
+description: Direct failure of one product in product-catalog
+rationale: >
+  The product-catalog service returns an internal error for one product (OLJCESPC7Z) while it serves the others. Errors appear in product-catalog and propagate to its callers (frontend, checkout, recommendation). The root cause is a defect in product-catalog itself. Not the whole service fails, which is part of the test: the evidence is a partial, product-specific failure.
+fault:
+  flag: productCatalogFailure
+  variant: "on"
+target_service: product-catalog
+fault_type: failure
+duration_s: 240
+workload:
+  users: 10
+observation_window_s: 180
+baseline_window_s: 180
+expected:
+  incident: true
+  affected_service: product-catalog
+  diagnosis: application_failure
+  acceptable_actions: [investigate, rollback_change, restart_service]

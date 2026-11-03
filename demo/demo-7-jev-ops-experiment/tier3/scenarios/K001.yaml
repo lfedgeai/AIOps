@@ -1,0 +1,28 @@
+experiment_id: K001
+application: otel-demo-3.1.0-kind
+description: cart scaled to zero replicas
+rationale: >
+  cart has no pods, so every add-to-cart and checkout call fails at the frontend and checkout.
+  The deployment row shows 0 desired and 0 available against a baseline of 1. Measured on kind
+  (2026-10-14): user requests returned 500 from the first 15 s poll, frontend error logs and
+  failing traces appeared at once, span-metric error rates (frontend about 20%, checkout 100%)
+  from about 90 s; cart itself drops out of span metrics, and only Normal events are emitted.
+  The origin is cart; the failure mode is that the service is not running. Restoring replicas
+  (scale_up) or undoing the change (rollback_change) fixes it; investigate and escalate are
+  safe.
+fault:
+  type: scale_zero
+  target: cart
+target_component: cart
+duration_s: 240
+detection_window_s: 240
+poll_interval_s: 15
+observation_window_s: 180
+baseline_window_s: 180
+workload:
+  users: 10
+expected:
+  incident: true
+  affected_component: cart
+  diagnosis: service_unavailable
+  acceptable_actions: [scale_up, rollback_change, investigate, escalate]

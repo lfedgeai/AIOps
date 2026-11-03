@@ -1,0 +1,51 @@
+# Hand-written candidate variant (jev-prompt-variants task 6.2, 2026-11-01), from
+# docs/prompt-variants-dev-notes.md. Never edit in place: bump `version` or add a variant.
+# v2 (2026-11-01): changed after the task 6.3 review, before any record used v1.
+# v3 (2026-11-01): changed after the second task 6.3 review, before any record used v2.
+name: strict-incident
+version: 3
+tier: tier1
+style: policy
+rationale: 'Policy stated. Only the human-review question changes. Dev notes finding 4: the baseline asks
+  for review on routine, contained cases, because the question gives no rule for when review is needed.
+  This states one general rule: review when the diagnosis is not certain or the fix is more than a routine,
+  reversible step. v2: v1 listed clauses that mapped almost one to one onto the Tier 1 cases, some in
+  their own wording, and its "look into a clear cause" clause contradicted a case whose expected answer
+  is yes; the review judged it fitted to the test set. v3: text unchanged; risks recorded from the
+  second review. A case with a named cause and a routine investigate step but an expected yes
+  (log_only_errors) may read as no under this rule; a case whose expected action is investigate but
+  expected review is no (degraded) may read as yes, since investigating suggests the cause is not
+  certain. Severity, action and cause wording are the baseline''s.'
+dev_records:
+- results/20261018-134025-70runs.jsonl
+questions:
+  severity:
+    instructions: How severe is the current condition of this server?
+    criteria:
+      normal: Operating normally. No sign of a problem.
+      degraded: Minor or uncertain signs of trouble. Service still works.
+      high: Clear service impairment. Users are likely affected.
+      critical: Severe failure or imminent failure. Service is down or close to it.
+  action:
+    instructions: What single operational action should be taken now?
+    criteria:
+      observe: Take no action. Keep watching.
+      investigate: Look into the cause before changing anything.
+      restart: Restart the affected service.
+      escalate: Hand the incident to a human on-call engineer immediately.
+  probable_cause:
+    instructions: What is the most likely cause of the current condition?
+    criteria:
+      none: Nothing is wrong.
+      resource_exhaustion: CPU, memory, disk or capacity is running out.
+      dependency_failure: A service this one depends on is failing or unreachable.
+      application_bug: A defect in the application code.
+      configuration: A wrong or changed configuration setting.
+      network: Network connectivity or packet loss.
+      unknown: The evidence is too weak or conflicting to name a cause.
+  human_review:
+    instructions: Should a person review this situation before any action is taken?
+    criteria:
+      'true': Yes, when the diagnosis cannot be made with confidence, or when the likely fix carries risk
+        beyond a routine, reversible step.
+      'false': No, otherwise.

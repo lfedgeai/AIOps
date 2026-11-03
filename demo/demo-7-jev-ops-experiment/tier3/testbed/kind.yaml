@@ -1,0 +1,19 @@
+# Four-node kind cluster for Tier 3 (design D1, D2). Created by create.sh.
+# NodePorts 3008x/3009x/3092x are published on 127.0.0.1 through the control-plane;
+# kube-proxy forwards them to pods on any node.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: jev
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - {containerPort: 30080, hostPort: 18080, listenAddress: "127.0.0.1"}  # frontend-proxy
+      - {containerPort: 30090, hostPort: 19090, listenAddress: "127.0.0.1"}  # prometheus
+      - {containerPort: 30920, hostPort: 19200, listenAddress: "127.0.0.1"}  # opensearch
+      - {containerPort: 30686, hostPort: 19686, listenAddress: "127.0.0.1"}  # jaeger query
+  - role: worker
+    labels: {jev-role: observability}
+  - role: worker
+    labels: {jev-role: app}
+  - role: worker
+    labels: {jev-role: app}

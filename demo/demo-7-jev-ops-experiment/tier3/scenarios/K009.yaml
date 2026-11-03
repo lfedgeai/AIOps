@@ -1,0 +1,32 @@
+experiment_id: K009
+application: otel-demo-3.1.0-kind
+description: application worker jev-worker2 tainted NoExecute
+rationale: >
+  A NoExecute taint on jev-worker2 evicts every application pod there; the scheduler puts them
+  on jev-worker3. Measured on kind (2026-10-14, five services on jev-worker2): replacements
+  were Running and Ready within 15 s, user requests kept returning 200, and errors spiked
+  briefly (product-catalog about 15%, frontend about 3%, gone by about 150 s). All the
+  eviction events are Normal (TaintManagerEviction), so the observation shows them only as
+  pods replaced since the baseline, jev-worker2 with a NoExecute taint effect and 0 pods, and
+  jev-worker3 carrying everything. A worker taken out of service is an incident even though
+  the services recovered: the cluster has lost half its application capacity. The origin is
+  the node, not any one service; the failure mode is eviction. Changing a node needs a human,
+  so investigate and escalate are acceptable. Nothing moves back after the taint is removed,
+  so the health check requires pods on both app nodes (tier3/testbed/rebalance.sh restores
+  that); which services sat on jev-worker2 is recorded per run as placement.
+fault:
+  type: node_taint
+  target: jev-worker2
+target_component: jev-worker2
+duration_s: 240
+detection_window_s: 240
+poll_interval_s: 15
+observation_window_s: 180
+baseline_window_s: 180
+workload:
+  users: 10
+expected:
+  incident: true
+  affected_component: jev-worker2
+  diagnosis: node_eviction
+  acceptable_actions: [investigate, escalate]

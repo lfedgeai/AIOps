@@ -1,0 +1,56 @@
+# Hand-written candidate variant (jev-prompt-variants task 6.2, 2026-11-01), from
+# docs/prompt-variants-dev-notes.md. Never edit in place: bump `version` or add a variant.
+# v2 (2026-11-01): changed after the task 6.3 review, before any record used v1.
+# v3 (2026-11-01): changed after the second task 6.3 review, before any record used v2.
+name: evidence-options
+version: 3
+tier: tier2
+style: wording
+rationale: 'Wording only. Service and diagnosis options describe what each looks like. Dev notes finding
+  3: the baseline names the caller that reports the errors instead of the service that failed, so the
+  service options say where the failure starts. v2: dropped "Choose this rather than guessing" from
+  `unknown` (a decision bias, so policy, not wording). v3: v2''s "not when it only reports errors or
+  slowness from a service it calls" made the expected origin look wrong where it is the caller (F004,
+  F006) and contradicted `dependency_unreachable` ("the caller reports the errors"). The service text now
+  counts a service''s own broken connection as its own failure and excludes only errors passed on from
+  below; `dependency_unreachable` describes a failed connection, so it overlaps `database_contention`
+  less. Remaining risk: a model may still read the exclusion too widely and name the callee on F004 or
+  F006. Questions and action wording are the baseline''s.'
+dev_records:
+- results/tier2/20261012-190447-369b
+questions:
+  incident_detected:
+    instructions: Is there an operational incident in this application right now?
+    criteria:
+      'true': Yes, something is failing or clearly degraded compared with the baseline.
+      'false': No, the application is operating normally.
+  affected_service:
+    instructions: Which single service or component is the origin of the problem?
+    criteria:
+      none: No service is failing.
+    criteria_templates:
+      services: 'The failure starts in {option}: its own work fails or slows down, or its own connection
+        to a dependency is broken. Not when {option} only passes on errors that a service it calls returns.'
+  diagnosis:
+    instructions: What is the most likely failure mode?
+    criteria:
+      none: Nothing is wrong.
+      application_failure: A service returns errors from its own work while the services it calls are
+        working.
+      latency_degradation: Requests succeed but take much longer than in the baseline window, with few
+        or no errors.
+      dependency_unreachable: A service cannot connect to another service or data store (connection refused,
+        wrong address, no route).
+      database_contention: A database or data store answers slowly, or with lock or time-out errors.
+      resource_exhaustion: A service runs out of CPU, memory or capacity, so it slows down or fails under
+        its normal load.
+      unknown: The signals are weak, mixed or point to different causes.
+  recommended_action:
+    instructions: What single operational action should be taken now?
+    criteria:
+      no_action: Take no action. Keep watching.
+      investigate: Look into the cause before changing anything.
+      restart_service: Restart the affected service.
+      rollback_change: Roll back a recent change or configuration.
+      scale_up: Add capacity to the affected service.
+      escalate: Hand the incident to a human on-call engineer immediately.
