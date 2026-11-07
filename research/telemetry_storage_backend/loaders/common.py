@@ -5,8 +5,18 @@ Ensures identical processing of the same static dataset.
 """
 from __future__ import annotations
 import json
+import os
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
+
+# Span timestamps come from the recorded dataset (Feb 2026), while every canonical query uses
+# a relative window (NOW() - INTERVAL 1/30 DAY). Once the data is older than the window the span
+# queries silently scan nothing. Logs and metrics are already stamped at load time, so by default
+# spans are shifted so the newest span lands at load time, keeping relative spacing.
+# Set TSB_REBASE_SPAN_TIME=0 to load the original timestamps.
+REBASE_SPAN_TIME = os.getenv("TSB_REBASE_SPAN_TIME", "1") != "0"
+_SQL_TS_FMT = "%Y-%m-%d %H:%M:%S.%f"
 
 
 def iso_to_sql_datetime(iso_str: str | None) -> str:
@@ -24,6 +34,34 @@ def iso_to_sql_datetime(iso_str: str | None) -> str:
         frac = frac[:6].ljust(6, "0")[:6]
         return f"{base}.{frac}"
     return s
+
+
+def _span_time_offset(trace_files: list[Path], max_per_file: int) -> timedelta:
+    """Offset that moves the newest span startTime in the dataset to now (local time)."""
+    newest = None
+    for tf in trace_files:
+        try:
+            arr = json.loads(tf.read_text())
+        except Exception:
+            continue
+        for hit in arr[:max_per_file]:
+            ts = iso_to_sql_datetime(hit.get("_source", {}).get("startTime"))
+            try:
+                dt = datetime.strptime(ts if "." in ts else ts + ".0", _SQL_TS_FMT)
+            except ValueError:
+                continue
+            newest = dt if newest is None or dt > newest else newest
+    return (datetime.now() - newest) if newest else timedelta(0)
+
+
+def _shift_ts(ts: str, offset: timedelta) -> str:
+    if not offset:
+        return ts
+    try:
+        dt = datetime.strptime(ts if "." in ts else ts + ".0", _SQL_TS_FMT)
+    except ValueError:
+        return ts
+    return (dt + offset).strftime(_SQL_TS_FMT)
 
 
 def _trace_file_for_log(log_path: Path, data_dir: Path) -> Path | None:
@@ -106,6 +144,7 @@ def extract_span_rows(data_dir: Path, batch: int, max_per_file: int = 200, targe
     """Yield span rows in batches. Same logic for both backends.
     If target_rows is set, cycle through files until at least target_rows are emitted."""
     trace_files = sorted(data_dir.rglob("traces_*.json")) or sorted(data_dir.glob("traces_*.json"))
+    offset = _span_time_offset(trace_files, max_per_file) if REBASE_SPAN_TIME else timedelta(0)
     emitted = 0
     while True:
         rows = []
@@ -119,8 +158,8 @@ def extract_span_rows(data_dir: Path, batch: int, max_per_file: int = 200, targe
                 dur = src.get("duration", 0)
                 duration_ms = int(dur) // 1_000_000 if isinstance(dur, (int, float)) else 0
                 rows.append({
-                    "ts_start": iso_to_sql_datetime(src.get("startTime")),
-                    "ts_end": iso_to_sql_datetime(src.get("endTime")),
+                    "ts_start": _shift_ts(iso_to_sql_datetime(src.get("startTime")), offset),
+                    "ts_end": _shift_ts(iso_to_sql_datetime(src.get("endTime")), offset),
                     "trace_id": src.get("traceId", ""),
                     "span_id": src.get("spanId", ""),
                     "parent_span_id": src.get("parentSpanId", ""),

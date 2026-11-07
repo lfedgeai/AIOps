@@ -26,7 +26,10 @@ import subprocess
 import time
 from pathlib import Path
 from datetime import datetime
+import pymysql
 import requests
+
+from bench_compare import _run_mysql_query, _split_sql, bench_backend
 
 FE_HTTP = os.getenv("DORIS_FE_HTTP", "http://localhost:8030")
 MYSQL_HOST = os.getenv("DORIS_MYSQL_HOST", "127.0.0.1")
@@ -60,74 +63,52 @@ def wait_port(host: str, port: int, timeout_s: int = 120) -> bool:
             time.sleep(1)
     return False
 
-def apply_schema() -> None:
-    """
-    Apply Doris schema by piping local SQL into a mysql client container.
+_CONN: pymysql.connections.Connection | None = None
 
-    Uses Docker's 'tsb-net' network to reach the 'tsb-doris' service,
-    avoiding local mysql client dependencies.
+def _conn(db: str | None = DB) -> pymysql.connections.Connection:
     """
-    sql = SCHEMA_SQL.read_text()
-    # Use mysql client in a transient container to execute SQL (avoids Python deps)
-    pass_arg = f"-p{PASS}" if PASS else ""
-    cmd = [
-        "docker", "run", "--rm", "--network", "tsb-net",
-        "mysql:8",
-        "sh", "-lc",
-        f"echo '{sql}' | mysql -h tsb-doris -P 9030 -u{USER} {pass_arg} -D information_schema"
-    ]
-    subprocess.run(cmd, check=True)
+    Persistent MySQL-protocol connection to the Doris FE.
+
+    Queries used to run through a transient `docker run mysql:8` container, which added
+    ~0.4-0.5s of container start-up to every measured latency (see docs/DORIS_TUNING.md).
+    """
+    global _CONN
+    if _CONN is None or not _CONN.open:
+        _CONN = pymysql.connect(host=MYSQL_HOST, port=MYSQL_PORT, user=USER, password=PASS,
+                                database=db, autocommit=True, connect_timeout=10, read_timeout=300)
+    return _CONN
+
+def apply_schema() -> None:
+    """Apply the Doris schema statement by statement."""
+    with _conn(None).cursor() as cur:
+        for st in _split_sql(SCHEMA_SQL.read_text()):
+            cur.execute(st)
     print("[schema] applied")
 
 def run_query(sql: str) -> dict:
     """
-    Execute a SQL statement against Doris via a mysql client container.
-
-    Args:
-      sql: SQL text to execute
+    Execute one query file against Doris on the persistent connection.
 
     Returns:
-      Dict with 'latency_s' and 'rows' (row count in stdout); on failure,
-      callers typically catch exceptions and record error info.
+      Dict with 'latency_s' and 'rows' (result-set row count), or 'error'.
     """
-    # Use mysql client container for simplicity
-    pass_arg = f"-p{PASS}" if PASS else ""
-    # Avoid shell quoting pitfalls by writing SQL to a temp file and piping to mysql
-    sh_script = (
-        "cat > /tmp/bench.sql <<'EOSQL'\n"
-        f"{sql}\n"
-        "EOSQL\n"
-        f"mysql -h tsb-doris -P 9030 -u{USER} {pass_arg} -D {DB} -N -B < /tmp/bench.sql\n"
-    )
-    cmd = [
-        "docker", "run", "--rm", "--network", "tsb-net",
-        "mysql:8", "sh", "-lc", sh_script
-    ]
-    t0 = time.time()
-    out = subprocess.run(cmd, capture_output=True, text=True)
-    dt = time.time() - t0
-    if out.returncode != 0:
-        return {"error": (out.stderr or out.stdout or "").strip()}
-    rows = [ln for ln in (out.stdout or "").splitlines() if ln.strip()]
-    return {"latency_s": dt, "rows": len(rows)}
+    try:
+        conn = _conn()
+        conn.select_db(DB)  # the connection may have been opened by apply_schema() without a DB
+        return _run_mysql_query(conn, sql)[0]
+    except pymysql.MySQLError as e:
+        return {"error": str(e)}
 
 def bench_queries() -> dict:
     """
-    Run all .sql files in queries/doris/ and collect timings.
+    Run all .sql files in queries/doris/ (1 warm-up + 5 timed runs, median latency).
 
     Returns:
-      Mapping of query name to {'latency_s', 'rows'} or {'error'}.
+      Mapping of query name to {'latency_s', 'rows', ...} or {'error'}.
     """
-    results = {}
+    results = bench_backend(QDIR, run_query)
     for f in sorted(QDIR.glob("*.sql")):
-        name = f.stem
-        sql = f.read_text()
-        try:
-            m = run_query(sql)
-            m["sql"] = sql.strip()
-        except Exception as e:
-            m = {"error": str(e), "sql": sql.strip()}
-        results[name] = m
+        results[f.stem]["sql"] = f.read_text().strip()
     return results
 
 def write_summary(out_dir: Path, ingest: dict, qres: dict) -> None:

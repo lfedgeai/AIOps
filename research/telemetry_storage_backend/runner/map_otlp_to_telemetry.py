@@ -53,9 +53,11 @@ FROM otel.otel_logs
 
     # Spans: otel_traces -> telemetry.spans (duration is microseconds in Doris)
     sql = """
-INSERT INTO telemetry.spans (ts_start, trace_id, ts_end, span_id, parent_span_id, service, name, duration_ms, attributes)
+INSERT INTO telemetry.spans (ts_start, trace_id, ts_end, span_id, parent_span_id, service, name, duration_ms, http_status_code, attributes)
 SELECT timestamp, trace_id, end_time, span_id, parent_span_id, service_name, span_name,
-       duration / 1000, COALESCE(CAST(span_attributes AS STRING), '{}')
+       duration / 1000,
+       CAST(json_extract_string(CAST(span_attributes AS STRING), '$."http.status_code"') AS INT),
+       COALESCE(CAST(span_attributes AS STRING), '{}')
 FROM otel.otel_traces
 """
     try:
@@ -66,8 +68,10 @@ FROM otel.otel_traces
     # Metrics: otel_metrics_gauge, otel_metrics_sum -> telemetry.metrics
     for tbl in ["otel_metrics_gauge", "otel_metrics_sum"]:
         sql = f"""
-INSERT INTO telemetry.metrics (ts, metric_name, value, labels)
-SELECT timestamp, metric_name, value, COALESCE(CAST(attributes AS STRING), '{{}}')
+INSERT INTO telemetry.metrics (ts, metric_name, value, trace_id, labels)
+SELECT timestamp, metric_name, value,
+       json_extract_string(CAST(attributes AS STRING), '$.trace_id'),
+       COALESCE(CAST(attributes AS STRING), '{{}}')
 FROM otel.{tbl}
 """
         try:

@@ -76,11 +76,15 @@ bench-compare:
 	@echo "Running Doris vs ClickHouse vs Druid comparison..."
 	DORIS_USER="root" DORIS_PASS="" CLICKHOUSE_HTTP="http://localhost:28223" CLICKHOUSE_PASSWORD="changeme" \
 	LOKI_HTTP="http://localhost:3100" \
-	python3 runner/bench_compare.py --all --data-dir "$(DATA_DIR)" --out "$(OUT)" --batch $(BATCH) $(SCALE_ARGS) $(STREAMING_ARGS)
+	python3 runner/bench_compare.py --all --data-dir "$(DATA_DIR)" --out "$(OUT)" --batch $(BATCH) $(SCALE_ARGS) $(STREAMING_ARGS) \
+	  --backends $(BACKENDS) --query-runs $(QUERY_RUNS)
 
 # Scaling: BATCH=10000 make bench-compare
 # Scale to 50k rows per type: make bench-compare SCALE_TO=50000
 # Or: DATA_DIR=/path/to/larger/data make bench-compare
+# Subset of backends: make bench-compare BACKENDS=doris,clickhouse
+BACKENDS ?= doris,clickhouse,druid,oceanbase,loki
+QUERY_RUNS ?= 5
 SCALE_TO ?=
 SCALE_ARGS := $(if $(SCALE_TO),--scale-to $(SCALE_TO),)
 STREAMING_BATCH ?=
