@@ -1,0 +1,30 @@
+# OPTIONAL: cluster-scoped node access for the `node_taint` fault.
+# This lets the harness taint ANY node in the cluster. On a shared RHOAI
+# cluster that can evict model servers and workbenches, so apply it only on a
+# disposable/lab cluster, or skip `node_taint` in your campaigns.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aiops-harness-node-faults
+  labels:
+    app.kubernetes.io/part-of: agentic-aiops
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aiops-harness-node-faults
+  labels:
+    app.kubernetes.io/part-of: agentic-aiops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aiops-harness-node-faults
+subjects:
+  - kind: ServiceAccount
+    name: aiops-harness
+    namespace: __AIOPS_NAMESPACE__

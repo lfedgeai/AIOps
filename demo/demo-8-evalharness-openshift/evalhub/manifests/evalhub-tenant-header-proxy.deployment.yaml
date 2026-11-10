@@ -1,0 +1,104 @@
+# In-cluster HTTPS→HTTPS proxy: injects X-Tenant from ?namespace= when missing.
+# TLS to clients uses EvalHub's service certificate (SNI is for evalhub.*, not this Service name);
+# rhods-dashboard eval-hub-ui is patched with --insecure-skip-verify for this URL only — see script.
+apiVersion: v1
+kind: Service
+metadata:
+  name: evalhub-tenant-header-proxy
+  namespace: __EVALHUB_NAMESPACE__
+  labels:
+    app: evalhub-tenant-header-proxy
+spec:
+  ports:
+    - name: https
+      port: 8443
+      protocol: TCP
+      targetPort: 8443
+  selector:
+    app: evalhub-tenant-header-proxy
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evalhub-tenant-header-proxy
+  namespace: __EVALHUB_NAMESPACE__
+  labels:
+    app: evalhub-tenant-header-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: evalhub-tenant-header-proxy
+  template:
+    metadata:
+      labels:
+        app: evalhub-tenant-header-proxy
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nginx
+          image: registry.access.redhat.com/ubi9/nginx-124:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - nginx
+          args:
+            - -g
+            - daemon off;
+            - -c
+            - /etc/nginx/proxy-nginx.conf
+          ports:
+            - containerPort: 8443
+              name: https
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/proxy-nginx.conf
+              subPath: proxy-nginx.conf
+              readOnly: true
+            - name: evalhub-tls
+              mountPath: /etc/tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          readinessProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: evalhub-tenant-header-proxy
+        - name: evalhub-tls
+          secret:
+            secretName: evalhub-tls
+        - name: tmp
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}

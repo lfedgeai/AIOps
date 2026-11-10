@@ -1,0 +1,103 @@
+# One-shot harness Job. Build/push the image first (see README), create the
+# model-credentials Secret (scripts/create-secrets.sh), then apply this file.
+# For a matrix, replace HARNESS_ARGS with the matrix script invocation or use
+# scripts/run_matrix.sh from a workbench/Job.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aiops-harness-state
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: __STORAGE_CLASS__
+  resources:
+    requests:
+      storage: __HARNESS_STORAGE_SIZE__
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aiops-harness
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels:
+        app: aiops-harness
+    spec:
+      serviceAccountName: aiops-harness
+      restartPolicy: Never
+      initContainers:
+        - name: init-state
+          image: __HARNESS_IMAGE__
+          command:
+            - /bin/sh
+            - -c
+            - mkdir -p /state/out /state/data /state/mlartifacts /state/logs
+          volumeMounts:
+            - name: state
+              mountPath: /state
+      containers:
+        - name: harness
+          image: __HARNESS_IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["/app/scripts/job-entrypoint.sh"]
+          env:
+            - name: AIOPS_NAMESPACE
+              value: __AIOPS_NAMESPACE__
+            - name: OTEL_DEMO_NAMESPACE
+              value: __OTEL_DEMO_NAMESPACE__
+            - name: K8S_FAULT_NAMESPACE
+              value: __OTEL_DEMO_NAMESPACE__
+            - name: CLICKHOUSE_HTTP
+              value: __CLICKHOUSE_HTTP__
+            - name: MLFLOW_TRACKING_URI
+              value: __MLFLOW_TRACKING_URI__
+            - name: MLFLOW_MODE
+              value: external
+            - name: CONTEXT_REPO_PATH
+              value: /app/context/opentelemetry-demo
+            - name: RAG_CACHE_DIR
+              value: /state/data/rag_cache
+            - name: EVENT_LEDGER_PATH
+              value: /state/data/event_ledger.jsonl
+            - name: HARNESS_ARGS
+              value: "__HARNESS_ARGS__"
+          envFrom:
+            - secretRef:
+                name: aiops-model-credentials
+                optional: true
+          volumeMounts:
+            - name: state
+              mountPath: /state
+            - name: state
+              mountPath: /app/out
+              subPath: out
+            - name: state
+              mountPath: /app/data
+              subPath: data
+            - name: state
+              mountPath: /app/mlartifacts
+              subPath: mlartifacts
+            - name: state
+              mountPath: /app/logs
+              subPath: logs
+          resources:
+            requests:
+              memory: 1Gi
+              cpu: 500m
+            limits:
+              memory: 4Gi
+              cpu: "2"
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: aiops-harness-state

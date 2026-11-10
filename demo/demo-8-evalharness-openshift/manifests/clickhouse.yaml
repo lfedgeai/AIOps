@@ -1,0 +1,140 @@
+# ClickHouse telemetry store for the AIOps harness.
+# Deployed in the AIOps namespace; the OTEL collector reaches it over the
+# cluster network at clickhouse.<AIOPS_NAMESPACE>.svc.cluster.local:9000.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-otel-config
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app: clickhouse
+    app.kubernetes.io/part-of: agentic-aiops
+data:
+  99-otel-k8s-memory.xml: |
+    <clickhouse>
+      <!-- Keep the server below the container limit; without a cap, metadata
+           replay on a large telemetry DB can OOMKill the pod. -->
+      <max_server_memory_usage>6442450944</max_server_memory_usage>
+      <max_concurrent_queries>24</max_concurrent_queries>
+    </clickhouse>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clickhouse
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app: clickhouse
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: __STORAGE_CLASS__
+  resources:
+    requests:
+      storage: __CLICKHOUSE_STORAGE_SIZE__
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickhouse
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app: clickhouse
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      containers:
+        - name: clickhouse
+          image: __CLICKHOUSE_IMAGE__
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9000
+              name: native
+            - containerPort: 8123
+              name: http
+          env:
+            - name: CLICKHOUSE_DB
+              value: otel
+            - name: CLICKHOUSE_USER
+              value: default
+            - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
+              value: "1"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            - name: config-d
+              mountPath: /etc/clickhouse-server/config.d/99-otel-k8s-memory.xml
+              subPath: 99-otel-k8s-memory.xml
+              readOnly: true
+          resources:
+            requests:
+              memory: 1Gi
+              cpu: 100m
+              ephemeral-storage: 2Gi
+            limits:
+              memory: 8Gi
+              cpu: "2000m"
+              ephemeral-storage: 4Gi
+          startupProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: clickhouse
+        - name: config-d
+          configMap:
+            name: clickhouse-otel-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app: clickhouse
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  ports:
+    - port: 9000
+      targetPort: 9000
+      name: native
+      protocol: TCP
+    - port: 8123
+      targetPort: 8123
+      name: http
+      protocol: TCP
+  selector:
+    app: clickhouse

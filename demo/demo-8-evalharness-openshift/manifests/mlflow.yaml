@@ -1,0 +1,133 @@
+# Standalone MLflow tracking server used by the AIOps harness.
+# SQLite metadata + file artifacts on a PVC; exposed through an edge Route.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app: mlflow
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: __STORAGE_CLASS__
+  resources:
+    requests:
+      storage: __MLFLOW_STORAGE_SIZE__
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app: mlflow
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      containers:
+        - name: mlflow
+          image: __MLFLOW_IMAGE__
+          command: ["mlflow", "server"]
+          args:
+            - --backend-store-uri
+            - sqlite:////mlflow/mlflow.db
+            - --default-artifact-root
+            - /mlflow/artifacts
+            - --artifacts-destination
+            - /mlflow/artifacts
+            - --serve-artifacts
+            - --host
+            - 0.0.0.0
+            - --port
+            - "5000"
+            - --workers
+            - "1"
+            - --allowed-hosts
+            - "*"
+            - --cors-allowed-origins
+            - "*"
+          env:
+            - name: MLFLOW_SERVER_ENABLE_JOB_EXECUTION
+              value: "false"
+          ports:
+            - containerPort: 5000
+              name: http
+          volumeMounts:
+            - name: data
+              mountPath: /mlflow
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 100m
+            limits:
+              memory: 2Gi
+              cpu: "1"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mlflow
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app: mlflow
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  ports:
+    - port: 5000
+      targetPort: 5000
+      name: http
+      protocol: TCP
+  selector:
+    app: mlflow
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mlflow
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app: mlflow
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  to:
+    kind: Service
+    name: mlflow
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+  wildcardPolicy: None

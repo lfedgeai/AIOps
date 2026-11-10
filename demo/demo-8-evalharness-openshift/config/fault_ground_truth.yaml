@@ -1,0 +1,33 @@
+# Ground truth root cause per harness fault (for rca_correct scoring).
+# Keys: fault_flag, then variant (use "*" as default variant).
+
+defaults:
+  layer: application
+
+k8s_faults:
+  scale_zero:
+    "*":
+      root_cause: null  # resolved from variant (deployment name)
+      layer: platform
+  kill_pod:
+    "*":
+      root_cause: null
+      layer: platform
+  memory_limit:
+    "*":
+      root_cause: null
+      layer: platform
+
+flagd_faults:
+  cartFailure:
+    on:
+      root_cause: cart
+      layer: application
+  paymentFailure:
+    on:
+      root_cause: payment
+      layer: application
+  adFailure:
+    on:
+      root_cause: ad
+      layer: application

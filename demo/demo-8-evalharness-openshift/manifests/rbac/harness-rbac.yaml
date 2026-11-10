@@ -1,0 +1,57 @@
+# Namespace-scoped RBAC for the harness. The harness injects and recovers
+# faults in the OTEL demo namespace, so it needs write access there — but only
+# there. Never bind this to RHOAI/application namespaces.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aiops-harness
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: agentic-aiops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aiops-harness-faults
+  namespace: __OTEL_DEMO_NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: agentic-aiops
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["events", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "delete", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aiops-harness-faults
+  namespace: __OTEL_DEMO_NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: agentic-aiops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aiops-harness-faults
+subjects:
+  - kind: ServiceAccount
+    name: aiops-harness
+    namespace: __AIOPS_NAMESPACE__

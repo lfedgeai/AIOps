@@ -1,0 +1,103 @@
+authorization:
+  endpoints:
+    - path: /api/v1/evaluations/jobs/*/events
+      mappings:
+        - methods: [post]
+          resources:
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: status-events
+                verb: create
+    - path: /api/v1/evaluations/jobs
+      mappings:
+        - methods: [post]
+          resources:
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: evaluations
+                verb: create
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: mlflow.kubeflow.org
+                resource: experiments
+                verb: create
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: mlflow.kubeflow.org
+                resource: experiments
+                verb: get
+        - methods: [get, head]
+          resources:
+            - rewrites:
+                byQueryString:
+                  name: namespace
+              resourceAttributes:
+                namespace: "{{.FromQueryString}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: evaluations
+                verb: "{{.FromMethod}}"
+        - resources:
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: evaluations
+                verb: "{{.FromMethod}}"
+    - path: /api/v1/evaluations/collections
+      mappings:
+        - methods: [get, head]
+          resources:
+            - rewrites:
+                byQueryString:
+                  name: namespace
+              resourceAttributes:
+                namespace: "{{.FromQueryString}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: collections
+                verb: "{{.FromMethod}}"
+        - resources:
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: collections
+                verb: "{{.FromMethod}}"
+    - path: /api/v1/evaluations/providers
+      mappings:
+        - methods: [get, head]
+          resources:
+            - rewrites:
+                byQueryString:
+                  name: namespace
+              resourceAttributes:
+                namespace: "{{.FromQueryString}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: providers
+                verb: "{{.FromMethod}}"
+        - resources:
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: providers
+                verb: "{{.FromMethod}}"

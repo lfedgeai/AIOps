@@ -1,0 +1,30 @@
+# Context corpora (orthogonal to scenario 0/a/b/c).
+# CONTEXT_C env: comma-separated corpus ids, e.g. "1,4" or "2" (explicit multi-select; not cumulative).
+# C0 / empty = no RAG context tools.
+
+corpora:
+  "0":
+    name: baseline
+    description: Live telemetry and scenario tools only (no RAG context tools).
+  "1":
+    name: source_code
+    description: rag_search_source — application source under src/**
+    tool: rag_search_source
+  "2":
+    name: documentation
+    description: rag_search_docs — docs, README, changelog
+    tool: rag_search_docs
+  "3":
+    name: architecture
+    description: rag_search_architecture — mermaid/architecture material from repo docs
+    tool: rag_search_architecture
+  "4":
+    name: dependencies
+    description: rag_search_dependencies — compose and Kubernetes manifests
+    tool: rag_search_dependencies
+
+# compare_telemetry is always available with telemetry tool profiles (not a corpus).
+
+default_repo:
+  url: https://github.com/open-telemetry/opentelemetry-demo.git
+  ref: main

@@ -1,0 +1,16 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+file_format: definition/2
+attribute_groups:
+  - id: service.recommendation
+    visibility: public
+    brief: Recommendation service attributes
+    stability: stable
+    attributes:
+      - ref: demo.product.recommended.count
+      - ref: demo.feature_flag.recommendation_cache
+      - ref: demo.recommendation.cache_hit
+      - ref: demo.product.count
+      - ref: demo.product.filtered.count
+      - ref: demo.product.filtered.list

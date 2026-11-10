@@ -1,0 +1,35 @@
+# Example EvalHub collection: real AIOps harness cell + an LM baseline.
+# Register in EvalHub for your tenant; provider_id must match the registered
+# provider (lfedge_aiops for the harness, lm_evaluation_harness for GSM8K).
+id: lfedge-aiops-comparison
+name: LF Edge AIOps — harness + LM baseline (EvalHub)
+category: aiops
+description: >
+  One AIOps harness cell (fault injection → agent → MTTD/MTTR/RCA) plus a
+  standard GSM8K smoke for side-by-side model comparison.
+tags:
+  - lfedge
+  - aiops
+  - mttd_mttr
+  - lm_eval
+benchmarks:
+  - id: mttd_mttr_harness
+    provider_id: lfedge_aiops
+    weight: 1
+    parameters:
+      agent: rhdp_qwen3-14b
+      scenario: a
+      fault: scale_zero
+      variant: cart
+      context_c: "0"
+      judge: false
+    primary_score:
+      metric: rca_correct
+      lower_is_better: false
+  - id: gsm8k
+    provider_id: lm_evaluation_harness
+    weight: 1
+    parameters: {}
+    primary_score:
+      metric: exact_match
+      lower_is_better: false

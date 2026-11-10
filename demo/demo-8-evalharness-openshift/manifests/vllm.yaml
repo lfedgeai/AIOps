@@ -1,0 +1,158 @@
+# Optional in-cluster OpenAI-compatible model endpoint (vLLM).
+# Prefer RHOAI KServe/vLLM or an external MaaS/LiteLLM gateway when available.
+# This raw Deployment is the zero-RHOAI-dependency fallback.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vllm-model-cache
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app: vllm
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: __STORAGE_CLASS__
+  resources:
+    requests:
+      storage: __VLLM_MODEL_CACHE_SIZE__
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app: vllm
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      containers:
+        - name: vllm
+          image: __VLLM_IMAGE__
+          args:
+            - --model
+            - __VLLM_MODEL__
+            - --served-model-name
+            - __VLLM_SERVED_MODEL_NAME__
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+            - --max-model-len
+            - "__VLLM_MAX_MODEL_LEN__"
+            - --gpu-memory-utilization
+            - "0.90"
+            - --enable-auto-tool-choice
+            - --tool-call-parser
+            - __VLLM_TOOL_CALL_PARSER__
+            - --dtype
+            - auto
+            - --trust-remote-code
+          env:
+            - name: HF_HOME
+              value: /model-cache
+            - name: HF_TOKEN
+              value: "__HF_TOKEN__"
+            - name: VLLM_WORKER_MULTIPROC_METHOD
+              value: spawn
+          ports:
+            - containerPort: 8000
+              name: http
+          volumeMounts:
+            - name: model-cache
+              mountPath: /model-cache
+            - name: shm
+              mountPath: /dev/shm
+          resources:
+            requests:
+              memory: 8Gi
+              cpu: 500m
+              __VLLM_GPU_RESOURCE__: "__VLLM_GPU_COUNT__"
+            limits:
+              memory: 32Gi
+              cpu: "8"
+              __VLLM_GPU_RESOURCE__: "__VLLM_GPU_COUNT__"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 180
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 120
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: vllm-model-cache
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app: vllm
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+      protocol: TCP
+  selector:
+    app: vllm
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: vllm
+  namespace: __AIOPS_NAMESPACE__
+  labels:
+    app: vllm
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  to:
+    kind: Service
+    name: vllm
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+  wildcardPolicy: None

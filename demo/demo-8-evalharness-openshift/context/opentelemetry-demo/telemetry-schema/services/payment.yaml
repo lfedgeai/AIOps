@@ -1,0 +1,16 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+file_format: definition/2
+attribute_groups:
+  - id: service.payment
+    visibility: public
+    brief: Payment service attributes
+    stability: stable
+    attributes:
+      - ref: enduser.id
+      - ref: demo.user_context.loyalty_level
+      - ref: demo.payment.card_type
+      - ref: demo.payment.card_valid
+      - ref: demo.payment.charged
+      - ref: demo.payment.amount

@@ -1,0 +1,9 @@
+FROM cypress/included:15.17.0@sha256:071a50a3acbef42b7070a19be7dd857b996f4e0ef154469059b99ab33c59bf53
+
+WORKDIR /app
+
+COPY ./src/frontend .
+
+RUN npm clean-install
+
+ENTRYPOINT ["cypress", "run"]
