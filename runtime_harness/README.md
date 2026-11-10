@@ -53,13 +53,42 @@ The UI provides: **scheduler timing control** (interval + enable/disable), **liv
 | `GET\|PUT /prompts` · `POST /prompts/reset` | Editable prompts |
 | `GET\|PUT /scheduler` | Continuous cycle control `{enabled, interval_s}` |
 | `GET\|PUT /context` | Active C1–C4 RAG context sets (BM25) |
-| `GET\|PUT /triggers` | Trigger config: mode (`scheduler`\|`alertmanager`), watcher toggle |
+| `GET\|PUT /triggers` | Trigger config: mode (`scheduler`\|`alertmanager`), namespaces, telemetry signal background watcher toggle + interval (`watcher_interval_s`) |
+| `GET /cluster-alerts` | Live Alertmanager snapshot with accepted/filtered classification |
 | `POST /alert` | Alertmanager webhook (push mode) — firing alerts → targeted cycles |
 | `POST /trigger` | Generic trigger `{target, t0, source}` |
 | `GET /telemetry-status` | Own-ClickHouse health (freshness, services, rate) |
 | `GET /trends` | Cycle history (MTTD/MTTR series) |
 | `POST /cycle` | One cycle; optional `{target, fault: {type, target, injected_at}}` for drills |
 | `POST /cycle` (fault types) | `scale_zero` · `kill_pod` · `config_corruption` |
+
+### Triggering from OpenShift Alertmanager
+
+The harness polls Alertmanager's v2 API. For the platform Alertmanager, use a
+local port-forward to the native (unauthenticated) pod port:
+
+```bash
+oc port-forward -n openshift-monitoring pod/alertmanager-main-0 9093:9093
+# then:
+curl -X PUT localhost:8085/triggers -H 'Content-Type: application/json' \
+  -d '{"mode":"alertmanager"}'
+curl -s localhost:8085/triggers | jq '.alertmanager'
+```
+
+Alerts are accepted only for namespaces in `triggers.namespaces` (default
+`otel-demo`) and only when they carry a workload label (`deployment`,
+`service`, `exported_service`, `service_name`, `pod`, or `job`). OpenShift
+platform alerts live in `openshift-*` namespaces and are intentionally filtered
+out; add app-level `PrometheusRule` alerts in `otel-demo` for app triggers.
+
+The UI shows the live Alertmanager alert list, the namespace filter, and each
+alert's decision (accepted, filtered by namespace, filtered without a target).
+Change the filter live with:
+
+```bash
+curl -X PUT localhost:8085/triggers -H 'Content-Type: application/json' \
+  -d '{"namespaces":["otel-demo","openshift-monitoring"]}'
+```
 
 ### MCP tooling (eval-harness parity)
 

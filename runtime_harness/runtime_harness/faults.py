@@ -57,9 +57,11 @@ class T0:
 
 def _parse_ts(value: str) -> Optional[datetime]:
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # ClickHouse TabSeparated timestamps are naive; treat them as UTC.
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
 def first_fault_evidence(client, target: str) -> Optional[datetime]:
@@ -71,9 +73,8 @@ def first_fault_evidence(client, target: str) -> Optional[datetime]:
     """
     from runtime_harness.telemetry.clickhouse import _esc  # local import, no cycle
 
-    since = (datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
+    since_dt = datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)
+    since = since_dt.strftime("%Y-%m-%d %H:%M:%S")
     candidates: list[datetime] = []
     queries = [
         # earliest error log for the target
@@ -105,6 +106,9 @@ def first_fault_evidence(client, target: str) -> Optional[datetime]:
                 )
             except ValueError:
                 continue
+        # ClickHouse min() over an empty set returns the epoch, not NULL.
+        if ts.year <= 1970 or ts < since_dt:
+            continue
         candidates.append(ts)
     return min(candidates) if candidates else None
 

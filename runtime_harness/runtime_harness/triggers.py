@@ -1,4 +1,4 @@
-"""Trigger layer — scheduler | alertmanager (exclusive) + statistical watcher.
+"""Trigger layer — scheduler | alertmanager (exclusive) + telemetry signal watcher.
 
 Purpose
 -------
@@ -7,9 +7,10 @@ Decide WHEN cycles run, from multiple sources behind one abstraction:
   scheduler (interval polling — the heartbeat; UI-settable)
   alertmanager (event-driven — POST /alert receives Alertmanager webhooks;
                 mutually exclusive with the scheduler as the PRIMARY mode)
-  watcher (cheap statistical sensor on the runtime's own ClickHouse: error
-           spans per service + service-silence detection; wakes the LLM cycle
-           only on suspicion — independent toggle, cheap enough to keep on)
+  telemetry signal background watcher (cheap sensor on the runtime's own
+                ClickHouse: error spans per service + service-silence
+                detection; wakes the LLM cycle only on suspicion — independent
+                toggle, cheap enough to keep on; check interval is UI-settable)
   manual (POST /cycle — always available)
 
 Every trigger carries a target hint and, when known, a T0 (alert ``startsAt``,
@@ -17,15 +18,17 @@ watcher onset timestamp) — upgrading production MTTD from "first telemetry
 evidence" to a measured onset. Trust-but-verify: triggers are cues; the
 tool-loop detector still investigates independently.
 
-Namespace scope: alerts and watcher operate on ``triggers.namespaces``
-(default: otel-demo — where the adopted application lives). Platform alerts
-(openshift-monitoring infra) are a phase-2 promotion with their own mapping.
+Namespace scope: alerts and the telemetry signal background watcher operate on
+``triggers.namespaces`` (default: otel-demo — where the adopted application
+lives). Platform alerts (openshift-monitoring infra) are a phase-2 promotion
+with their own mapping.
 
 How it connects
 ---------------
 - Mode store mirrors ``remediation.py`` (init-once from YAML, live-switchable
   via ``GET|PUT /triggers`` and the UI's exclusive buttons).
-- ``api.py`` wires ``POST /alert`` / ``POST /trigger`` and the watcher thread.
+- ``api.py`` wires ``POST /alert`` / ``POST /trigger`` and the telemetry signal
+  background watcher thread.
 - Cycles fire through ``scheduler.try_run`` (shared lock — never overlapping).
 """
 
@@ -41,12 +44,16 @@ TRIGGER_MODES = ("scheduler", "alertmanager")
 DEFAULT_NAMESPACES = ["otel-demo"]
 
 # ---------------------------------------------------------------------------
-# Mode store (init-once; live changes win)
+# Mode + namespace stores (init-once; live changes win)
 # ---------------------------------------------------------------------------
 
 _MODE_LOCK = threading.Lock()
 _TRIGGER_MODE = "scheduler"
 _MODE_INITIALIZED = False
+
+_NS_LOCK = threading.Lock()
+_TRIGGER_NAMESPACES = list(DEFAULT_NAMESPACES)
+_NS_INITIALIZED = False
 
 
 def get_trigger_mode() -> str:
@@ -73,10 +80,35 @@ def init_trigger_mode_from_config(config: dict[str, Any]) -> str:
         return _TRIGGER_MODE
 
 
+def init_trigger_namespaces_from_config(config: dict[str, Any]) -> list[str]:
+    global _TRIGGER_NAMESPACES, _NS_INITIALIZED
+    with _NS_LOCK:
+        if _NS_INITIALIZED:
+            return list(_TRIGGER_NAMESPACES)
+        ns = (config.get("triggers") or {}).get("namespaces") or DEFAULT_NAMESPACES
+        _TRIGGER_NAMESPACES = [str(n) for n in ns if str(n).strip()]
+        _NS_INITIALIZED = True
+        return list(_TRIGGER_NAMESPACES)
+
+
 def get_trigger_namespaces(config: Optional[dict[str, Any]] = None) -> list[str]:
-    cfg = config or {}
-    ns = (cfg.get("triggers") or {}).get("namespaces") or DEFAULT_NAMESPACES
-    return list(ns)
+    if config is not None:
+        ns = (config.get("triggers") or {}).get("namespaces") or DEFAULT_NAMESPACES
+        return [str(n) for n in ns if str(n).strip()]
+    with _NS_LOCK:
+        return list(_TRIGGER_NAMESPACES)
+
+
+def set_trigger_namespaces(namespaces: list[str]) -> list[str]:
+    if not isinstance(namespaces, list):
+        raise ValueError("namespaces must be a list of namespace names")
+    cleaned = [str(n).strip() for n in namespaces if str(n).strip()]
+    if not cleaned:
+        raise ValueError("at least one namespace is required")
+    global _TRIGGER_NAMESPACES
+    with _NS_LOCK:
+        _TRIGGER_NAMESPACES = cleaned
+    return list(cleaned)
 
 
 # ---------------------------------------------------------------------------
@@ -170,47 +202,94 @@ class AlertEvent:
         self.fingerprint = fingerprint
 
 
+def _alert_is_firing(alert: dict[str, Any]) -> bool:
+    """Handle both webhook payloads (status: firing) and v2 API (status.state)."""
+    status = alert.get("status")
+    if isinstance(status, dict):
+        return status.get("state") == "active"
+    return status in (None, "firing")
+
+
+def _evaluate_alert(
+    alert: dict[str, Any], namespaces: list[str]
+) -> dict[str, Any]:
+    """Classify one Alertmanager alert exactly as the trigger path sees it."""
+    labels = alert.get("labels") or {}
+    annotations = alert.get("annotations") or {}
+    namespace = labels.get("namespace")
+    target = _target_from_labels(labels)
+    alertname = labels.get("alertname", "unknown")
+    fingerprint = alert.get("fingerprint") or f"{alertname}:{target}"
+    item = {
+        "alertname": alertname,
+        "namespace": namespace,
+        "severity": labels.get("severity", ""),
+        "target": target,
+        "fingerprint": fingerprint,
+        "starts_at": _parse_ts(alert.get("startsAt")),
+        "summary": annotations.get("summary") or annotations.get("description") or "",
+        "labels": labels,
+        "status": "accepted",
+        "reason": "matches namespace filter and workload target",
+    }
+    if not _alert_is_firing(alert):
+        item["status"] = "not_firing"
+        item["reason"] = "alert is not firing"
+    elif namespace and namespaces and namespace not in namespaces:
+        item["status"] = "filtered_namespace"
+        item["reason"] = f"namespace '{namespace}' is not in the filter"
+    elif not target:
+        item["status"] = "filtered_no_target"
+        item["reason"] = "no workload label (deployment/service/exported_service/service_name/pod/job)"
+    return item
+
+
 def parse_alertmanager_payload(payload: dict[str, Any]) -> list[AlertEvent]:
     """Extract firing alerts as events (deduped, namespace-filtered, valid targets)."""
-    namespaces = set(get_trigger_namespaces())
+    namespaces = get_trigger_namespaces()
     events: list[AlertEvent] = []
-    for alert in payload.get("alerts") or []:
-        if alert.get("status") != "firing":
+    for item in (_evaluate_alert(a, namespaces) for a in payload.get("alerts") or []):
+        if item["status"] != "accepted":
             continue
-        labels = alert.get("labels") or {}
-        namespace = labels.get("namespace")
-        if namespace and namespaces and namespace not in namespaces:
-            continue  # out of trigger scope
-        target = _target_from_labels(labels)
-        if not target:
-            continue  # no workload hint — nothing to focus a cycle on
-        fingerprint = alert.get("fingerprint") or f"{labels.get('alertname')}:{target}"
-        if not _dedup(fingerprint):
+        if not _dedup(item["fingerprint"]):
             continue
         events.append(
             AlertEvent(
-                target=target,
-                namespace=namespace,
-                alertname=labels.get("alertname", "unknown"),
-                severity=labels.get("severity", ""),
-                starts_at=_parse_ts(alert.get("startsAt")),
-                fingerprint=fingerprint,
+                target=item["target"],
+                namespace=item["namespace"],
+                alertname=item["alertname"],
+                severity=item["severity"],
+                starts_at=item["starts_at"],
+                fingerprint=item["fingerprint"],
             )
         )
     return events
 
 
+def inspect_alertmanager_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read-only classification for the UI; never mutates dedup state."""
+    namespaces = get_trigger_namespaces()
+    out: list[dict[str, Any]] = []
+    for alert in payload.get("alerts") or []:
+        item = _evaluate_alert(alert, namespaces)
+        starts_at = item.pop("starts_at", None)
+        item["starts_at"] = starts_at.isoformat() if starts_at else None
+        out.append(item)
+    return out
+
+
 # ---------------------------------------------------------------------------
-# Statistical watcher — cheap sensor on the runtime's own ClickHouse
+# Telemetry signal background watcher — cheap sensor on the runtime's own ClickHouse
 # ---------------------------------------------------------------------------
 
 
-class StatisticalWatcher:
-    """Background sensor: error-span bursts + service silence.
+class TelemetrySignalWatcher:
+    """Telemetry signal background watcher: error-span bursts + service silence.
 
     Every ``interval_s`` it runs two cheap ClickHouse queries and fires a
     cycle (via callback) when a service breaches thresholds — with a
     per-target cooldown so an ongoing incident doesn't refire every tick.
+    The interval can be changed live via ``set_interval``.
     """
 
     def __init__(
@@ -238,6 +317,7 @@ class StatisticalWatcher:
         self._cooldowns: dict[str, float] = {}
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._wake = threading.Event()
 
     # -- queries -----------------------------------------------------------
 
@@ -297,11 +377,33 @@ class StatisticalWatcher:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="aiops-watcher", daemon=True)
+        self._wake.clear()
+        self._thread = threading.Thread(
+            target=self._loop,
+            name="aiops-telemetry-signal-watcher",
+            daemon=True,
+        )
         self._thread.start()
 
+    def stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+
+    def set_interval(self, seconds: int) -> int:
+        """Update the check cadence; wakes the loop so it takes effect now."""
+        seconds = int(seconds)
+        if seconds < 5:
+            raise ValueError("telemetry signal watcher interval must be >= 5s")
+        self.interval_s = seconds
+        self._wake.set()
+        return self.interval_s
+
     def _loop(self) -> None:
-        while not self._stop.wait(self.interval_s):
+        while not self._stop.is_set():
+            self._wake.wait(self.interval_s)
+            self._wake.clear()
+            if self._stop.is_set():
+                break
             if not self.enabled:
                 continue
             try:
@@ -333,7 +435,7 @@ class StatisticalWatcher:
                     }
                 )
                 self.breaches = self.breaches[-20:]
-                self.fire(svc, t0, "watcher-errors")
+                self.fire(svc, t0, "telemetry-watcher-errors")
 
         for svc, last_ts in self._silent_services(ch):
             if cooled(svc):
@@ -346,7 +448,7 @@ class StatisticalWatcher:
                     }
                 )
                 self.breaches = self.breaches[-20:]
-                self.fire(svc, last_ts, "watcher-silence")
+                self.fire(svc, last_ts, "telemetry-watcher-silence")
 
     def status(self) -> dict[str, Any]:
         return {
@@ -441,16 +543,23 @@ class AlertmanagerPoller:
         }
 
 
+# Backwards-compatible alias for older imports.
+StatisticalWatcher = TelemetrySignalWatcher
+
 __all__ = [
     "TRIGGER_MODES",
     "get_trigger_mode",
     "set_trigger_mode",
     "init_trigger_mode_from_config",
+    "init_trigger_namespaces_from_config",
     "get_trigger_namespaces",
+    "set_trigger_namespaces",
     "record_trigger",
     "trigger_history",
     "parse_alertmanager_payload",
+    "inspect_alertmanager_payload",
     "AlertEvent",
+    "TelemetrySignalWatcher",
     "StatisticalWatcher",
     "AlertmanagerPoller",
 ]

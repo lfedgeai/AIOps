@@ -58,7 +58,7 @@ def get_mode() -> RemediationMode:
 
 def set_mode(mode: str | RemediationMode) -> RemediationMode:
     global _MODE
-    m = RemediationMode(str(mode).lower())
+    m = mode if isinstance(mode, RemediationMode) else RemediationMode(str(mode).lower())
     with _MODE_LOCK:
         _MODE = m
     return m
@@ -119,8 +119,9 @@ def run_playbook(
 ) -> dict[str, Any]:
     """Run one catalog playbook via ansible-runner (or ansible-playbook).
 
-    Returns {ok, rc, output_tail, playbook, extravars} — recorded in the
-    cycle history for audit.
+    Returns {ok, rc, status, output_tail, playbook, extravars, runner,
+    artifact_dir} — the artifact directory contains stdout/stderr, rc, status
+    and the command, and is rendered in the remediate stage detail for audit.
     """
     path = PLAYBOOKS_DIR / f"{name}.yml"
     if not path.is_file():
@@ -140,9 +141,12 @@ def run_playbook(
             private_data_dir=None,
             quiet=True,
         )
+        artifact_dir = getattr(getattr(result, "config", None), "artifact_dir", None)
         output = ""
+        event_count = 0
         try:
             for ev in result.events or []:
+                event_count += 1
                 if ev.get("event") in ("runner_on_ok", "runner_on_failed", "runner_on_error", "runner_on_start"):
                     output += f"{ev.get('event')}: {json.dumps(ev.get('event_data', {}))[:300]}\n"
         except Exception:  # noqa: BLE001
@@ -151,10 +155,13 @@ def run_playbook(
             "ok": result.rc == 0 and result.status == "successful",
             "rc": result.rc,
             "status": result.status,
+            "event_count": event_count,
             "output_tail": output[-1500:],
             "playbook": name,
             "extravars": extravars,
             "runner": "ansible-runner",
+            "artifact_dir": artifact_dir,
+            "stdout_path": f"{artifact_dir}/stdout" if artifact_dir else None,
         }
     except ImportError:
         # fallback: ansible-playbook subprocess
@@ -183,6 +190,8 @@ def run_playbook(
                 "playbook": name,
                 "extravars": extravars,
                 "runner": "ansible-playbook",
+                "artifact_dir": None,
+                "stdout_path": None,
             }
         except FileNotFoundError:
             return {

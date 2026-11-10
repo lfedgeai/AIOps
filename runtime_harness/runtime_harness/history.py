@@ -78,6 +78,7 @@ def new_cycle_record(target: str, t0_source: str) -> dict[str, Any]:
         "rca_component": None,
         "fault": None,
         "remediation": None,
+        "remediation_detail": None,
         "mttd_s": None,
         "mttr_s": None,
         "mttr_mode": None,

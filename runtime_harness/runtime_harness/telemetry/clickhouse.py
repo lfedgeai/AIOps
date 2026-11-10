@@ -408,7 +408,8 @@ def telemetry_status(client: ClickHouseClient | None = None) -> dict[str, Any]:
             out = ch.query(
                 f"SELECT formatDateTime(max({time_col}), '%Y-%m-%dT%H:%i:%S'), "
                 f"countIf({time_col} >= now() - INTERVAL 1 HOUR) "
-                f"FROM {ch.database}.{table} FORMAT TabSeparated"
+                f"FROM {ch.database}.{table} "
+                f"WHERE {time_col} >= now() - INTERVAL 24 HOUR FORMAT TabSeparated"
             )
             if out.startswith("Error:") or not out.strip():
                 continue

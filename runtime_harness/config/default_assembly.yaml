@@ -101,23 +101,27 @@ scheduler:
 #   alertmanager event-driven: POST /alert receives Alertmanager webhooks
 #                (firing alerts → targeted cycles, T0 from startsAt,
 #                fingerprint dedup, trust-but-verify)
-# The watcher is an INDEPENDENT cheap sensor (error bursts + service silence
-# on the runtime's own ClickHouse) that wakes full cycles on suspicion.
+# The telemetry signal background watcher is an INDEPENDENT cheap sensor
+# (error bursts + service silence on the runtime's own ClickHouse) that wakes
+# full cycles on suspicion. Its check interval is UI-settable via
+# PUT /triggers {"watcher_interval_s": <seconds>}.
 # Namespace scope: where alerts/triggers apply (the adopted app's home).
 # ---------------------------------------------------------------------------
 triggers:
-  mode: scheduler
+  mode: alertmanager
   namespaces: ["otel-demo"]
   alertmanager:
     # Poll mode (default): the runtime pulls firing alerts from Alertmanager's
     # v2 API — no inbound network needed (port-forward or in-cluster URL).
+    # OpenShift platform Alertmanager local access:
+    #   oc port-forward -n openshift-monitoring pod/alertmanager-main-0 9093:9093
     # Push mode: POST /alert webhook, requires cluster → runtime reachability
     # (open firewalld 8085 or run the runtime in-cluster).
     url: "${ALERTMANAGER_URL:-http://127.0.0.1:9093}"
     poll_interval_s: 15
   watcher:
     enabled: false
-    interval_s: 20
+    interval_s: 60        # UI-settable via PUT /triggers {"watcher_interval_s": ...}
     error_window_m: 5
     error_threshold: 25   # failed spans per service per window → breach
     silence_s: 90         # no telemetry for this long → breach

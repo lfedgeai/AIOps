@@ -124,14 +124,26 @@ class Orchestrator:
         t_cycle = datetime.now(timezone.utc)
 
         self._publish(
-            stage=Stage.TELEMETRY,
+            stage=Stage.ENRICH,
             health=Health.UNKNOWN,
-            message="Collecting telemetry + enrichment",
+            message="Enriching context (BM25 C1–C4)",
             incident=incident,
             stages=stages,
         )
         try:
             stages.append(a.enrichment.run(ctx))
+        except Exception as exc:  # noqa: BLE001
+            stages.append(self._error_stage(Stage.ENRICH, f"enrichment stage failed: {exc}"))
+            return self._finish(Stage.ERROR, Health.ERROR, str(exc), incident, stages, record)
+
+        self._publish(
+            stage=Stage.TELEMETRY,
+            health=Health.UNKNOWN,
+            message="Collecting telemetry and adopting services",
+            incident=incident,
+            stages=stages,
+        )
+        try:
             stages.append(a.telemetry.run(ctx))
         except Exception as exc:  # noqa: BLE001
             stages.append(self._error_stage(Stage.TELEMETRY, f"telemetry stage failed: {exc}"))
@@ -155,11 +167,16 @@ class Orchestrator:
         record["t0_source"] = t0_resolved.source
         record["target"] = focus or record["target"]
         ctx["t0"] = t0_resolved
+        t0_ts = t0_resolved.ts
+        if t0_ts.tzinfo is None:
+            t0_ts = t0_ts.replace(tzinfo=timezone.utc)
 
         # -- detect ---------------------------------------------------------
+        # Health reflects evidence, not pipeline activity: detection running does
+        # not yet prove degradation, so keep the badge UNKNOWN until it reports.
         self._publish(
             stage=Stage.DETECT,
-            health=Health.DEGRADED,
+            health=Health.UNKNOWN,
             message="Running anomaly detection (Granite)",
             incident=incident,
             stages=stages,
@@ -173,7 +190,7 @@ class Orchestrator:
         incident.detected = bool(detection.get("detected"))
         record["detected"] = incident.detected
         if incident.detected:
-            incident.mttd_s = (datetime.now(timezone.utc) - t0_resolved.ts).total_seconds()
+            incident.mttd_s = (datetime.now(timezone.utc) - t0_ts).total_seconds()
             record["mttd_s"] = incident.mttd_s
 
         if not incident.detected:
@@ -238,8 +255,9 @@ class Orchestrator:
         incident.remediation_proposed = rem.get("action")
         incident.remediation_executed = bool(rem.get("executed"))
         record["remediation"] = rem.get("action")
+        record["remediation_detail"] = rem
         if rem.get("proposed") or rem.get("executed"):
-            incident.mttr_s = (datetime.now(timezone.utc) - t0_resolved.ts).total_seconds()
+            incident.mttr_s = (datetime.now(timezone.utc) - t0_ts).total_seconds()
             record["mttr_s"] = incident.mttr_s
             record["mttr_mode"] = "executed" if rem.get("executed") else "proposed"
 

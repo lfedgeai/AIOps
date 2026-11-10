@@ -23,7 +23,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -78,30 +78,36 @@ def _startup() -> None:
         interval_s=int(sched_cfg.get("interval_s", 300)),
         gate=lambda: get_trigger_mode() == "scheduler",
     )
-    from runtime_harness.triggers import init_trigger_mode_from_config
+    from runtime_harness.triggers import (
+        init_trigger_mode_from_config,
+        init_trigger_namespaces_from_config,
+    )
 
     init_trigger_mode_from_config(a.config)
-    _init_watcher(a)
+    init_trigger_namespaces_from_config(a.config)
+    _init_telemetry_signal_watcher(a)
     _init_am_poller(a)
 
 
-def _init_watcher(assembly: Assembly):
-    global _watcher
+def _init_telemetry_signal_watcher(assembly: Assembly):
+    global _telemetry_watcher
     from runtime_harness.telemetry.clickhouse import ClickHouseClient
-    from runtime_harness.triggers import StatisticalWatcher, record_trigger
+    from runtime_harness.triggers import TelemetrySignalWatcher, record_trigger
     from runtime_harness.faults import T0
 
     w_cfg = (assembly.config.get("triggers") or {}).get("watcher") or {}
 
     def fire(target: str, onset, reason: str) -> None:
-        record_trigger("watcher", target, reason, t0=onset.isoformat())
+        record_trigger("telemetry-watcher", target, reason, t0=onset.isoformat())
         get_scheduler().try_run(
             lambda: get_orch().run_cycle(
-                target=target, t0=T0(ts=onset, source=reason), source="watcher"
+                target=target,
+                t0=T0(ts=onset, source=reason),
+                source="telemetry-watcher",
             )
         )
 
-    _watcher = StatisticalWatcher(
+    _telemetry_watcher = TelemetrySignalWatcher(
         fire=fire,
         client_factory=ClickHouseClient,
         interval_s=int(w_cfg.get("interval_s", 20)),
@@ -110,17 +116,17 @@ def _init_watcher(assembly: Assembly):
         silence_s=int(w_cfg.get("silence_s", 90)),
         cooldown_s=int(w_cfg.get("cooldown_s", 300)),
     )
-    _watcher.enabled = bool(w_cfg.get("enabled", False))
-    _watcher.start()
+    _telemetry_watcher.enabled = bool(w_cfg.get("enabled", False))
+    _telemetry_watcher.start()
 
 
-_watcher = None
+_telemetry_watcher = None
 _am_poller = None
 
 
 def _init_am_poller(assembly: Assembly):
     global _am_poller
-    from runtime_harness.triggers import AlertmanagerPoller, record_trigger
+    from runtime_harness.triggers import AlertmanagerPoller, get_trigger_mode, record_trigger
 
     t_cfg = assembly.config.get("triggers") or {}
     am_cfg = t_cfg.get("alertmanager") or {}
@@ -141,6 +147,7 @@ def _init_am_poller(assembly: Assembly):
         url=str(am_cfg.get("url", "http://127.0.0.1:9093")),
         interval_s=int(am_cfg.get("poll_interval_s", 15)),
     )
+    _am_poller.enabled = get_trigger_mode() == "alertmanager"
     _am_poller.start()
 
 
@@ -322,9 +329,9 @@ def triggers_status() -> dict[str, Any]:
     return {
         "mode": get_trigger_mode(),
         "modes": list(TRIGGER_MODES),
-        "namespaces": get_trigger_namespaces(get_assembly().config),
+        "namespaces": get_trigger_namespaces(),
         "scheduler": get_scheduler().status(),
-        "watcher": _watcher.status() if _watcher else {},
+        "watcher": _telemetry_watcher.status() if _telemetry_watcher else {},
         "alertmanager": _am_poller.status() if _am_poller else {},
         "history": trigger_history(10),
     }
@@ -332,17 +339,78 @@ def triggers_status() -> dict[str, Any]:
 
 @app.put("/triggers")
 def triggers_update(body: dict[str, Any]) -> dict[str, Any]:
-    from runtime_harness.triggers import set_trigger_mode
+    from runtime_harness.triggers import set_trigger_mode, set_trigger_namespaces
 
     mode = body.get("mode")
     if mode is not None:
         set_trigger_mode(mode)
         if _am_poller:
             _am_poller.enabled = mode == "alertmanager"
+    if "namespaces" in body:
+        try:
+            set_trigger_namespaces(body["namespaces"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     if "watcher_enabled" in body:
-        if _watcher:
-            _watcher.enabled = bool(body["watcher_enabled"])
+        if _telemetry_watcher:
+            _telemetry_watcher.enabled = bool(body["watcher_enabled"])
+    if "watcher_interval_s" in body:
+        if _telemetry_watcher:
+            try:
+                _telemetry_watcher.set_interval(int(body["watcher_interval_s"]))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
     return triggers_status()
+
+
+@app.get("/cluster-alerts")
+def cluster_alerts() -> dict[str, Any]:
+    """Live OpenShift Alertmanager snapshot + how each alert is classified."""
+    import httpx
+
+    from runtime_harness.triggers import get_trigger_namespaces, inspect_alertmanager_payload
+
+    a = get_assembly()
+    t_cfg = a.config.get("triggers") or {}
+    am_cfg = t_cfg.get("alertmanager") or {}
+    url = str(am_cfg.get("url", "http://127.0.0.1:9093")).rstrip("/")
+    result: dict[str, Any] = {
+        "url": url,
+        "poll_interval_s": int(am_cfg.get("poll_interval_s", 15)),
+        "webhook_path": "/alert",
+        "namespaces": get_trigger_namespaces(),
+        "reachable": False,
+        "error": None,
+        "counts": {
+            "total": 0,
+            "accepted": 0,
+            "filtered_namespace": 0,
+            "filtered_no_target": 0,
+            "not_firing": 0,
+        },
+        "alerts": [],
+        "poller": _am_poller.status() if _am_poller else {},
+    }
+    try:
+        resp = httpx.get(
+            f"{url}/api/v2/alerts",
+            params={"active": "true", "silenced": "false"},
+            timeout=4.0,
+        )
+        resp.raise_for_status()
+        payload = {"alerts": resp.json() or []}
+    except Exception as exc:  # noqa: BLE001 — a UI panel must never crash
+        result["error"] = str(exc)[:300]
+        return result
+
+    alerts = inspect_alertmanager_payload(payload)
+    result["reachable"] = True
+    result["alerts"] = alerts
+    for alert in alerts:
+        result["counts"]["total"] += 1
+        status = alert.get("status", "not_firing")
+        result["counts"][status] = result["counts"].get(status, 0) + 1
+    return result
 
 
 @app.post("/alert")
@@ -489,9 +557,14 @@ _STATUS_HTML = """<!DOCTYPE html>
   .row .k { color: var(--dim); }
   .row .v { font-family: var(--mono); font-size: 12px; text-align: right; }
   .stages { display: flex; gap: 4px; margin: 10px 0; }
-  .stage { flex: 1; text-align: center; font-size: 10px; padding: 6px 2px; border-radius: 4px; background: #21262d; color: var(--dim); border: 1px solid var(--border); }
-  .stage.active { background: var(--accent); color: #000; font-weight: 600; border-color: var(--accent); }
+  .stage { flex: 1; text-align: center; font-size: 10px; padding: 6px 2px; border-radius: 4px; background: #21262d; color: var(--dim); border: 1px solid var(--border); transition: all .2s; }
+  .stage.active { background: var(--yellow); color: #000; font-weight: 700; border-color: var(--yellow); box-shadow: 0 0 0 2px #d2992240, 0 0 14px #d2992290; animation: stagePulse 1.3s ease-in-out infinite; }
   .stage.done { background: #1f2b1f; color: var(--green); border-color: #2ea04340; }
+  @keyframes stagePulse { 50% { box-shadow: 0 0 0 4px #d2992220, 0 0 22px #d29922c0; } }
+  .am-accepted { color: var(--green); }
+  .am-filtered_namespace { color: var(--yellow); }
+  .am-filtered_no_target { color: var(--red); }
+  .am-not_firing { color: var(--dim); }
   input, select, button {
     background: #0d1117; color: var(--fg); border: 1px solid var(--border);
     border-radius: 6px; padding: 6px 10px; font-size: 13px; font-family: var(--mono);
@@ -521,6 +594,7 @@ _STATUS_HTML = """<!DOCTYPE html>
     <h2>Runtime status</h2>
     <div><span class="badge" id="health">unknown</span><span class="badge b-accent" id="assembly">—</span><span class="badge" id="dryrun">dry-run</span></div>
     <div class="stages" id="stages"></div>
+    <div class="row"><span class="k">current stage</span><span class="v" id="stage-current">—</span></div>
     <div class="row"><span class="k">message</span><span class="v" id="message">—</span></div>
     <div class="row"><span class="k">target / component</span><span class="v" id="target">—</span></div>
     <div class="row"><span class="k">fault hypothesis</span><span class="v" id="fault">—</span></div>
@@ -532,14 +606,18 @@ _STATUS_HTML = """<!DOCTYPE html>
       <button class="primary" onclick="runCycle()">Run cycle</button>
     </div>
     <div class="msg" id="cycle-msg"></div>
+    <div class="chart-title">last stage results</div>
+    <table id="stage-results"><tr><th>stage</th><th>ok</th><th>agent</th><th>duration</th><th>summary</th></tr></table>
+    <div class="msg">enrich = BM25 retrieval of C1–C4 docs/architecture/dependencies; telemetry = adopt services from the runtime ClickHouse and collect their logs, traces, and metrics.</div>
+    <div class="msg" id="assembly-note">assembly = model/configuration lineup. oct26-granite-glm = Oct-26 evaluation lineup: Granite for anomaly detection, GLM-5.3-Flash for RCA/remediation.</div>
   </div>
 
   <div class="card">
     <h2>Triggers</h2>
     <div class="controls">
       <button id="trig-scheduler" onclick="setTrigMode('scheduler')">Scheduler (interval)</button>
-      <button id="trig-alertmanager" onclick="setTrigMode('alertmanager')">Alertmanager (webhook)</button>
-      <button id="trig-watcher" onclick="toggleWatcher()">Watcher: off</button>
+      <button id="trig-alertmanager" onclick="setTrigMode('alertmanager')">Alertmanager (poll/webhook)</button>
+      <button id="trig-watcher" onclick="toggleTelemetryWatcher()">Telemetry signal background watcher: off</button>
     </div>
     <div class="row"><span class="k">primary mode</span><span class="v" id="trig-mode">—</span></div>
     <div class="row"><span class="k">namespaces</span><span class="v" id="trig-ns">—</span></div>
@@ -549,11 +627,31 @@ _STATUS_HTML = """<!DOCTYPE html>
       <button class="primary" onclick="setInterval2()">Set interval</button>
       <button class="ok" id="toggle-btn" onclick="toggleScheduler()">Enable</button>
     </div>
-    <div class="row"><span class="k">watcher checks</span><span class="v" id="watch-checks">—</span></div>
-    <div class="row"><span class="k">last breaches</span><span class="v" id="watch-breaches">—</span></div>
+    <div class="row"><span class="k">telemetry signal watcher</span><span class="v" id="watch-state">—</span></div>
+    <div class="controls">
+      <input id="watch-interval-input" type="number" min="5" step="5" style="width:80px"> s
+      <button class="primary" onclick="setWatcherInterval()">Set watcher time</button>
+    </div>
+    <div class="row"><span class="k">telemetry signal checks</span><span class="v" id="watch-checks">—</span></div>
+    <div class="row"><span class="k">last signal breaches</span><span class="v" id="watch-breaches">—</span></div>
     <div class="chart-title">recent triggers</div>
     <table id="trig-history"><tr><th>time</th><th>source</th><th>target</th><th>detail</th></tr></table>
-    <div class="msg">Primary mode is exclusive: scheduler polls on an interval; alertmanager waits for POST /alert webhooks (T0 from startsAt). The watcher is an independent cheap sensor (error bursts + service silence) that wakes full cycles. Triggers are cues — the detector still verifies independently.</div>
+    <div class="msg">Primary mode is exclusive: scheduler polls on an interval; alertmanager waits for POST /alert webhooks (T0 from startsAt). The telemetry signal background watcher is an independent cheap sensor (error bursts + service silence) that wakes full cycles. Triggers are cues — the detector still verifies independently.</div>
+  </div>
+
+  <div class="card wide">
+    <h2>OpenShift Alertmanager — cluster alerts</h2>
+    <div class="row"><span class="k">endpoint</span><span class="v" id="am-url">—</span></div>
+    <div class="row"><span class="k">delivery</span><span class="v" id="am-delivery">—</span></div>
+    <div class="row"><span class="k">connection</span><span class="v" id="am-state">—</span></div>
+    <div class="row"><span class="k">namespace filter</span><span class="v" id="am-ns">—</span></div>
+    <div class="controls">
+      <input id="am-ns-input" placeholder="otel-demo, openshift-monitoring" style="width:280px">
+      <button class="primary" onclick="setAlertNamespaces()">Set namespace filter</button>
+    </div>
+    <div class="row"><span class="k">firing / accepted / filtered</span><span class="v" id="am-counts">—</span></div>
+    <table id="am-alerts"><tr><th>alert</th><th>namespace</th><th>severity</th><th>target</th><th>decision</th><th>starts</th></tr></table>
+    <div class="msg">The runtime polls Alertmanager's v2 API on the interval shown above; the webhook endpoint POST /alert is also accepted. The namespace filter applies when an alert carries a namespace label; unlabelled alerts with a workload target are allowed. Filtered alerts are shown here but do not start cycles.</div>
   </div>
 
   <div class="card">
@@ -617,6 +715,12 @@ let trendsCache = [];
 
 async function jget(u) { const r = await fetch(u); return r.json(); }
 
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
 function fmtAge(s) {
   if (s == null) return "—";
   if (s < 90) return s.toFixed(0) + "s";
@@ -638,6 +742,7 @@ async function refreshStatus() {
     if (i === order) cls += " active";
     return `<div class="${cls}">${st}</div>`;
   }).join("");
+  document.getElementById("stage-current").textContent = s.stage.value + " · " + s.health;
   document.getElementById("message").textContent = s.message;
   const i = s.incident;
   document.getElementById("target").textContent = i.component || "—";
@@ -646,6 +751,14 @@ async function refreshStatus() {
   document.getElementById("mtts").textContent =
     (i.mttd_s != null ? i.mttd_s.toFixed(1) : "—") + " / " +
     (i.mttr_s != null ? i.mttr_s.toFixed(1) : "—");
+  const sr = document.getElementById("stage-results");
+  sr.innerHTML = "<tr><th>stage</th><th>ok</th><th>agent</th><th>duration</th><th>summary</th></tr>" +
+    (s.last_stages || []).map(st =>
+      `<tr><td>${esc(st.stage)}</td>` +
+      `<td style="color:${st.ok ? "var(--green)" : "var(--red)"}">${st.ok ? "✓" : "✗"}</td>` +
+      `<td>${esc(st.agent_id || "—")}</td>` +
+      `<td>${st.duration_s != null ? st.duration_s.toFixed(2) + "s" : "—"}</td>` +
+      `<td>${esc(st.summary)}</td></tr>`).join("");
 }
 
 async function refreshScheduler() {
@@ -659,11 +772,15 @@ async function refreshScheduler() {
   }
   const wb = document.getElementById("trig-watcher");
   const w = t.watcher || {};
-  wb.textContent = "Watcher: " + (w.enabled ? "on" : "off");
+  wb.textContent = "Telemetry signal background watcher: " + (w.enabled ? "on" : "off");
   wb.className = w.enabled ? "primary" : "";
+  document.getElementById("watch-state").textContent =
+    (w.enabled ? "on" : "off") + " · every " + (w.interval_s != null ? w.interval_s : "—") + "s";
   document.getElementById("watch-checks").textContent = w.checks_run != null ? w.checks_run : "—";
   const br = (w.breaches || []).slice(-2).map(b => (b.service || "?") + " " + (b.reason || b.error || "")).join(" · ");
   document.getElementById("watch-breaches").textContent = br || "—";
+  const wi = document.getElementById("watch-interval-input");
+  if (!wi.value) wi.value = w.interval_s != null ? w.interval_s : 20;
   const s = t.scheduler || {};
   document.getElementById("sched-state").textContent =
     (s.enabled && t.mode === "scheduler" ? "enabled" : s.enabled ? "paused (mode=" + t.mode + ")" : "disabled");
@@ -684,11 +801,69 @@ async function setTrigMode(m) {
   refreshScheduler();
 }
 
-async function toggleWatcher() {
+async function toggleTelemetryWatcher() {
   const t = await jget("/triggers");
   const on = !(t.watcher || {}).enabled;
   await fetch("/triggers", { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ watcher_enabled: on }) });
   refreshScheduler();
+}
+
+async function setWatcherInterval() {
+  const v = parseInt(document.getElementById("watch-interval-input").value);
+  if (!v || v < 5) { alert("telemetry signal watcher interval must be >= 5s"); return; }
+  const r = await fetch("/triggers", { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ watcher_interval_s: v }) });
+  if (!r.ok) {
+    const e = await r.json();
+    alert("error: " + (e.detail || r.status));
+    return;
+  }
+  refreshScheduler();
+}
+
+async function refreshClusterAlerts() {
+  const a = await jget("/cluster-alerts");
+  document.getElementById("am-url").textContent = a.url;
+  const p = a.poller || {};
+  document.getElementById("am-delivery").textContent =
+    "poll every " + a.poll_interval_s + "s · webhook POST " + a.webhook_path +
+    " · poller " + (p.enabled ? "on" : "off");
+  const st = document.getElementById("am-state");
+  st.textContent = a.reachable
+    ? "reachable" + (p.last_error ? " · last poll error: " + p.last_error : "")
+    : "NO — " + (a.error || "unreachable");
+  st.style.color = a.reachable && !p.last_error ? "var(--green)" : "var(--red)";
+  document.getElementById("am-ns").textContent = (a.namespaces || []).join(", ") || "—";
+  const ni = document.getElementById("am-ns-input");
+  if (!ni.value) ni.value = (a.namespaces || []).join(", ");
+  const c = a.counts || {};
+  const filtered = (c.filtered_namespace || 0) + (c.filtered_no_target || 0);
+  document.getElementById("am-counts").textContent =
+    (c.total || 0) + " / " + (c.accepted || 0) + " / " + filtered;
+  const tb = document.getElementById("am-alerts");
+  tb.innerHTML = "<tr><th>alert</th><th>namespace</th><th>severity</th><th>target</th><th>decision</th><th>starts</th></tr>" +
+    (a.alerts || []).slice(0, 30).map(x =>
+      `<tr><td>${esc(x.alertname)}</td><td>${esc(x.namespace || "—")}</td>` +
+      `<td>${esc(x.severity || "—")}</td><td>${esc(x.target || "—")}</td>` +
+      `<td class="am-${esc(x.status)}">${esc(x.status)} — ${esc(x.reason)}</td>` +
+      `<td>${(x.starts_at || "").slice(0, 19).replace("T", " ")}</td></tr>`).join("");
+}
+
+async function setAlertNamespaces() {
+  const raw = document.getElementById("am-ns-input").value;
+  const namespaces = raw.split(/[,\\s]+/).map(x => x.trim()).filter(Boolean);
+  if (!namespaces.length) { alert("enter at least one namespace"); return; }
+  const r = await fetch("/triggers", {
+    method: "PUT", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ namespaces })
+  });
+  if (!r.ok) {
+    const e = await r.json();
+    alert("error: " + (e.detail || r.status));
+    return;
+  }
+  document.getElementById("am-ns-input").value = "";
+  refreshScheduler();
+  refreshClusterAlerts();
 }
 
 async function refreshTelemetry() {
@@ -839,7 +1014,7 @@ async function setRemMode(m) {
 }
 
 function refreshAll() {
-  refreshStatus(); refreshScheduler(); refreshTelemetry(); refreshModels(); refreshTrends(); refreshContext(); refreshRemediation();
+  refreshStatus(); refreshScheduler(); refreshClusterAlerts(); refreshTelemetry(); refreshModels(); refreshTrends(); refreshContext(); refreshRemediation();
 }
 refreshAll();
 setInterval(refreshAll, 3000);
