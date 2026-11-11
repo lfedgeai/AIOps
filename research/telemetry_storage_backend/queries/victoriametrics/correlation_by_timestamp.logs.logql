@@ -1,0 +1,1 @@
+_time:30d * | stats by (service, _time:1m) count() as log_count | limit 500

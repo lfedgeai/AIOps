@@ -1,0 +1,1 @@
+_time:30d * | stats by (trace_id, "resource_attr:service.name") count() as span_count | sort by (span_count) desc | limit 20
