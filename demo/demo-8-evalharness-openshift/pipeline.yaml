@@ -1,0 +1,768 @@
+# PIPELINE DEFINITION
+# Name: aiops-eval-matrix
+# Description: AIOps harness: sequential agents × faults with environment reset and summary report
+components:
+  comp-generate-report:
+    executorLabel: exec-generate-report
+    inputDefinitions:
+      parameters:
+        results:
+          parameterType: LIST
+        run_name:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRUCT
+  comp-harness-cell:
+    executorLabel: exec-harness-cell
+    inputDefinitions:
+      parameters:
+        agent:
+          parameterType: STRING
+        fault:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRUCT
+  comp-harness-cell-2:
+    executorLabel: exec-harness-cell-2
+    inputDefinitions:
+      parameters:
+        agent:
+          parameterType: STRING
+        fault:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRUCT
+  comp-harness-cell-3:
+    executorLabel: exec-harness-cell-3
+    inputDefinitions:
+      parameters:
+        agent:
+          parameterType: STRING
+        fault:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRUCT
+  comp-harness-cell-4:
+    executorLabel: exec-harness-cell-4
+    inputDefinitions:
+      parameters:
+        agent:
+          parameterType: STRING
+        fault:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRUCT
+  comp-reset-environment:
+    executorLabel: exec-reset-environment
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-reset-environment-2:
+    executorLabel: exec-reset-environment-2
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-reset-environment-3:
+    executorLabel: exec-reset-environment-3
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-reset-environment-4:
+    executorLabel: exec-reset-environment-4
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-generate-report:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - generate_report
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef generate_report(\n    results: list[dict],\n    run_name: str,\n\
+          ) -> dict:\n    \"\"\"Aggregate all cell results into a summary report.\n\
+          \n    Computes detection rate, mean MTTD, per-agent breakdown, and logs\n\
+          \    everything to MLflow as a summary run. Outputs the report as a\n  \
+          \  pipeline artifact.\n    \"\"\"\n    import json\n    import os\n\n  \
+          \  # MLflow logging\n    os.environ[\"MLFLOW_TRACKING_URI\"] = \"http://mlflow.agentic-aiops-harness.svc.cluster.local:5000\"\
+          \n\n    total = len(results)\n    detected = sum(1 for r in results if r.get(\"\
+          detected\"))\n    mttds = [r.get(\"mttd_seconds\") for r in results if r.get(\"\
+          mttd_seconds\") is not None]\n    mean_mttd = sum(mttds) / len(mttds) if\
+          \ mttds else None\n    rca_correct = sum(1 for r in results if r.get(\"\
+          rca_correct\"))\n    remediation = sum(1 for r in results if r.get(\"remediation_executed\"\
+          ))\n    errors = sum(1 for r in results if r.get(\"agent_error\"))\n\n \
+          \   # Per-agent breakdown\n    by_agent = {}\n    for r in results:\n  \
+          \      agent = r.get(\"approach\", \"unknown\")\n        if agent not in\
+          \ by_agent:\n            by_agent[agent] = {\"total\": 0, \"detected\":\
+          \ 0, \"mttds\": []}\n        by_agent[agent][\"total\"] += 1\n        if\
+          \ r.get(\"detected\"):\n            by_agent[agent][\"detected\"] += 1\n\
+          \        if r.get(\"mttd_seconds\") is not None:\n            by_agent[agent][\"\
+          mttds\"].append(r[\"mttd_seconds\"])\n\n    report = {\n        \"run_name\"\
+          : run_name,\n        \"total_cells\": total,\n        \"detected\": detected,\n\
+          \        \"detection_rate\": round(detected / total, 3) if total else 0,\n\
+          \        \"mean_mttd_seconds\": round(mean_mttd, 1) if mean_mttd else None,\n\
+          \        \"rca_correct\": rca_correct,\n        \"remediation_executed\"\
+          : remediation,\n        \"agent_errors\": errors,\n        \"per_agent\"\
+          : {\n            agent: {\n                \"total\": v[\"total\"],\n  \
+          \              \"detected\": v[\"detected\"],\n                \"detection_rate\"\
+          : round(v[\"detected\"] / v[\"total\"], 3),\n                \"mean_mttd_seconds\"\
+          : round(sum(v[\"mttds\"]) / len(v[\"mttds\"]), 1) if v[\"mttds\"] else None,\n\
+          \            }\n            for agent, v in by_agent.items()\n        },\n\
+          \        \"cells\": [\n            {\n                \"agent\": r.get(\"\
+          approach\"),\n                \"fault\": r.get(\"fault_flag\"),\n      \
+          \          \"detected\": r.get(\"detected\"),\n                \"mttd_seconds\"\
+          : r.get(\"mttd_seconds\"),\n                \"rca_correct\": r.get(\"rca_correct\"\
+          ),\n                \"remediation_executed\": r.get(\"remediation_executed\"\
+          ),\n                \"agent_error\": r.get(\"agent_error\"),\n         \
+          \   }\n            for r in results\n        ],\n    }\n\n    # Log to MLflow\n\
+          \    try:\n        import mlflow\n\n        mlflow.set_tracking_uri(os.environ[\"\
+          MLFLOW_TRACKING_URI\"])\n        mlflow.set_experiment(\"agentic_aiops_mttd_mttr\"\
+          )\n        with mlflow.start_run(run_name=f\"{run_name}_summary\"):\n  \
+          \          mlflow.log_metric(\"total_cells\", total)\n            mlflow.log_metric(\"\
+          detected_count\", detected)\n            mlflow.log_metric(\"detection_rate\"\
+          , report[\"detection_rate\"])\n            if mean_mttd:\n             \
+          \   mlflow.log_metric(\"mean_mttd_seconds\", mean_mttd)\n            mlflow.log_metric(\"\
+          rca_correct_count\", rca_correct)\n            mlflow.log_metric(\"remediation_executed_count\"\
+          , remediation)\n            mlflow.log_metric(\"agent_error_count\", errors)\n\
+          \            mlflow.log_dict(report, \"artifacts/summary_report.json\")\n\
+          \            mlflow.set_tag(\"run_type\", \"pipeline_summary\")\n      \
+          \      mlflow.set_tag(\"pipeline\", run_name)\n    except Exception as e:\n\
+          \        print(f\"[report] MLflow logging failed: {e}\")\n\n    # Write\
+          \ report to file for pipeline artifact\n    with open(\"/tmp/report.json\"\
+          , \"w\") as f:\n        json.dump(report, f, indent=2)\n\n    print(json.dumps(report,\
+          \ indent=2))\n    return report\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
+    exec-harness-cell:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - harness_cell
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef harness_cell(agent: str, fault: str) -> dict:\n    \"\"\"Run\
+          \ one harness cell: inject fault, poll agent, score, output JSON.\"\"\"\n\
+          \    import base64\n    import json\n    import os\n    import subprocess\n\
+          \    import sys\n\n    # Load MaaS credentials from the Kubernetes Secret\n\
+          \    from kubernetes import client, config\n\n    config.load_incluster_config()\n\
+          \    v1 = client.CoreV1Api()\n    ns = open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
+          ).read().strip()\n    secret = v1.read_namespaced_secret(\"aiops-model-credentials\"\
+          , ns)\n    for key, value in (secret.data or {}).items():\n        os.environ[key]\
+          \ = base64.b64decode(value).decode()\n\n    # Configure harness connections\n\
+          \    os.environ[\"CLICKHOUSE_HTTP\"] = \"http://clickhouse.agentic-aiops-harness.svc.cluster.local:8123\"\
+          \n    os.environ[\"MLFLOW_TRACKING_URI\"] = \"http://mlflow.agentic-aiops-harness.svc.cluster.local:5000\"\
+          \n    os.environ[\"K8S_FAULT_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"\
+          K8S_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"PYTHONPATH\"] = \"/app\"\
+          \n    os.environ[\"AGENT_TIMEOUT\"] = \"600\"\n\n    cmd = [\n        sys.executable,\
+          \ \"-u\", \"/app/code/harness/run_harness.py\",\n        \"--scenario\"\
+          , \"a\",\n        \"--flag\", fault,\n        \"--variant\", \"cart\",\n\
+          \        \"--context-c\", \"0\",\n        \"--agents\", agent,\n       \
+          \ \"--no-judge\",\n        \"--detection-timeout\", \"600\",\n        \"\
+          --fault-duration\", \"120\",\n        \"--output\", \"/tmp/result.json\"\
+          ,\n    ]\n    proc = subprocess.run(cmd, capture_output=True, text=True,\
+          \ timeout=900, cwd=\"/app\")\n    print(proc.stdout[-5000:])\n    if proc.returncode\
+          \ != 0:\n        print(proc.stderr[-3000:], file=sys.stderr)\n    try:\n\
+          \        with open(\"/tmp/result.json\") as f:\n            return json.load(f)\n\
+          \    except FileNotFoundError:\n        return {\"error\": \"no output\"\
+          , \"detected\": False, \"mttd_seconds\": None,\n                \"approach\"\
+          : agent, \"fault_flag\": fault}\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
+    exec-harness-cell-2:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - harness_cell
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef harness_cell(agent: str, fault: str) -> dict:\n    \"\"\"Run\
+          \ one harness cell: inject fault, poll agent, score, output JSON.\"\"\"\n\
+          \    import base64\n    import json\n    import os\n    import subprocess\n\
+          \    import sys\n\n    # Load MaaS credentials from the Kubernetes Secret\n\
+          \    from kubernetes import client, config\n\n    config.load_incluster_config()\n\
+          \    v1 = client.CoreV1Api()\n    ns = open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
+          ).read().strip()\n    secret = v1.read_namespaced_secret(\"aiops-model-credentials\"\
+          , ns)\n    for key, value in (secret.data or {}).items():\n        os.environ[key]\
+          \ = base64.b64decode(value).decode()\n\n    # Configure harness connections\n\
+          \    os.environ[\"CLICKHOUSE_HTTP\"] = \"http://clickhouse.agentic-aiops-harness.svc.cluster.local:8123\"\
+          \n    os.environ[\"MLFLOW_TRACKING_URI\"] = \"http://mlflow.agentic-aiops-harness.svc.cluster.local:5000\"\
+          \n    os.environ[\"K8S_FAULT_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"\
+          K8S_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"PYTHONPATH\"] = \"/app\"\
+          \n    os.environ[\"AGENT_TIMEOUT\"] = \"600\"\n\n    cmd = [\n        sys.executable,\
+          \ \"-u\", \"/app/code/harness/run_harness.py\",\n        \"--scenario\"\
+          , \"a\",\n        \"--flag\", fault,\n        \"--variant\", \"cart\",\n\
+          \        \"--context-c\", \"0\",\n        \"--agents\", agent,\n       \
+          \ \"--no-judge\",\n        \"--detection-timeout\", \"600\",\n        \"\
+          --fault-duration\", \"120\",\n        \"--output\", \"/tmp/result.json\"\
+          ,\n    ]\n    proc = subprocess.run(cmd, capture_output=True, text=True,\
+          \ timeout=900, cwd=\"/app\")\n    print(proc.stdout[-5000:])\n    if proc.returncode\
+          \ != 0:\n        print(proc.stderr[-3000:], file=sys.stderr)\n    try:\n\
+          \        with open(\"/tmp/result.json\") as f:\n            return json.load(f)\n\
+          \    except FileNotFoundError:\n        return {\"error\": \"no output\"\
+          , \"detected\": False, \"mttd_seconds\": None,\n                \"approach\"\
+          : agent, \"fault_flag\": fault}\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
+    exec-harness-cell-3:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - harness_cell
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef harness_cell(agent: str, fault: str) -> dict:\n    \"\"\"Run\
+          \ one harness cell: inject fault, poll agent, score, output JSON.\"\"\"\n\
+          \    import base64\n    import json\n    import os\n    import subprocess\n\
+          \    import sys\n\n    # Load MaaS credentials from the Kubernetes Secret\n\
+          \    from kubernetes import client, config\n\n    config.load_incluster_config()\n\
+          \    v1 = client.CoreV1Api()\n    ns = open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
+          ).read().strip()\n    secret = v1.read_namespaced_secret(\"aiops-model-credentials\"\
+          , ns)\n    for key, value in (secret.data or {}).items():\n        os.environ[key]\
+          \ = base64.b64decode(value).decode()\n\n    # Configure harness connections\n\
+          \    os.environ[\"CLICKHOUSE_HTTP\"] = \"http://clickhouse.agentic-aiops-harness.svc.cluster.local:8123\"\
+          \n    os.environ[\"MLFLOW_TRACKING_URI\"] = \"http://mlflow.agentic-aiops-harness.svc.cluster.local:5000\"\
+          \n    os.environ[\"K8S_FAULT_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"\
+          K8S_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"PYTHONPATH\"] = \"/app\"\
+          \n    os.environ[\"AGENT_TIMEOUT\"] = \"600\"\n\n    cmd = [\n        sys.executable,\
+          \ \"-u\", \"/app/code/harness/run_harness.py\",\n        \"--scenario\"\
+          , \"a\",\n        \"--flag\", fault,\n        \"--variant\", \"cart\",\n\
+          \        \"--context-c\", \"0\",\n        \"--agents\", agent,\n       \
+          \ \"--no-judge\",\n        \"--detection-timeout\", \"600\",\n        \"\
+          --fault-duration\", \"120\",\n        \"--output\", \"/tmp/result.json\"\
+          ,\n    ]\n    proc = subprocess.run(cmd, capture_output=True, text=True,\
+          \ timeout=900, cwd=\"/app\")\n    print(proc.stdout[-5000:])\n    if proc.returncode\
+          \ != 0:\n        print(proc.stderr[-3000:], file=sys.stderr)\n    try:\n\
+          \        with open(\"/tmp/result.json\") as f:\n            return json.load(f)\n\
+          \    except FileNotFoundError:\n        return {\"error\": \"no output\"\
+          , \"detected\": False, \"mttd_seconds\": None,\n                \"approach\"\
+          : agent, \"fault_flag\": fault}\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
+    exec-harness-cell-4:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - harness_cell
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef harness_cell(agent: str, fault: str) -> dict:\n    \"\"\"Run\
+          \ one harness cell: inject fault, poll agent, score, output JSON.\"\"\"\n\
+          \    import base64\n    import json\n    import os\n    import subprocess\n\
+          \    import sys\n\n    # Load MaaS credentials from the Kubernetes Secret\n\
+          \    from kubernetes import client, config\n\n    config.load_incluster_config()\n\
+          \    v1 = client.CoreV1Api()\n    ns = open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
+          ).read().strip()\n    secret = v1.read_namespaced_secret(\"aiops-model-credentials\"\
+          , ns)\n    for key, value in (secret.data or {}).items():\n        os.environ[key]\
+          \ = base64.b64decode(value).decode()\n\n    # Configure harness connections\n\
+          \    os.environ[\"CLICKHOUSE_HTTP\"] = \"http://clickhouse.agentic-aiops-harness.svc.cluster.local:8123\"\
+          \n    os.environ[\"MLFLOW_TRACKING_URI\"] = \"http://mlflow.agentic-aiops-harness.svc.cluster.local:5000\"\
+          \n    os.environ[\"K8S_FAULT_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"\
+          K8S_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"PYTHONPATH\"] = \"/app\"\
+          \n    os.environ[\"AGENT_TIMEOUT\"] = \"600\"\n\n    cmd = [\n        sys.executable,\
+          \ \"-u\", \"/app/code/harness/run_harness.py\",\n        \"--scenario\"\
+          , \"a\",\n        \"--flag\", fault,\n        \"--variant\", \"cart\",\n\
+          \        \"--context-c\", \"0\",\n        \"--agents\", agent,\n       \
+          \ \"--no-judge\",\n        \"--detection-timeout\", \"600\",\n        \"\
+          --fault-duration\", \"120\",\n        \"--output\", \"/tmp/result.json\"\
+          ,\n    ]\n    proc = subprocess.run(cmd, capture_output=True, text=True,\
+          \ timeout=900, cwd=\"/app\")\n    print(proc.stdout[-5000:])\n    if proc.returncode\
+          \ != 0:\n        print(proc.stderr[-3000:], file=sys.stderr)\n    try:\n\
+          \        with open(\"/tmp/result.json\") as f:\n            return json.load(f)\n\
+          \    except FileNotFoundError:\n        return {\"error\": \"no output\"\
+          , \"detected\": False, \"mttd_seconds\": None,\n                \"approach\"\
+          : agent, \"fault_flag\": fault}\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
+    exec-reset-environment:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - reset_environment
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef reset_environment() -> str:\n    \"\"\"Reset the OTEL demo to\
+          \ a clean baseline before the next harness cell.\n\n    Scales all fault-target\
+          \ deployments back to 1 replica, removes any\n    leftover harness artifacts\
+          \ (network policies, env vars), and waits\n    for pods to become Ready.\n\
+          \    \"\"\"\n    import os\n    import time\n\n    from kubernetes import\
+          \ client, config\n\n    config.load_incluster_config()\n    apps = client.AppsV1Api()\n\
+          \    core = client.CoreV1Api()\n    net = client.NetworkingV1Api()\n\n \
+          \   namespace = \"otel-demo\"\n    targets = [\"cart\", \"checkout\", \"\
+          valkey-cart\", \"load-generator\",\n               \"product-catalog\",\
+          \ \"payment\", \"email\", \"frontend\"]\n    issues = []\n\n    # Scale\
+          \ all deployments back to at least 1 replica\n    for dep_name in targets:\n\
+          \        try:\n            dep = apps.read_namespaced_deployment(dep_name,\
+          \ namespace)\n            if (dep.spec.replicas or 0) < 1:\n           \
+          \     apps.patch_namespaced_deployment(dep_name, namespace, {\"spec\": {\"\
+          replicas\": 1}})\n                print(f\"  scaled {dep_name} back to 1\"\
+          )\n        except Exception as e:\n            issues.append(f\"{dep_name}:\
+          \ {e}\")\n\n    # Remove leftover harness network policies\n    try:\n \
+          \       policies = net.list_namespaced_network_policy(namespace)\n     \
+          \   for pol in policies.items:\n            if pol.metadata.name.startswith(\"\
+          harness-block-\"):\n                net.delete_namespaced_network_policy(pol.metadata.name,\
+          \ namespace)\n                print(f\"  deleted network policy {pol.metadata.name}\"\
+          )\n    except Exception:\n        pass\n\n    # Wait for pods to become\
+          \ Ready\n    deadline = time.time() + 120\n    while time.time() < deadline:\n\
+          \        all_ready = True\n        for dep_name in [\"cart\", \"checkout\"\
+          ]:\n            try:\n                dep = apps.read_namespaced_deployment(dep_name,\
+          \ namespace)\n                ready = dep.status.ready_replicas or 0\n \
+          \               if ready < 1:\n                    all_ready = False\n \
+          \           except Exception:\n                all_ready = False\n     \
+          \   if all_ready:\n            break\n        time.sleep(5)\n\n    status\
+          \ = \"clean\" if not issues else f\"warnings: {'; '.join(issues)}\"\n  \
+          \  print(f\"[reset] environment ready ({status})\")\n    return status\n\
+          \n"
+        image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
+    exec-reset-environment-2:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - reset_environment
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef reset_environment() -> str:\n    \"\"\"Reset the OTEL demo to\
+          \ a clean baseline before the next harness cell.\n\n    Scales all fault-target\
+          \ deployments back to 1 replica, removes any\n    leftover harness artifacts\
+          \ (network policies, env vars), and waits\n    for pods to become Ready.\n\
+          \    \"\"\"\n    import os\n    import time\n\n    from kubernetes import\
+          \ client, config\n\n    config.load_incluster_config()\n    apps = client.AppsV1Api()\n\
+          \    core = client.CoreV1Api()\n    net = client.NetworkingV1Api()\n\n \
+          \   namespace = \"otel-demo\"\n    targets = [\"cart\", \"checkout\", \"\
+          valkey-cart\", \"load-generator\",\n               \"product-catalog\",\
+          \ \"payment\", \"email\", \"frontend\"]\n    issues = []\n\n    # Scale\
+          \ all deployments back to at least 1 replica\n    for dep_name in targets:\n\
+          \        try:\n            dep = apps.read_namespaced_deployment(dep_name,\
+          \ namespace)\n            if (dep.spec.replicas or 0) < 1:\n           \
+          \     apps.patch_namespaced_deployment(dep_name, namespace, {\"spec\": {\"\
+          replicas\": 1}})\n                print(f\"  scaled {dep_name} back to 1\"\
+          )\n        except Exception as e:\n            issues.append(f\"{dep_name}:\
+          \ {e}\")\n\n    # Remove leftover harness network policies\n    try:\n \
+          \       policies = net.list_namespaced_network_policy(namespace)\n     \
+          \   for pol in policies.items:\n            if pol.metadata.name.startswith(\"\
+          harness-block-\"):\n                net.delete_namespaced_network_policy(pol.metadata.name,\
+          \ namespace)\n                print(f\"  deleted network policy {pol.metadata.name}\"\
+          )\n    except Exception:\n        pass\n\n    # Wait for pods to become\
+          \ Ready\n    deadline = time.time() + 120\n    while time.time() < deadline:\n\
+          \        all_ready = True\n        for dep_name in [\"cart\", \"checkout\"\
+          ]:\n            try:\n                dep = apps.read_namespaced_deployment(dep_name,\
+          \ namespace)\n                ready = dep.status.ready_replicas or 0\n \
+          \               if ready < 1:\n                    all_ready = False\n \
+          \           except Exception:\n                all_ready = False\n     \
+          \   if all_ready:\n            break\n        time.sleep(5)\n\n    status\
+          \ = \"clean\" if not issues else f\"warnings: {'; '.join(issues)}\"\n  \
+          \  print(f\"[reset] environment ready ({status})\")\n    return status\n\
+          \n"
+        image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
+    exec-reset-environment-3:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - reset_environment
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef reset_environment() -> str:\n    \"\"\"Reset the OTEL demo to\
+          \ a clean baseline before the next harness cell.\n\n    Scales all fault-target\
+          \ deployments back to 1 replica, removes any\n    leftover harness artifacts\
+          \ (network policies, env vars), and waits\n    for pods to become Ready.\n\
+          \    \"\"\"\n    import os\n    import time\n\n    from kubernetes import\
+          \ client, config\n\n    config.load_incluster_config()\n    apps = client.AppsV1Api()\n\
+          \    core = client.CoreV1Api()\n    net = client.NetworkingV1Api()\n\n \
+          \   namespace = \"otel-demo\"\n    targets = [\"cart\", \"checkout\", \"\
+          valkey-cart\", \"load-generator\",\n               \"product-catalog\",\
+          \ \"payment\", \"email\", \"frontend\"]\n    issues = []\n\n    # Scale\
+          \ all deployments back to at least 1 replica\n    for dep_name in targets:\n\
+          \        try:\n            dep = apps.read_namespaced_deployment(dep_name,\
+          \ namespace)\n            if (dep.spec.replicas or 0) < 1:\n           \
+          \     apps.patch_namespaced_deployment(dep_name, namespace, {\"spec\": {\"\
+          replicas\": 1}})\n                print(f\"  scaled {dep_name} back to 1\"\
+          )\n        except Exception as e:\n            issues.append(f\"{dep_name}:\
+          \ {e}\")\n\n    # Remove leftover harness network policies\n    try:\n \
+          \       policies = net.list_namespaced_network_policy(namespace)\n     \
+          \   for pol in policies.items:\n            if pol.metadata.name.startswith(\"\
+          harness-block-\"):\n                net.delete_namespaced_network_policy(pol.metadata.name,\
+          \ namespace)\n                print(f\"  deleted network policy {pol.metadata.name}\"\
+          )\n    except Exception:\n        pass\n\n    # Wait for pods to become\
+          \ Ready\n    deadline = time.time() + 120\n    while time.time() < deadline:\n\
+          \        all_ready = True\n        for dep_name in [\"cart\", \"checkout\"\
+          ]:\n            try:\n                dep = apps.read_namespaced_deployment(dep_name,\
+          \ namespace)\n                ready = dep.status.ready_replicas or 0\n \
+          \               if ready < 1:\n                    all_ready = False\n \
+          \           except Exception:\n                all_ready = False\n     \
+          \   if all_ready:\n            break\n        time.sleep(5)\n\n    status\
+          \ = \"clean\" if not issues else f\"warnings: {'; '.join(issues)}\"\n  \
+          \  print(f\"[reset] environment ready ({status})\")\n    return status\n\
+          \n"
+        image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
+    exec-reset-environment-4:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - reset_environment
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef reset_environment() -> str:\n    \"\"\"Reset the OTEL demo to\
+          \ a clean baseline before the next harness cell.\n\n    Scales all fault-target\
+          \ deployments back to 1 replica, removes any\n    leftover harness artifacts\
+          \ (network policies, env vars), and waits\n    for pods to become Ready.\n\
+          \    \"\"\"\n    import os\n    import time\n\n    from kubernetes import\
+          \ client, config\n\n    config.load_incluster_config()\n    apps = client.AppsV1Api()\n\
+          \    core = client.CoreV1Api()\n    net = client.NetworkingV1Api()\n\n \
+          \   namespace = \"otel-demo\"\n    targets = [\"cart\", \"checkout\", \"\
+          valkey-cart\", \"load-generator\",\n               \"product-catalog\",\
+          \ \"payment\", \"email\", \"frontend\"]\n    issues = []\n\n    # Scale\
+          \ all deployments back to at least 1 replica\n    for dep_name in targets:\n\
+          \        try:\n            dep = apps.read_namespaced_deployment(dep_name,\
+          \ namespace)\n            if (dep.spec.replicas or 0) < 1:\n           \
+          \     apps.patch_namespaced_deployment(dep_name, namespace, {\"spec\": {\"\
+          replicas\": 1}})\n                print(f\"  scaled {dep_name} back to 1\"\
+          )\n        except Exception as e:\n            issues.append(f\"{dep_name}:\
+          \ {e}\")\n\n    # Remove leftover harness network policies\n    try:\n \
+          \       policies = net.list_namespaced_network_policy(namespace)\n     \
+          \   for pol in policies.items:\n            if pol.metadata.name.startswith(\"\
+          harness-block-\"):\n                net.delete_namespaced_network_policy(pol.metadata.name,\
+          \ namespace)\n                print(f\"  deleted network policy {pol.metadata.name}\"\
+          )\n    except Exception:\n        pass\n\n    # Wait for pods to become\
+          \ Ready\n    deadline = time.time() + 120\n    while time.time() < deadline:\n\
+          \        all_ready = True\n        for dep_name in [\"cart\", \"checkout\"\
+          ]:\n            try:\n                dep = apps.read_namespaced_deployment(dep_name,\
+          \ namespace)\n                ready = dep.status.ready_replicas or 0\n \
+          \               if ready < 1:\n                    all_ready = False\n \
+          \           except Exception:\n                all_ready = False\n     \
+          \   if all_ready:\n            break\n        time.sleep(5)\n\n    status\
+          \ = \"clean\" if not issues else f\"warnings: {'; '.join(issues)}\"\n  \
+          \  print(f\"[reset] environment ready ({status})\")\n    return status\n\
+          \n"
+        image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
+pipelineInfo:
+  description: "AIOps harness: sequential agents \xD7 faults with environment reset\
+    \ and summary report"
+  name: aiops-eval-matrix
+root:
+  dag:
+    tasks:
+      generate-report:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-generate-report
+        dependentTasks:
+        - harness-cell
+        - harness-cell-2
+        - harness-cell-3
+        - harness-cell-4
+        inputs:
+          parameters:
+            pipelinechannel--harness-cell-2-Output:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: harness-cell-2
+            pipelinechannel--harness-cell-3-Output:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: harness-cell-3
+            pipelinechannel--harness-cell-4-Output:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: harness-cell-4
+            pipelinechannel--harness-cell-Output:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: harness-cell
+            results:
+              runtimeValue:
+                constant:
+                - '{{$.inputs.parameters[''pipelinechannel--harness-cell-Output'']}}'
+                - '{{$.inputs.parameters[''pipelinechannel--harness-cell-2-Output'']}}'
+                - '{{$.inputs.parameters[''pipelinechannel--harness-cell-3-Output'']}}'
+                - '{{$.inputs.parameters[''pipelinechannel--harness-cell-4-Output'']}}'
+            run_name:
+              runtimeValue:
+                constant: aiops-eval-matrix
+        taskInfo:
+          name: summary report
+      harness-cell:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-harness-cell
+        dependentTasks:
+        - reset-environment
+        inputs:
+          parameters:
+            agent:
+              runtimeValue:
+                constant: rhdp_deepseek-r1-distill-qwen-14b
+            fault:
+              runtimeValue:
+                constant: scale_zero
+        taskInfo:
+          name: rhdp_deeps / scale_zero
+      harness-cell-2:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-harness-cell-2
+        dependentTasks:
+        - reset-environment-2
+        inputs:
+          parameters:
+            agent:
+              runtimeValue:
+                constant: rhdp_deepseek-r1-distill-qwen-14b
+            fault:
+              runtimeValue:
+                constant: kill_pod
+        taskInfo:
+          name: rhdp_deeps / kill_pod
+      harness-cell-3:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-harness-cell-3
+        dependentTasks:
+        - reset-environment-3
+        inputs:
+          parameters:
+            agent:
+              runtimeValue:
+                constant: rhdp_granite-3-2-8b-instruct
+            fault:
+              runtimeValue:
+                constant: scale_zero
+        taskInfo:
+          name: rhdp_grani / scale_zero
+      harness-cell-4:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-harness-cell-4
+        dependentTasks:
+        - reset-environment-4
+        inputs:
+          parameters:
+            agent:
+              runtimeValue:
+                constant: rhdp_granite-3-2-8b-instruct
+            fault:
+              runtimeValue:
+                constant: kill_pod
+        taskInfo:
+          name: rhdp_grani / kill_pod
+      reset-environment:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-reset-environment
+        taskInfo:
+          name: reset / scale_zero
+      reset-environment-2:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-reset-environment-2
+        dependentTasks:
+        - harness-cell
+        taskInfo:
+          name: reset / kill_pod
+      reset-environment-3:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-reset-environment-3
+        dependentTasks:
+        - harness-cell-2
+        taskInfo:
+          name: reset / scale_zero
+      reset-environment-4:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-reset-environment-4
+        dependentTasks:
+        - harness-cell-3
+        taskInfo:
+          name: reset / kill_pod
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.17.0
