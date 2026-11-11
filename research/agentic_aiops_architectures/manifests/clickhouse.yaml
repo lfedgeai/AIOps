@@ -1,32 +1,60 @@
-# ClickHouse deployment for OTEL telemetry (traces, metrics, logs).
-# Tuned for OpenShift: no fixed UID; memory limit + server cap to avoid OOMKilled under ingest.
-# If you edit ConfigMap `clickhouse-otel-config` data only, bump pod annotation
-# `lfedge.aiops/clickhouse-config` on the Deployment template so pods reload the file.
+# ClickHouse telemetry store for Agentic AIOps (observability platform tier).
+# Deploy: oc apply -f manifests/clickhouse.yaml
+# Namespace agentic-aiops is created by manifests/mlflow.yaml (apply that first, or create ns manually).
+# OTEL demo collectors in otel-demo export cross-namespace to clickhouse.agentic-aiops.svc.cluster.local.
+#
+# Data persists on lvms-vg1 PVC (not emptyDir) so eviction does not wipe telemetry.
+# Memory: container limit 8Gi + internal server cap 6Gi. The internal cap is REQUIRED:
+# without max_server_memory_usage the server allocates past the container limit while
+# replaying metadata/ingest -> OOMKilled crash loop (observed 2026-10-19: exit 137 ~9s
+# after start with a 3Gi limit and no cap).
+# KEEP THIS CONFIG MINIMAL: adding mark_cache_size / uncompressed_cache_size /
+# max_thread_pool_size here deadlocked startup at "Loading metadata" (reproduced
+# 2026-10-20 with fresh AND real data; server up in 10s once removed).
+# Mount via subPath so the image's own config.d/docker_related_config.xml
+# (listen_host 0.0.0.0/::) stays visible — a directory mount shadows it and the
+# kubelet probe to the pod IP gets connection refused.
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: clickhouse-otel-config
-  namespace: otel-demo
+  namespace: agentic-aiops
   labels:
     app: clickhouse
+    app.kubernetes.io/part-of: agentic-aiops
 data:
-  # Merged by the official image into /etc/clickhouse-server/config.d/
-  # max_server_memory_usage: stay below the container memory limit (leave headroom for OS/cache).
   99-otel-k8s-memory.xml: |
     <clickhouse>
-      <!-- 3 GiB cap — stay below the 4Gi container limit (avoids OOMKilled under OTEL ingest). -->
-      <max_server_memory_usage>3221225472</max_server_memory_usage>
+      <!-- 6 GiB cap — stay below the 8Gi container limit (headroom for OS/page cache). -->
+      <max_server_memory_usage>6442450944</max_server_memory_usage>
       <max_concurrent_queries>24</max_concurrent_queries>
     </clickhouse>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clickhouse
+  namespace: agentic-aiops
+  labels:
+    app: clickhouse
+    app.kubernetes.io/part-of: agentic-aiops
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: lvms-vg1
+  resources:
+    requests:
+      storage: 50Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: clickhouse
-  namespace: otel-demo
+  namespace: agentic-aiops
   labels:
     app: clickhouse
+    app.kubernetes.io/part-of: agentic-aiops
 spec:
   replicas: 1
   selector:
@@ -39,13 +67,12 @@ spec:
       labels:
         app: clickhouse
       annotations:
-        # Bump when changing clickhouse-otel-config so `oc apply` rolls pods without manual restart.
-        lfedge.aiops/clickhouse-config: "v2"
+        lfedge.aiops/clickhouse-config: "v7-8gi-cap-minimal-subpath"
     spec:
-      # OpenShift restricted-v2: omit fixed UID/GID (101) — use assigned namespace range.
       containers:
         - name: clickhouse
           image: clickhouse/clickhouse-server:24.3
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 9000
               name: native
@@ -61,43 +88,47 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/clickhouse
-            - name: otel-config
+            - name: config-d
               mountPath: /etc/clickhouse-server/config.d/99-otel-k8s-memory.xml
               subPath: 99-otel-k8s-memory.xml
               readOnly: true
           resources:
             requests:
               memory: 1Gi
-              cpu: 250m
+              cpu: 100m
+              ephemeral-storage: 2Gi
             limits:
-              memory: 4Gi
+              memory: 8Gi
               cpu: "2000m"
+              ephemeral-storage: 4Gi
           startupProbe:
             httpGet:
               path: /ping
               port: 8123
-            failureThreshold: 36
-            periodSeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 90  # 15 min: metadata replay on a 13G+ telemetry DB can exceed 5 min
           readinessProbe:
             httpGet:
               path: /ping
               port: 8123
-            initialDelaySeconds: 5
-            periodSeconds: 5
-            timeoutSeconds: 3
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 6
           livenessProbe:
             httpGet:
               path: /ping
               port: 8123
-            initialDelaySeconds: 60
-            periodSeconds: 15
-            timeoutSeconds: 5
-            failureThreshold: 5
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
       volumes:
         - name: data
-          emptyDir: {}
-        - name: otel-config
+          persistentVolumeClaim:
+            claimName: clickhouse
+        - name: config-d
           configMap:
             name: clickhouse-otel-config
 ---
@@ -105,9 +136,10 @@ apiVersion: v1
 kind: Service
 metadata:
   name: clickhouse
-  namespace: otel-demo
+  namespace: agentic-aiops
   labels:
     app: clickhouse
+    app.kubernetes.io/part-of: agentic-aiops
 spec:
   ports:
     - port: 9000

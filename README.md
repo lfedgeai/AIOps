@@ -35,8 +35,8 @@ There are three workstreams on the highest level:
 ## Research
 The motto inside this folder is "Anything AIOps Goes". Here's the home for your wildest ideas to try out, code, test and report back on. Ideally everything built on open source technology or at least free to use and openly available software or models. Examples are  evaluating different algorithms or models for anomaly detection, trying different agentic architectures like agents for logs, metrics, traces VS agents for each system component or layer of the technology stack.
 
-## Test Harness
-The test harness is where we assemble different components of AIOps solutions to test and benchmark against each other. This can be sub-component test harnesses like for anomaly-detection or a full end-to-end AIOps solution cycle from data/signal collection, signal correlation, anomaly detection, root cause analysis, and remediation.
+## Runtime Harness
+The runtime harness (`runtime_harness/`) assembles best-performing AIOps components from research evaluations into a pluggable end-to-end solution (detect → RCA → remediate → verify), with a simple status API/UI. Component defaults follow the Oct 12 Option-2 matrix in `research/agentic_aiops_architectures/docs/EVALUATION_RESULTS_12oct26.md`. Research benchmarking remains under `research/agentic_aiops_architectures/`.
 
 ## Demo
 The demo is where the contributors assemble working demos and products to showcase.

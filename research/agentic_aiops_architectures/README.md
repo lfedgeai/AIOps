@@ -1,12 +1,14 @@
 # Agentic AIOps Evaluation Harness
 
-Framework for comparing LLM agents on autonomous fault detection and remediation. Measures MTTD (Mean Time To Detect) and MTTR (Mean Time To Repair) across models, scenarios, and fault types.
+Framework for comparing LLM agents on autonomous fault detection and remediation. Measures MTTD (Mean Time To Detect) and MTTR (Mean Time To Repair) across models, scenarios, fault types, and context corpora.
 
 ## Architecture
 
 - **Telemetry**: OTEL Demo → Collector → ClickHouse in `agentic-aiops` (logs, traces, metrics)
 - **Fault injection**: Kubernetes API (scale_zero, kill_pod, memory_limit, network_partition, etc.)
-- **Agents**: Nemotron-Nano-3, Qwen3-14B, DeepSeek R1 Distill 14B, Llama Scout 17B, GPT-OSS 120B
+- **Agents (default matrix)**: Qwen3-14B, Qwen3.8-27B, Qwen3.6-27B, DeepSeek R1 Distill 14B, Granite 3.2 8B Instruct, GLM-5.3 Flash  
+- **Shared prompts**: all agents use `code/agents/prompts.py` (same task framing; profile overlays still come from `tool_profiles.py`)  
+  (Nemotron/Kimi/Llama31/Scout/GPT-OSS dropped — see [RUN_NOTES_07Oct26.md](docs/RUN_NOTES_07Oct26.md), [RUN_NOTES_10Aug26.md](docs/RUN_NOTES_10Aug26.md))
 - **Experiment tracking**: MLflow (local)
 - **No frameworks**: No LangChain, no AutoGen — each agent is a single Python file with a tool-calling loop
 
@@ -21,12 +23,15 @@ Each harness run picks one cell in the evaluation space: **agent × scenario × 
 cp config/.env.example config/.env
 # Edit config/.env with your API keys and endpoints
 
-# 2. Deploy / port-forward ClickHouse (observability tier in `agentic-aiops`, not `otel-demo`)
+# 2. Deploy ClickHouse, then patch the OTEL Collector ConfigMap to add a
+#    ClickHouse exporter on the traces, metrics, and logs pipelines
+#    (cross-namespace to agentic-aiops; also drops the broken Prometheus metrics exporter)
 oc apply -f manifests/clickhouse.yaml
-python3 scripts/patch-otel-collector-clickhouse.py   # OTEL collector → cross-namespace CH
+python3 scripts/patch-otel-collector-clickhouse.py
 oc port-forward -n agentic-aiops svc/clickhouse 38123:8123 &
 
-# 3. Start local MLflow
+# 3. Start local MLflow (required — do not use OpenShift mlflow)
+#    Or: ./scripts/ensure_local_mlflow.sh
 /usr/bin/python3.13 -m mlflow server \
   --backend-store-uri sqlite:///mlflow_local.db \
   --default-artifact-root ./mlartifacts \
@@ -71,15 +76,33 @@ Defined in `config/scenarios.yaml`:
 
 Usage: `./scripts/run_harness.sh --scenario a` or `--all-scenarios`
 
+## Context corpora (orthogonal to scenarios)
+
+Controlled by `CONTEXT_C` / `config/context_c_levels.yaml`. When C1–C4 are enabled, agents must call the matching RAG tool(s) before other tools unlock (`code/tools/rag_policy.py` + `code/agents/rag_force.py`). Empty corpora abort the run **before** fault injection (`EmptyCorpusError`) — no soft-fallback to telemetry-only.
+
+| Corpus | Tool | Content |
+|--------|------|---------|
+| **C0** | (none) | Live telemetry / scenario tools only |
+| **C1** | `rag_search_source` | App source (`src/**`) |
+| **C2** | `rag_search_docs` | Docs / README / changelog |
+| **C3** | `rag_search_architecture` | System overview (README, compose topology, …) |
+| **C4** | `rag_search_dependencies` | Compose files, Dockerfiles, collector configs |
+
 ## Agents
 
 | Agent | Model | Tool calling | Env vars |
 |-------|-------|-------------|----------|
-| `nemotron_agent/` | NVIDIA Nemotron-3-Nano | Native + reasoning | `NEMOTRON_API_KEY`, `NEMOTRON_API_BASE` |
 | `qwen3_agent/` | Qwen3-14B | Native + streaming | `QWEN3_API_KEY`, `QWEN3_API_BASE` |
+| `qwen38_27b_agent/` | Qwen3.8 27B | Native | `QWEN38_API_KEY`, `QWEN38_API_BASE`, `QWEN38_MODEL` |
+| `qwen36_27b_agent/` | Qwen3.6 27B | Native | `QWEN36_API_KEY`, `QWEN36_API_BASE`, `QWEN36_MODEL` |
 | `deepseek_agent/` | DeepSeek R1 Distill 14B | Prompt-based | `DEEPSEEK_API_KEY`, `DEEPSEEK_API_BASE` |
-| `llama_scout_agent/` | Llama Scout 17B | Native | `LLAMA_SCOUT_API_KEY`, `LLAMA_SCOUT_API_BASE` |
-| `gpt_oss_agent/` | GPT-OSS 120B | Native | `GPT_OSS_API_KEY`, `GPT_OSS_API_BASE` |
+| `granite_agent/` | Granite 3.2 8B Instruct | Native (+ content fallback) | `GRANITE_API_KEY`, `GRANITE_API_BASE`, `GRANITE_MODEL` |
+| `glm_53_flash_agent/` | GLM-5.3 Flash | Native | `GLM_API_KEY`, `GLM_API_BASE`, `GLM_MODEL` |
+| `nemotron_agent/` | Nemotron Cascade 2 30B | Native + reasoning | *Optional — dropped (prelude timeout/503 since Oct 2026)* |
+| `kimi_k2_agent/` | Kimi K2-7 | Native | *Optional — dropped from default matrix (Oct 2026)* |
+| `llama31_70b_agent/` | Llama 3.1 70B (CPU) | Native (+ content fallback) | *Optional — dropped (0% detect Oct 2026)* |
+| `llama_scout_agent/` | Llama Scout 17B | Native | *Optional — dropped from default matrix (Aug 2026)* |
+| `gpt_oss_agent/` | GPT-OSS 120B | Native | *Optional — dropped from default matrix (Aug 2026)* |
 
 All credentials in `config/.env` (gitignored). `run_harness.sh` sources it automatically.
 
@@ -94,32 +117,65 @@ All credentials in `config/.env` (gitignored). `run_harness.sh` sources it autom
 
 AI performance metrics (per run): TTFT, tokens/sec, total tokens, tool calls, LLM rounds.
 
-## Full Matrix Run
+## Matrix campaigns
 
 ```bash
-# Run all agents × all faults on scenario a (~2.5 hours)
+# All agents × 8 faults × scenarios 0/a/b/c  (~10–12 hours; ~128+ runs with 4 agents)
 bash scripts/run_full_matrix.sh
+
+# Scenario A only × agents × 3 faults × C1–C4  (context-engineering sweep)
+bash scripts/run_c_matrix_scenario_a_c1-c4.sh
+# Optional C0 baseline: INCLUDE_C0=1 bash scripts/run_c_matrix_scenario_a_c1-c4.sh
+
+# Option 2 — all CONTEXT_C subsets (16) × agents × 3 faults = 240 runs (~14h)
+bash scripts/run_c_matrix_scenario_a_c_permutations.sh
+
+# Full cross-product: agents × scenarios 0/a/b/c × faults × C0–C4  (very long)
+bash scripts/run_full_c_matrix.sh
 ```
+
+Matrix wrappers call `scripts/preflight_agent_apis.py` first and **abort** if any default-lineup LLM endpoint fails `chat/completions` (HTML error pages, connection errors, missing creds). That prevents the Aug 2026 failure mode where Nemotron HTML / Llama connection errors were recorded as soft `detected=false`.
+
+`scripts/run_c_matrix.sh` is a compatibility shim that forwards to `run_c_matrix_scenario_a_c1-c4.sh`.
 
 ## Project Structure
 
 ```
 code/
 ├── harness/           # Orchestration (run_harness.py, scenarios.py)
-├── agents/            # One dir per model (nemotron, qwen3, deepseek, llama_scout)
-│   └── ai_metrics.py # Shared TTFT/token/latency tracking
-└── tools/             # Shared tools (agent_tools.py, tool_profiles.py)
-config/                # .env, harness.yaml, scenarios.yaml
-scripts/               # run_harness.sh, run_full_matrix.sh
+├── agents/            # One dir per model (qwen3, deepseek, granite, glm_53_flash, …)
+│   ├── skills/        # Shared detect/diagnose/remediate/verify skill prompts
+│   └── ai_metrics.py  # Shared TTFT/token/latency tracking
+└── tools/             # Shared tools (agent_tools.py, tool_profiles.py, context_engineering)
+config/                # .env, harness.yaml, scenarios.yaml, context_c_levels.yaml
+scripts/               # run_harness.sh, run_full_matrix.sh, run_c_matrix_scenario_a_c1-c4.sh, …
 manifests/             # OpenShift deployments (mlflow, clickhouse, vllm)
+evalhub/               # TrustyAI EvalHub provider + manifests
 docs/                  # Architecture, credentials, results
+data/                  # Event ledger (runtime)
 out/                   # Run output JSONs (gitignored)
 ```
 
 ## Docs
 
-- [EVALUATION_RESULTS_23June26.md](docs/EVALUATION_RESULTS_23June26.md) — Full matrix results (128 runs)
-- [CONTEXT_ENGINEERING_EVAL_REPORT.md](docs/CONTEXT_ENGINEERING_EVAL_REPORT.md) — Context levels L0–L2 eval (Nemotron)
+- [EVALUATION_RESULTS_09oct26.md](docs/EVALUATION_RESULTS_09oct26.md) — Oct execute-gate matrix: 7 agents × 16 contexts × 3 faults (336/336)
+- [COMPARE_09oct26_vs_23sep26.md](docs/COMPARE_09oct26_vs_23sep26.md) — Oct vs Sep baseline compare
+- [RUN_NOTES_07Oct26.md](docs/RUN_NOTES_07Oct26.md) — Oct 7–9 execute-gate matrix + post-run cleanup (llama dropped, generic prompts)
+- [EVALUATION_RESULTS_27sep26.md](docs/EVALUATION_RESULTS_27sep26.md) — Option 2 re-run: skills + no-CHANGELOG (335/336, MLflow-audited)
+- [COMPARE_27sep26_vs_23sep26.md](docs/COMPARE_27sep26_vs_23sep26.md) — Sep 27 vs Sep 23 compare
+- [RUN_NOTES_25Sep26.md](docs/RUN_NOTES_25Sep26.md) — Skills + no-CHANGELOG Option 2 re-run (timeouts raised)
+- [EVALUATION_RESULTS_23sep26.md](docs/EVALUATION_RESULTS_23sep26.md) — Option 2 baseline: 7 agents × 16 CONTEXT_C × 3 faults (336 runs)
+- [RUN_NOTES_14Sep26.md](docs/RUN_NOTES_14Sep26.md) — Next matrix: iteration budget 20, health gate, MLflow metrics, C0 vs context investigation
+- [Learnings_across_runs_report.md](docs/Learnings_across_runs_report.md) — Cross-run: why agents don’t execute, context value, chunking, next tests
+- [EVALUATION_RESULTS_12Aug26.md](docs/EVALUATION_RESULTS_12Aug26.md) — Option 2 expanded MaaS lineup: 8 agents, 384 runs, MLflow-validated
+- [RUN_NOTES_11Aug26.md](docs/RUN_NOTES_11Aug26.md) — Aug 11 expanded MaaS lineup (Nemotron swap, Qwen3.8/3.6/Kimi added)
+- [EVALUATION_RESULTS_11Aug26.md](docs/EVALUATION_RESULTS_11Aug26.md) — Option 2 re-run: Granite + Llama31, drop Scout/GPT-OSS (240 runs) + MLflow audit
+- [RUN_NOTES_10Aug26.md](docs/RUN_NOTES_10Aug26.md) — Aug 2026 lineup change + smoke notes
+- [EVALUATION_RESULTS_26July26.md](docs/EVALUATION_RESULTS_26July26.md) — Option 2: scenario A × all CONTEXT_C subsets (240 runs) + MLflow audit
+- [EVALUATION_RESULTS_25July26.md](docs/EVALUATION_RESULTS_25July26.md) — Option 1 re-run: scenario A × C0–C4, forced RAG, fixed corpora (75 runs)
+- [EVALUATION_RESULTS_07July26.md](docs/EVALUATION_RESULTS_07July26.md) — Scenario A × C1–C4 (optional RAG, pre-force)
+- [EVALUATION_RESULTS_23June26.md](docs/EVALUATION_RESULTS_23June26.md) — Full scenario matrix results (128 runs)
+- [CONTEXT_ENGINEERING_EVAL_REPORT.md](docs/CONTEXT_ENGINEERING_EVAL_REPORT.md) — Auto-generated context corpus report
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — Current system architecture
 - [LLM_CREDENTIALS.md](docs/LLM_CREDENTIALS.md) — API key setup
 - [OPENSHIFT_OTEL_DEPLOYMENT.md](docs/OPENSHIFT_OTEL_DEPLOYMENT.md) — OpenShift deployment
@@ -127,6 +183,6 @@ out/                   # Run output JSONs (gitignored)
 ## Backlog
 
 - Multi-model pipeline — fast detection → deep RCA → constrained remediation with different models per stage
-- Agent self-verification — after fix, poll get_pod_status to confirm recovery before reporting success
+- ~~Agent self-verification~~ — implemented as execute gate (`AGENT_EXECUTE_GATE=1`); blocks final JSON until rem write
 - Reinforcement loop — use results to improve prompts automatically
 - Local ClickHouse — run telemetry DB locally so harness works without OpenShift

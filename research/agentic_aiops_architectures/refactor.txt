@@ -1,0 +1,21 @@
+- replace flagd with real kubernetes faults, keep flagd as a non-default optional parameter
+- create different experiment dimensions aka scenarios - and run the same fault injection across the different scenarios and measure MTTD and MTTR
+-- refactor current approach into a scenario a)
+-- scenario a) the same agent processing logs, traces, metrics - current scenario
+-- scenario b) different agents: one agent each for logs metrics traces - 3 agents in total
+-- scenario c) different agents: one agent each for hardware/host, platform (k8s) and application
+- ensure that agents only have access to what they should be able to see, so don't give tool access for k8s to an hardware agent, log available tools per  scenario 
+- run the harness to check everything is working OK and as expected; 
+- fix issues and repeat until everything is working OK and as expected and everything is logged in MLFlow for easy comparison
+- then run again using all available models across all scenarios
+
+
+--new tool refactoring
+-rename get_baseline_telemetry to get pre_anomaly_logs
+-in get_baseline_telemetry rename pre_start to pre_anomaly_detected
+Why and how is the FAULT_INJECTION_TIME set as an env? How does that make sense?
+-Make the fault_injection_ts mandatory not optional and rename it to anomaly_detected_ts. This helps the tool to be used as intended.
+- rename compare_telemetry to compare pre_VS_post_anomaly_Logs
+- implement the same tool for traces and metrics
+- Remove the chronic noise prompt and make that a tool call that checks for potential chronic noises across all hardware, software and platform logs/traces/metrics.
+- why does a platform role and hardware role not have access to logs and traces?
