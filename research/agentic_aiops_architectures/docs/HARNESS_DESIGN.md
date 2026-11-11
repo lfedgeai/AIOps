@@ -8,19 +8,23 @@
 
 ## 1. What the harness measures
 
-Each **cell** is one trial on a live OpenShift cluster: inject a Kubernetes fault into a target workload, give an LLM agent a time window with telemetry/K8s/RAG tools, then score the outcome. A **batch** (matrix) is the cross-product of agents × fault types × context configurations.
+Each **cell** is one trial on a live OpenShift cluster: inject a Kubernetes fault into a target workload, give an LLM agent a time window with telemetry/K8s/RAG tools, then score the outcome. A **batch** (matrix) is the cross-product of agents × fault types × context configurations. One cell = one `run_harness.py` subprocess = one result JSON at a deterministic path (e.g. `out/context_C1-2_sa_scale_zero_<agent>.json`).
+
+**Naming:** the `c` in `run_c_matrix_*`, `--context-c`, and the `aiops-c-matrix-sa-c-permutations.service` unit is the **context** axis — which context corpora the agent receives (`config/context_c_levels.yaml`): C0 = none, C1 = source code, C2 = docs, C3 = architecture, C4 = dependencies. `run_c_matrix_scenario_a_c_permutations.sh` sweeps scenario A × agents × 3 faults × all 16 CONTEXT_C labels (C0 plus every non-empty subset of {1,2,3,4}); `run_c_matrix.sh` is a compatibility shim for the C1–C4-only variant.
 
 | Metric | Definition | Invariant / note |
 |---|---|---|
 | `detected` | Agent reported detection within the window | |
 | `rca_correct` | Right failing component identified | OR of declared · inferred · executed-target · oracle-judge layers |
-| `remediation_correct` (OR) | Appropriate fix present in declared text | Execution not required |
+| `remediation_correct` (OR) | Appropriate fix present in declared text | Headline over layers: declared text · `remediation_executed` · judge; execution not required |
 | `remediation_executed` | A write that was **successful ∧ targeted at the expected component ∧ action-appropriate for the fault** | Selected by the single shared `first_effective_remediation_write` selector |
 | `recovery_verified` | Harness verified the fault cleared **before** its own auto-recovery | Only the agent's own fix can flip this |
 | `mttd_seconds` | Injection → the agent's own detection timestamp | Tolerant parser; harness clock only as fallback |
 | `mttr_seconds` | Injection → first effective write completion | **Exists ⟺ `remediation_executed`**, by construction |
 | `mttr_verified_seconds` | Injection → recovery verified | |
 | `agent_error` | Harness-recorded agent/API failure for the cell | Reported alongside rates — never silently folded into "no detect" |
+
+The `(OR)` marker flags a combined headline: true when **any** contributing layer is true — `remediation_correct = any(remediation_declared, remediation_executed, remediation_judge)` and `rca_correct = any(rca_declared, rca_inferred, rca_judge)` (`score_hybrid`, `code/harness/evaluation.py`); layers that did not run (e.g. a skipped judge) do not vote. Each layer alone is a weak witness of the same fact — an agent can declare the right fix and never act, or execute it and describe it poorly — so the strict per-layer values stay as separate columns and the knowing-vs-doing gap stays visible.
 
 The core premise is **fairness**: a cross-agent comparison is only valid when agents share task framing, tools, scoring, and infra health. Everything below exists to protect that premise or to fix a violation of it.
 
@@ -75,7 +79,7 @@ Shared prompt module, shared skills, shared tool profile, shared gate, shared ju
 **Origin:** cloned agents drift — a copied agent that keeps its own prompt copy silently diverges from the lineup and invalidates comparisons. Codified as a change-control rule (`.cursor/rules/evaluation-fairness.mdc`): prompt/profile/scoring changes require documenting the invalidation of prior reports.
 
 ### P2 — Protocol discipline: stdout is data, stderr is diagnostics
-The agent↔harness channel is a JSON-over-stdout protocol. Every diagnostic (gate nudges, RAG notices, usage reports) must go to stderr; the harness parses stdout only with the tolerant `parse_agent_signals` parser.
+The agent↔harness channel is a JSON-over-stdout protocol. Every diagnostic (gate nudges, RAG notices, usage reports) must go to stderr; the harness parses stdout only with the tolerant `parse_agent_signals` parser. stderr is diagnostics only — never a management plane: the harness never reads it for control. The management itself (execute-gate blocking, RAG-phase tool filtering) is in-process control flow inside the agent; the stderr lines only report that it fired, e.g. `[execute_gate] blocked final JSON (detected=true, no rem write yet) nudge=1/3` or `[rag_force] harness executing forced rag_search_docs` (printed when the harness itself runs a corpus query the model skipped).
 **Origin (Oct 10–12, 3 bugs):** the execute-gate nudge, the forced-RAG notice, and the context-window report all `print()`ed to stdout — the default output channel — corrupting the protocol on *every* run. The strict `json.loads` then failed silently and MTTD fell back to the subprocess-exit clock, inflating one agent's MTTD by ~60 s (exit clock includes post-loop MLflow uploads). Six derivation bugs total, fixed 19 Oct by replay over recorded data — [EVALUATION_RESULTS_12oct26_corrected.md](EVALUATION_RESULTS_12oct26_corrected.md).
 
 ### P3 — One selector per concept
@@ -84,6 +88,9 @@ The agent↔harness channel is a JSON-over-stdout protocol. Every diagnostic (ga
 
 ### P4 — Agent-authored timestamps, not harness clocks
 MTTD uses the agent's own `detection_timestamp`: the first mid-loop `detected=true` claim that survives gate-blocked rounds, else the first successful write.
+
+Mechanism: `stamp_detection_claim` (`code/agents/remediation_signals.py`) writes `detection_timestamp` **once**, at the first mid-loop `detected=true` claim, and never overwrites it. When the execute gate then blocks the final JSON (claim but no write yet — §2, AGENT layer), the loop runs up to three extra nudged rounds, and the stamp still points at the claim, not at the later write. That persistence is what "survives gate-blocked rounds" means: the claim came first, the gate forced extra work after it, and the timestamp stayed with the claim. Act-first agents that never claim mid-loop are stamped at their first successful write instead (`_on_write_tool_end` in `code/tools/agent_tools.py`).
+
 **Origin:** detection was stamped only at the first successful *write* — for declare-then-act agents, detection ≡ remediation; for act-first agents, claims were never stamped at all. Combined with P2's exit-clock fallback, latency columns were untrustworthy across agents.
 
 ### P5 — Bounded wall-clock everywhere
@@ -112,6 +119,8 @@ A write tool whose arguments are free-form LLM strings must constrain its effect
 - **override-only `set_env`** — may change env vars that already exist; refuses to add new ones;
 - **no-op rejection** — a patch that changes nothing is a *failed* write, not a success;
 - **conflict retry** — read-modify-write retried on 409 (a prior patch's rollout bumps `resourceVersion`).
+
+Scope: all three guardrails live on `patch_deployment` — the only write tool whose free-form string arguments can create cluster state. `restart`/`scale`/`delete` take a name (and a number), cannot invent state, and rely on the API rejecting hallucinated names (404 → recorded failed write) plus the scoring-side targeting checks (`first_effective_remediation_write`); their arguments are not validated against observed state before execution.
 
 **Origin (Oct 22):** an agent hallucinated `set_env={"CORRECT_VAR": "value"}` — the junk variable was *added to the live deployment*, survived the harness's fault recovery (which only removes vars it knows), contaminated subsequent cells, and scored as a successful remediation. Hallucinated arguments must not be able to create cluster state or earn exec credit.
 
