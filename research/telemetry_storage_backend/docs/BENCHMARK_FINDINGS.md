@@ -1,7 +1,8 @@
 # Telemetry Storage Backend Benchmark — Findings Report
 
 **Generated:** 2026-11-11 · 
-**Author:** @aspanner `out/` (2026-02-27 → 2026-06-17)
+**Author:** @aspanner 
+**research periods** `out/` (2026-02-27 → 2026-06-17)
 **Scope:** unified telemetry storage evaluation for AIOps — ingestion and canonical query performance across **8 backends** storing logs, traces and metrics.
 
 ---
