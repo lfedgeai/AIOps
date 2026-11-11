@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: todo-client
+  labels:
+    app: loadgen
+    component: loadgen
+    workload_class: non-agentic
+    app.kubernetes.io/part-of: demo-5
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loadgen
+  template:
+    metadata:
+      labels:
+        app: loadgen
+        component: loadgen
+        workload_class: non-agentic
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: loadgen
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: APP_NS
+              value: todo-demo
+            - name: INTERVAL
+              value: "5"
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              microdnf -y install curl >/dev/null 2>&1 || true
+              base="http://todo.${APP_NS}.svc:8080"
+              echo "loadgen targeting ${base} every ${INTERVAL}s"
+              while true; do
+                curl -s -o /dev/null -m 5 "${base}/health" && echo "ok GET /health" || echo "fail GET /health"
+                curl -s -o /dev/null -m 5 "${base}/api" && echo "ok GET /api" || echo "fail GET /api"
+                curl -s -o /dev/null -m 5 -X POST -H 'Content-Type: application/json' \
+                  -d '{"title":"demo-5 load","completed":false,"order":1}' "${base}/api" \
+                  && echo "ok POST /api" || echo "fail POST /api"
+                sleep "${INTERVAL}"
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

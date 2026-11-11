@@ -1,0 +1,181 @@
+# Lab default secret — replace with Vault/ESO in GitOps installs.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgresql
+  namespace: todo-demo
+  labels:
+    app: postgresql
+    app.kubernetes.io/part-of: demo-5
+type: Opaque
+stringData:
+  database-name: todo
+  database-user: todo
+  database-password: todo
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgresql
+  namespace: todo-demo
+  labels:
+    app: postgresql
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: todo-demo
+  labels:
+    app: postgresql
+    component: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app: postgresql
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgresql
+  namespace: todo-demo
+  labels:
+    app: postgresql
+    component: postgres
+    workload_class: non-agentic
+    app.kubernetes.io/part-of: demo-5
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+        deployment: postgresql
+        component: postgres
+        workload_class: non-agentic
+    spec:
+      containers:
+        - name: postgresql
+          image: registry.redhat.io/rhel8/postgresql-10:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: postgresql
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql
+                  key: database-user
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql
+                  key: database-password
+            - name: POSTGRESQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql
+                  key: database-name
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          readinessProbe:
+            exec:
+              command: ["/usr/libexec/check-container"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["/usr/libexec/check-container", "--live"]
+            initialDelaySeconds: 60
+            periodSeconds: 10
+          volumeMounts:
+            - name: postgresql-data
+              mountPath: /var/lib/pgsql/data
+      volumes:
+        - name: postgresql-data
+          persistentVolumeClaim:
+            claimName: postgresql
+---
+# Metrics for AIOps — scraped by site otel-collector (prometheus receiver).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-exporter
+  namespace: todo-demo
+  labels:
+    app: postgres-exporter
+    component: postgres
+    workload_class: non-agentic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-exporter
+  template:
+    metadata:
+      labels:
+        app: postgres-exporter
+        component: postgres
+        workload_class: non-agentic
+    spec:
+      containers:
+        - name: postgres-exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DATA_SOURCE_URI
+              value: postgresql:5432/todo?sslmode=disable
+            - name: DATA_SOURCE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql
+                  key: database-user
+            - name: DATA_SOURCE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql
+                  key: database-password
+          ports:
+            - containerPort: 9187
+              name: metrics
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-exporter
+  namespace: todo-demo
+  labels:
+    app: postgres-exporter
+    component: postgres
+spec:
+  selector:
+    app: postgres-exporter
+  ports:
+    - name: metrics
+      port: 9187
+      targetPort: 9187

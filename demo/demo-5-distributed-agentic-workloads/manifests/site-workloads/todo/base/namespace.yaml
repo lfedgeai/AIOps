@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: todo-demo
+  labels:
+    app.kubernetes.io/part-of: demo-5
+    workload_class: non-agentic
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: todo-client
+  labels:
+    app.kubernetes.io/part-of: demo-5
+    workload_class: non-agentic

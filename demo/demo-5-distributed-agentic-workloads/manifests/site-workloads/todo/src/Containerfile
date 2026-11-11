@@ -1,0 +1,15 @@
+FROM registry.access.redhat.com/ubi9/python-311:1-77
+
+USER 0
+WORKDIR /opt/app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app.py telemetry.py ./
+RUN chown -R 1001:0 /opt/app
+USER 1001
+
+ENV PORT=8080 \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8080
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]

@@ -1,0 +1,21 @@
+# Optional north-south access to the todo API on OpenShift / MicroShift (Route CRD).
+# First slice uses MicroShift: uncomment in kustomization.yaml when you want a site Route.
+# Full PoC on K3s: use Ingress instead — do not use port-forward as the access architecture.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: todo
+  namespace: todo-demo
+  labels:
+    app: todo
+spec:
+  to:
+    kind: Service
+    name: todo
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

@@ -1,0 +1,22 @@
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: lvmcluster
+  namespace: openshift-storage
+  labels:
+    app.kubernetes.io/part-of: demo-5
+spec:
+  storage:
+    deviceClasses:
+      - name: vg1
+        default: true
+        # Lab: loop device prepared by lvms-loop-setup Job.
+        # Production: replace with unused disk, e.g. /dev/disk/by-path/...
+        deviceSelector:
+          paths:
+            - /dev/loop7
+          forceWipeDevicesAndDestroyAllData: true
+        thinPoolConfig:
+          name: thin-pool-1
+          sizePercent: 90
+          overprovisionRatio: 10

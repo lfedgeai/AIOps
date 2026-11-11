@@ -1,0 +1,79 @@
+# One-shot: create sparse file + losetup on the SNO (lab only; not reboot-persistent).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lvms-loop-setup
+  namespace: openshift-storage
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lvms-loop-setup-privileged
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:privileged
+subjects:
+  - kind: ServiceAccount
+    name: lvms-loop-setup
+    namespace: openshift-storage
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lvms-loop-setup
+  namespace: openshift-storage
+  labels:
+    app.kubernetes.io/part-of: demo-5
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 1
+  template:
+    spec:
+      serviceAccountName: lvms-loop-setup
+      hostPID: true
+      hostNetwork: true
+      restartPolicy: Never
+      containers:
+        - name: setup
+          image: registry.redhat.io/rhel9/support-tools:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              IMG=/var/lib/lvms-lab-disk.img
+              LOOP=/dev/loop7
+              if [[ -b "$LOOP" ]] && losetup "$LOOP" >/dev/null 2>&1; then
+                echo "loop already configured: $(losetup "$LOOP")"
+                lsblk "$LOOP"
+                exit 0
+              fi
+              if [[ ! -f "$IMG" ]]; then
+                echo "Creating 40Gi sparse file at $IMG"
+                truncate -s 40G "$IMG"
+              fi
+              losetup "$LOOP" "$IMG"
+              losetup -a | grep "$LOOP" || true
+              lsblk "$LOOP"
+              echo "OK: $LOOP ready for LVMCluster"
+          volumeMounts:
+            - name: host-var
+              mountPath: /var
+            - name: host-dev
+              mountPath: /dev
+      volumes:
+        - name: host-var
+          hostPath:
+            path: /var
+            type: Directory
+        - name: host-dev
+          hostPath:
+            path: /dev
+            type: Directory
+      tolerations:
+        - operator: Exists

@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo5-observability
+  labels:
+    app.kubernetes.io/part-of: demo-5
+    demo5.lfedge.aiops/plane: observe
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo5-aiops
+  labels:
+    app.kubernetes.io/part-of: demo-5
+    demo5.lfedge.aiops/plane: act
+---
+# Placeholder for Phase 3+ Gateway (empty until OpenShell pin).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo5-openshell
+  labels:
+    app.kubernetes.io/part-of: demo-5
+    demo5.lfedge.aiops/plane: openshell

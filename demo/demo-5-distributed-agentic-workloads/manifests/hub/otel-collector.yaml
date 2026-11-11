@@ -1,0 +1,141 @@
+# Hub OTEL collector — OTLP intake (OpenShift Route) → ClickHouse (T/M/L).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: demo5-observability
+  labels:
+    app: otel-collector
+    app.kubernetes.io/part-of: demo-5
+data:
+  config.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+          grpc:
+            endpoint: 0.0.0.0:4317
+    processors:
+      batch:
+        timeout: 5s
+    exporters:
+      clickhouse:
+        endpoint: tcp://clickhouse.demo5-observability.svc.cluster.local:9000?dial_timeout=10s
+        database: otel
+        create_schema: true
+        timeout: 10s
+      debug:
+        verbosity: basic
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [clickhouse, debug]
+        metrics:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [clickhouse, debug]
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [clickhouse, debug]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: demo5-observability
+  labels:
+    app: otel-collector
+    app.kubernetes.io/part-of: demo-5
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.120.0
+          args: ["--config=/conf/config.yaml"]
+          ports:
+            - containerPort: 4317
+              name: otlp-grpc
+            - containerPort: 4318
+              name: otlp-http
+            - containerPort: 13133
+              name: health
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 6
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+            items:
+              - key: config.yaml
+                path: config.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: demo5-observability
+  labels:
+    app: otel-collector
+    app.kubernetes.io/part-of: demo-5
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+---
+# Hub OTLP intake — sites must use this Route only (AGENTS.md).
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: otel-intake
+  namespace: demo5-observability
+  labels:
+    app: otel-collector
+    app.kubernetes.io/part-of: demo-5
+spec:
+  to:
+    kind: Service
+    name: otel-collector
+    weight: 100
+  port:
+    targetPort: otlp-http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

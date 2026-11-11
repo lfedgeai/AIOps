@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: todo
+  namespace: todo-demo
+spec:
+  template:
+    metadata:
+      labels:
+        site_id: site-a
+    spec:
+      containers:
+        - name: todo
+          env:
+            - name: SITE_ID
+              value: site-a
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: todo-demo
+spec:
+  template:
+    metadata:
+      labels:
+        site_id: site-a
+    spec:
+      containers:
+        - name: otel-collector
+          env:
+            - name: SITE_ID
+              value: site-a
+            - name: HUB_OTLP_ENDPOINT
+              value: https://otel-intake-demo5-observability.apps.sno1gpu.localdomain

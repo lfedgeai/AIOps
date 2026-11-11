@@ -1,0 +1,163 @@
+# demo5 site-a: CNV VM for MicroShift (Phase 1)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo5-sites
+  labels:
+    app.kubernetes.io/part-of: demo-5
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pull-secret
+  namespace: demo5-sites
+type: kubernetes.io/dockerconfigjson
+# Filled by scripts/provision-site-vms.sh from openshift-config/pull-secret
+data: {}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: site-a-cloudinit
+  namespace: demo5-sites
+  labels:
+    site_id: site-a
+type: Opaque
+stringData:
+  userdata: |
+    #cloud-config
+    hostname: demo5-site-a
+    fqdn: demo5-site-a.demo5.local
+    manage_etc_hosts: true
+    users:
+      - name: cloud-user
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        shell: /bin/bash
+        lock_passwd: false
+        # password: microshift (openssl passwd -6) — change in lab
+        passwd: "$6$rounds=4096$demosalt$N8K8YQZxYxqJxqJxqJxqJxqJxqJxqJxqJxqJxqJxqJxqJxqJxqJxqJxqJxqJxqJx"
+    ssh_pwauth: true
+    package_upgrade: false
+    write_files:
+      - path: /usr/local/bin/bootstrap-microshift.sh
+        permissions: "0755"
+        content: |
+          #!/bin/bash
+          set -euo pipefail
+          exec > >(tee -a /var/log/bootstrap-microshift.log) 2>&1
+          echo "=== demo-5 MicroShift bootstrap $(date -Is) ==="
+          if ! command -v subscription-manager >/dev/null; then
+            echo "ERROR: subscription-manager missing — need RHEL guest image"
+            exit 1
+          fi
+          if [[ -f /etc/rhsm-credentials/org_id && -f /etc/rhsm-credentials/activation_key ]]; then
+            ORG=$(cat /etc/rhsm-credentials/org_id)
+            KEY=$(cat /etc/rhsm-credentials/activation_key)
+            subscription-manager register --org="$ORG" --activationkey="$KEY" || true
+          elif [[ -f /etc/rhsm-credentials/username ]]; then
+            subscription-manager register \
+              --username="$(cat /etc/rhsm-credentials/username)" \
+              --password="$(cat /etc/rhsm-credentials/password)" \
+              --auto-attach || true
+          else
+            echo "WARN: no RHSM credentials mounted; attempting existing entitlement"
+          fi
+          subscription-manager repos \
+            --enable="rhocp-4.18-for-rhel-9-$(uname -m)-rpms" \
+            --enable="fast-datapath-for-rhel-9-$(uname -m)-rpms" || \
+          subscription-manager repos \
+            --enable="rhocp-4.17-for-rhel-9-$(uname -m)-rpms" \
+            --enable="fast-datapath-for-rhel-9-$(uname -m)-rpms" || true
+          dnf install -y microshift openshift-clients firewalld
+          systemctl enable --now firewalld microshift
+          echo "MicroShift enabled; kubeconfig typically /var/lib/microshift/resources/kubeadmin/kubeconfig"
+    runcmd:
+      - [/usr/local/bin/bootstrap-microshift.sh]
+---
+# Optional: create Secret rhsm-credentials with org_id+activation_key or username+password
+# oc -n demo5-sites create secret generic rhsm-credentials --from-literal=...
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: site-a-rootdisk
+  namespace: demo5-sites
+  labels:
+    site_id: site-a
+    app.kubernetes.io/part-of: demo-5
+spec:
+  pvc:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 40Gi
+    storageClassName: lvms-vg1
+  source:
+    registry:
+      # RHEL 9 guest image (requires pull-secret with registry.redhat.io)
+      url: "docker://registry.redhat.io/rhel9/rhel-guest-image:9.6"
+      secretRef: pull-secret
+      pullMethod: node
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: demo5-site-a
+  namespace: demo5-sites
+  labels:
+    site_id: site-a
+    app.kubernetes.io/part-of: demo-5
+    demo5.lfedge.aiops/role: site
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: demo5-site-a
+        site_id: site-a
+    spec:
+      domain:
+        cpu:
+          cores: 4
+        resources:
+          requests:
+            memory: 16Gi
+            cpu: "4"
+          limits:
+            memory: 16Gi
+            cpu: "4"
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+        machine:
+          type: q35
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: false
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: site-a-rootdisk
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            secretRef:
+              name: site-a-cloudinit
+            networkData: |
+              version: 2
+              ethernets:
+                eth0:
+                  dhcp4: true
+      accessCredentials: []
+      # Mount RHSM secret if present (optional volume — added by provision script when secret exists)

@@ -1,0 +1,131 @@
+# Site OTEL Collector — receives todo OTLP (+ scrapes postgres_exporter) and forwards to hub Route.
+# Set HUB_OTLP_ENDPOINT to the hub OpenShift Route, e.g. https://otel-intake.apps.<hub-domain>
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: todo-demo
+  labels:
+    app: otel-collector
+    app.kubernetes.io/part-of: demo-5
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+          grpc:
+            endpoint: 0.0.0.0:4317
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: postgres-exporter
+              scrape_interval: 15s
+              static_configs:
+                - targets: ["postgres-exporter.todo-demo.svc:9187"]
+                  labels:
+                    app: todo
+                    component: postgres
+                    workload_class: non-agentic
+    processors:
+      resource:
+        attributes:
+          - key: site_id
+            value: ${env:SITE_ID}
+            action: upsert
+      batch: {}
+    exporters:
+      otlphttp:
+        # Base URL only; collector appends /v1/{traces|metrics|logs}.
+        endpoint: ${env:HUB_OTLP_ENDPOINT}
+        tls:
+          insecure: false
+          insecure_skip_verify: true
+      debug:
+        verbosity: basic
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [resource, batch]
+          exporters: [otlphttp, debug]
+        metrics:
+          receivers: [otlp, prometheus]
+          processors: [resource, batch]
+          exporters: [otlphttp, debug]
+        logs:
+          receivers: [otlp]
+          processors: [resource, batch]
+          exporters: [otlphttp, debug]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: todo-demo
+  labels:
+    app: otel-collector
+    site_id: site-a
+    app.kubernetes.io/part-of: demo-5
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+        site_id: site-a
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.120.0
+          args: ["--config=/conf/config.yaml"]
+          env:
+            - name: SITE_ID
+              value: site-a
+            # Hub OpenShift Route only (AGENTS.md). Replace with real hostname.
+            - name: HUB_OTLP_ENDPOINT
+              value: https://otel-intake.apps.hub.example.com
+          ports:
+            - containerPort: 4317
+              name: otlp-grpc
+            - containerPort: 4318
+              name: otlp-http
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+            items:
+              - key: config.yaml
+                path: config.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: todo-demo
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318

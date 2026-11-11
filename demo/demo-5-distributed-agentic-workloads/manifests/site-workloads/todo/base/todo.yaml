@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: todo
+  namespace: todo-demo
+  labels:
+    app: todo
+    component: todo
+    workload_class: non-agentic
+    site_id: site-a
+    app.kubernetes.io/part-of: demo-5
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: todo
+  template:
+    metadata:
+      labels:
+        app: todo
+        deployment: todo
+        component: todo
+        workload_class: non-agentic
+        site_id: site-a
+    spec:
+      containers:
+        - name: todo
+          # Build from ../src (Containerfile) and push; override with kustomize images:.
+          image: demo5-todo:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            # DB creds from Secret (lab default; later Vault/ESO → same keys).
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql
+                  key: database-user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql
+                  key: database-password
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql
+                  key: database-name
+            - name: POSTGRES_HOST
+              value: postgresql
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: OTEL_SERVICE_NAME
+              value: todo
+            - name: OTEL_SERVICE_NAMESPACE
+              value: todo-demo
+            # Overlay per site (site-a, site-b, …).
+            - name: SITE_ID
+              value: site-a
+            - name: DEPLOYMENT_ENVIRONMENT
+              value: demo
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector.todo-demo.svc:4318
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: todo
+  namespace: todo-demo
+  labels:
+    app: todo
+    component: todo
+spec:
+  type: ClusterIP
+  selector:
+    app: todo
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

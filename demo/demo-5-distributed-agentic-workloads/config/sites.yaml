@@ -1,0 +1,12 @@
+# Lab site inventory — do not commit real tokens/kubeconfigs.
+hub_otlp_route: "https://otel-intake-demo5-observability.apps.sno1gpu.localdomain"
+
+sites:
+  - site_id: site-a
+    distro: microshift
+    registration: pending # rhacm | argo — needs kubeconfig after MicroShift bootstrap
+    vm_name: demo5-site-a
+    vm_namespace: demo5-sites
+    # console: oc -n demo5-sites console vmi/demo5-site-a
+    # login: cloud-user / microshift
+    # RHSM required for dnf install microshift — set RHSM_* and re-run cloud-init or register manually

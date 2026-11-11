@@ -1,0 +1,31 @@
+# LVM Storage (LVMS) for demo-5 hub — lab SNO with no spare disk uses a loop device
+# (see https://github.com/openshift/lvm-operator/blob/main/docs/loop-devices.md).
+# Replace with a real unused disk path for anything beyond lab smoke tests.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-storage
+  labels:
+    openshift.io/cluster-monitoring: "true"
+    app.kubernetes.io/part-of: demo-5
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: openshift-storage-operatorgroup
+  namespace: openshift-storage
+spec:
+  targetNamespaces:
+    - openshift-storage
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: lvms-operator
+  namespace: openshift-storage
+spec:
+  channel: stable-4.22
+  name: lvms-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic

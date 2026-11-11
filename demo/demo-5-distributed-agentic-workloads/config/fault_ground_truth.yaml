@@ -1,0 +1,12 @@
+# Ground-truth faults for MTTD demos (Phase 2+). GitOps must be paused when injecting.
+faults:
+  - id: todo-scale-zero
+    class: workload
+    site_id: site-a
+    description: Scale todo Deployment to 0 replicas
+    inject: "scripts/inject-fault.sh todo-scale-zero"
+    expected_signature:
+      traces: drop or absence of service.name=todo spans for site_id
+      metrics: http.server.request.count stalls; pod count / up signals drop
+      logs: absence of todo app logs for site_id
+    notes: Pause Argo sync first so the Deployment is not reconciled back.
