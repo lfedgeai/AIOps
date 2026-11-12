@@ -81,7 +81,7 @@ class RuntimeStatus(BaseModel):
     health: Health = Health.UNKNOWN
     stage: Stage = Stage.IDLE
     assembly: str = ""
-    remediation_mode: str = "hil"  # hil | governed | direct (mutually exclusive)
+    remediation_mode: str = "hil"  # hil | governed | direct | image_rebuild (mutually exclusive)
     dry_run: bool = True
     human_in_the_loop: bool = True
     components: list[ComponentRef] = Field(default_factory=list)

@@ -46,7 +46,7 @@ class Orchestrator:
         self.store = store or get_store()
         from runtime_harness.remediation import init_mode_from_config
 
-        init_mode_from_config(assembly.config)  # hil | governed | direct (exclusive)
+        init_mode_from_config(assembly.config)  # hil | governed | direct | image_rebuild (exclusive)
 
     def _publish(
         self,

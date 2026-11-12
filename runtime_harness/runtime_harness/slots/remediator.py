@@ -1,4 +1,4 @@
-"""Remediation slot — three mutually exclusive modes (HIL / Governed / Direct).
+"""Remediation slot — four mutually exclusive modes (HIL / Governed / Direct / Image-rebuild).
 
 Purpose
 -------
@@ -10,6 +10,8 @@ Convert a confirmed RCA into a remediation, per the active mode
             the harness runs it via ansible-runner. Model never writes commands.
   direct    GLM SELECTS a guarded write tool (+ args); the harness executes
             it through write_tools (G1–G3) — requires AIOPS_RT_ENABLE_WRITE_TOOLS=1.
+  image_rebuild  GLM names the faulty SERVICE only; the harness runs the reviewed
+            image_rebuild_deploy playbook (OpenShift BuildConfig → registry → rollout).
 
 Architectural rule: the harness (never the model) owns execution.
 
@@ -18,7 +20,7 @@ How it connects
 - Runs after RCA in ``orchestrator`` when RCA is confirmed.
 - Model id from ``stage_models`` (GLM-5.3-Flash default).
 - Response validated against the mode's schema (RemediationPlan /
-  GovernedPlan / DirectPlan).
+  GovernedPlan / DirectPlan / ImageRebuildPlan).
 - Writes ``ctx["remediation"]`` for the verifier + cycle history audit.
 """
 
@@ -33,17 +35,23 @@ from runtime_harness.providers.llm import LLMProvider
 from runtime_harness.remediation import (
     RemediationMode,
     execute_direct,
+    execute_image_rebuild,
     get_mode,
     playbook_for_fault,
     run_playbook,
 )
-from runtime_harness.schemas import DirectPlan, GovernedPlan, RemediationPlan
+from runtime_harness.schemas import (
+    DirectPlan,
+    GovernedPlan,
+    ImageRebuildPlan,
+    RemediationPlan,
+)
 from runtime_harness.slots.base import Slot, SlotContext
 from runtime_harness.stage_models import get_stage_models
 
 
 class LLMRemediator(Slot):
-    """Action slot — mode-driven (hil | governed | direct)."""
+    """Action slot — mode-driven (hil | governed | direct | image_rebuild)."""
 
     name = "remediator"
     plugin = "llm_remediate"
@@ -64,6 +72,8 @@ class LLMRemediator(Slot):
             return self._run_hil(ctx, primary, system, rca, started)
         if mode == RemediationMode.GOVERNED:
             return self._run_governed(ctx, primary, system, rca, started)
+        if mode == RemediationMode.IMAGE_REBUILD:
+            return self._run_image_rebuild(ctx, primary, system, rca, started)
         return self._run_direct(ctx, primary, system, rca, started)
 
     # -- HIL: proposals only ------------------------------------------------
@@ -186,6 +196,44 @@ class LLMRemediator(Slot):
             proposed=True,
             executed=executed,
             detail_extra={"plan": out.model_dump(), "direct_result": result},
+            agent_id=primary,
+            started=started,
+        )
+
+    # -- Image rebuild: reviewed BuildConfig playbook -------------------------
+
+    def _run_image_rebuild(self, ctx, primary, system, rca, started) -> StageResult:
+        user = (
+            store_user()
+            + f"\n\nIMAGE REBUILD MODE — name the faulty service whose container image "
+            f"should be rebuilt from source and redeployed. You do NOT choose commands "
+            f"or playbooks; the harness runs the reviewed build+deploy pipeline.\n"
+            f"rca={rca}\n"
+            'Return ONLY JSON: {"service": "cart", "git_ref": "main", '
+            '"confidence": 0.0-1.0, "summary": "..."}'
+        )
+        out: ImageRebuildPlan = self.provider.complete(primary, system, user, ImageRebuildPlan)
+
+        # Harness-side execution: sanitize the service name, run the catalog playbook.
+        service = out.service or rca.get("component") or ctx.get("target")
+        namespace = ctx.get("namespace", "otel-demo")
+        result = execute_image_rebuild(service, namespace=namespace, git_ref=out.git_ref)
+        executed = bool(result.get("executed"))
+        return self._finish(
+            ctx,
+            stage_result_kwargs=dict(
+                summary=(
+                    f"Image-rebuild remediation {'executed' if executed else 'FAILED'}: "
+                    f"rebuild+deploy of {service} in {namespace}"
+                    + (f" — {result.get('error', '')}" if not executed else "")
+                ),
+                **({} if executed else {"ok": False}),
+            ),
+            mode="image_rebuild",
+            action=f"image rebuild+deploy {service} ({out.git_ref})",
+            proposed=True,
+            executed=executed,
+            detail_extra={"plan": out.model_dump(), "image_rebuild_result": result},
             agent_id=primary,
             started=started,
         )

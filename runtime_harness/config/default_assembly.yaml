@@ -81,12 +81,16 @@ pipeline:
   max_steps: 20
 
 # ---------------------------------------------------------------------------
-# Remediation — three MUTUALLY EXCLUSIVE configurations (PUT /remediation, UI):
-#   hil       proposals only (default; model suggests, human decides)
-#   governed  execution via reviewed Ansible playbooks (playbooks/ catalog;
-#             the model only SELECTS a playbook + params, never writes commands)
-#   direct    execution via guarded MCP/K8s write tools (G1–G3); requires
-#             AIOPS_RT_ENABLE_WRITE_TOOLS=1 to arm
+# Remediation — four MUTUALLY EXCLUSIVE configurations (PUT /remediation, UI):
+#   hil            proposals only (default; model suggests, human decides)
+#   governed       execution via reviewed Ansible playbooks (playbooks/ catalog;
+#                  the model only SELECTS a playbook + params, never writes commands)
+#   direct         execution via guarded MCP/K8s write tools (G1–G3); requires
+#                  AIOPS_RT_ENABLE_WRITE_TOOLS=1 to arm
+#   image_rebuild  rebuild the faulty service's container image from source and
+#                  redeploy it (reviewed image_rebuild_deploy playbook: OpenShift
+#                  BuildConfig -> internal registry -> rollout); the model only
+#                  names the service — never build commands
 # ---------------------------------------------------------------------------
 remediation:
   mode: hil

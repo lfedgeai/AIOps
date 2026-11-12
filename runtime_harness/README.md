@@ -183,7 +183,7 @@ runtime_harness/
     slots/                       # pluggable stage interfaces
 ```
 
-## Remediation — three mutually exclusive modes
+## Remediation — four mutually exclusive modes
 
 One active mode at a time (`GET|PUT /remediation`, UI buttons, YAML `remediation.mode`):
 
@@ -192,6 +192,7 @@ One active mode at a time (`GET|PUT /remediation`, UI buttons, YAML `remediation
 | **hil** (default) | Proposes an action string | Nothing — a human decides | Human review |
 | **governed** | **Selects** a playbook from the reviewed catalog (`playbooks/`) + params | The harness runs it via ansible-runner | Organizational trust in reviewed, versioned playbooks — the model never writes commands; catalog is enforced harness-side |
 | **direct** | **Selects** a guarded write tool (`scale/restart/delete/patch`) + args | The harness executes via `write_tools.py` (G1–G3 guardrails) | Structured selection + allowlist + guardrails; **requires `AIOPS_RT_ENABLE_WRITE_TOOLS=1` to arm** |
+| **image_rebuild** | **Names** the faulty service (+ optional git ref) — nothing else | The harness runs the reviewed `image_rebuild_deploy` playbook: OpenShift BuildConfig (docker strategy, source = the pinned demo repo, `src/<service>`) → internal registry → `oc set image` → rollout wait | Same reviewed-catalog basis as governed — the model never sees or writes build commands; service name is sanitized harness-side; audit artifacts identical |
 
 Fault → playbook defaults: `scale_zero → scale_restore`, `kill_pod → restart_deployment`, `config_corruption → patch_remove_env`. A selection outside the catalog is refused and recorded as a proposal.
 
@@ -205,7 +206,8 @@ Fault → playbook defaults: `scale_zero → scale_restore`, `kill_pod → resta
   (`readyReplicas` via the kubernetes client); proposal-mode fallback only
   when cluster access is unavailable.
 - **Execution stays harness-gated by design**: models *select*, never write
-  commands. Three mutually exclusive modes (HIL / Governed-Ansible / Direct-
-  MCP); direct additionally requires `AIOPS_RT_ENABLE_WRITE_TOOLS=1`.
+  commands. Four mutually exclusive modes (HIL / Governed-Ansible / Direct-
+  MCP / Image-rebuild); direct additionally requires
+  `AIOPS_RT_ENABLE_WRITE_TOOLS=1`.
 - **Detection shares its suspect**: `DetectDecision.component` names the
   anomalous service; RCA starts from that suspicion.

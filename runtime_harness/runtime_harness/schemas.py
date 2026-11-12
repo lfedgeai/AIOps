@@ -81,6 +81,22 @@ class DirectPlan(BaseModel):
     summary: str = ""
 
 
+class ImageRebuildPlan(BaseModel):
+    """Remediation output in IMAGE_REBUILD mode: rebuild + redeploy a service image.
+
+    The model only names the faulty SERVICE (and optionally a source ref) —
+    the harness runs the reviewed ``image_rebuild_deploy`` playbook: build the
+    service's container image from source via an OpenShift BuildConfig and
+    roll the deployment onto the new image. The model never sees or writes
+    build commands.
+    """
+
+    service: str
+    git_ref: str = "main"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    summary: str = ""
+
+
 T = TypeVar("T", bound=BaseModel)
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
@@ -124,6 +140,9 @@ __all__ = [
     "DetectDecision",
     "RcaDecision",
     "RemediationPlan",
+    "GovernedPlan",
+    "DirectPlan",
+    "ImageRebuildPlan",
     "extract_json",
     "validate",
 ]
