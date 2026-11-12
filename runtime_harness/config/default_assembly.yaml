@@ -81,15 +81,32 @@ pipeline:
   max_steps: 20
 
 # ---------------------------------------------------------------------------
-# Remediation — three MUTUALLY EXCLUSIVE configurations (PUT /remediation, UI):
-#   hil       proposals only (default; model suggests, human decides)
-#   governed  execution via reviewed Ansible playbooks (playbooks/ catalog;
-#             the model only SELECTS a playbook + params, never writes commands)
-#   direct    execution via guarded MCP/K8s write tools (G1–G3); requires
-#             AIOPS_RT_ENABLE_WRITE_TOOLS=1 to arm
+# Remediation — four MUTUALLY EXCLUSIVE configurations (PUT /remediation, UI):
+#   hil            proposals only (default; model suggests, human decides)
+#   governed       execution via reviewed Ansible playbooks (playbooks/ catalog;
+#                  the model only SELECTS a playbook + params, never writes commands)
+#   direct         execution via guarded MCP/K8s write tools (G1–G3); requires
+#                  AIOPS_RT_ENABLE_WRITE_TOOLS=1 to arm
+#   image_rebuild  EDGE: rebuild the bootc (Bootable Container) OS image and roll
+#                  it out to a FlightCtl fleet. The model only names the fleet;
+#                  the harness runs build (podman/buildah + bootc Containerfile)
+#                  → registry push → flightctl apply (spec.template.spec.os.image).
+#                  Requires the flightctl CLI (logged in) + build tool + registry.
 # ---------------------------------------------------------------------------
 remediation:
   mode: hil
+  image_rebuild:
+    flightctl_cli: "flightctl"        # env FLIGHTCTL_CLI overrides
+    flightctl_args: []                # e.g. ["--context", "edge"]
+    fleet_allowlist: []               # empty = discover via `flightctl get fleets`
+    build_tool: "podman"              # podman | buildah
+    containerfile: "Containerfile"    # bootc Containerfile (inside context_dir / git_repo)
+    context_dir: ""                   # local build context (or use git_repo)
+    git_repo: ""                      # e.g. https://github.com/yourorg/edge-bootc.git
+    registry: ""                      # push target, e.g. quay.io/yourorg/edge-os
+    tag_prefix: "aiops-rt"
+    build_timeout_s: 1200
+    deploy_timeout_s: 300
 
 scheduler:
   enabled: false

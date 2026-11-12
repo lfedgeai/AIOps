@@ -1,15 +1,20 @@
-"""Remediation modes — three mutually exclusive configurations.
+"""Remediation modes — four mutually exclusive configurations.
 
 Purpose
 -------
 The graduated autonomy ladder, as one exclusive choice:
 
-  hil       proposals only — the model suggests, a human decides (default)
-  governed  execution via reviewed Ansible playbooks from a catalog
-            (the model SELECTS a playbook + params; it never writes commands)
-  direct    execution via the guarded MCP/K8s write tools (structured tool
-            selection, G1–G3 guardrails) — requires arming via
-            ``AIOPS_RT_ENABLE_WRITE_TOOLS=1``
+  hil            proposals only — the model suggests, a human decides (default)
+  governed       execution via reviewed Ansible playbooks from a catalog
+                 (the model SELECTS a playbook + params; it never writes commands)
+  direct         execution via the guarded MCP/K8s write tools (structured tool
+                 selection, G1–G3 guardrails) — requires arming via
+                 ``AIOPS_RT_ENABLE_WRITE_TOOLS=1``
+  image_rebuild  EDGE use case: rebuild the bootc (Bootable Container) OS image
+                 and roll it out to the edge fleet via FlightCtl. The model only
+                 names the target fleet; the harness owns the build/push/deploy
+                 commands (``execute_image_rebuild`` — no model-authored commands
+                 ever run)
 
 How it connects
 ---------------
@@ -44,6 +49,7 @@ class RemediationMode(str, Enum):
     HIL = "hil"
     GOVERNED = "governed"
     DIRECT = "direct"
+    IMAGE_REBUILD = "image_rebuild"
 
 
 _MODE_LOCK = threading.Lock()
@@ -65,13 +71,19 @@ def set_mode(mode: str | RemediationMode) -> RemediationMode:
 
 
 def init_mode_from_config(config: dict[str, Any]) -> RemediationMode:
-    """Seed the mode from YAML once per process; live changes win afterwards."""
+    """Seed the mode (and image-rebuild settings) from YAML once per process."""
     global _MODE, _MODE_INITIALIZED
     with _MODE_LOCK:
-        if _MODE_INITIALIZED:
-            return _MODE
-        _MODE = RemediationMode(str((config.get("remediation") or {}).get("mode", "hil")).lower())
-        _MODE_INITIALIZED = True
+        rem_cfg = config.get("remediation") or {}
+        if not _MODE_INITIALIZED:
+            _MODE = RemediationMode(str(rem_cfg.get("mode", "hil").lower())
+                                    if str(rem_cfg.get("mode", "hil")).lower()
+                                    in ("hil", "governed", "direct", "image_rebuild")
+                                    else "hil")
+            _MODE_INITIALIZED = True
+        ir = rem_cfg.get("image_rebuild") or {}
+        if ir:
+            _IMAGE_REBUILD_CFG.update(ir)
         return _MODE
 
 
@@ -80,11 +92,16 @@ def mode_status() -> dict[str, Any]:
 
     return {
         "mode": get_mode().value,
-        "modes": ["hil", "governed", "direct"],
+        "modes": ["hil", "governed", "direct", "image_rebuild"],
         "descriptions": {
             "hil": "proposals only — model suggests, human decides",
             "governed": "execution via reviewed Ansible playbooks (model selects from catalog)",
             "direct": "execution via guarded MCP/K8s write tools",
+            "image_rebuild": (
+                "edge: rebuild the bootc OS image and roll it out to a FlightCtl "
+                "fleet (model names the fleet only; harness runs build/push/deploy)"
+            ),
+            "image_rebuild_ready": image_rebuild_ready(),
         },
         "direct_armed": writes_armed(),
         "playbooks": list_playbooks(),
@@ -132,13 +149,24 @@ def run_playbook(
     env = dict(os.environ)
     env["PATH"] = env.get("PATH", "") + f":{os.path.expanduser('~/.local/bin')}"
 
+    # Persistent artifact dir (audit): ansible-runner defaults to a /tmp mkdtemp
+    # that is lost on reboot; keep stdout/stderr/rc/status/events under
+    # data/ansible-artifacts/<ts>-<playbook>/ so playbook executions stay
+    # reviewable after the fact.
+    artifact_root = PLAYBOOKS_DIR.parent / "data" / "ansible-artifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    from datetime import datetime as _dt
+    private_dir = artifact_root / (
+        _dt.now().strftime("%Y%m%d-%H%M%S") + f"-{name}"
+    )
+
     try:
         import ansible_runner  # type: ignore
 
         result = ansible_runner.run(
             playbook=str(path),
             extravars=extravars,
-            private_data_dir=None,
+            private_data_dir=str(private_dir),
             quiet=True,
         )
         artifact_dir = getattr(getattr(result, "config", None), "artifact_dir", None)
@@ -232,6 +260,201 @@ def execute_direct(tool: str, args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Image-rebuild mode (edge): bootc image rebuild + FlightCtl fleet rollout
+# ---------------------------------------------------------------------------
+
+import re as _re
+import shutil as _shutil
+
+_IMAGE_REBUILD_CFG: dict[str, Any] = {
+    "flightctl_cli": "flightctl",       # CLI binary (env FLIGHTCTL_CLI overrides)
+    "flightctl_args": [],               # extra CLI args, e.g. ["--context", "edge"]
+    "fleet_allowlist": [],              # empty -> discover via `flightctl get fleets`
+    "build_tool": "podman",             # bootc build backend (podman | buildah)
+    "containerfile": "Containerfile",   # bootc Containerfile path (in context_dir)
+    "context_dir": "",                  # build context (local dir; required w/o git_repo)
+    "git_repo": "",                     # optional: git clone before build
+    "registry": "",                     # push target, e.g. quay.io/org/edge-os (required)
+    "tag_prefix": "aiops-rt",
+    "build_timeout_s": 1200,
+    "deploy_timeout_s": 300,
+}
+_FLEET_RE = _re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _ir_cfg() -> dict[str, Any]:
+    cfg = dict(_IMAGE_REBUILD_CFG)
+    if os.environ.get("FLIGHTCTL_CLI"):
+        cfg["flightctl_cli"] = os.environ["FLIGHTCTL_CLI"]
+    if os.environ.get("AIOPS_RT_IMAGE_REGISTRY"):
+        cfg["registry"] = os.environ["AIOPS_RT_IMAGE_REGISTRY"]
+    return cfg
+
+
+def image_rebuild_ready() -> bool:
+    """True when the build tool + flightctl CLI + registry target are configured."""
+    cfg = _ir_cfg()
+    return bool(
+        _shutil.which(cfg["flightctl_cli"])
+        and _shutil.which(cfg["build_tool"])
+        and cfg.get("registry")
+        and (cfg.get("context_dir") or cfg.get("git_repo"))
+    )
+
+
+def _run_cmd(cmd: list[str], timeout_s: int) -> dict[str, Any]:
+    try:
+        proc = subprocess.run(  # noqa: S603 — harness-owned, config-sourced command
+            cmd, capture_output=True, text=True, timeout=timeout_s
+        )
+        return {
+            "rc": proc.returncode,
+            "ok": proc.returncode == 0,
+            "stdout_tail": (proc.stdout or "")[-1500:],
+            "stderr_tail": (proc.stderr or "")[-1500:],
+        }
+    except FileNotFoundError:
+        return {"rc": 127, "ok": False, "error": f"'{cmd[0]}' not found"}
+    except subprocess.TimeoutExpired:
+        return {"rc": 124, "ok": False, "error": f"timed out after {timeout_s}s"}
+
+
+def _flightctl(cfg: dict[str, Any], args: list[str], timeout_s: int = 120) -> dict[str, Any]:
+    cmd = [cfg["flightctl_cli"]] + list(cfg.get("flightctl_args") or []) + args
+    return _run_cmd(cmd, timeout_s)
+
+
+def list_fleets() -> list[str]:
+    """Known FlightCtl fleets (allowlist from config, else discovered live)."""
+    cfg = _ir_cfg()
+    allow = cfg.get("fleet_allowlist") or []
+    if allow:
+        return list(allow)
+    res = _flightctl(cfg, ["get", "fleets", "-o", "name"])
+    if not res["ok"]:
+        return []
+    names = []
+    for line in (res.get("stdout_tail") or "").splitlines():
+        line = line.strip()
+        if line.startswith("fleet/"):
+            names.append(line[len("fleet/"):])
+    return sorted(names)
+
+
+def execute_image_rebuild(fleet: str, git_ref: str = "") -> dict[str, Any]:
+    """Rebuild the bootc OS image and roll it out to a FlightCtl fleet (edge).
+
+    Harness-owned pipeline — the model only chose ``fleet`` (+ optional source
+    ref). Steps, all fail-loud (no mock):
+      1. validate the fleet name + membership (config allowlist or live list)
+      2. optional: git clone the bootc image source at ``git_ref``
+      3. build the Bootable Container image (podman/buildah + the bootc
+         Containerfile from config)
+      4. push to the configured registry as <registry>:<tag_prefix>-<ts>
+      5. patch the fleet's ``spec.template.spec.os.image`` to the new ref and
+         ``flightctl apply`` — FlightCtl rolls it out to the enrolled devices
+    Returns a full audit dict; ``executed`` is true only if every step passed.
+    """
+    cfg = _ir_cfg()
+    fleet = str(fleet or "").strip().lower()
+    if not _FLEET_RE.match(fleet):
+        return {"ok": False, "executed": False, "error": f"invalid fleet name {fleet!r}"}
+    fleets = list_fleets()
+    if fleets and fleet not in fleets:
+        return {
+            "ok": False,
+            "executed": False,
+            "error": f"fleet '{fleet}' not in known fleets {fleets}",
+        }
+    if not (cfg.get("context_dir") or cfg.get("git_repo")):
+        return {"ok": False, "executed": False,
+                "error": "image_rebuild not configured: set remediation.image_rebuild.context_dir (or git_repo)"}
+    if not cfg.get("registry"):
+        return {"ok": False, "executed": False,
+                "error": "image_rebuild not configured: set remediation.image_rebuild.registry"}
+
+    steps: dict[str, Any] = {"fleet": fleet, "git_ref": git_ref or None}
+
+    # (2) optional source checkout
+    context_dir = cfg.get("context_dir") or ""
+    if cfg.get("git_repo"):
+        ref = git_ref or "main"
+        clone_dir = f"/tmp/aiops-rt-bootc-{fleet}"
+        _shutil.rmtree(clone_dir, ignore_errors=True)
+        res = _run_cmd(["git", "clone", "--depth", "1", "--branch", ref,
+                        cfg["git_repo"], clone_dir], 300)
+        steps["git_clone"] = res
+        if not res["ok"]:
+            return {"ok": False, "executed": False, "error": "git clone failed", "steps": steps}
+        context_dir = clone_dir
+
+    # (3) build the bootc image
+    from datetime import datetime, timezone as _tz
+    tag = f"{cfg['tag_prefix']}-{datetime.now(_tz.utc).strftime('%Y%m%d-%H%M%S')}"
+    image_ref = f"{cfg['registry']}:{tag}"
+    build_tool = cfg.get("build_tool", "podman")
+    build_cmd = {
+        "podman": ["podman", "build", "-f", cfg.get("containerfile") or "Containerfile",
+                   "-t", image_ref, context_dir],
+        "buildah": ["buildah", "bud", "-f", cfg.get("containerfile") or "Containerfile",
+                    "-t", image_ref, context_dir],
+    }[build_tool]
+    res = _run_cmd(build_cmd, int(cfg.get("build_timeout_s", 1200)))
+    steps["build"] = res
+    if not res["ok"]:
+        return {"ok": False, "executed": False, "error": "bootc image build failed", "steps": steps}
+
+    # (4) push
+    res = _run_cmd([build_tool, "push", image_ref], int(cfg.get("build_timeout_s", 1200)))
+    steps["push"] = res
+    if not res["ok"]:
+        return {"ok": False, "executed": False, "error": f"push of {image_ref} failed", "steps": steps}
+
+    # (5) deploy: patch the fleet's os.image and apply
+    get = _flightctl(cfg, ["get", "fleet", fleet, "-o", "yaml"])
+    steps["fleet_get"] = get
+    if not get["ok"]:
+        return {"ok": False, "executed": False, "error": f"flightctl get fleet {fleet} failed", "steps": steps}
+    import yaml as _yaml
+    try:
+        fleet_doc = _yaml.safe_load(get.get("stdout_tail") or "")
+    except _yaml.YAMLError:
+        fleet_doc = None
+    if not isinstance(fleet_doc, dict):
+        return {"ok": False, "executed": False, "error": "could not parse fleet YAML", "steps": steps}
+    try:
+        fleet_doc["spec"]["template"]["spec"]["os"]["image"] = image_ref
+    except (KeyError, TypeError):
+        return {"ok": False, "executed": False,
+                "error": f"fleet {fleet} has no spec.template.spec.os.image to patch", "steps": steps}
+    fleet_yaml = _yaml.safe_dump(fleet_doc)
+    apply_cmd = [cfg["flightctl_cli"]] + list(cfg.get("flightctl_args") or []) + ["apply", "-f", "-"]
+    try:
+        proc = subprocess.run(  # noqa: S603 — harness-owned flightctl apply
+            apply_cmd, input=fleet_yaml, capture_output=True, text=True,
+            timeout=int(cfg.get("deploy_timeout_s", 300)),
+        )
+        steps["fleet_apply"] = {"rc": proc.returncode, "ok": proc.returncode == 0,
+                                "stdout_tail": (proc.stdout or "")[-800:],
+                                "stderr_tail": (proc.stderr or "")[-800:]}
+    except FileNotFoundError:
+        return {"ok": False, "executed": False, "error": "flightctl CLI not found", "steps": steps}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "executed": False, "error": "flightctl apply timed out", "steps": steps}
+    if not steps["fleet_apply"]["ok"]:
+        return {"ok": False, "executed": False, "error": "flightctl apply failed", "steps": steps}
+
+    return {
+        "ok": True,
+        "executed": True,
+        "fleet": fleet,
+        "image_ref": image_ref,
+        "steps": steps,
+        "note": "FlightCtl is rolling the new bootc image out to the fleet's devices",
+    }
+
+
 __all__ = [
     "RemediationMode",
     "get_mode",
@@ -242,6 +465,9 @@ __all__ = [
     "playbook_for_fault",
     "run_playbook",
     "execute_direct",
+    "execute_image_rebuild",
+    "image_rebuild_ready",
+    "list_fleets",
     "FAULT_PLAYBOOKS",
     "PLAYBOOKS_DIR",
 ]

@@ -484,8 +484,8 @@ def remediation_update(body: dict[str, Any]) -> dict[str, Any]:
     from runtime_harness.remediation import RemediationMode, mode_status, set_mode
 
     mode = body.get("mode")
-    if mode not in ("hil", "governed", "direct"):
-        raise ValueError("mode must be one of: hil, governed, direct")
+    if mode not in ("hil", "governed", "direct", "image_rebuild"):
+        raise ValueError("mode must be one of: hil, governed, direct, image_rebuild")
     set_mode(RemediationMode(mode))
     return mode_status()
 
@@ -689,12 +689,14 @@ _STATUS_HTML = """<!DOCTYPE html>
       <button id="rem-hil" onclick="setRemMode('hil')">HIL — proposals</button>
       <button id="rem-governed" onclick="setRemMode('governed')">Governed — Ansible</button>
       <button id="rem-direct" onclick="setRemMode('direct')">Direct — MCP tools</button>
+      <button id="rem-image-rebuild" onclick="setRemMode('image_rebuild')">Image rebuild — bootc + FlightCtl</button>
     </div>
     <div class="row"><span class="k">active</span><span class="v" id="rem-active">—</span></div>
     <div class="row"><span class="k">direct armed</span><span class="v" id="rem-armed">—</span></div>
+    <div class="row"><span class="k">image rebuild ready</span><span class="v" id="rem-ir-ready">—</span></div>
     <div class="row"><span class="k">playbook catalog</span><span class="v" id="rem-playbooks">—</span></div>
     <div class="row"><span class="k">fault → playbook</span><span class="v" id="rem-map">—</span></div>
-    <div class="msg">Mutually exclusive. HIL: model proposes, human decides. Governed: model selects a reviewed playbook; harness runs it (model never writes commands). Direct: guarded K8s writes (G1–G3) — requires AIOPS_RT_ENABLE_WRITE_TOOLS=1.</div>
+    <div class="msg">Mutually exclusive. HIL: model proposes, human decides. Governed: model selects a reviewed playbook; harness runs it (model never writes commands). Direct: guarded K8s writes (G1–G3) — requires AIOPS_RT_ENABLE_WRITE_TOOLS=1. Image rebuild (edge): model names the FlightCtl fleet; harness rebuilds the bootc OS image and rolls it out — configure under remediation.image_rebuild.</div>
   </div>
 
   <div class="card wide">
@@ -998,10 +1000,14 @@ async function refreshRemediation() {
   document.getElementById("rem-active").textContent = r.mode;
   document.getElementById("rem-armed").textContent = r.direct_armed ? "yes" : "NO";
   document.getElementById("rem-armed").style.color = r.direct_armed ? "var(--green)" : "var(--dim)";
+  const ir = document.getElementById("rem-ir-ready");
+  if (ir) { ir.textContent = r.descriptions && r.descriptions.image_rebuild_ready ? "yes" : "NO";
+            ir.style.color = r.descriptions && r.descriptions.image_rebuild_ready ? "var(--green)" : "var(--dim)"; }
   document.getElementById("rem-playbooks").textContent = (r.playbooks || []).join(", ") || "—";
   document.getElementById("rem-map").textContent = Object.entries(r.fault_playbook_map || {}).map(([k,v]) => k+"→"+v).join(" · ") || "—";
-  for (const m of ["hil","governed","direct"]) {
-    const btn = document.getElementById("rem-" + m);
+  for (const m of ["hil","governed","direct","image_rebuild"]) {
+    const id = "rem-" + (m === "image_rebuild" ? "image-rebuild" : m);
+    const btn = document.getElementById(id);
     btn.className = (r.mode === m) ? "primary" : "";
     btn.style.opacity = (r.mode === m) ? "1" : "0.55";
   }

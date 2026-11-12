@@ -1,4 +1,4 @@
-"""Remediation slot — three mutually exclusive modes (HIL / Governed / Direct).
+"""Remediation slot — four mutually exclusive modes (HIL / Governed / Direct / Image-rebuild).
 
 Purpose
 -------
@@ -10,6 +10,8 @@ Convert a confirmed RCA into a remediation, per the active mode
             the harness runs it via ansible-runner. Model never writes commands.
   direct    GLM SELECTS a guarded write tool (+ args); the harness executes
             it through write_tools (G1–G3) — requires AIOPS_RT_ENABLE_WRITE_TOOLS=1.
+  image_rebuild  EDGE: GLM names the target FlightCtl fleet only; the harness
+            rebuilds the bootc OS image and rolls it out (execute_image_rebuild).
 
 Architectural rule: the harness (never the model) owns execution.
 
@@ -18,7 +20,7 @@ How it connects
 - Runs after RCA in ``orchestrator`` when RCA is confirmed.
 - Model id from ``stage_models`` (GLM-5.3-Flash default).
 - Response validated against the mode's schema (RemediationPlan /
-  GovernedPlan / DirectPlan).
+  GovernedPlan / DirectPlan / ImageRebuildPlan).
 - Writes ``ctx["remediation"]`` for the verifier + cycle history audit.
 """
 
@@ -33,17 +35,23 @@ from runtime_harness.providers.llm import LLMProvider
 from runtime_harness.remediation import (
     RemediationMode,
     execute_direct,
+    execute_image_rebuild,
     get_mode,
     playbook_for_fault,
     run_playbook,
 )
-from runtime_harness.schemas import DirectPlan, GovernedPlan, RemediationPlan
+from runtime_harness.schemas import (
+    DirectPlan,
+    GovernedPlan,
+    ImageRebuildPlan,
+    RemediationPlan,
+)
 from runtime_harness.slots.base import Slot, SlotContext
 from runtime_harness.stage_models import get_stage_models
 
 
 class LLMRemediator(Slot):
-    """Action slot — mode-driven (hil | governed | direct)."""
+    """Action slot — mode-driven (hil | governed | direct | image_rebuild)."""
 
     name = "remediator"
     plugin = "llm_remediate"
@@ -64,6 +72,8 @@ class LLMRemediator(Slot):
             return self._run_hil(ctx, primary, system, rca, started)
         if mode == RemediationMode.GOVERNED:
             return self._run_governed(ctx, primary, system, rca, started)
+        if mode == RemediationMode.IMAGE_REBUILD:
+            return self._run_image_rebuild(ctx, primary, system, rca, started)
         return self._run_direct(ctx, primary, system, rca, started)
 
     # -- HIL: proposals only ------------------------------------------------
@@ -186,6 +196,46 @@ class LLMRemediator(Slot):
             proposed=True,
             executed=executed,
             detail_extra={"plan": out.model_dump(), "direct_result": result},
+            agent_id=primary,
+            started=started,
+        )
+
+    # -- Image rebuild (edge): bootc + FlightCtl ------------------------------
+
+    def _run_image_rebuild(self, ctx, primary, system, rca, started) -> StageResult:
+        from runtime_harness.remediation import list_fleets
+
+        fleets = list_fleets()
+        user = (
+            store_user()
+            + f"\n\nIMAGE REBUILD MODE (edge) — name the FlightCtl fleet that should "
+            f"receive a rebuilt bootc OS image. You do NOT choose build or deploy "
+            f"commands; the harness owns the entire build/push/rollout pipeline.\n"
+            f"known_fleets={fleets or '(none discoverable — name the fleet from the RCA)'}\n"
+            f"rca={rca}\n"
+            'Return ONLY JSON: {"fleet": "edge-dc1", "git_ref": "", '
+            '"confidence": 0.0-1.0, "summary": "..."}'
+        )
+        out: ImageRebuildPlan = self.provider.complete(primary, system, user, ImageRebuildPlan)
+
+        # Harness-side execution: fleet validated + pipeline run by the harness.
+        result = execute_image_rebuild(out.fleet, git_ref=out.git_ref)
+        executed = bool(result.get("executed"))
+        return self._finish(
+            ctx,
+            stage_result_kwargs=dict(
+                summary=(
+                    f"Image-rebuild remediation {'executed' if executed else 'FAILED'}: "
+                    f"bootc rebuild + FlightCtl rollout to fleet {out.fleet}"
+                    + (f" — {result.get('error', '')}" if not executed else "")
+                ),
+                **({} if executed else {"ok": False}),
+            ),
+            mode="image_rebuild",
+            action=f"bootc image rebuild + flightctl rollout → fleet {out.fleet}",
+            proposed=True,
+            executed=executed,
+            detail_extra={"plan": out.model_dump(), "image_rebuild_result": result},
             agent_id=primary,
             started=started,
         )

@@ -81,6 +81,22 @@ class DirectPlan(BaseModel):
     summary: str = ""
 
 
+class ImageRebuildPlan(BaseModel):
+    """Remediation output in IMAGE_REBUILD mode: rebuild a bootc OS image + FlightCtl rollout.
+
+    Edge use case: when an in-place remediation is insufficient (OS-level or
+    baked-in fault), rebuild the Bootable-Container (bootc) image and roll it
+    out to the edge fleet via FlightCtl. The model only names the target
+    FLEET (+ optional source ref); the harness owns every build/push/deploy
+    command — the model never writes them.
+    """
+
+    fleet: str
+    git_ref: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    summary: str = ""
+
+
 T = TypeVar("T", bound=BaseModel)
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
@@ -124,6 +140,9 @@ __all__ = [
     "DetectDecision",
     "RcaDecision",
     "RemediationPlan",
+    "GovernedPlan",
+    "DirectPlan",
+    "ImageRebuildPlan",
     "extract_json",
     "validate",
 ]
