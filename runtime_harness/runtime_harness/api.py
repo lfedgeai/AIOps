@@ -484,8 +484,8 @@ def remediation_update(body: dict[str, Any]) -> dict[str, Any]:
     from runtime_harness.remediation import RemediationMode, mode_status, set_mode
 
     mode = body.get("mode")
-    if mode not in ("hil", "governed", "direct", "image_rebuild"):
-        raise ValueError("mode must be one of: hil, governed, direct, image_rebuild")
+    if mode not in ("hil", "governed", "direct"):
+        raise ValueError("mode must be one of: hil, governed, direct")
     set_mode(RemediationMode(mode))
     return mode_status()
 
@@ -689,13 +689,12 @@ _STATUS_HTML = """<!DOCTYPE html>
       <button id="rem-hil" onclick="setRemMode('hil')">HIL — proposals</button>
       <button id="rem-governed" onclick="setRemMode('governed')">Governed — Ansible</button>
       <button id="rem-direct" onclick="setRemMode('direct')">Direct — MCP tools</button>
-      <button id="rem-image-rebuild" onclick="setRemMode('image_rebuild')">Image rebuild — build &amp; deploy</button>
     </div>
     <div class="row"><span class="k">active</span><span class="v" id="rem-active">—</span></div>
     <div class="row"><span class="k">direct armed</span><span class="v" id="rem-armed">—</span></div>
     <div class="row"><span class="k">playbook catalog</span><span class="v" id="rem-playbooks">—</span></div>
     <div class="row"><span class="k">fault → playbook</span><span class="v" id="rem-map">—</span></div>
-    <div class="msg">Mutually exclusive. HIL: model proposes, human decides. Governed: model selects a reviewed playbook; harness runs it (model never writes commands). Direct: guarded K8s writes (G1–G3) — requires AIOPS_RT_ENABLE_WRITE_TOOLS=1. Image rebuild: model names the faulty service; harness rebuilds its image from source (reviewed BuildConfig playbook) and rolls the deployment onto it.</div>
+    <div class="msg">Mutually exclusive. HIL: model proposes, human decides. Governed: model selects a reviewed playbook; harness runs it (model never writes commands). Direct: guarded K8s writes (G1–G3) — requires AIOPS_RT_ENABLE_WRITE_TOOLS=1.</div>
   </div>
 
   <div class="card wide">
@@ -1001,8 +1000,8 @@ async function refreshRemediation() {
   document.getElementById("rem-armed").style.color = r.direct_armed ? "var(--green)" : "var(--dim)";
   document.getElementById("rem-playbooks").textContent = (r.playbooks || []).join(", ") || "—";
   document.getElementById("rem-map").textContent = Object.entries(r.fault_playbook_map || {}).map(([k,v]) => k+"→"+v).join(" · ") || "—";
-  for (const m of ["hil","governed","direct","image_rebuild"]) {
-    const btn = document.getElementById("rem-" + m.replace("image_rebuild", "image-rebuild"));
+  for (const m of ["hil","governed","direct"]) {
+    const btn = document.getElementById("rem-" + m);
     btn.className = (r.mode === m) ? "primary" : "";
     btn.style.opacity = (r.mode === m) ? "1" : "0.55";
   }

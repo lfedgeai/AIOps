@@ -1,30 +1,23 @@
-"""Remediation modes — four mutually exclusive configurations.
+"""Remediation modes — three mutually exclusive configurations.
 
 Purpose
 -------
 The graduated autonomy ladder, as one exclusive choice:
 
-  hil            proposals only — the model suggests, a human decides (default)
-  governed       execution via reviewed Ansible playbooks from a catalog
-                 (the model SELECTS a playbook + params; it never writes commands)
-  direct         execution via the guarded MCP/K8s write tools (structured tool
-                 selection, G1–G3 guardrails) — requires arming via
-                 ``AIOPS_RT_ENABLE_WRITE_TOOLS=1``
-  image_rebuild  rebuild the faulty service's container image from source and
-                 redeploy it (OpenShift BuildConfig → internal registry →
-                 rollout) — the model only names the service; the reviewed
-                 ``image_rebuild_deploy`` playbook does the build+deploy
+  hil       proposals only — the model suggests, a human decides (default)
+  governed  execution via reviewed Ansible playbooks from a catalog
+            (the model SELECTS a playbook + params; it never writes commands)
+  direct    execution via the guarded MCP/K8s write tools (structured tool
+            selection, G1–G3 guardrails) — requires arming via
+            ``AIOPS_RT_ENABLE_WRITE_TOOLS=1``
 
 How it connects
 ---------------
 - Seeded from ``remediation.mode`` in the assembly YAML; live-switchable via
   ``GET|PUT /remediation`` and the UI's mutually exclusive buttons.
 - ``slots/remediator.py`` reads the mode per cycle and validates the model's
-  output against the mode's schema (RemediationPlan / GovernedPlan / DirectPlan /
-  ImageRebuildPlan).
+  output against the mode's schema (RemediationPlan / GovernedPlan / DirectPlan).
 - Governed execution runs playbooks from ``playbooks/`` via ansible-runner.
-- Image-rebuild execution runs the cataloged ``image_rebuild_deploy`` playbook
-  via the same ansible-runner path (audit artifacts identical to governed).
 """
 
 from __future__ import annotations
@@ -51,7 +44,6 @@ class RemediationMode(str, Enum):
     HIL = "hil"
     GOVERNED = "governed"
     DIRECT = "direct"
-    IMAGE_REBUILD = "image_rebuild"
 
 
 _MODE_LOCK = threading.Lock()
@@ -88,15 +80,11 @@ def mode_status() -> dict[str, Any]:
 
     return {
         "mode": get_mode().value,
-        "modes": ["hil", "governed", "direct", "image_rebuild"],
+        "modes": ["hil", "governed", "direct"],
         "descriptions": {
             "hil": "proposals only — model suggests, human decides",
             "governed": "execution via reviewed Ansible playbooks (model selects from catalog)",
             "direct": "execution via guarded MCP/K8s write tools",
-            "image_rebuild": (
-                "rebuild the faulty service's image from source and redeploy it "
-                "(reviewed BuildConfig playbook; model names the service only)"
-            ),
         },
         "direct_armed": writes_armed(),
         "playbooks": list_playbooks(),
@@ -244,59 +232,6 @@ def execute_direct(tool: str, args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Image-rebuild mode execution (reviewed BuildConfig playbook)
-# ---------------------------------------------------------------------------
-
-IMAGE_REBUILD_PLAYBOOK = "image_rebuild_deploy"
-IMAGE_REBUILD_GIT_URL = "https://github.com/open-telemetry/opentelemetry-demo.git"
-_SERVICE_RE = __import__("re").compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
-
-
-def execute_image_rebuild(
-    service: str,
-    namespace: str = "otel-demo",
-    git_ref: str = "main",
-    timeout_s: int = 900,
-) -> dict[str, Any]:
-    """Rebuild a service's container image from source and redeploy it.
-
-    Runs the reviewed ``image_rebuild_deploy`` catalog playbook: create/apply
-    an OpenShift BuildConfig (docker strategy, source = the pinned demo repo,
-    contextDir = src/<service>), build to the internal registry, then roll the
-    deployment onto the new image. The model's only input is the service name
-    (+ optional git ref); the harness sanitizes it — no model-authored build
-    commands ever run. Audit trail identical to governed mode (ansible-runner
-    artifact dir rendered in the remediate stage detail).
-    """
-    service = str(service or "").strip().lower()
-    if not _SERVICE_RE.match(service):
-        return {
-            "ok": False,
-            "executed": False,
-            "error": f"invalid service name '{service!r}' — must be a lowercase k8s name",
-        }
-    if IMAGE_REBUILD_PLAYBOOK not in list_playbooks():
-        return {
-            "ok": False,
-            "executed": False,
-            "error": f"playbook '{IMAGE_REBUILD_PLAYBOOK}' not in catalog",
-        }
-    extravars = {
-        "namespace": namespace or "otel-demo",
-        "target": service,
-        "git_url": IMAGE_REBUILD_GIT_URL,
-        "git_ref": str(git_ref or "main").strip() or "main",
-        "build_timeout": timeout_s,
-    }
-    result = run_playbook(IMAGE_REBUILD_PLAYBOOK, extravars, timeout_s=timeout_s + 120)
-    result["executed"] = bool(result.get("ok"))
-    result["service"] = service
-    result["namespace"] = extravars["namespace"]
-    result["mode"] = "image_rebuild"
-    return result
-
-
 __all__ = [
     "RemediationMode",
     "get_mode",
@@ -307,8 +242,6 @@ __all__ = [
     "playbook_for_fault",
     "run_playbook",
     "execute_direct",
-    "execute_image_rebuild",
     "FAULT_PLAYBOOKS",
     "PLAYBOOKS_DIR",
-    "IMAGE_REBUILD_PLAYBOOK",
 ]
