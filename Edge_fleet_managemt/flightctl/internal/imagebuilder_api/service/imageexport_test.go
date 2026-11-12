@@ -1,0 +1,2086 @@
+package service
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	api "github.com/flightctl/flightctl/api/imagebuilder/v1alpha1"
+	"github.com/flightctl/flightctl/internal/config"
+	coredomain "github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/flterrors"
+	"github.com/flightctl/flightctl/internal/instrumentation/encryption"
+	"github.com/flightctl/flightctl/internal/oci"
+	"github.com/flightctl/flightctl/internal/util"
+	"github.com/flightctl/flightctl/pkg/log"
+	"github.com/google/uuid"
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/samber/lo"
+	"github.com/stretchr/testify/require"
+)
+
+func newTestImageExportService() (ImageExportService, *DummyImageExportStore, *DummyImageBuildStore) {
+	imageExportStore := NewDummyImageExportStore()
+	imageBuildStore := NewDummyImageBuildStore()
+	repositoryStore := NewDummyRepositoryStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repositoryStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+	return svc, imageExportStore, imageBuildStore
+}
+
+func newValidImageExport(name string) api.ImageExport {
+	source := api.ImageExportSource{}
+	_ = source.FromImageBuildRefSource(api.ImageBuildRefSource{
+		Type:          api.ImageBuildRefSourceTypeImageBuild,
+		ImageBuildRef: "test-image-build",
+	})
+
+	return api.ImageExport{
+		ApiVersion: api.ImageExportAPIVersion,
+		Kind:       string(api.ResourceKindImageExport),
+		Metadata: v1beta1.ObjectMeta{
+			Name: lo.ToPtr(name),
+		},
+		Spec: api.ImageExportSpec{
+			Source: source,
+			Format: api.ExportFormatTypeQCOW2,
+		},
+	}
+}
+
+func newImageExportWithImageBuildSource(name, imageBuildRef string) api.ImageExport {
+	source := api.ImageExportSource{}
+	_ = source.FromImageBuildRefSource(api.ImageBuildRefSource{
+		Type:          api.ImageBuildRefSourceTypeImageBuild,
+		ImageBuildRef: imageBuildRef,
+	})
+
+	return api.ImageExport{
+		ApiVersion: api.ImageExportAPIVersion,
+		Kind:       string(api.ResourceKindImageExport),
+		Metadata: v1beta1.ObjectMeta{
+			Name: lo.ToPtr(name),
+		},
+		Spec: api.ImageExportSpec{
+			Source: source,
+			Format: api.ExportFormatTypeVMDK,
+		},
+	}
+}
+
+func setupRepositoriesForImageExport(t *testing.T, repoStore *DummyRepositoryStore, ctx context.Context, orgId uuid.UUID, includeSource bool) {
+	if includeSource {
+		// Create source repository (Read is fine for source)
+		sourceRepo := newOciRepository(t, "source-registry", v1beta1.Read)
+		requireRepositoryCreate(t, repoStore, ctx, orgId, sourceRepo)
+	}
+
+	// Create destination repository (must be ReadWrite)
+	destRepo := newOciRepository(t, "output-registry", v1beta1.ReadWrite)
+	requireRepositoryCreate(t, repoStore, ctx, orgId, destRepo)
+}
+
+// setupImageBuildForExport creates the ImageBuild that newValidImageExport references
+func setupImageBuildForExport(imageBuildStore *DummyImageBuildStore, ctx context.Context, orgId uuid.UUID) {
+	imageBuild := newValidImageBuild("test-image-build")
+	_, _ = imageBuildStore.Create(ctx, orgId, &imageBuild)
+}
+
+func TestCreateImageExport(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+
+	// Create the ImageBuild that will be referenced
+	imageBuild := newValidImageBuild("test-image-build")
+	_, err := imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	svc := NewImageExportService(NewDummyImageExportStore(), imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	imageExport := newValidImageExport("test-export")
+	result, status := svc.Create(ctx, orgId, imageExport)
+
+	require.Equal(int32(http.StatusCreated), statusCode(status))
+	require.NotNil(result)
+	require.Equal("test-export", lo.FromPtr(result.Metadata.Name))
+}
+
+func TestCreateImageExportDuplicate(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+
+	// Create the ImageBuild that will be referenced
+	imageBuild := newValidImageBuild("test-image-build")
+	_, err := imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	svc := NewImageExportService(NewDummyImageExportStore(), imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	imageExport := newValidImageExport("duplicate-test")
+
+	// First create should succeed
+	_, status := svc.Create(ctx, orgId, imageExport)
+	require.Equal(int32(http.StatusCreated), statusCode(status))
+
+	// Second create should fail with conflict
+	_, status = svc.Create(ctx, orgId, imageExport)
+	require.Equal(int32(http.StatusConflict), statusCode(status))
+}
+
+// TestCreateImageExportMissingDestinationRepository removed - ImageExport no longer has destination field
+
+func TestCreateImageExportMissingFormats(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+
+	// Create the ImageBuild that will be referenced
+	imageBuild := newValidImageBuild("test-image-build")
+	_, err := imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	svc := NewImageExportService(NewDummyImageExportStore(), imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	imageExport := newValidImageExport("test")
+	imageExport.Spec.Format = ""
+
+	_, status := svc.Create(ctx, orgId, imageExport)
+	require.Equal(int32(http.StatusBadRequest), statusCode(status))
+}
+
+func TestCreateImageExportWithImageBuildRef(t *testing.T) {
+	require := require.New(t)
+	_, _, imageBuildStore := newTestImageExportService()
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories (destination only, source comes from ImageBuild)
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageExport(t, repoStore, ctx, orgId, false)
+	svc := NewImageExportService(NewDummyImageExportStore(), imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// First create the ImageBuild that will be referenced
+	imageBuild := newValidImageBuild("my-build")
+	_, err := imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	// Now create the ImageExport referencing it
+	imageExport := newImageExportWithImageBuildSource("test-export", "my-build")
+	result, status := svc.Create(ctx, orgId, imageExport)
+
+	require.Equal(int32(http.StatusCreated), statusCode(status))
+	require.NotNil(result)
+}
+
+func TestCreateImageExportWithNonexistentImageBuildRef(t *testing.T) {
+	require := require.New(t)
+	svc, _, _ := newTestImageExportService()
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Create ImageExport referencing non-existent ImageBuild
+	imageExport := newImageExportWithImageBuildSource("test-export", "nonexistent-build")
+	_, status := svc.Create(ctx, orgId, imageExport)
+
+	require.Equal(int32(http.StatusBadRequest), statusCode(status))
+	require.Contains(status.Message, "not found")
+}
+
+func TestGetImageExport(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+
+	// Create the ImageBuild that will be referenced
+	imageBuild := newValidImageBuild("test-image-build")
+	_, err := imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	svc := NewImageExportService(NewDummyImageExportStore(), imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create first
+	imageExport := newValidImageExport("get-test")
+	_, status := svc.Create(ctx, orgId, imageExport)
+	require.Equal(int32(http.StatusCreated), statusCode(status))
+
+	// Get it back
+	result, status := svc.Get(ctx, orgId, "get-test")
+	require.Equal(int32(http.StatusOK), statusCode(status))
+	require.NotNil(result)
+	require.Equal("get-test", lo.FromPtr(result.Metadata.Name))
+}
+
+func TestGetImageExportNotFound(t *testing.T) {
+	require := require.New(t)
+	svc, _, _ := newTestImageExportService()
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	_, status := svc.Get(ctx, orgId, "nonexistent")
+	require.Equal(int32(http.StatusNotFound), statusCode(status))
+}
+
+func TestListImageExports(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+
+	// Create the ImageBuild that will be referenced
+	imageBuild := newValidImageBuild("test-image-build")
+	_, err := imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	svc := NewImageExportService(NewDummyImageExportStore(), imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create multiple
+	for i := 0; i < 3; i++ {
+		imageExport := newValidImageExport(string(rune('a'+i)) + "-export")
+		_, status := svc.Create(ctx, orgId, imageExport)
+		require.Equal(int32(http.StatusCreated), statusCode(status))
+	}
+
+	// List all
+	result, status := svc.List(ctx, orgId, api.ListImageExportsParams{})
+	require.Equal(int32(http.StatusOK), statusCode(status))
+	require.NotNil(result)
+	require.Len(result.Items, 3)
+}
+
+func TestListImageExportsWithLimit(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+
+	// Create the ImageBuild that will be referenced
+	imageBuild := newValidImageBuild("test-image-build")
+	_, err := imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	svc := NewImageExportService(NewDummyImageExportStore(), imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create multiple
+	for i := 0; i < 5; i++ {
+		imageExport := newValidImageExport(string(rune('a'+i)) + "-export")
+		_, status := svc.Create(ctx, orgId, imageExport)
+		require.Equal(int32(http.StatusCreated), statusCode(status))
+	}
+
+	// List with limit
+	limit := int32(2)
+	result, status := svc.List(ctx, orgId, api.ListImageExportsParams{Limit: &limit})
+	require.Equal(int32(http.StatusOK), statusCode(status))
+	require.NotNil(result)
+	require.Len(result.Items, 2)
+}
+
+// Helper to create a short timeout config for delete tests
+func newShortTimeoutConfig() *config.ImageBuilderServiceConfig {
+	cfg := config.NewDefaultImageBuilderServiceConfig()
+	cfg.DeleteCancelTimeout = util.Duration(100 * time.Millisecond) // Very short timeout for testing
+	return cfg
+}
+
+// Helper to set up service with KVStore and short timeout for delete tests
+func setupDeleteTestService(t *testing.T, ctx context.Context, orgId uuid.UUID, kvStore *DummyKVStore) (ImageExportService, *DummyImageExportStore, *DummyImageBuildStore) {
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+	imageExportStore := NewDummyImageExportStore()
+
+	// Create the ImageBuild that will be referenced
+	imageBuild := newValidImageBuild("test-image-build")
+	_, _ = imageBuildStore.Create(ctx, orgId, &imageBuild)
+
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, kvStore, newShortTimeoutConfig(), log.InitLogs())
+	return svc, imageExportStore, imageBuildStore
+}
+
+// Helper to create an ImageExport with a specific status condition
+func createImageExportWithStatus(ctx context.Context, svc ImageExportService, imageExportStore *DummyImageExportStore, orgId uuid.UUID, name string, reason api.ImageExportConditionReason) *api.ImageExport {
+	imageExport := newValidImageExport(name)
+	created, _ := svc.Create(ctx, orgId, imageExport)
+
+	if created == nil {
+		return nil
+	}
+
+	// Initialize status if needed
+	if created.Status == nil {
+		created.Status = &api.ImageExportStatus{}
+	}
+	if created.Status.Conditions == nil {
+		created.Status.Conditions = &[]api.ImageExportCondition{}
+	}
+
+	// Set the appropriate status based on reason
+	conditionStatus := v1beta1.ConditionStatusFalse
+	if reason == api.ImageExportConditionReasonCompleted {
+		conditionStatus = v1beta1.ConditionStatusTrue
+	}
+
+	api.SetImageExportStatusCondition(created.Status.Conditions, api.ImageExportCondition{
+		Type:               api.ImageExportConditionTypeReady,
+		Status:             conditionStatus,
+		Reason:             string(reason),
+		Message:            "Test status",
+		LastTransitionTime: time.Now().UTC(),
+	})
+	updated, _ := svc.UpdateStatus(ctx, orgId, created)
+	return updated
+}
+
+func TestDeleteImageExport_Pending_CancelSuccess(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	kvStore := NewDummyKVStore()
+	svc, _, _ := setupDeleteTestService(t, ctx, orgId, kvStore)
+
+	// Create ImageExport (starts in Pending state)
+	imageExport := newValidImageExport("delete-pending-success")
+	_, status := svc.Create(ctx, orgId, imageExport)
+	require.Equal(int32(http.StatusCreated), statusCode(status))
+
+	// Simulate that the worker will send the canceled signal
+	canceledStreamKey := fmt.Sprintf("imageexport:canceled:%s:%s", orgId.String(), "delete-pending-success")
+	kvStore.SimulateCanceledSignal(canceledStreamKey)
+
+	// Delete it - should cancel first and wait for signal
+	status = svc.Delete(ctx, orgId, "delete-pending-success")
+	require.Equal(int32(http.StatusOK), statusCode(status))
+
+	// Verify it's gone
+	_, status = svc.Get(ctx, orgId, "delete-pending-success")
+	require.Equal(int32(http.StatusNotFound), statusCode(status))
+}
+
+func TestDeleteImageExport_Converting_CancelSuccess(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	kvStore := NewDummyKVStore()
+	svc, imageExportStore, _ := setupDeleteTestService(t, ctx, orgId, kvStore)
+
+	// Create ImageExport and set to Converting state
+	created := createImageExportWithStatus(ctx, svc, imageExportStore, orgId, "delete-converting-success", api.ImageExportConditionReasonConverting)
+	require.NotNil(created)
+
+	// Simulate that the worker will send the canceled signal
+	canceledStreamKey := fmt.Sprintf("imageexport:canceled:%s:%s", orgId.String(), "delete-converting-success")
+	kvStore.SimulateCanceledSignal(canceledStreamKey)
+
+	// Delete it - should cancel first and wait for signal
+	status := svc.Delete(ctx, orgId, "delete-converting-success")
+	require.Equal(int32(http.StatusOK), statusCode(status))
+
+	// Verify it's gone
+	_, status = svc.Get(ctx, orgId, "delete-converting-success")
+	require.Equal(int32(http.StatusNotFound), statusCode(status))
+}
+
+func TestDeleteImageExport_Pushing_CancelSuccess(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	kvStore := NewDummyKVStore()
+	svc, imageExportStore, _ := setupDeleteTestService(t, ctx, orgId, kvStore)
+
+	// Create ImageExport and set to Pushing state
+	created := createImageExportWithStatus(ctx, svc, imageExportStore, orgId, "delete-pushing-success", api.ImageExportConditionReasonPushing)
+	require.NotNil(created)
+
+	// Simulate that the worker will send the canceled signal
+	canceledStreamKey := fmt.Sprintf("imageexport:canceled:%s:%s", orgId.String(), "delete-pushing-success")
+	kvStore.SimulateCanceledSignal(canceledStreamKey)
+
+	// Delete it - should cancel first and wait for signal
+	status := svc.Delete(ctx, orgId, "delete-pushing-success")
+	require.Equal(int32(http.StatusOK), statusCode(status))
+
+	// Verify it's gone
+	_, status = svc.Get(ctx, orgId, "delete-pushing-success")
+	require.Equal(int32(http.StatusNotFound), statusCode(status))
+}
+
+func TestDeleteImageExport_CancelTimeout(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	kvStore := NewDummyKVStore()
+	svc, _, _ := setupDeleteTestService(t, ctx, orgId, kvStore)
+
+	// Create ImageExport (starts in Pending state - cancelable)
+	imageExport := newValidImageExport("delete-timeout")
+	_, status := svc.Create(ctx, orgId, imageExport)
+	require.Equal(int32(http.StatusCreated), statusCode(status))
+
+	// Do NOT simulate canceled signal - this will cause timeout
+
+	// Delete it - should cancel, timeout waiting, then delete anyway
+	start := time.Now()
+	status = svc.Delete(ctx, orgId, "delete-timeout")
+	elapsed := time.Since(start)
+
+	require.Equal(int32(http.StatusOK), statusCode(status))
+
+	// Verify timeout happened (should take at least 100ms but not too long)
+	require.GreaterOrEqual(elapsed.Milliseconds(), int64(100), "Should have waited for timeout")
+	require.Less(elapsed.Milliseconds(), int64(500), "Should not wait too long")
+
+	// Verify it's gone
+	_, status = svc.Get(ctx, orgId, "delete-timeout")
+	require.Equal(int32(http.StatusNotFound), statusCode(status))
+}
+
+func TestDeleteImageExport_Completed_NoCancelAttempt(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	kvStore := NewDummyKVStore()
+	svc, imageExportStore, _ := setupDeleteTestService(t, ctx, orgId, kvStore)
+
+	// Create ImageExport and set to Completed state (not cancelable)
+	imageExport := newValidImageExport("delete-completed")
+	created, _ := svc.Create(ctx, orgId, imageExport)
+	require.NotNil(created)
+
+	// Initialize status if needed and set to Completed state
+	if created.Status == nil {
+		created.Status = &api.ImageExportStatus{}
+	}
+	if created.Status.Conditions == nil {
+		created.Status.Conditions = &[]api.ImageExportCondition{}
+	}
+	api.SetImageExportStatusCondition(created.Status.Conditions, api.ImageExportCondition{
+		Type:               api.ImageExportConditionTypeReady,
+		Status:             v1beta1.ConditionStatusTrue,
+		Reason:             string(api.ImageExportConditionReasonCompleted),
+		Message:            "Test completed",
+		LastTransitionTime: time.Now().UTC(),
+	})
+	_, _ = svc.UpdateStatus(ctx, orgId, created)
+
+	// Delete it - should NOT try to cancel (not cancelable)
+	start := time.Now()
+	status := svc.Delete(ctx, orgId, "delete-completed")
+	elapsed := time.Since(start)
+
+	require.Equal(int32(http.StatusOK), statusCode(status))
+
+	// Should be fast (no cancel wait)
+	require.Less(elapsed.Milliseconds(), int64(50), "Should not wait for cancel on completed export")
+
+	// Verify it's gone
+	_, status = svc.Get(ctx, orgId, "delete-completed")
+	require.Equal(int32(http.StatusNotFound), statusCode(status))
+	_ = imageExportStore // suppress unused warning
+}
+
+func TestDeleteImageExport_Failed_NoCancelAttempt(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	kvStore := NewDummyKVStore()
+	svc, imageExportStore, _ := setupDeleteTestService(t, ctx, orgId, kvStore)
+
+	// Create ImageExport and set to Failed state (not cancelable)
+	created := createImageExportWithStatus(ctx, svc, imageExportStore, orgId, "delete-failed", api.ImageExportConditionReasonFailed)
+	require.NotNil(created)
+
+	// Delete it - should NOT try to cancel (not cancelable)
+	start := time.Now()
+	status := svc.Delete(ctx, orgId, "delete-failed")
+	elapsed := time.Since(start)
+
+	require.Equal(int32(http.StatusOK), statusCode(status))
+
+	// Should be fast (no cancel wait)
+	require.Less(elapsed.Milliseconds(), int64(50), "Should not wait for cancel on failed export")
+
+	// Verify it's gone
+	_, status = svc.Get(ctx, orgId, "delete-failed")
+	require.Equal(int32(http.StatusNotFound), statusCode(status))
+}
+
+func TestDeleteImageExport_Canceled_NoCancelAttempt(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	kvStore := NewDummyKVStore()
+	svc, imageExportStore, _ := setupDeleteTestService(t, ctx, orgId, kvStore)
+
+	// Create ImageExport and set to Canceled state (not cancelable)
+	created := createImageExportWithStatus(ctx, svc, imageExportStore, orgId, "delete-canceled", api.ImageExportConditionReasonCanceled)
+	require.NotNil(created)
+
+	// Delete it - should NOT try to cancel (already canceled)
+	start := time.Now()
+	status := svc.Delete(ctx, orgId, "delete-canceled")
+	elapsed := time.Since(start)
+
+	require.Equal(int32(http.StatusOK), statusCode(status))
+
+	// Should be fast (no cancel wait)
+	require.Less(elapsed.Milliseconds(), int64(50), "Should not wait for cancel on already canceled export")
+
+	// Verify it's gone
+	_, status = svc.Get(ctx, orgId, "delete-canceled")
+	require.Equal(int32(http.StatusNotFound), statusCode(status))
+}
+
+func TestDeleteImageExport_Canceling_NoCancelAttempt(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	kvStore := NewDummyKVStore()
+	svc, imageExportStore, _ := setupDeleteTestService(t, ctx, orgId, kvStore)
+
+	// Create ImageExport and set to Canceling state (not cancelable - already canceling)
+	created := createImageExportWithStatus(ctx, svc, imageExportStore, orgId, "delete-canceling", api.ImageExportConditionReasonCanceling)
+	require.NotNil(created)
+
+	// Delete it - should NOT try to cancel (already canceling)
+	start := time.Now()
+	status := svc.Delete(ctx, orgId, "delete-canceling")
+	elapsed := time.Since(start)
+
+	require.Equal(int32(http.StatusOK), statusCode(status))
+
+	// Should be fast (no cancel wait)
+	require.Less(elapsed.Milliseconds(), int64(50), "Should not wait for cancel on already canceling export")
+
+	// Verify it's gone
+	_, status = svc.Get(ctx, orgId, "delete-canceling")
+	require.Equal(int32(http.StatusNotFound), statusCode(status))
+}
+
+func TestDeleteImageExportNotFound(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	kvStore := NewDummyKVStore()
+	svc, _, _ := setupDeleteTestService(t, ctx, orgId, kvStore)
+
+	// Delete is idempotent - deleting non-existent resource returns success
+	status := svc.Delete(ctx, orgId, "nonexistent")
+	require.Equal(int32(http.StatusOK), statusCode(status))
+}
+
+func TestUpdateImageExportStatus(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+
+	// Create the ImageBuild that will be referenced
+	imageBuild := newValidImageBuild("test-image-build")
+	_, err := imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	svc := NewImageExportService(NewDummyImageExportStore(), imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create first
+	imageExport := newValidImageExport("status-test")
+	_, status := svc.Create(ctx, orgId, imageExport)
+	require.Equal(int32(http.StatusCreated), statusCode(status))
+
+	// Update status with condition
+	now := time.Now()
+	imageExport.Status = &api.ImageExportStatus{
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:               api.ImageExportConditionTypeReady,
+				Status:             v1beta1.ConditionStatusUnknown,
+				Reason:             string(api.ImageExportConditionReasonConverting),
+				Message:            "Converting in progress",
+				LastTransitionTime: now,
+			},
+		},
+	}
+	result, err := svc.UpdateStatus(ctx, orgId, &imageExport)
+	require.NoError(err)
+	require.NotNil(result)
+	require.NotNil(result.Status)
+	require.NotNil(result.Status.Conditions)
+	require.Len(*result.Status.Conditions, 1)
+	require.Equal(api.ImageExportConditionTypeReady, (*result.Status.Conditions)[0].Type)
+	require.Equal(string(api.ImageExportConditionReasonConverting), (*result.Status.Conditions)[0].Reason)
+}
+
+// Tests for old imageReference source type removed - only imageBuild source is supported now
+// Tests for destination validation removed - destination now comes from ImageBuild
+
+func newReadyImageExport(name string, manifestDigest string) api.ImageExport {
+	imageExport := newValidImageExport(name)
+	now := time.Now()
+	imageExport.Status = &api.ImageExportStatus{
+		ManifestDigest: lo.ToPtr(manifestDigest),
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:               api.ImageExportConditionTypeReady,
+				Status:             v1beta1.ConditionStatusTrue,
+				Reason:             string(api.ImageExportConditionReasonCompleted),
+				Message:            "Export completed",
+				LastTransitionTime: now,
+			},
+		},
+	}
+	return imageExport
+}
+
+func TestDownloadImageExportNotFound(t *testing.T) {
+	require := require.New(t)
+	svc, _, _ := newTestImageExportService()
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	_, err := svc.Download(ctx, orgId, "nonexistent")
+	require.Error(err)
+	require.True(errors.Is(err, flterrors.ErrResourceNotFound))
+}
+
+func TestDownloadImageExportNotReadyNoStatus(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+	setupImageBuildForExport(imageBuildStore, ctx, orgId)
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create ImageExport without status
+	imageExport := newValidImageExport("test-export")
+	_, err := imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	_, err = svc.Download(ctx, orgId, "test-export")
+	require.Error(err)
+	require.True(errors.Is(err, ErrImageExportStatusNotReady))
+}
+
+func TestDownloadImageExportNotReadyNoConditions(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+	setupImageBuildForExport(imageBuildStore, ctx, orgId)
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create ImageExport with status but no conditions
+	imageExport := newValidImageExport("test-export")
+	imageExport.Status = &api.ImageExportStatus{
+		ManifestDigest: lo.ToPtr("sha256:abc123"),
+	}
+	_, err := imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	_, err = svc.Download(ctx, orgId, "test-export")
+	require.Error(err)
+	require.True(errors.Is(err, ErrImageExportStatusNotReady))
+}
+
+func TestDownloadImageExportNotReadyNoReadyCondition(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+	setupImageBuildForExport(imageBuildStore, ctx, orgId)
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create ImageExport with status but no Ready condition
+	imageExport := newValidImageExport("test-export")
+	now := time.Now()
+	imageExport.Status = &api.ImageExportStatus{
+		ManifestDigest: lo.ToPtr("sha256:abc123"),
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:               "Other",
+				Status:             v1beta1.ConditionStatusTrue,
+				LastTransitionTime: now,
+			},
+		},
+	}
+	_, err := imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	_, err = svc.Download(ctx, orgId, "test-export")
+	require.Error(err)
+	require.True(errors.Is(err, ErrImageExportReadyConditionNotFound))
+}
+
+func TestDownloadImageExportNotReadyFalseStatus(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+	setupImageBuildForExport(imageBuildStore, ctx, orgId)
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create ImageExport with Ready condition but status is False
+	imageExport := newValidImageExport("test-export")
+	now := time.Now()
+	imageExport.Status = &api.ImageExportStatus{
+		ManifestDigest: lo.ToPtr("sha256:abc123"),
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:               api.ImageExportConditionTypeReady,
+				Status:             v1beta1.ConditionStatusFalse,
+				Reason:             string(api.ImageExportConditionReasonConverting),
+				Message:            "Still converting",
+				LastTransitionTime: now,
+			},
+		},
+	}
+	_, err := imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	_, err = svc.Download(ctx, orgId, "test-export")
+	require.Error(err)
+	require.True(errors.Is(err, ErrImageExportNotReady))
+	require.Contains(err.Error(), "status: False")
+}
+
+func TestDownloadImageExportMissingManifestDigest(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+	setupImageBuildForExport(imageBuildStore, ctx, orgId)
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create ImageExport with Ready condition but no manifest digest
+	imageExport := newValidImageExport("test-export")
+	now := time.Now()
+	imageExport.Status = &api.ImageExportStatus{
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:               api.ImageExportConditionTypeReady,
+				Status:             v1beta1.ConditionStatusTrue,
+				Reason:             string(api.ImageExportConditionReasonCompleted),
+				Message:            "Export completed",
+				LastTransitionTime: now,
+			},
+		},
+	}
+	_, err := imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	_, err = svc.Download(ctx, orgId, "test-export")
+	require.Error(err)
+	require.True(errors.Is(err, ErrImageExportManifestDigestNotSet))
+}
+
+func TestDownloadImageExportEmptyManifestDigest(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+	setupImageBuildForExport(imageBuildStore, ctx, orgId)
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create ImageExport with Ready condition but empty manifest digest
+	imageExport := newValidImageExport("test-export")
+	now := time.Now()
+	imageExport.Status = &api.ImageExportStatus{
+		ManifestDigest: lo.ToPtr(""),
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:               api.ImageExportConditionTypeReady,
+				Status:             v1beta1.ConditionStatusTrue,
+				Reason:             string(api.ImageExportConditionReasonCompleted),
+				Message:            "Export completed",
+				LastTransitionTime: now,
+			},
+		},
+	}
+	_, err := imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	_, err = svc.Download(ctx, orgId, "test-export")
+	require.Error(err)
+	require.True(errors.Is(err, ErrImageExportManifestDigestNotSet))
+}
+
+func TestDownloadImageExportDestinationRepositoryNotFound(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories - don't create destination repository
+	repoStore := NewDummyRepositoryStore()
+	sourceRepo := newOciRepository(t, "input-registry", v1beta1.Read)
+	requireRepositoryCreate(t, repoStore, ctx, orgId, sourceRepo)
+
+	// Create ImageBuild with destination repository that doesn't exist
+	imageBuildStore := NewDummyImageBuildStore()
+	imageBuild := newValidImageBuild("test-image-build")
+	imageBuild.Spec.Destination.Repository = "output-registry" // This repository doesn't exist
+	_, err := imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create ImageExport that references ImageBuild with non-existent destination repository
+	imageExport := newReadyImageExport("test-export", "sha256:abc123")
+	_, err = imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	_, err = svc.Download(ctx, orgId, "test-export")
+	require.Error(err)
+	require.True(errors.Is(err, ErrRepositoryNotFound))
+}
+
+func TestDownloadImageExportDestinationNamespaceRejected(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	repoStore := NewDummyRepositoryStore()
+	sourceRepo := newOciRepository(t, "input-registry", v1beta1.Read)
+	requireRepositoryCreate(t, repoStore, ctx, orgId, sourceRepo)
+	destRepo := newOciRepositoryCustom(t, "output-registry", v1beta1.ReadWrite, nil, lo.ToPtr("my-org"))
+	requireRepositoryCreate(t, repoStore, ctx, orgId, destRepo)
+
+	imageBuildStore := NewDummyImageBuildStore()
+	imageBuild := newValidImageBuild("test-image-build")
+	_, err := imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	imageExport := newReadyImageExport("test-export", "sha256:abc123")
+	_, err = imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	_, err = svc.Download(ctx, orgId, "test-export")
+	require.Error(err)
+	require.ErrorIs(err, ErrInvalidImageDest)
+	require.Contains(err.Error(), "namespace")
+}
+
+func TestDownloadImageExportDestinationRepositoryMismatchRejected(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	repoStore := NewDummyRepositoryStore()
+	sourceRepo := newOciRepository(t, "input-registry", v1beta1.Read)
+	requireRepositoryCreate(t, repoStore, ctx, orgId, sourceRepo)
+	destRepo := newOciRepositoryCustom(t, "output-registry", v1beta1.ReadWrite, lo.ToPtr("my-org/diffs"), nil)
+	requireRepositoryCreate(t, repoStore, ctx, orgId, destRepo)
+
+	imageBuildStore := NewDummyImageBuildStore()
+	imageBuild := newValidImageBuild("test-image-build")
+	_, err := imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	imageExport := newReadyImageExport("test-export", "sha256:abc123")
+	_, err = imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	_, err = svc.Download(ctx, orgId, "test-export")
+	require.Error(err)
+	require.ErrorIs(err, ErrInvalidImageDest)
+	require.Contains(err.Error(), "imageName")
+}
+
+func TestImageExportRegistryOnlyDestRef(t *testing.T) {
+	require := require.New(t)
+	require.Equal("quay.io/output-image", oci.RepoDestRef("quay.io", "output-image"))
+}
+
+func TestDownloadImageExportInvalidManifestDigest(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Set up repositories
+	repoStore := NewDummyRepositoryStore()
+	setupRepositoriesForImageBuild(t, repoStore, ctx, orgId)
+	imageBuildStore := NewDummyImageBuildStore()
+
+	// Create the ImageBuild that will be referenced
+	imageBuild := newValidImageBuild("test-image-build")
+	_, err := imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create ImageExport with invalid manifest digest
+	imageExport := newReadyImageExport("test-export", "invalid-digest")
+	_, err = imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	_, err = svc.Download(ctx, orgId, "test-export")
+	require.Error(err)
+	require.True(errors.Is(err, ErrInvalidManifestDigest))
+}
+
+// newOciRepositoryWithRegistry creates a test OCI repository pointing to a specific registry hostname
+func newOciRepositoryWithRegistry(name string, accessMode v1beta1.OciRepoSpecAccessMode, registryHostname string, scheme *v1beta1.OciRepoSpecScheme, skipVerification bool) *v1beta1.Repository {
+	spec := v1beta1.RepositorySpec{}
+	ociSpec := v1beta1.OciRepoSpec{
+		Registry:   registryHostname,
+		Type:       v1beta1.OciRepoSpecTypeOci,
+		AccessMode: &accessMode,
+	}
+	if scheme != nil {
+		ociSpec.Scheme = scheme
+	}
+	if skipVerification {
+		ociSpec.SkipServerVerification = lo.ToPtr(true)
+	}
+	_ = spec.FromOciRepoSpec(ociSpec)
+	return &v1beta1.Repository{
+		ApiVersion: "flightctl.io/v1beta1",
+		Kind:       string(v1beta1.ResourceKindRepository),
+		Metadata: v1beta1.ObjectMeta{
+			Name: lo.ToPtr(name),
+		},
+		Spec: spec,
+	}
+}
+
+// TestDownloadImageExportWithRedirect tests successful download with redirect response.
+// The service follows redirects and returns the blob content.
+func TestDownloadImageExportWithRedirect(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Create a test HTTP server that mocks an OCI registry
+	manifestDigest := "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+	layerDigest := "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	blobContent := []byte("test blob content from redirect")
+
+	// Create manifest JSON
+	manifest := ocispec.Manifest{
+		MediaType: ocispec.MediaTypeImageManifest,
+		Config: ocispec.Descriptor{
+			MediaType: ocispec.MediaTypeImageConfig,
+			Digest:    digest.Digest("sha256:config123"),
+			Size:      100,
+		},
+		Layers: []ocispec.Descriptor{
+			{
+				MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+				Digest:    digest.Digest(layerDigest),
+				Size:      1024,
+			},
+		},
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	require.NoError(err)
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/":
+			// Registry API version check
+			w.WriteHeader(http.StatusOK)
+		case "/v2/test-image/manifests/" + manifestDigest:
+			// Manifest fetch
+			w.Header().Set("Content-Type", ocispec.MediaTypeImageManifest)
+			w.Header().Set("Content-Length", strconv.Itoa(len(manifestBytes)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(manifestBytes)
+		case "/v2/test-image/blobs/" + layerDigest:
+			// Blob fetch - return redirect to internal presigned URL
+			redirectURL := "https://" + r.Host + "/presigned-blob"
+			w.Header().Set("Location", redirectURL)
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		case "/presigned-blob":
+			// Presigned URL serves the actual blob content
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Length", strconv.Itoa(len(blobContent)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(blobContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	// Extract hostname from test server URL (remove "https://" prefix)
+	registryHostname := ts.URL[8:]
+	scheme := v1beta1.Https
+
+	// Set up repositories pointing to test server
+	repoStore := NewDummyRepositoryStore()
+	destRepo := newOciRepositoryWithRegistry("output-registry", v1beta1.ReadWrite, registryHostname, &scheme, true)
+	_, err = repoStore.Create(ctx, orgId, destRepo)
+	require.NoError(err)
+
+	// Create ImageBuild with destination
+	imageBuildStore := NewDummyImageBuildStore()
+	imageBuild := newValidImageBuild("test-image-build")
+	imageBuild.Spec.Destination.Repository = "output-registry"
+	imageBuild.Spec.Destination.ImageName = "test-image"
+	imageBuild.Spec.Destination.ImageTag = "v1.0"
+	_, err = imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create ImageExport
+	imageExport := newReadyImageExport("test-export", manifestDigest)
+	_, err = imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Download - now follows redirects and returns blob content
+	result, err := svc.Download(ctx, orgId, "test-export")
+	require.NoError(err)
+	require.NotNil(result)
+	require.NotNil(result.BlobReader)
+	require.Equal(http.StatusOK, result.StatusCode)
+	require.NotEmpty(result.Filename)
+
+	// Read blob content
+	defer result.BlobReader.Close()
+	readContent, err := io.ReadAll(result.BlobReader)
+	require.NoError(err)
+	require.Equal(blobContent, readContent)
+}
+
+// TestDownloadImageExportWithBlobReader tests successful download with direct blob stream.
+func TestDownloadImageExportWithBlobReader(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Create a test HTTP server that mocks an OCI registry
+	manifestDigest := "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+	layerDigest := "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	blobContent := []byte("test blob content")
+
+	// Create manifest JSON
+	manifest := ocispec.Manifest{
+		MediaType: ocispec.MediaTypeImageManifest,
+		Config: ocispec.Descriptor{
+			MediaType: ocispec.MediaTypeImageConfig,
+			Digest:    digest.Digest("sha256:config123"),
+			Size:      100,
+		},
+		Layers: []ocispec.Descriptor{
+			{
+				MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+				Digest:    digest.Digest(layerDigest),
+				Size:      int64(len(blobContent)),
+			},
+		},
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	require.NoError(err)
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/":
+			// Registry API version check
+			w.WriteHeader(http.StatusOK)
+		case "/v2/test-image/manifests/" + manifestDigest:
+			// Manifest fetch
+			w.Header().Set("Content-Type", ocispec.MediaTypeImageManifest)
+			w.Header().Set("Content-Length", strconv.Itoa(len(manifestBytes)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(manifestBytes)
+		case "/v2/test-image/blobs/" + layerDigest:
+			// Blob fetch - return blob content directly
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Length", strconv.Itoa(len(blobContent)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(blobContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	// Extract hostname from test server URL (remove "https://" prefix)
+	registryHostname := ts.URL[8:]
+	scheme := v1beta1.Https
+
+	// Set up repositories pointing to test server
+	repoStore := NewDummyRepositoryStore()
+	destRepo := newOciRepositoryWithRegistry("output-registry", v1beta1.ReadWrite, registryHostname, &scheme, true)
+	_, err = repoStore.Create(ctx, orgId, destRepo)
+	require.NoError(err)
+
+	// Create ImageBuild with destination
+	imageBuildStore := NewDummyImageBuildStore()
+	imageBuild := newValidImageBuild("test-image-build")
+	imageBuild.Spec.Destination.Repository = "output-registry"
+	imageBuild.Spec.Destination.ImageName = "test-image"
+	imageBuild.Spec.Destination.ImageTag = "v1.0"
+	_, err = imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create ImageExport
+	imageExport := newReadyImageExport("test-export", manifestDigest)
+	_, err = imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Download
+	result, err := svc.Download(ctx, orgId, "test-export")
+	require.NoError(err)
+	require.NotNil(result)
+	require.NotNil(result.BlobReader)
+	require.Equal(http.StatusOK, result.StatusCode)
+	require.NotNil(result.Headers)
+	require.NotEmpty(result.Filename)
+
+	// Read blob content
+	defer result.BlobReader.Close()
+	readContent, err := io.ReadAll(result.BlobReader)
+	require.NoError(err)
+	require.Equal(blobContent, readContent)
+}
+
+// TestDownloadImageExportManifestWrongLayerCount tests validation of manifest layer count.
+func TestDownloadImageExportManifestWrongLayerCount(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	// Create a test HTTP server that mocks an OCI registry
+	manifestDigest := "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+	layerDigest1 := "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	layerDigest2 := "sha256:fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
+
+	// Create manifest JSON with 2 layers (should be exactly 1)
+	manifest := ocispec.Manifest{
+		MediaType: ocispec.MediaTypeImageManifest,
+		Config: ocispec.Descriptor{
+			MediaType: ocispec.MediaTypeImageConfig,
+			Digest:    digest.Digest("sha256:config123"),
+			Size:      100,
+		},
+		Layers: []ocispec.Descriptor{
+			{
+				MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+				Digest:    digest.Digest(layerDigest1),
+				Size:      1024,
+			},
+			{
+				MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+				Digest:    digest.Digest(layerDigest2),
+				Size:      2048,
+			},
+		},
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	require.NoError(err)
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/":
+			// Registry API version check
+			w.WriteHeader(http.StatusOK)
+		case "/v2/test-image/manifests/" + manifestDigest:
+			// Manifest fetch
+			w.Header().Set("Content-Type", ocispec.MediaTypeImageManifest)
+			w.Header().Set("Content-Length", strconv.Itoa(len(manifestBytes)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(manifestBytes)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	// Extract hostname from test server URL (remove "https://" prefix)
+	registryHostname := ts.URL[8:]
+	scheme := v1beta1.Https
+
+	// Set up repositories pointing to test server
+	repoStore := NewDummyRepositoryStore()
+	destRepo := newOciRepositoryWithRegistry("output-registry", v1beta1.ReadWrite, registryHostname, &scheme, true)
+	_, err = repoStore.Create(ctx, orgId, destRepo)
+	require.NoError(err)
+
+	// Create ImageBuild with destination
+	imageBuildStore := NewDummyImageBuildStore()
+	imageBuild := newValidImageBuild("test-image-build")
+	imageBuild.Spec.Destination.Repository = "output-registry"
+	imageBuild.Spec.Destination.ImageName = "test-image"
+	imageBuild.Spec.Destination.ImageTag = "v1.0"
+	_, err = imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	// Create ImageExport
+	imageExport := newReadyImageExport("test-export", manifestDigest)
+	_, err = imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Download should fail because manifest has 2 layers instead of 1
+	result, err := svc.Download(ctx, orgId, "test-export")
+	require.Error(err)
+	require.Nil(result)
+	require.True(errors.Is(err, ErrInvalidManifestLayerCount))
+	require.Contains(err.Error(), "manifest must have exactly one layer")
+	require.Contains(err.Error(), "found 2")
+}
+
+// Cancel ImageExport tests
+
+func newTestImageExportServiceWithKVStore() (ImageExportService, *DummyImageExportStore, *DummyImageBuildStore) {
+	imageExportStore := NewDummyImageExportStore()
+	imageBuildStore := NewDummyImageBuildStore()
+	repositoryStore := NewDummyRepositoryStore()
+	kvStore := NewDummyKVStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repositoryStore, nil, nil, kvStore, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+	return svc, imageExportStore, imageBuildStore
+}
+
+func TestCancelImageExport_Pending(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	svc, imageExportStore, _ := newTestImageExportServiceWithKVStore()
+
+	// Create an ImageExport
+	imageExport := newValidImageExport("cancel-test")
+	_, err := imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Set status to Pending
+	imageExport.Status = &api.ImageExportStatus{
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:               api.ImageExportConditionTypeReady,
+				Status:             v1beta1.ConditionStatusFalse,
+				Reason:             string(api.ImageExportConditionReasonPending),
+				Message:            "Export is pending",
+				LastTransitionTime: time.Now(),
+			},
+		},
+	}
+	_, err = imageExportStore.UpdateStatus(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Cancel the export
+	result, err := svc.Cancel(ctx, orgId, "cancel-test")
+	require.NoError(err)
+	require.NotNil(result)
+	require.NotNil(result.Status)
+	require.NotNil(result.Status.Conditions)
+
+	// Verify status is Canceled (Pending resources go directly to Canceled, no active processing to stop)
+	readyCondition := api.FindImageExportStatusCondition(*result.Status.Conditions, api.ImageExportConditionTypeReady)
+	require.NotNil(readyCondition)
+	require.Equal(string(api.ImageExportConditionReasonCanceled), readyCondition.Reason)
+}
+
+func TestCancelImageExport_Converting(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	svc, imageExportStore, _ := newTestImageExportServiceWithKVStore()
+
+	// Create an ImageExport
+	imageExport := newValidImageExport("cancel-converting-test")
+	_, err := imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Set status to Converting
+	imageExport.Status = &api.ImageExportStatus{
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:               api.ImageExportConditionTypeReady,
+				Status:             v1beta1.ConditionStatusFalse,
+				Reason:             string(api.ImageExportConditionReasonConverting),
+				Message:            "Export conversion in progress",
+				LastTransitionTime: time.Now(),
+			},
+		},
+	}
+	_, err = imageExportStore.UpdateStatus(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Cancel the export
+	result, err := svc.Cancel(ctx, orgId, "cancel-converting-test")
+	require.NoError(err)
+	require.NotNil(result)
+
+	// Verify status is Canceling
+	readyCondition := api.FindImageExportStatusCondition(*result.Status.Conditions, api.ImageExportConditionTypeReady)
+	require.NotNil(readyCondition)
+	require.Equal(string(api.ImageExportConditionReasonCanceling), readyCondition.Reason)
+}
+
+func TestCancelImageExport_Pushing(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	svc, imageExportStore, _ := newTestImageExportServiceWithKVStore()
+
+	// Create an ImageExport
+	imageExport := newValidImageExport("cancel-pushing-test")
+	_, err := imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Set status to Pushing
+	imageExport.Status = &api.ImageExportStatus{
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:               api.ImageExportConditionTypeReady,
+				Status:             v1beta1.ConditionStatusFalse,
+				Reason:             string(api.ImageExportConditionReasonPushing),
+				Message:            "Pushing export artifact",
+				LastTransitionTime: time.Now(),
+			},
+		},
+	}
+	_, err = imageExportStore.UpdateStatus(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Cancel the export
+	result, err := svc.Cancel(ctx, orgId, "cancel-pushing-test")
+	require.NoError(err)
+	require.NotNil(result)
+
+	// Verify status is Canceling
+	readyCondition := api.FindImageExportStatusCondition(*result.Status.Conditions, api.ImageExportConditionTypeReady)
+	require.NotNil(readyCondition)
+	require.Equal(string(api.ImageExportConditionReasonCanceling), readyCondition.Reason)
+}
+
+func TestCancelImageExport_NotCancelable_Completed(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	svc, imageExportStore, _ := newTestImageExportServiceWithKVStore()
+
+	// Create an ImageExport
+	imageExport := newValidImageExport("cancel-completed-test")
+	_, err := imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Set status to Completed
+	imageExport.Status = &api.ImageExportStatus{
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:               api.ImageExportConditionTypeReady,
+				Status:             v1beta1.ConditionStatusTrue,
+				Reason:             string(api.ImageExportConditionReasonCompleted),
+				Message:            "Export completed",
+				LastTransitionTime: time.Now(),
+			},
+		},
+	}
+	_, err = imageExportStore.UpdateStatus(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Attempt to cancel - should fail
+	_, err = svc.Cancel(ctx, orgId, "cancel-completed-test")
+	require.ErrorIs(err, ErrNotCancelable)
+}
+
+func TestCancelImageExport_NotCancelable_Failed(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	svc, imageExportStore, _ := newTestImageExportServiceWithKVStore()
+
+	// Create an ImageExport
+	imageExport := newValidImageExport("cancel-failed-test")
+	_, err := imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Set status to Failed
+	imageExport.Status = &api.ImageExportStatus{
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:               api.ImageExportConditionTypeReady,
+				Status:             v1beta1.ConditionStatusFalse,
+				Reason:             string(api.ImageExportConditionReasonFailed),
+				Message:            "Export failed",
+				LastTransitionTime: time.Now(),
+			},
+		},
+	}
+	_, err = imageExportStore.UpdateStatus(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Attempt to cancel - should fail
+	_, err = svc.Cancel(ctx, orgId, "cancel-failed-test")
+	require.ErrorIs(err, ErrNotCancelable)
+}
+
+func TestCancelImageExport_NotCancelable_Canceled(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	svc, imageExportStore, _ := newTestImageExportServiceWithKVStore()
+
+	// Create an ImageExport
+	imageExport := newValidImageExport("cancel-canceled-test")
+	_, err := imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Set status to Canceled
+	imageExport.Status = &api.ImageExportStatus{
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:               api.ImageExportConditionTypeReady,
+				Status:             v1beta1.ConditionStatusFalse,
+				Reason:             string(api.ImageExportConditionReasonCanceled),
+				Message:            "Export was canceled",
+				LastTransitionTime: time.Now(),
+			},
+		},
+	}
+	_, err = imageExportStore.UpdateStatus(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Attempt to cancel - should fail
+	_, err = svc.Cancel(ctx, orgId, "cancel-canceled-test")
+	require.ErrorIs(err, ErrNotCancelable)
+}
+
+func TestCancelImageExport_NotFound(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	svc, _, _ := newTestImageExportServiceWithKVStore()
+
+	// Attempt to cancel non-existent export
+	_, err := svc.Cancel(ctx, orgId, "nonexistent")
+	require.Error(err)
+}
+
+func TestCancelImageExport_NoStatus(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	svc, imageExportStore, _ := newTestImageExportServiceWithKVStore()
+
+	// Create an ImageExport with no status (treated as Pending)
+	imageExport := newValidImageExport("cancel-nostatus-test")
+	_, err := imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	// Cancel the export (should work since no status = Pending)
+	result, err := svc.Cancel(ctx, orgId, "cancel-nostatus-test")
+	require.NoError(err)
+	require.NotNil(result)
+
+	// Verify status is Canceled (no status = Pending, which goes directly to Canceled)
+	readyCondition := api.FindImageExportStatusCondition(*result.Status.Conditions, api.ImageExportConditionTypeReady)
+	require.NotNil(readyCondition)
+	require.Equal(string(api.ImageExportConditionReasonCanceled), readyCondition.Reason)
+}
+
+func TestCreateTLSConfig_Default(t *testing.T) {
+	require := require.New(t)
+	ociSpec := &coredomain.OciRepoSpec{Registry: "registry.example.com"}
+
+	cfg, err := createTLSConfig(ociSpec)
+	require.NoError(err)
+	require.NotNil(cfg)
+	require.Equal(uint16(tls.VersionTLS12), cfg.MinVersion)
+	require.False(cfg.InsecureSkipVerify)
+	require.Nil(cfg.RootCAs)
+}
+
+func TestCreateTLSConfig_SkipVerification(t *testing.T) {
+	require := require.New(t)
+	ociSpec := &coredomain.OciRepoSpec{
+		Registry:               "registry.example.com",
+		SkipServerVerification: lo.ToPtr(true),
+	}
+
+	cfg, err := createTLSConfig(ociSpec)
+	require.NoError(err)
+	require.True(cfg.InsecureSkipVerify)
+	require.Nil(cfg.RootCAs)
+}
+
+func TestCreateTLSConfig_SkipVerificationFalse(t *testing.T) {
+	require := require.New(t)
+	ociSpec := &coredomain.OciRepoSpec{
+		Registry:               "registry.example.com",
+		SkipServerVerification: lo.ToPtr(false),
+	}
+
+	cfg, err := createTLSConfig(ociSpec)
+	require.NoError(err)
+	require.False(cfg.InsecureSkipVerify)
+}
+
+func TestCreateTLSConfig_CaCrt(t *testing.T) {
+	require := require.New(t)
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer ts.Close()
+
+	caPEM := ts.TLS.Certificates[0].Certificate[0]
+	pemBlock := fmt.Sprintf("-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n",
+		base64.StdEncoding.EncodeToString(caPEM))
+	encoded := base64.StdEncoding.EncodeToString([]byte(pemBlock))
+
+	ociSpec := &coredomain.OciRepoSpec{
+		Registry: "registry.example.com",
+		CaCrt:    &encoded,
+	}
+
+	cfg, err := createTLSConfig(ociSpec)
+	require.NoError(err)
+	require.NotNil(cfg.RootCAs)
+	require.False(cfg.InsecureSkipVerify)
+}
+
+func TestCreateTLSConfig_BothCaCrtAndSkipVerification(t *testing.T) {
+	require := require.New(t)
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer ts.Close()
+
+	caPEM := ts.TLS.Certificates[0].Certificate[0]
+	pemBlock := fmt.Sprintf("-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n",
+		base64.StdEncoding.EncodeToString(caPEM))
+	encoded := base64.StdEncoding.EncodeToString([]byte(pemBlock))
+
+	ociSpec := &coredomain.OciRepoSpec{
+		Registry:               "registry.example.com",
+		SkipServerVerification: lo.ToPtr(true),
+		CaCrt:                  &encoded,
+	}
+
+	cfg, err := createTLSConfig(ociSpec)
+	require.NoError(err)
+	require.True(cfg.InsecureSkipVerify)
+	require.NotNil(cfg.RootCAs)
+}
+
+func TestCreateTLSConfig_InvalidBase64(t *testing.T) {
+	require := require.New(t)
+	invalid := "not-valid-base64!!!"
+	ociSpec := &coredomain.OciRepoSpec{
+		Registry: "registry.example.com",
+		CaCrt:    &invalid,
+	}
+
+	_, err := createTLSConfig(ociSpec)
+	require.Error(err)
+	require.Contains(err.Error(), "decode CA certificate")
+}
+
+func TestCreateTLSConfig_InvalidPEM(t *testing.T) {
+	require := require.New(t)
+	notPEM := base64.StdEncoding.EncodeToString([]byte("this is not a PEM certificate"))
+	ociSpec := &coredomain.OciRepoSpec{
+		Registry: "registry.example.com",
+		CaCrt:    &notPEM,
+	}
+
+	_, err := createTLSConfig(ociSpec)
+	require.Error(err)
+	require.Contains(err.Error(), "failed to append CA certificates")
+}
+
+func TestListCompletedForBuild_NoExports(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	svc, _, _ := newTestImageExportService()
+
+	result, err := svc.ListCompletedForBuild(ctx, orgId, "my-build", api.ExportFormatTypeQCOW2)
+	require.NoError(err)
+	require.Nil(result)
+}
+
+func TestListCompletedForBuild_ReturnsFirstExport(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	svc, imageExportStore, _ := newTestImageExportService()
+
+	// Store two matching exports; the service should return the first one.
+	// NOTE: field-selector filtering is a store concern tested in integration tests.
+	// The dummy store returns all items regardless of the selector.
+	export1 := newValidImageExport("export-one")
+	export1.Status = &api.ImageExportStatus{
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:   api.ImageExportConditionTypeReady,
+				Status: v1beta1.ConditionStatusTrue,
+				Reason: string(api.ImageExportConditionReasonCompleted),
+			},
+		},
+	}
+	_, err := imageExportStore.Create(ctx, orgId, &export1)
+	require.NoError(err)
+
+	export2 := newValidImageExport("export-two")
+	export2.Status = &api.ImageExportStatus{
+		Conditions: &[]api.ImageExportCondition{
+			{
+				Type:   api.ImageExportConditionTypeReady,
+				Status: v1beta1.ConditionStatusTrue,
+				Reason: string(api.ImageExportConditionReasonCompleted),
+			},
+		},
+	}
+	_, err = imageExportStore.Create(ctx, orgId, &export2)
+	require.NoError(err)
+
+	result, err := svc.ListCompletedForBuild(ctx, orgId, "test-image-build", api.ExportFormatTypeQCOW2)
+	require.NoError(err)
+	require.NotNil(result)
+	require.Equal("export-one", lo.FromPtr(result.Metadata.Name))
+}
+
+func TestListCompletedForBuild_StoreError(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	svc, imageExportStore, _ := newTestImageExportService()
+	imageExportStore.listErr = errors.New("database unavailable")
+
+	result, err := svc.ListCompletedForBuild(ctx, orgId, "my-build", api.ExportFormatTypeQCOW2)
+	require.Error(err)
+	require.Contains(err.Error(), "database unavailable")
+	require.Nil(result)
+}
+
+// newOciRepositoryWithRegistryAndAuth creates a test OCI repository with credentials.
+// The password is stored encrypted to match what the GORM encryption plugin produces on save.
+func newOciRepositoryWithRegistryAndAuth(t *testing.T, name string, accessMode v1beta1.OciRepoSpecAccessMode, registryHostname string, scheme *v1beta1.OciRepoSpecScheme, skipVerification bool, username, password string) *v1beta1.Repository {
+	t.Helper()
+	repo := newOciRepositoryWithRegistry(name, accessMode, registryHostname, scheme, skipVerification)
+	ociSpec, err := repo.Spec.AsOciRepoSpec()
+	if err != nil {
+		t.Fatalf("newOciRepositoryWithRegistryAndAuth: %v", err)
+	}
+	encryptedPassword, err := encryption.Encrypt(context.Background(), []byte(password))
+	if err != nil {
+		t.Fatalf("newOciRepositoryWithRegistryAndAuth encrypt: %v", err)
+	}
+	ociAuth := &v1beta1.OciAuth{}
+	if err := ociAuth.FromDockerAuth(v1beta1.DockerAuth{
+		AuthType: v1beta1.Docker,
+		Username: username,
+		Password: string(encryptedPassword),
+	}); err != nil {
+		t.Fatalf("newOciRepositoryWithRegistryAndAuth FromDockerAuth: %v", err)
+	}
+	ociSpec.OciAuth = ociAuth
+	if err := repo.Spec.FromOciRepoSpec(ociSpec); err != nil {
+		t.Fatalf("newOciRepositoryWithRegistryAndAuth FromOciRepoSpec: %v", err)
+	}
+	return repo
+}
+
+// TestDownloadImageExportWithBasicAuth tests that Download succeeds when the registry
+// requires HTTP Basic authentication (nginx-style, not Bearer token).
+func TestDownloadImageExportWithBasicAuth(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	const username = "testuser"
+	const password = "testpassword"
+
+	manifestDigest := "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+	layerDigest := "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	blobContent := []byte("test blob content via basic auth")
+
+	manifest := ocispec.Manifest{
+		MediaType: ocispec.MediaTypeImageManifest,
+		Config: ocispec.Descriptor{
+			MediaType: ocispec.MediaTypeImageConfig,
+			Digest:    digest.Digest("sha256:config123"),
+			Size:      100,
+		},
+		Layers: []ocispec.Descriptor{
+			{
+				MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+				Digest:    digest.Digest(layerDigest),
+				Size:      int64(len(blobContent)),
+			},
+		},
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	require.NoError(err)
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// All endpoints require Basic auth
+		u, p, ok := r.BasicAuth()
+		if !ok || u != username || p != password {
+			w.Header().Set("Www-Authenticate", `Basic realm="Private Registry"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/v2/":
+			w.WriteHeader(http.StatusOK)
+		case "/v2/test-image/manifests/" + manifestDigest:
+			w.Header().Set("Content-Type", ocispec.MediaTypeImageManifest)
+			w.Header().Set("Content-Length", strconv.Itoa(len(manifestBytes)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(manifestBytes)
+		case "/v2/test-image/blobs/" + layerDigest:
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Length", strconv.Itoa(len(blobContent)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(blobContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	registryHostname := strings.TrimPrefix(ts.URL, "https://")
+	scheme := v1beta1.Https
+
+	repoStore := NewDummyRepositoryStore()
+	destRepo := newOciRepositoryWithRegistryAndAuth(t, "output-registry", v1beta1.ReadWrite, registryHostname, &scheme, true, username, password)
+	_, err = repoStore.Create(ctx, orgId, destRepo)
+	require.NoError(err)
+
+	imageBuildStore := NewDummyImageBuildStore()
+	imageBuild := newValidImageBuild("test-image-build")
+	imageBuild.Spec.Destination.Repository = "output-registry"
+	imageBuild.Spec.Destination.ImageName = "test-image"
+	imageBuild.Spec.Destination.ImageTag = "v1.0"
+	_, err = imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	imageExport := newReadyImageExport("test-export", manifestDigest)
+	_, err = imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	result, err := svc.Download(ctx, orgId, "test-export")
+	require.NoError(err)
+	require.NotNil(result)
+	require.Equal(http.StatusOK, result.StatusCode)
+
+	defer result.BlobReader.Close()
+	readContent, err := io.ReadAll(result.BlobReader)
+	require.NoError(err)
+	require.Equal(blobContent, readContent)
+}
+
+// TestDownloadImageExportWithBasicAuthWrongCredentials tests that Download fails
+// at the blob fetch when wrong Basic credentials are supplied.
+// The manifest endpoint is open so that fetchAndParseManifest succeeds;
+// only the blob endpoint enforces authentication; auth.Client handles the
+// Basic challenge-response and the wrong credentials cause blob fetch to fail.
+func TestDownloadImageExportWithBasicAuthWrongCredentials(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	const correctUser = "correctuser"
+	const correctPass = "correctpass"
+
+	manifestDigest := "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+	layerDigest := "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+
+	manifest := ocispec.Manifest{
+		MediaType: ocispec.MediaTypeImageManifest,
+		Config: ocispec.Descriptor{
+			MediaType: ocispec.MediaTypeImageConfig,
+			Digest:    digest.Digest("sha256:config123"),
+			Size:      100,
+		},
+		Layers: []ocispec.Descriptor{
+			{
+				MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+				Digest:    digest.Digest(layerDigest),
+				Size:      32,
+			},
+		},
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	require.NoError(err)
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/":
+			// Probe endpoint: always challenge so the probe returns "Basic".
+			w.Header().Set("Www-Authenticate", `Basic realm="Private Registry"`)
+			w.WriteHeader(http.StatusUnauthorized)
+		case "/v2/test-image/manifests/" + manifestDigest:
+			// Manifest is publicly readable so fetchAndParseManifest succeeds.
+			w.Header().Set("Content-Type", ocispec.MediaTypeImageManifest)
+			w.Header().Set("Content-Length", strconv.Itoa(len(manifestBytes)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(manifestBytes)
+		case "/v2/test-image/blobs/" + layerDigest:
+			// Blob requires correct credentials; wrong credentials are rejected.
+			u, p, ok := r.BasicAuth()
+			if !ok || u != correctUser || p != correctPass {
+				w.Header().Set("Www-Authenticate", `Basic realm="Private Registry"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	registryHostname := strings.TrimPrefix(ts.URL, "https://")
+	scheme := v1beta1.Https
+
+	repoStore := NewDummyRepositoryStore()
+	destRepo := newOciRepositoryWithRegistryAndAuth(t, "output-registry", v1beta1.ReadWrite, registryHostname, &scheme, true, "wronguser", "wrongpass")
+	_, cerr := repoStore.Create(ctx, orgId, destRepo)
+	require.NoError(cerr)
+
+	imageBuildStore := NewDummyImageBuildStore()
+	imageBuild := newValidImageBuild("test-image-build")
+	imageBuild.Spec.Destination.Repository = "output-registry"
+	imageBuild.Spec.Destination.ImageName = "test-image"
+	imageBuild.Spec.Destination.ImageTag = "v1.0"
+	_, cerr = imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(cerr)
+
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	imageExport := newReadyImageExport("test-export", manifestDigest)
+	_, cerr = imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(cerr)
+
+	_, dlErr := svc.Download(ctx, orgId, "test-export")
+	require.Error(dlErr)
+	require.ErrorIs(dlErr, ErrExternalServiceUnavailable)
+}
+
+// TestDownloadImageExportWithBearerAuth tests that Download succeeds end-to-end
+// when the registry uses Bearer token authentication. The mock server:
+//  1. Returns a Bearer challenge on /v2/ (handled internally by auth.Client).
+//  2. Issues a token from the realm endpoint when presented with valid credentials.
+//  3. Requires the Bearer token on manifest and blob requests.
+func TestDownloadImageExportWithBearerAuth(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	orgId := uuid.New()
+
+	const username = "testuser"
+	const password = "testpassword"
+	const issuedToken = "test-bearer-token-abc123"
+
+	manifestDigest := "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+	layerDigest := "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	blobContent := []byte("test blob content via bearer auth")
+
+	manifest := ocispec.Manifest{
+		MediaType: ocispec.MediaTypeImageManifest,
+		Config: ocispec.Descriptor{
+			MediaType: ocispec.MediaTypeImageConfig,
+			Digest:    digest.Digest("sha256:config123"),
+			Size:      100,
+		},
+		Layers: []ocispec.Descriptor{
+			{
+				MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+				Digest:    digest.Digest(layerDigest),
+				Size:      int64(len(blobContent)),
+			},
+		},
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	require.NoError(err)
+
+	// ts.URL is not known until the server starts, so we capture it via a closure variable.
+	var tsURL string
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/":
+			// Probe endpoint: always returns Bearer challenge; auth.Client handles the negotiation.
+			realm := tsURL + "/token"
+			w.Header().Set("Www-Authenticate", `Bearer realm="`+realm+`",service="registry.example.com",scope="repository:test-image:pull"`)
+			w.WriteHeader(http.StatusUnauthorized)
+
+		case "/token":
+			// Token endpoint: assert scope=repository:test-image:pull so the test
+			// verifies that AppendRepositoryScope propagates the pull scope into the
+			// token request, then validate credentials and issue a token.
+			if scope := r.URL.Query().Get("scope"); scope != "repository:test-image:pull" {
+				http.Error(w, "missing or wrong scope: "+scope, http.StatusBadRequest)
+				return
+			}
+			u, p, ok := r.BasicAuth()
+			if !ok || u != username || p != password {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"token":"` + issuedToken + `"}`))
+
+		case "/v2/test-image/manifests/" + manifestDigest:
+			// Manifest is publicly readable so fetchAndParseManifest (oras) succeeds;
+			// blob GET uses auth.Client which attaches the cached Bearer token.
+			w.Header().Set("Content-Type", ocispec.MediaTypeImageManifest)
+			w.Header().Set("Content-Length", strconv.Itoa(len(manifestBytes)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(manifestBytes)
+
+		case "/v2/test-image/blobs/" + layerDigest:
+			// Blob requires a valid Bearer token; return a proper challenge on 401
+			// so auth.Client can fetch/retry with the token.
+			if r.Header.Get("Authorization") != "Bearer "+issuedToken {
+				realm := tsURL + "/token"
+				w.Header().Set("Www-Authenticate", `Bearer realm="`+realm+`",service="registry.example.com",scope="repository:test-image:pull"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Length", strconv.Itoa(len(blobContent)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(blobContent)
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+	tsURL = ts.URL
+
+	registryHostname := strings.TrimPrefix(ts.URL, "https://")
+	scheme := v1beta1.Https
+
+	repoStore := NewDummyRepositoryStore()
+	destRepo := newOciRepositoryWithRegistryAndAuth(t, "output-registry", v1beta1.ReadWrite, registryHostname, &scheme, true, username, password)
+	_, err = repoStore.Create(ctx, orgId, destRepo)
+	require.NoError(err)
+
+	imageBuildStore := NewDummyImageBuildStore()
+	imageBuild := newValidImageBuild("test-image-build")
+	imageBuild.Spec.Destination.Repository = "output-registry"
+	imageBuild.Spec.Destination.ImageName = "test-image"
+	imageBuild.Spec.Destination.ImageTag = "v1.0"
+	_, err = imageBuildStore.Create(ctx, orgId, &imageBuild)
+	require.NoError(err)
+
+	imageExportStore := NewDummyImageExportStore()
+	svc := NewImageExportService(imageExportStore, imageBuildStore, repoStore, nil, nil, nil, config.NewDefaultImageBuilderServiceConfig(), log.InitLogs())
+
+	imageExport := newReadyImageExport("test-export", manifestDigest)
+	_, err = imageExportStore.Create(ctx, orgId, &imageExport)
+	require.NoError(err)
+
+	result, err := svc.Download(ctx, orgId, "test-export")
+	require.NoError(err)
+	require.NotNil(result)
+	require.Equal(http.StatusOK, result.StatusCode)
+
+	defer result.BlobReader.Close()
+	readContent, err := io.ReadAll(result.BlobReader)
+	require.NoError(err)
+	require.Equal(blobContent, readContent)
+}

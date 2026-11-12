@@ -1,0 +1,410 @@
+package cli_test
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/test/e2e/resources"
+	"github.com/flightctl/flightctl/test/harness/e2e"
+	"github.com/flightctl/flightctl/test/util"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+// Test constants
+const (
+	logLookbackDuration = "10 minutes ago"
+)
+
+// -----------------------------------------------------------------------------
+// Console test-suite
+// -----------------------------------------------------------------------------
+
+var _ = Describe("CLI - device console", Label(e2e.NeedVMLabel), func() {
+	var (
+		deviceID string
+	)
+
+	BeforeEach(func() {
+		// Get harness directly - no shared package-level variable
+		harness := e2e.GetWorkerHarness()
+
+		By("resetting the agent config for console tests")
+		Expect(resetConsoleTestAgentConfig(harness)).To(Succeed())
+
+		By("enrolling the device")
+		deviceID, _ = harness.EnrollAndWaitForOnlineStatus()
+	})
+
+	AfterEach(func() {
+		harness := e2e.GetWorkerHarness()
+		harness.PrintAgentLogsIfFailed()
+		harness.CaptureDeploymentLogsIfFailed()
+	})
+
+	It("connects to a device and executes a simple command", Label("80483", "sanity", "agent", "client"), func() {
+		// Get harness directly - no shared package-level variable
+		harness := e2e.GetWorkerHarness()
+
+		cs := harness.NewConsoleSession(deviceID)
+		cs.MustSend("pwd")
+		cs.MustExpect("/var/lib/flightctl")
+		cs.Close()
+	})
+
+	It("supports multiple simultaneous console sessions", Label("81737", "agent", "client"), func() {
+		// Get harness directly - no shared package-level variable
+		harness := e2e.GetWorkerHarness()
+
+		cs1 := harness.NewConsoleSession(deviceID)
+		cs2 := harness.NewConsoleSession(deviceID)
+
+		By("Having separate console session environments")
+		cs1.MustSend(`export MYVAR=abc123`)
+		cs2.MustSend(`export MYVAR=xyz456`)
+
+		cs1.MustSend(`echo $MYVAR`)
+		cs1.MustExpect(`abc123`)
+
+		cs2.MustSend(`echo $MYVAR`)
+		cs2.MustExpect(`xyz456`)
+
+		By("Sharing the same filesystem and access to files")
+		cs1.MustSend("echo Session1 > /tmp/file.txt")
+		cs1.MustExpect(`.*flightctl-console@.*\$`)
+
+		cs2.MustSend("cat /tmp/file.txt")
+		cs2.MustExpect("Session1")
+
+		cs2.MustSend("echo Session2 >> /tmp/file.txt")
+		cs2.MustExpect(`.*flightctl-console@.*\$`)
+
+		cs1.MustSend("cat /tmp/file.txt")
+		cs1.MustExpect("(?s).*Session1.*Session2.*")
+
+		cs1.Close()
+		cs2.Close()
+	})
+
+	It("keeps console sessions open during a device update", Label("81786", "client"), func() {
+		// Get harness directly - no shared package-level variable
+		harness := e2e.GetWorkerHarness()
+
+		const sessionsToOpen = 4
+
+		initialRenderedVersion, err := harness.GetCurrentDeviceRenderedVersion(deviceID)
+		Expect(err).ToNot(HaveOccurred())
+
+		By("initiating a device update")
+		device, _, err := harness.WaitForBootstrapAndUpdateToVersion(deviceID, util.DeviceTags.V4)
+		Expect(err).ToNot(HaveOccurred())
+		Eventually(resources.GetJSONByName[*v1beta1.Device]).
+			WithArguments(harness, resources.Devices, deviceID).
+			Should(WithTransform((*v1beta1.Device).IsUpdating, BeTrue()))
+		Expect(device.Status.Summary.Status).To(Equal(v1beta1.DeviceSummaryStatusOnline))
+
+		sessions := make([]*e2e.ConsoleSession, 0, sessionsToOpen)
+		for i := range sessionsToOpen {
+			By(fmt.Sprintf("opening console session %d/%d", i+1, sessionsToOpen))
+			sessions = append(sessions, harness.NewConsoleSession(deviceID))
+		}
+		for i, cs := range sessions {
+			By(fmt.Sprintf("closing console session %d/%d", i+1, sessionsToOpen))
+			cs.Close()
+		}
+
+		By("waiting for the update to finish")
+		util.EventuallySlow(resources.GetJSONByName[*v1beta1.Device]).
+			WithArguments(harness, resources.Devices, deviceID).
+			Should(WithTransform((*v1beta1.Device).IsUpdatedToDeviceSpec, BeTrue()))
+
+		// ensure applications become healthy
+		Eventually(resources.GetJSONByName[*v1beta1.Device]).
+			WithArguments(harness, resources.Devices, deviceID).
+			Should(WithTransform(func(d *v1beta1.Device) v1beta1.ApplicationsSummaryStatusType {
+				return d.Status.ApplicationsSummary.Status
+			}, Equal(v1beta1.ApplicationsSummaryStatusHealthy)))
+
+		currentRenderedVersion, err := harness.GetCurrentDeviceRenderedVersion(deviceID)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(currentRenderedVersion).To(BeNumerically(">", initialRenderedVersion))
+
+		By("returns a helpful error when the device is not found")
+		out, err := harness.CLI("console", "device/nonexistent")
+		Expect(err).To(HaveOccurred())
+		Expect(out).To(ContainSubstring("not found"))
+	})
+
+	It("recovers from image pull network disruption", Label("82541", "client"), func() {
+		// Get harness directly - no shared package-level variable
+		harness := e2e.GetWorkerHarness()
+
+		const disruptionTime = 1 * time.Minute
+		_, _, err := harness.WaitForBootstrapAndUpdateToVersion(deviceID, util.DeviceTags.V4)
+		Expect(err).ToNot(HaveOccurred())
+
+		Eventually(resources.GetJSONByName[*v1beta1.Device]).
+			WithArguments(harness, resources.Devices, deviceID).
+			Should(WithTransform((*v1beta1.Device).IsUpdating, BeTrue()))
+
+		regHost, regPort := auxSvcs.Registry.Host, auxSvcs.Registry.Port
+		GinkgoWriter.Printf("Simulating network failure\n")
+		DeferCleanup(func() { _ = harness.FixNetworkFailure(regHost, regPort) })
+		err = harness.SimulateNetworkFailure(regHost, regPort)
+		Expect(err).ToNot(HaveOccurred())
+
+		GinkgoWriter.Printf("Waiting for image pull activity\n")
+		util.EventuallySlow(harness.ReadPrimaryVMAgentLogs).
+			WithArguments(logLookbackDuration, util.FLIGHTCTL_AGENT_SERVICE).
+			Should(ContainSubstring("Pulling image"))
+
+		GinkgoWriter.Printf("Simulating network disruption for %s\n", disruptionTime)
+		Consistently(resources.GetJSONByName[*v1beta1.Device]).
+			WithTimeout(disruptionTime).
+			WithPolling(disruptionTime/10).
+			WithArguments(harness, resources.Devices, deviceID).
+			Should(WithTransform((*v1beta1.Device).IsUpdating, BeTrue()))
+
+		err = harness.FixNetworkFailure(regHost, regPort)
+		Expect(err).ToNot(HaveOccurred())
+
+		GinkgoWriter.Printf("Network disruption fixed. Waiting for the device to finish updating\n")
+		util.EventuallySlow(resources.GetJSONByName[*v1beta1.Device]).
+			WithArguments(harness, resources.Devices, deviceID).
+			Should(WithTransform((*v1beta1.Device).IsUpdatedToDeviceSpec, BeTrue()))
+	})
+
+	It("uses the flightctl-console user and has sudo access", Label("87848", "client"), func() {
+		// Get harness directly - no shared package-level variable
+		harness := e2e.GetWorkerHarness()
+
+		session := harness.NewConsoleSession(deviceID)
+		DeferCleanup(session.Close)
+
+		session.MustSend(`whoami`)
+		session.MustExpect(`flightctl-console`)
+
+		session.MustSend(`id -Z`)
+		session.MustExpect(`unconfined_t`)
+
+		session.MustSend(`echo $HOME`)
+		session.MustExpect(`/var/lib/flightctl`)
+
+		session.MustSend(`pwd`)
+		session.MustExpect(`/var/lib/flightctl`)
+
+		session.MustSend(`sudo whoami`)
+		session.MustExpect(`root`)
+
+		session.MustSend(`systemctl start flightctl-agent --no-ask-password > /dev/null; echo $?`)
+		session.MustExpect(`1`)
+
+		session.MustSend(`sudo systemctl start flightctl-agent > /dev/null; echo $?`)
+		session.MustExpect(`0`)
+
+		session.MustSend(`sudo podman ps && echo $?`)
+		session.MustExpect(`0`)
+
+		session.MustSend(`sudo -u flightctl podman ps > /dev/null; echo $?`)
+		session.MustExpect(`0`)
+
+		session.MustSend(`sudo journalctl -e -t sudo --no-pager`)
+		session.MustExpect(`flightctl-console : TTY=pts/\d+ ; PWD=/var/lib/flightctl ; USER=root ; COMMAND=/bin/systemctl start flightctl-agent`)
+
+		{
+			out, err := harness.RunConsoleCommand(deviceID, []string{"--notty"}, `whoami`)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(out).To(ContainSubstring(`flightctl-console`))
+		}
+
+		{
+			out, err := harness.RunConsoleCommand(deviceID, []string{"--notty"}, `sudo`, `whoami`)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(out).To(ContainSubstring(`root`))
+		}
+	})
+
+	It("recovers from image pull network connection error", Label("83029", "client"), func() {
+		// Get harness directly - no shared package-level variable
+		harness := e2e.GetWorkerHarness()
+
+		regHost, regPort := auxSvcs.Registry.Host, auxSvcs.Registry.Port
+		GinkgoWriter.Printf("Simulating network failure\n")
+		DeferCleanup(func() { _ = harness.FixNetworkFailure(regHost, regPort) })
+		err := harness.SimulateNetworkFailure(regHost, regPort)
+		Expect(err).ToNot(HaveOccurred())
+
+		_, _, err = harness.WaitForBootstrapAndUpdateToVersion(deviceID, util.DeviceTags.V4)
+		Expect(err).ToNot(HaveOccurred())
+
+		GinkgoWriter.Printf("Waiting for image pull activity\n")
+		Eventually(resources.GetJSONByName[*v1beta1.Device]).
+			WithArguments(harness, resources.Devices, deviceID).
+			Should(WithTransform((*v1beta1.Device).IsUpdating, BeTrue()))
+
+		util.EventuallySlow(harness.ReadPrimaryVMAgentLogs).
+			WithArguments(logLookbackDuration, util.FLIGHTCTL_AGENT_SERVICE).
+			Should(ContainSubstring("Pulling image"))
+
+		GinkgoWriter.Printf("Waiting for image pull failure. It will take a while...\n")
+		util.EventuallySlow(harness.ReadPrimaryVMAgentLogs).
+			WithArguments(logLookbackDuration, util.FLIGHTCTL_AGENT_SERVICE).
+			Should(And(
+				ContainSubstring("Error"),
+				Or(
+					ContainSubstring("i/o timeout"),
+					ContainSubstring("refused"),
+				),
+			),
+			)
+
+		GinkgoWriter.Printf("Image pull failure detected!\n")
+		err = harness.FixNetworkFailure(regHost, regPort)
+		Expect(err).ToNot(HaveOccurred())
+
+		GinkgoWriter.Printf("Waiting for the device to finish updating\n")
+		util.EventuallySlow(resources.GetJSONByName[*v1beta1.Device]).
+			WithArguments(harness, resources.Devices, deviceID).
+			Should(WithTransform((*v1beta1.Device).IsUpdatedToDeviceSpec, BeTrue()))
+	})
+
+	It("provides console --help and auxiliary features", Label("81866", "sanity", "agent", "client"), func() {
+		// Get harness directly - no shared package-level variable
+		harness := e2e.GetWorkerHarness()
+
+		out, err := harness.CLI("console", "--help")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(out).To(
+			And(
+				ContainSubstring("Usage:"),
+				ContainSubstring("flightctl console device/NAME [-- COMMAND [ARG...]]"),
+			),
+		)
+
+		By("verifying that the ~. sequence exits the shell")
+		cs := harness.NewConsoleSession(deviceID)
+		DeferCleanup(cs.Close)
+		cs.Disconnect()
+
+		By("running a command without opening a shell")
+		out, err = harness.RunConsoleCommand(deviceID, nil, "flightctl-agent", "system-info")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(out).To(ContainSubstring("hostname"))
+
+		By("running a background command without a TTY")
+		out, err = harness.RunConsoleCommand(deviceID, []string{"--notty"}, "pwd")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(out).To(ContainSubstring("/"))
+
+		// TODO: By running this as an unconfined process with the new SELinux rules, it consumes too
+		// much memory for the e2e test instances which leads to OOM errors in e2e test. Disable for now
+		// and revisit later.
+
+		//By("generating a remote sos-report")
+		//// "sos: command not found" when running "console device/{device} -- sos" in a non-interactive shell. a bug?
+		//out, err = harness.RunConsoleCommand(deviceID, nil, "/usr/sbin/sos", "report", "--batch", "--quiet", "--preset", "minimal")
+		//Expect(err).ToNot(HaveOccurred())
+		//Expect(out).To(ContainSubstring("sos report has been generated"))
+
+		By("failing when required command args are missing")
+		out, err = harness.CLI("console", "--tty")
+		Expect(err).To(HaveOccurred())
+		Expect(out).To(ContainSubstring("Error:"))
+	})
+})
+
+// -----------------------------------------------------------------------------
+// Helper functions for deprecated test
+// -----------------------------------------------------------------------------
+
+// extractTimestampsFromLogs extracts and parses timestamps from log lines that match the given regex pattern.
+// Returns a slice of valid timestamps found in the logs.
+// func extractTimestampsFromLogs(logs string, logPattern *regexp.Regexp) []time.Time {
+// 	lines := strings.Split(strings.TrimSpace(logs), "\n")
+// 	GinkgoWriter.Printf("Read %d log lines from agent journal\n", len(lines))
+
+// 	var validTimestamps []time.Time
+
+// 	for _, line := range lines {
+// 		if m := logPattern.FindStringSubmatch(line); m != nil {
+// 			if t, err := time.Parse(time.RFC3339Nano, m[1]); err != nil {
+// 				GinkgoWriter.Printf("Failed to parse timestamp %q: %v\n", m[1], err)
+// 			} else {
+// 				validTimestamps = append(validTimestamps, t)
+// 				GinkgoWriter.Printf("Found matching log line with timestamp: %s\n", t.Format(time.RFC3339))
+// 			}
+// 		}
+// 	}
+
+// 	GinkgoWriter.Printf("Found %d lines matching the pattern\n", len(validTimestamps))
+// 	return validTimestamps
+// }
+
+// validateIntervalTiming checks if intervals between consecutive timestamps are within tolerance.
+// Returns true if all intervals are within 1 second of the expected interval.
+// func validateIntervalTiming(timestamps []time.Time, expectedInterval time.Duration) bool {
+// 	const toleranceThreshold = time.Second
+
+// 	GinkgoWriter.Printf("Validating intervals between %d timestamps\n", len(timestamps))
+
+// 	for i := 1; i < len(timestamps); i++ {
+// 		delta := timestamps[i].Sub(timestamps[i-1])
+// 		deviation := (delta - expectedInterval).Abs()
+
+// 		GinkgoWriter.Printf("Timestamp %d->%d: delta=%v, expected=%v, deviation=%v\n",
+// 			i-1, i, delta, expectedInterval, deviation)
+
+// 		if deviation > toleranceThreshold {
+// 			GinkgoWriter.Printf("Interval not as expected - deviation %v > %v threshold\n", deviation, toleranceThreshold)
+// 			return false
+// 		}
+// 	}
+
+// 	GinkgoWriter.Printf("All %d intervals are stable within %v tolerance\n", len(timestamps)-1, toleranceThreshold)
+// 	return true
+// }
+
+// validateTimestampIntervals validates that the intervals between log timestamps match the expected interval.
+// It returns true if at least 2 timestamps are found and all intervals are within 1 second of the expected interval.
+// func validateTimestampIntervals(logs string, logPattern *regexp.Regexp, expectedInterval time.Duration) bool {
+// 	timestamps := extractTimestampsFromLogs(logs, logPattern)
+
+// 	const minRequired = 2
+// 	if len(timestamps) < minRequired {
+// 		GinkgoWriter.Printf("Need at least %d matching timestamps, only have %d - waiting for more logs\n", minRequired, len(timestamps))
+// 		return false
+// 	}
+
+// 	return validateIntervalTiming(timestamps, expectedInterval)
+// }
+
+// resetConsoleTestAgentConfig clears enrollment state and enrollment labels so
+// console tests start from a predictable enrollment configuration.
+func resetConsoleTestAgentConfig(harness *e2e.Harness) error {
+	if harness == nil {
+		return fmt.Errorf("harness is nil")
+	}
+
+	if err := harness.ResetAgentEnrollmentState(); err != nil {
+		return fmt.Errorf("resetting agent enrollment state: %w", err)
+	}
+
+	cfg, err := harness.GetAgentConfig()
+	if err != nil {
+		return fmt.Errorf("getting agent config: %w", err)
+	}
+
+	cfg.DefaultLabels = map[string]string{}
+	cfg.LabelFromSystemInfo = map[string]string{}
+
+	if err := harness.SetAgentConfig(cfg); err != nil {
+		return fmt.Errorf("setting agent config: %w", err)
+	}
+
+	if err := harness.StartFlightCtlAgent(); err != nil {
+		return fmt.Errorf("starting flightctl-agent: %w", err)
+	}
+
+	return nil
+}

@@ -1,0 +1,1476 @@
+package applications
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/agent/client"
+	appconsole "github.com/flightctl/flightctl/internal/agent/device/applications/console"
+	"github.com/flightctl/flightctl/internal/agent/device/applications/lifecycle"
+	"github.com/flightctl/flightctl/internal/agent/device/applications/provider"
+	"github.com/flightctl/flightctl/internal/agent/device/deltastatus"
+	"github.com/flightctl/flightctl/internal/agent/device/errors"
+	"github.com/flightctl/flightctl/internal/agent/device/fileio"
+	"github.com/flightctl/flightctl/internal/agent/device/systemd"
+	"github.com/flightctl/flightctl/pkg/log"
+	"github.com/mohae/deepcopy"
+	"github.com/opencontainers/go-digest"
+	"github.com/samber/lo"
+)
+
+const (
+	expectedPodmanSigTermExitCode = 1
+	quadletSystemdLabel           = "PODMAN_SYSTEMD_UNIT"
+	podmanHealthStatusEvent       = "health_status"
+	composeServiceLabel           = "com.docker.compose.service"
+	maxPodmanEventBytes           = 4 * 1024 * 1024
+)
+
+type PodmanMonitor struct {
+	mu sync.Mutex
+	// apps is a map of application ID to application.
+	apps                   map[string]Application
+	recoveryPending        map[string]pendingRecovery
+	actions                []lifecycle.Action
+	startTime              time.Time
+	lastActionsSuccessTime time.Time
+
+	handlers       map[v1beta1.AppType]lifecycle.ActionHandler
+	clientFactory  client.PodmanFactory
+	systemdFactory systemd.ManagerFactory
+	watchers       map[v1beta1.Username]*podmanEventWatcher
+	events         chan client.PodmanEvent
+
+	log *log.PrefixLogger
+}
+
+type pendingRecovery struct {
+	services           []string
+	serviceGenerations map[string]uint64
+	generation         uint64
+	allServices        bool
+}
+
+// PodmanMonitorOption configures optional Podman monitor dependencies.
+type PodmanMonitorOption func(*podmanMonitorOptions)
+
+type podmanMonitorOptions struct {
+	deltaStatusStore *deltastatus.Store
+}
+
+// WithPodmanMonitorDeltaStatusStore supplies the store used by application lifecycle handlers.
+func WithPodmanMonitorDeltaStatusStore(store *deltastatus.Store) PodmanMonitorOption {
+	return func(options *podmanMonitorOptions) {
+		options.deltaStatusStore = store
+	}
+}
+
+func NewPodmanMonitor(
+	log *log.PrefixLogger,
+	podmanFactory client.PodmanFactory,
+	systemdFactory systemd.ManagerFactory,
+	bootTime string,
+	rwFactory fileio.ReadWriterFactory,
+	options ...PodmanMonitorOption,
+) *PodmanMonitor {
+	var configured podmanMonitorOptions
+	for _, option := range options {
+		option(&configured)
+	}
+	// don't fail for this. This is being parsed purely for informational reasons in the event something fails
+	startTime, err := time.Parse(time.RFC3339, bootTime)
+	if err != nil {
+		log.Errorf("Failed to parse bootTime %q: %v", bootTime, err)
+		startTime = time.Now()
+	}
+	return &PodmanMonitor{
+		clientFactory:  podmanFactory,
+		systemdFactory: systemdFactory,
+		handlers: map[v1beta1.AppType]lifecycle.ActionHandler{
+			v1beta1.AppTypeCompose: lifecycle.NewCompose(log, rwFactory, podmanFactory, lifecycle.WithDeltaStatusStore(configured.deltaStatusStore)),
+			v1beta1.AppTypeQuadlet: lifecycle.NewQuadlet(log, rwFactory, systemdFactory, podmanFactory, lifecycle.WithDeltaStatusStore(configured.deltaStatusStore)),
+		},
+		watchers:               make(map[v1beta1.Username]*podmanEventWatcher),
+		apps:                   make(map[string]Application),
+		recoveryPending:        make(map[string]pendingRecovery),
+		startTime:              startTime,
+		lastActionsSuccessTime: startTime,
+		log:                    log,
+	}
+}
+
+// isRunning returns true if the monitor is currently running
+func (m *PodmanMonitor) isRunning(username v1beta1.Username) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.watchers[username]
+	return ok
+}
+
+func (m *PodmanMonitor) ensureMonitorForUser(ctx context.Context, username v1beta1.Username) error {
+	if _, ok := m.watchers[username]; ok {
+		m.log.Debugf("Podman monitor is already running for user %s", username)
+		return nil
+	}
+	m.log.Infof("Starting podman monitor for user %s", username)
+
+	if m.events == nil {
+		m.events = make(chan client.PodmanEvent)
+		go m.listenForEvents(ctx)
+	}
+
+	client, err := m.clientFactory(username)
+	if err != nil {
+		return err
+	}
+
+	var watcher podmanEventWatcher
+	watcher.Init(m.log, username, client, m.startTime)
+	if err := watcher.Watch(ctx, m.events); err != nil {
+		return fmt.Errorf("initializing watcher: %w", err)
+	}
+
+	m.watchers[username] = &watcher
+
+	return nil
+}
+
+func (m *PodmanMonitor) stopMonitorForUser(username v1beta1.Username) error {
+	watcher, ok := m.watchers[username]
+	if !ok {
+		m.log.Debugf("Podman monitor is already stopped for user %s", username)
+		return nil
+	}
+	delete(m.watchers, username)
+
+	return watcher.Stop()
+}
+
+// Stop stops the podman monitor without draining applications
+func (m *PodmanMonitor) Stop() error {
+	var errs []error
+	for _, watcher := range m.watchers {
+		if err := watcher.Stop(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	m.watchers = nil
+	if m.events != nil {
+		close(m.events)
+	}
+	return errors.Join(errs...)
+}
+
+// Drain stops and removes all applications, then stops the monitor
+func (m *PodmanMonitor) Drain(ctx context.Context) error {
+	// Drain may be called as the result of an OS upgrade. Any applications added during that spec update
+	// may have "start" actions pending. Clear out any pending actions so that they can be replaced with "stops"
+	m.drainActions()
+
+	return m.drain(ctx)
+}
+
+func (m *PodmanMonitor) getApps() []Application {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	apps := make([]Application, 0, len(m.apps))
+	for _, app := range m.apps {
+		apps = append(apps, app)
+	}
+	return apps
+}
+
+func (m *PodmanMonitor) drain(ctx context.Context) error {
+	var errs []error
+
+	apps := m.getApps()
+	m.log.Infof("Draining %d applications", len(apps))
+	for _, app := range apps {
+		if err := m.QueueRemove(app); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if err := m.executeActions(ctx, true); err != nil {
+		errs = append(errs, err)
+	}
+
+	return errors.Join(errs...)
+}
+
+func (m *PodmanMonitor) Has(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	_, ok := m.apps[id]
+	return ok
+}
+
+// QueueLifecycle compares the new spec's lifecycle intent against the stored intent on
+// the tracked application and queues ActionStop, ActionStart, or ActionRestart as needed.
+// The stored desiredState/restartGeneration are only advanced by StopApp/StartApp/RestartApp
+// once the corresponding action succeeds, so a failed action is retried on the next sync.
+// No-op if the app is not tracked, intent is unchanged, and all tracked workloads are healthy.
+func (m *PodmanMonitor) QueueLifecycle(appID string, desiredState v1beta1.ApplicationDesiredState, restartGeneration int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	app, ok := m.apps[appID]
+	if !ok {
+		return
+	}
+
+	currentState := app.DesiredState()
+	currentGen := app.RestartGeneration()
+
+	var actionType lifecycle.ActionType
+	switch {
+	case restartGeneration > currentGen && desiredState == v1beta1.ApplicationDesiredStateRunning:
+		actionType = lifecycle.ActionRestart
+	case desiredState != currentState:
+		if desiredState == v1beta1.ApplicationDesiredStateStopped {
+			actionType = lifecycle.ActionStop
+		} else {
+			actionType = lifecycle.ActionStart
+		}
+	case desiredState == v1beta1.ApplicationDesiredStateRunning && (hasStoppedWorkload(app) || hasPendingRecovery(m.recoveryPending, appID)):
+		actionType = lifecycle.ActionStart
+	default:
+		return
+	}
+
+	var startServices []string
+	var recoveryGeneration uint64
+	if actionType == lifecycle.ActionStart {
+		if pending, ok := m.recoveryPending[appID]; ok {
+			recoveryGeneration = pending.generation
+			if !pending.allServices && !hasUnnamedStoppedWorkload(app) {
+				startServices = mergeServiceNames(pending.services, stoppedWorkloadServices(app))
+			}
+		} else {
+			startServices = stoppedWorkloadServices(app)
+		}
+	}
+
+	m.actions = append(m.actions, lifecycle.Action{
+		ID:                 appID,
+		Name:               app.Name(),
+		Lifetime:           app.ImageSnapshot().Lifetime,
+		User:               app.User(),
+		AppType:            app.AppType(),
+		Path:               app.Path(),
+		Type:               actionType,
+		RestartGeneration:  restartGeneration,
+		StartServices:      startServices,
+		RecoveryGeneration: recoveryGeneration,
+	})
+}
+
+func hasPendingRecovery(recoveryPending map[string]pendingRecovery, appID string) bool {
+	_, ok := recoveryPending[appID]
+	return ok
+}
+
+// hasStoppedWorkload reports whether a workload unexpectedly stopped or reached
+// a terminal runtime state while the application is still expected to be
+// running. Exited workloads are intentionally excluded because they represent
+// successful completion for one-shot applications.
+func hasStoppedWorkload(app Application) bool {
+	for _, workload := range app.Workloads() {
+		switch workload.Status {
+		case StatusStop, StatusDie, StatusDied, StatusRemove:
+			return true
+		}
+	}
+	return false
+}
+
+func hasUnnamedStoppedWorkload(app Application) bool {
+	for _, workload := range app.Workloads() {
+		switch workload.Status {
+		case StatusStop, StatusDie, StatusDied, StatusRemove:
+			if workload.ServiceName == "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stoppedWorkloadServices(app Application) []string {
+	var services []string
+	for _, workload := range app.Workloads() {
+		switch workload.Status {
+		case StatusStop, StatusDie, StatusDied, StatusRemove:
+			services = append(services, workload.ServiceName)
+		}
+	}
+	return mergeServiceNames(services)
+}
+
+func mergeServiceNames(serviceLists ...[]string) []string {
+	seen := make(map[string]struct{})
+	var merged []string
+	for _, services := range serviceLists {
+		for _, service := range services {
+			if service == "" {
+				continue
+			}
+			if _, ok := seen[service]; ok {
+				continue
+			}
+			seen[service] = struct{}{}
+			merged = append(merged, service)
+		}
+	}
+	return merged
+}
+
+func (m *PodmanMonitor) Ensure(ctx context.Context, app Application) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	appID := app.ID()
+	_, ok := m.apps[appID]
+	if ok {
+		// app already exists
+		return nil
+	}
+	m.apps[appID] = app
+
+	appName := app.Name()
+	action := lifecycle.Action{
+		AppType:  app.AppType(),
+		Type:     lifecycle.ActionAdd,
+		User:     app.User(),
+		Name:     appName,
+		Lifetime: app.ImageSnapshot().Lifetime,
+		ID:       appID,
+		Path:     app.Path(),
+		Embedded: app.IsEmbedded(),
+		Volumes:  provider.ToLifecycleVolumes(app.Volume().List()),
+	}
+
+	m.actions = append(m.actions, action)
+	return nil
+}
+
+func (m *PodmanMonitor) QueueRemove(app Application) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Always proceed with removal even if the app isn't tracked. After a reboot,
+	// in-memory state is cleared but workloads (containers, pods, etc.) may still
+	// exist and need cleanup. The lifecycle handlers are idempotent and will
+	// handle the case where the workload doesn't exist.
+	appID := app.ID()
+	delete(m.apps, appID)
+	delete(m.recoveryPending, appID)
+	appName := app.Name()
+
+	action := lifecycle.Action{
+		AppType:  app.AppType(),
+		Type:     lifecycle.ActionRemove,
+		Name:     appName,
+		Lifetime: app.ImageSnapshot().Lifetime,
+		User:     app.User(),
+		ID:       appID,
+		Volumes:  provider.ToLifecycleVolumes(app.Volume().List()),
+	}
+
+	m.actions = append(m.actions, action)
+
+	return nil
+}
+
+func (m *PodmanMonitor) QueueUpdate(app Application) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	appID := app.ID()
+	// A restarted agent has no monitor registration for existing workloads.
+	// Register the desired app and keep the update action so those workloads
+	// are removed before the new application starts.
+	m.apps[appID] = app
+	delete(m.recoveryPending, appID)
+
+	// currently we don't support updating embedded applications
+	action := lifecycle.Action{
+		AppType:  app.AppType(),
+		Type:     lifecycle.ActionUpdate,
+		Name:     app.Name(),
+		Lifetime: app.ImageSnapshot().Lifetime,
+		User:     app.User(),
+		ID:       appID,
+		Path:     app.Path(),
+		Volumes:  provider.ToLifecycleVolumes(app.Volume().List()),
+	}
+
+	m.actions = append(m.actions, action)
+	return nil
+}
+
+func (m *PodmanMonitor) addBatchTimeToCtx(ctx context.Context) context.Context {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return lifecycle.ContextWithBatchStartTime(ctx, m.lastActionsSuccessTime)
+}
+
+func (m *PodmanMonitor) updateLastSuccessTime(t time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastActionsSuccessTime = t
+}
+
+func normalizeActionAppType(appType v1beta1.AppType) v1beta1.AppType {
+	// Container and VM apps both use the quadlet action handler.
+	if appType == v1beta1.AppTypeContainer || appType == v1beta1.AppTypeVm {
+		return v1beta1.AppTypeQuadlet
+	}
+	return appType
+}
+
+// StopApp stops the application identified by appID without removing its files or Podman resources.
+// Dispatches to the LifecycleHandler for the application's type and updates the app's desired state.
+func (m *PodmanMonitor) StopApp(ctx context.Context, appID string) error {
+	handler, action, app, err := m.lifecycleDispatch(appID)
+	if err != nil {
+		return err
+	}
+	if err := handler.Stop(ctx, action); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	app.SetDesiredState(v1beta1.ApplicationDesiredStateStopped)
+	delete(m.recoveryPending, appID)
+	m.mu.Unlock()
+	return nil
+}
+
+// StartApp starts a previously stopped application identified by appID.
+func (m *PodmanMonitor) StartApp(ctx context.Context, appID string, queuedActions ...lifecycle.Action) error {
+	handler, action, app, err := m.lifecycleDispatch(appID)
+	if err != nil {
+		return err
+	}
+	if len(queuedActions) > 0 {
+		action.StartServices = queuedActions[0].StartServices
+		action.RecoveryGeneration = queuedActions[0].RecoveryGeneration
+	}
+	recoveryGeneration := action.RecoveryGeneration
+	if err := handler.Start(ctx, action); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	app.SetDesiredState(v1beta1.ApplicationDesiredStateRunning)
+	m.clearRecoveryIntent(appID, action, recoveryGeneration)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *PodmanMonitor) clearRecoveryIntent(appID string, action lifecycle.Action, recoveryGeneration uint64) {
+	if recoveryGeneration == 0 {
+		return
+	}
+	pending, ok := m.recoveryPending[appID]
+	if !ok {
+		return
+	}
+	if pending.generation == recoveryGeneration {
+		delete(m.recoveryPending, appID)
+		return
+	}
+	if pending.allServices || len(action.StartServices) == 0 {
+		return
+	}
+	remainingServices := make([]string, 0, len(pending.services))
+	for _, service := range pending.services {
+		serviceGeneration, tracked := pending.serviceGenerations[service]
+		if tracked && serviceGeneration > recoveryGeneration {
+			remainingServices = append(remainingServices, service)
+			continue
+		}
+		if !containsServiceName(action.StartServices, service) {
+			remainingServices = append(remainingServices, service)
+		}
+	}
+	pending.services = remainingServices
+	if len(pending.services) == 0 {
+		delete(m.recoveryPending, appID)
+		return
+	}
+	m.recoveryPending[appID] = pending
+}
+
+func containsServiceName(services []string, service string) bool {
+	for _, candidate := range services {
+		if candidate == service {
+			return true
+		}
+	}
+	return false
+}
+
+// RestartApp restarts the application identified by appID.
+// For VM workloads this triggers an ACPI shutdown before the unit restarts.
+func (m *PodmanMonitor) RestartApp(ctx context.Context, appID string, restartGeneration int) error {
+	handler, action, app, err := m.lifecycleDispatch(appID)
+	if err != nil {
+		return err
+	}
+	if err := handler.Restart(ctx, action); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	app.SetRestartGeneration(restartGeneration)
+	delete(m.recoveryPending, appID)
+	m.mu.Unlock()
+	return nil
+}
+
+// lifecycleDispatch looks up the application and resolves its LifecycleHandler.
+// Returns the handler, a lifecycle.Action populated from the application's fields, and the application itself.
+func (m *PodmanMonitor) lifecycleDispatch(appID string) (lifecycle.LifecycleHandler, lifecycle.Action, Application, error) {
+	m.mu.Lock()
+	app, ok := m.apps[appID]
+	m.mu.Unlock()
+
+	if !ok {
+		return nil, lifecycle.Action{}, nil, fmt.Errorf("%w: %s", errors.ErrAppNotFound, appID)
+	}
+
+	appType := normalizeActionAppType(app.AppType())
+	handler, ok := m.handlers[appType].(lifecycle.LifecycleHandler)
+	if !ok {
+		return nil, lifecycle.Action{}, nil, fmt.Errorf("%w: no lifecycle handler for app type %s", errors.ErrUnsupportedAppType, appType)
+	}
+
+	action := lifecycle.Action{
+		ID:       app.ID(),
+		Name:     app.Name(),
+		Lifetime: app.ImageSnapshot().Lifetime,
+		User:     app.User(),
+		AppType:  app.AppType(),
+		Path:     app.Path(),
+	}
+	return handler, action, app, nil
+}
+
+// ExecuteActions executes all queued actions.
+func (m *PodmanMonitor) ExecuteActions(ctx context.Context) error {
+	return m.executeActions(ctx, false)
+}
+
+func (m *PodmanMonitor) executeActions(ctx context.Context, systemShutdown bool) error {
+	ctx = m.addBatchTimeToCtx(ctx)
+	actions := m.drainActions()
+
+	// Group structural actions (Add/Update/Remove) by app type for batch execution.
+	// Lifecycle actions (Stop/Start/Restart) are dispatched directly below.
+	groupedActions := make(map[v1beta1.AppType][]lifecycle.Action)
+	for i := range actions {
+		action := actions[i]
+		if action.Type == lifecycle.ActionStop || action.Type == lifecycle.ActionStart || action.Type == lifecycle.ActionRestart {
+			continue
+		}
+
+		appType := normalizeActionAppType(action.AppType)
+		if systemShutdown && appType == v1beta1.AppTypeQuadlet {
+			m.log.Debugf("System shutdown: skipping quadlet action for %s", action.Name)
+			continue
+		}
+
+		_, ok := m.handlers[appType]
+		if !ok {
+			return fmt.Errorf("%w: no action handler registered: %s", errors.ErrUnsupportedAppType, action.AppType)
+		}
+		groupedActions[appType] = append(groupedActions[appType], action)
+	}
+
+	for appType, actions := range groupedActions {
+		if err := m.handlers[appType].Execute(ctx, actions); err != nil {
+			return err
+		}
+	}
+
+	// After installing or updating an app, apply desiredState=stopped if the operator
+	// wants it off. The install/update handler always starts workloads; stop them here.
+	for _, a := range actions {
+		if a.Type != lifecycle.ActionAdd && a.Type != lifecycle.ActionUpdate {
+			continue
+		}
+		m.mu.Lock()
+		app, ok := m.apps[a.ID]
+		m.mu.Unlock()
+		if !ok || app.DesiredState() != v1beta1.ApplicationDesiredStateStopped {
+			continue
+		}
+		m.log.Infof("Stopping application %s (desiredState: stopped, post-install)", a.Name)
+		if err := m.StopApp(ctx, a.ID); err != nil {
+			m.log.Warnf("Failed to stop application %s after install: %v", a.Name, err)
+		}
+	}
+
+	// Dispatch explicit lifecycle actions queued by QueueLifecycle.
+	m.dispatchLifecycleActions(ctx, actions)
+
+	m.updateLastSuccessTime(time.Now())
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, a := range actions {
+		switch a.Type {
+		case lifecycle.ActionAdd, lifecycle.ActionUpdate:
+			if err := m.ensureMonitorForUser(ctx, a.User); err != nil {
+				return fmt.Errorf("failed to start podman monitor: %w", err)
+			}
+		case lifecycle.ActionRemove:
+			// Stop the monitor for the app user if no other apps for that user are running.
+			user := a.User
+			exists := false
+			for _, app := range m.apps {
+				if app.User() == user {
+					exists = true
+				}
+			}
+			if !exists {
+				if err := m.stopMonitorForUser(user); err != nil {
+					return fmt.Errorf("failed to stop podman monitor for user %s: %w", user, err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// dispatchLifecycleActions dispatches explicit stop/start/restart lifecycle actions.
+func (m *PodmanMonitor) dispatchLifecycleActions(ctx context.Context, actions []lifecycle.Action) {
+	for _, a := range actions {
+		switch a.Type {
+		case lifecycle.ActionStop:
+			m.log.Infof("Stopping application %s", a.Name)
+			if err := m.StopApp(ctx, a.ID); err != nil {
+				m.log.Warnf("Failed to stop application %s: %v", a.Name, err)
+			}
+		case lifecycle.ActionStart:
+			m.log.Infof("Starting application %s", a.Name)
+			if err := m.StartApp(ctx, a.ID, a); err != nil {
+				m.log.Warnf("Failed to start application %s: %v", a.Name, err)
+			}
+		case lifecycle.ActionRestart:
+			m.log.Infof("Restarting application %s", a.Name)
+			if err := m.RestartApp(ctx, a.ID, a.RestartGeneration); err != nil {
+				m.log.Warnf("Failed to restart application %s: %v", a.Name, err)
+			}
+		}
+	}
+}
+
+// drainActions returns a copy of the current actions and clears the existing. this
+// ensures actions can only be executed once and on failure the remaining
+// actions will not be executed.
+func (m *PodmanMonitor) drainActions() []lifecycle.Action {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	actions := reduceActions(m.actions)
+	m.actions = nil
+	return actions
+}
+
+func (m *PodmanMonitor) Status() ([]AppStatusResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var errs []error
+	results := make([]AppStatusResult, 0, len(m.apps))
+
+	for _, app := range m.apps {
+		appStatus, appSummary, err := app.Status()
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		results = append(results, AppStatusResult{
+			ID:      app.ID(),
+			Status:  *deepcopy.Copy(appStatus).(*v1beta1.DeviceApplicationStatus),
+			Images:  app.ImageSnapshot(),
+			Summary: appSummary,
+		})
+	}
+
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+
+	return results, nil
+}
+
+func (m *PodmanMonitor) listenForEvents(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event := <-m.events:
+			m.handleEvent(ctx, event)
+		}
+	}
+}
+
+func appIDFromEvent(event *client.PodmanEvent) string {
+	if appID, ok := event.Attributes[client.ComposeDockerProjectLabelKey]; ok {
+		return appID
+	}
+	if appID, ok := event.Attributes[client.QuadletProjectLabelKey]; ok {
+		return appID
+	}
+	return ""
+}
+
+func (m *PodmanMonitor) handleEvent(ctx context.Context, event client.PodmanEvent) {
+	appID := appIDFromEvent(&event)
+	if appID == "" {
+		m.log.Debugf("Application id not found in event attributes: %v", event)
+		return
+	}
+
+	m.mu.Lock()
+	app, ok := m.apps[appID]
+	m.mu.Unlock()
+	if !ok {
+		m.log.Debugf("Application not found: %s", appID)
+		return
+	}
+	if event.StoreOwner != nil && *event.StoreOwner != app.User() {
+		m.log.Debugf("Ignoring event from another Podman user store for app %s", appID)
+		return
+	}
+	m.updateAppStatus(ctx, app, &event)
+}
+
+func (m *PodmanMonitor) updateAppStatus(ctx context.Context, app Application, event *client.PodmanEvent) {
+	if event.Type == "container" {
+		m.updateContainerStatus(ctx, app, event)
+		return
+	}
+	if event.Type == "volume" {
+		app.Volume().UpdateStatus(event)
+	}
+}
+
+func (m *PodmanMonitor) updateContainerStatus(ctx context.Context, app Application, event *client.PodmanEvent) {
+	if event.Status == podmanHealthStatusEvent {
+		if app.AppType() != v1beta1.AppTypeVm {
+			return
+		}
+		m.updateContainerHealthStatus(app, event)
+		return
+	}
+
+	appType := normalizeActionAppType(app.AppType())
+	switch appType {
+	case v1beta1.AppTypeCompose:
+		m.updateComposeContainerStatus(ctx, app, event)
+	case v1beta1.AppTypeQuadlet:
+		m.updateQuadletContainerStatus(ctx, app, event)
+	default:
+		m.log.Errorf("Cannot update container status for unknown app type: %s", appType)
+	}
+}
+
+func (m *PodmanMonitor) updateContainerHealthStatus(app Application, event *client.PodmanEvent) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	container, exists := app.Workload(event.Name)
+	if !exists {
+		m.log.Debugf("Ignoring health_status for unknown container %s in app %s", event.Name, app.Name())
+		return
+	}
+	if container.ID != "" && event.ID != "" && container.ID != event.ID {
+		m.log.Debugf("Ignoring stale health_status for container %s: event ID %s != tracked ID %s", event.Name, event.ID, container.ID)
+		return
+	}
+
+	switch container.Status {
+	case StatusRunning, StatusUnhealthy:
+	default:
+		m.log.Debugf("Ignoring health_status=%s for container %s in status %s", event.HealthStatus, event.Name, container.Status)
+		return
+	}
+
+	switch event.HealthStatus {
+	case "starting", "unhealthy":
+		// starting/unhealthy keep the app Degraded; only healthy clears it.
+		container.RequiresHealth = true
+		container.Status = StatusUnhealthy
+	case "healthy":
+		container.RequiresHealth = true
+		container.Status = StatusRunning
+	default:
+		m.log.Debugf("Ignoring health_status=%s for container %s", event.HealthStatus, event.Name)
+	}
+}
+
+func isFinishedStatus(status StatusType) bool {
+	exitedStatuses := map[StatusType]struct {
+	}{
+		StatusRemove: {},
+		StatusDie:    {},
+		StatusDied:   {},
+	}
+	_, ok := exitedStatuses[status]
+	return ok
+}
+
+func (m *PodmanMonitor) updateApplicationStatus(
+	ctx context.Context,
+	app Application,
+	event *client.PodmanEvent,
+	status StatusType,
+	restarts int,
+	podmanClient *client.Podman,
+	inspectData []client.PodmanInspect,
+) {
+	image, hasImage := m.resolveWorkloadImage(ctx, app, event, podmanClient, inspectData)
+	imageNotRequired := event.Image == "" && m.isRootfsInfraContainer(ctx, app, event, podmanClient, inspectData)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	container, exists := app.Workload(event.Name)
+	if exists {
+		// Health-gated workloads stay Degraded on bare start until healthy.
+		if status == StatusRunning && container.RequiresHealth {
+			status = StatusUnhealthy
+		}
+		container.Status = status
+		if hasImage {
+			container.Images = []WorkloadImage{image}
+		}
+		if imageNotRequired {
+			container.Images = nil
+		}
+		if event.ID != "" || hasImage {
+			container.ImageNotRequired = imageNotRequired
+		}
+		if event.ID != "" {
+			if event.ID != container.ID && !hasImage {
+				// The event identifies a new container but has no image reference
+				// with which to refresh the digest. Keep the last reference and
+				// mark its digest unknown until a later event supplies the image.
+				for i := range container.Images {
+					container.Images[i].Digest = ""
+				}
+			}
+			container.ID = event.ID
+		}
+		if restarts > container.Restarts {
+			container.Restarts = restarts
+		}
+		if serviceName := event.Attributes[composeServiceLabel]; serviceName != "" {
+			container.ServiceName = serviceName
+		}
+
+		return
+	}
+
+	var images []WorkloadImage
+	if hasImage {
+		images = []WorkloadImage{image}
+	}
+	// add new container
+	m.log.Debugf("Adding container: %s to app %s", event.Name, app.Name())
+	app.AddWorkload(&Workload{
+		ID:               event.ID,
+		Images:           images,
+		ImageNotRequired: imageNotRequired,
+		Name:             event.Name,
+		ServiceName:      event.Attributes[composeServiceLabel],
+		Status:           status,
+		Restarts:         restarts,
+	})
+}
+
+// isRootfsInfraContainer distinguishes Podman's image-less pod infrastructure
+// from a workload whose image identity has not been collected yet.
+func (m *PodmanMonitor) isRootfsInfraContainer(
+	ctx context.Context,
+	app Application,
+	event *client.PodmanEvent,
+	podmanClient *client.Podman,
+	inspectData []client.PodmanInspect,
+) bool {
+	if event.ID == "" {
+		return false
+	}
+	if snapshot := event.ContainerInspectData; snapshot != nil && snapshot.ID == event.ID {
+		return snapshot.IsInfra && snapshot.Image == ""
+	}
+	m.mu.Lock()
+	workload, exists := app.Workload(event.Name)
+	known := exists && workload.ID == event.ID && workload.ImageNotRequired
+	m.mu.Unlock()
+	if known {
+		return true
+	}
+	if inspectData == nil {
+		if podmanClient == nil {
+			if m.clientFactory == nil {
+				return false
+			}
+			var err error
+			podmanClient, err = m.clientFactory(app.User())
+			if err != nil {
+				return false
+			}
+		}
+		var err error
+		inspectData, err = m.inspectContainer(ctx, event.ID, podmanClient)
+		if err != nil {
+			return false
+		}
+	}
+	return len(inspectData) == 1 && inspectData[0].IsInfra && inspectData[0].Image == ""
+}
+
+func (m *PodmanMonitor) resolveWorkloadImage(
+	ctx context.Context,
+	app Application,
+	event *client.PodmanEvent,
+	podmanClient *client.Podman,
+	inspectData []client.PodmanInspect,
+) (WorkloadImage, bool) {
+	if event.Image == "" {
+		return WorkloadImage{}, false
+	}
+
+	image := WorkloadImage{Image: event.Image}
+	resolver := m.newLocalImageResolver(app.User(), podmanClient)
+
+	// Create events preserve the container's registry identity after --rm, without
+	// resolving the mutable image reference or requiring the container to survive.
+	if snapshot := event.ContainerInspectData; snapshot != nil && event.ID != "" && snapshot.ID == event.ID {
+		snapshotDigest := ""
+		if observed, err := digest.Parse(snapshot.ImageDigest); err == nil {
+			snapshotDigest = observed.String()
+		}
+		if client.IsImmutablePodmanImageID(snapshot.Image) {
+			if localDigest, ok := resolver.resolve(ctx, snapshot.Image); ok {
+				image.Digest = localDigest.String()
+				return image, true
+			}
+			if snapshotDigest != "" {
+				image.Digest = snapshotDigest
+				return image, true
+			}
+			if inspectData == nil {
+				inspectData = []client.PodmanInspect{{Image: snapshot.Image}}
+			}
+		} else if snapshotDigest != "" {
+			image.Digest = snapshotDigest
+			return image, true
+		}
+	}
+
+	// A container restart may resolve the same mutable tag to different content.
+	// Reuse a known digest only while both the container ID and image reference
+	// match. An empty digest is retried on a later event in case the image became
+	// available after the first lookup.
+	m.mu.Lock()
+	if workload, ok := app.Workload(event.Name); ok && event.ID != "" && workload.ID == event.ID {
+		for _, previous := range workload.Images {
+			if previous.Image == event.Image && previous.Digest != "" {
+				m.mu.Unlock()
+				return previous, true
+			}
+		}
+	}
+	m.mu.Unlock()
+
+	podmanClient, ok := resolver.ensureClient(event.Image)
+	if !ok {
+		return image, true
+	}
+
+	if event.ID == "" {
+		return image, true
+	}
+	if inspectData == nil {
+		var err error
+		inspectData, err = m.inspectContainer(ctx, event.ID, podmanClient)
+		if err != nil {
+			m.log.Warnf("Failed to inspect workload %q: %v", event.ID, err)
+			return image, true
+		}
+	}
+	if len(inspectData) == 1 && inspectData[0].Image != "" {
+		// Use the same image-inspect digest as prefetch, scoped to the immutable
+		// image used by this container. The event tag may already have moved,
+		// and container ImageDigest may retain a different index digest.
+		if localDigest, ok := resolver.resolve(ctx, inspectData[0].Image); ok {
+			image.Digest = localDigest.String()
+		}
+	}
+	return image, true
+}
+
+type localImageResolver struct {
+	clientFactory client.PodmanFactory
+	logger        *log.PrefixLogger
+	user          v1beta1.Username
+	client        *client.Podman
+}
+
+func (m *PodmanMonitor) newLocalImageResolver(user v1beta1.Username, client *client.Podman) *localImageResolver {
+	return &localImageResolver{
+		clientFactory: m.clientFactory,
+		logger:        m.log,
+		user:          user,
+		client:        client,
+	}
+}
+
+func (r *localImageResolver) ensureClient(image string) (*client.Podman, bool) {
+	if r.client != nil {
+		return r.client, true
+	}
+	if r.clientFactory == nil {
+		r.logger.Warnf("Cannot resolve digest for workload image %q: podman client factory is not configured", image)
+		return nil, false
+	}
+	client, err := r.clientFactory(r.user)
+	if err != nil {
+		r.logger.Warnf("Failed to create podman client to resolve workload image %q: %v", image, err)
+		return nil, false
+	}
+	r.client = client
+	return r.client, true
+}
+
+func (r *localImageResolver) resolve(ctx context.Context, image string) (digest.Digest, bool) {
+	client, ok := r.ensureClient(image)
+	if !ok {
+		return "", false
+	}
+	metadata, err := client.ImageMetadata(ctx, image)
+	if err != nil {
+		r.logger.Warnf("Failed to inspect workload image %q: %v", image, err)
+		return "", false
+	}
+	observed, err := digest.Parse(metadata.Digest)
+	if err != nil {
+		return "", false
+	}
+	return observed, true
+}
+
+func (m *PodmanMonitor) updateQuadletContainerStatus(ctx context.Context, app Application, event *client.PodmanEvent) {
+	systemdUnit, ok := event.Attributes[quadletSystemdLabel]
+	if !ok {
+		m.log.Errorf("Could not find systemd unit label in event %v", event)
+		return
+	}
+
+	systemctl, err := m.systemdFactory(app.User())
+	if err != nil {
+		m.log.Errorf("Failed to create systemctl client for %s: %v", systemdUnit, err)
+		return
+	}
+	states, err := systemctl.Show(ctx, systemdUnit, client.WithShowLoadState())
+	if err != nil || len(states) == 0 {
+		m.log.Errorf("Could not show systemd unit: %s state: %v", systemdUnit, err)
+		return
+	}
+	state := states[0]
+	if v1beta1.SystemdLoadStateType(state) == v1beta1.SystemdLoadStateNotFound {
+		// likely from event replay
+		m.log.Debugf("Received event for an unloaded unit file: %s. Skipping processing event.", systemdUnit)
+		return
+	}
+
+	restarts, err := systemctl.Show(ctx, systemdUnit, client.WithShowRestarts())
+	if err != nil || len(restarts) == 0 {
+		m.log.Errorf("Could not show systemd unit: %s restarts: %v", systemdUnit, err)
+		// default to no restarts similar to how compose handles it.
+		restarts = []string{"0"}
+	}
+
+	restartCount, err := strconv.Atoi(restarts[0])
+	if err != nil {
+		m.log.Errorf("Could not parse systemd unit restarts: %v", err)
+	}
+
+	status := StatusType(event.Status)
+	if isFinishedStatus(status) && lo.FromPtrOr(event.ContainerExitCode, -1) == 0 {
+		status = StatusExited
+	}
+	m.updateApplicationStatus(ctx, app, event, status, restartCount, nil, nil)
+}
+
+func (m *PodmanMonitor) updateComposeContainerStatus(ctx context.Context, app Application, event *client.PodmanEvent) {
+	client, err := m.clientFactory(app.User())
+	if err != nil {
+		m.log.Errorf("Failed to create podman client for %s: %v", app.Name(), err)
+		return
+	}
+	inspectData, err := m.inspectContainer(ctx, event.ID, client)
+	if err != nil {
+		if errors.Is(err, errors.ErrNotFound) {
+			m.log.Debugf("Container %s not found; likely removed during app restart", event.ID)
+		} else {
+			m.log.Errorf("Failed to inspect container: %v", err)
+		}
+	}
+
+	restarts, err := m.getContainerRestarts(inspectData)
+	if err != nil {
+		m.log.Errorf("Failed to get container restarts: %v", err)
+	}
+
+	status := m.resolveStatus(event.Status, inspectData)
+	if status == StatusRemove {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		recoverRemovedWorkload := app.DesiredState() == v1beta1.ApplicationDesiredStateRunning
+		var recoveryServices []string
+		if workload, exists := app.Workload(event.Name); exists {
+			if workload.Status == StatusExited {
+				recoverRemovedWorkload = false
+			}
+			serviceName := event.Attributes[composeServiceLabel]
+			if serviceName == "" {
+				serviceName = workload.ServiceName
+			}
+			if serviceName != "" {
+				recoveryServices = []string{serviceName}
+			}
+		} else if serviceName := event.Attributes[composeServiceLabel]; serviceName != "" {
+			recoveryServices = []string{serviceName}
+		}
+		for _, action := range m.actions {
+			if action.ID != app.ID() {
+				continue
+			}
+			switch action.Type {
+			case lifecycle.ActionAdd, lifecycle.ActionUpdate, lifecycle.ActionRemove, lifecycle.ActionStop:
+				recoverRemovedWorkload = false
+			}
+		}
+		if recoverRemovedWorkload {
+			if m.recoveryPending == nil {
+				m.recoveryPending = make(map[string]pendingRecovery)
+			}
+			pending := m.recoveryPending[app.ID()]
+			allServices := pending.allServices || len(recoveryServices) == 0
+			services := pending.services
+			if allServices {
+				services = nil
+			} else {
+				services = mergeServiceNames(services, recoveryServices)
+			}
+			generation := pending.generation + 1
+			serviceGenerations := make(map[string]uint64, len(pending.serviceGenerations)+len(recoveryServices))
+			for service, serviceGeneration := range pending.serviceGenerations {
+				serviceGenerations[service] = serviceGeneration
+			}
+			for _, service := range pending.services {
+				if _, ok := serviceGenerations[service]; !ok {
+					serviceGenerations[service] = pending.generation
+				}
+			}
+			for _, service := range recoveryServices {
+				serviceGenerations[service] = generation
+			}
+			m.recoveryPending[app.ID()] = pendingRecovery{
+				services:           services,
+				serviceGenerations: serviceGenerations,
+				generation:         generation,
+				allServices:        allServices,
+			}
+			m.actions = append(m.actions, lifecycle.Action{
+				ID:                 app.ID(),
+				Name:               app.Name(),
+				User:               app.User(),
+				AppType:            app.AppType(),
+				Path:               app.Path(),
+				Type:               lifecycle.ActionStart,
+				RestartGeneration:  app.RestartGeneration(),
+				StartServices:      services,
+				RecoveryGeneration: generation,
+			})
+		}
+		// remove existing container
+		if removed := app.RemoveWorkload(event.Name); removed {
+			m.log.Debugf("Removed container: %s", event.Name)
+		}
+		return
+	}
+
+	m.updateApplicationStatus(ctx, app, event, status, restarts, client, inspectData)
+}
+
+func (m *PodmanMonitor) getContainerRestarts(inspectData []client.PodmanInspect) (int, error) {
+	var restarts int
+	if len(inspectData) > 0 {
+		restarts = inspectData[0].Restarts
+	}
+
+	return restarts, nil
+}
+
+func (m *PodmanMonitor) inspectContainer(ctx context.Context, containerID string, podman *client.Podman) ([]client.PodmanInspect, error) {
+	resp, err := podman.Inspect(ctx, containerID)
+	if err != nil {
+		return nil, err
+	}
+
+	var inspectData []client.PodmanInspect
+	if err := json.Unmarshal([]byte(resp), &inspectData); err != nil {
+		return nil, fmt.Errorf("unmarshal podman inspect output: %v", err)
+	}
+	return inspectData, nil
+}
+
+func (m *PodmanMonitor) resolveStatus(status string, inspectData []client.PodmanInspect) StatusType {
+	initialStatus := StatusType(status)
+	// podman events don't properly event exited in the case where the container exits 0.
+	if initialStatus == StatusDie || initialStatus == StatusDied {
+		if len(inspectData) > 0 && inspectData[0].State.ExitCode == 0 && inspectData[0].State.FinishedAt != "" {
+			return StatusExited
+		}
+	}
+	return initialStatus
+}
+
+type podmanEventWatcher struct {
+	log      *log.PrefixLogger
+	username v1beta1.Username
+	client   *client.Podman
+	// listenerCloseChan is used to ensure that the event listening goroutine comes to completion
+	// during the stopMonitor invocation
+	listenerCloseChan chan struct{}
+	// lastEventTime tracks the timestamp at which the podman monitor should start listening to events for
+	lastEventTime atomic.Pointer[time.Time]
+	cmd           *exec.Cmd
+	cancel        context.CancelFunc
+}
+
+func (e *podmanEventWatcher) Init(log *log.PrefixLogger, username v1beta1.Username, client *client.Podman, startTime time.Time) {
+	e.log = log
+	e.username = username
+	e.client = client
+	e.listenerCloseChan = make(chan struct{})
+	e.lastEventTime.Store(&startTime)
+}
+
+func (e *podmanEventWatcher) Watch(ctx context.Context, events chan<- client.PodmanEvent) error {
+	// list of podman events to listen for
+	eventsTypes := []string{"create", "init", "start", "stop", "die", "sync", "remove", "exited", "health_status"}
+	e.log.Debugf("Replaying podman events for user %s since: %s", e.username, e.lastEventTime.Load())
+
+	ctx, e.cancel = context.WithCancel(ctx)
+
+	cmd := e.client.EventsSinceCmd(ctx, eventsTypes, e.lastEventTime.Load().Format(time.RFC3339))
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start podman events: %w", err)
+	}
+
+	e.cmd = cmd
+	e.listenerCloseChan = make(chan struct{})
+
+	go func() {
+		defer close(e.listenerCloseChan)
+		e.listenForEvents(ctx, stdoutPipe, events)
+	}()
+
+	return nil
+}
+
+func (e *podmanEventWatcher) listenForEvents(ctx context.Context, stdoutPipe io.ReadCloser, events chan<- client.PodmanEvent) {
+	// the pipe will be closed by calling cmd.Wait
+	defer e.log.Debugf("Done listening for podman events for user %s", e.username)
+
+	reader := bufio.NewReader(stdoutPipe)
+	var data []byte
+	oversized := false
+	for {
+		// Inspect snapshots can exceed Scanner's default limit. Read bounded
+		// fragments so oversized events can be discarded without stopping the stream.
+		fragment, err := reader.ReadSlice('\n')
+		if ctx.Err() != nil {
+			return
+		}
+		if !oversized {
+			if len(data)+len(fragment) > maxPodmanEventBytes {
+				oversized = true
+				data = nil
+				e.log.Warnf("Discarding Podman event larger than %d bytes", maxPodmanEventBytes)
+			} else {
+				data = append(data, fragment...)
+			}
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if !oversized && len(data) > 0 {
+			e.handleEvent(ctx, data, events)
+		}
+		data = data[:0]
+		oversized = false
+		if err != nil {
+			if err != io.EOF {
+				e.log.Errorf("Error reading podman events: %v", err)
+			}
+			return
+		}
+	}
+}
+
+func (e *podmanEventWatcher) handleEvent(ctx context.Context, data []byte, events chan<- client.PodmanEvent) {
+	var event client.PodmanEvent
+	if err := json.Unmarshal(data, &event); err != nil {
+		e.log.Errorf("Failed to decode podman event: %v", err)
+		return
+	}
+	event.StoreOwner = lo.ToPtr(e.username)
+	eventTime := time.Unix(0, event.TimeNano)
+	e.lastEventTime.Store(&eventTime)
+	e.log.Tracef("Received podman event: %q at %s", event.Type, eventTime)
+	// sync event means we are now in sync with the current state of the containers
+	if event.Type == "sync" {
+		e.log.Debugf("Received bootSync event : %v", event)
+		return
+	}
+
+	select {
+	case <-ctx.Done():
+		return
+	case events <- event:
+		return
+	}
+}
+
+func (e *podmanEventWatcher) Stop() error {
+	if e.cmd == nil {
+		return nil
+	}
+
+	// When a monitor is started, a separate goroutine is created to consume events from a stream
+	// To prevent unexpected errors from occurring in the reading routine, we attempt to let it
+	// gracefully exit before calling .Wait and cleaning up the commands resources
+	// see https://pkg.go.dev/os/exec#Cmd.StdoutPipe
+	e.log.Info("Stopping podman monitor")
+
+	// send a graceful shutdown signal to the command
+	if err := e.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		e.log.Warnf("Failed to send SIGTERM to podman monitor: %v", err)
+	}
+
+	if e.cancel != nil {
+		e.cancel()
+	}
+
+	// wait for our consuming goroutine to complete
+	if !waitForChannelWithTimeout(e.listenerCloseChan, stopMonitorWaitDuration) {
+		e.log.Warn("Timeout waiting for podman monitor reader to shutdown")
+		if err := e.cmd.Process.Signal(syscall.SIGKILL); err != nil {
+			e.log.Warnf("Failed to send SIGKILL to podman monitor: %v", err)
+		}
+		if !waitForChannelWithTimeout(e.listenerCloseChan, stopMonitorWaitDuration) {
+			e.log.Error("Timeout waiting for podman monitor reader to shutdown after force killed")
+		}
+	}
+
+	// wait for the command to exit.
+	if err := e.cmd.Wait(); err != nil && !isExpectedShutdownError(err) {
+		return fmt.Errorf("unexpected error during podman monitor shutdown: %w", err)
+	}
+	e.log.Info("Podman monitor stopped")
+	return nil
+}
+
+// errConsoleAppNotFound is a sentinel returned by resolveConsole when the named
+// application is not tracked by this monitor. The caller should try the next monitor.
+var errConsoleAppNotFound = fmt.Errorf("app not found in podman monitor")
+
+// resolveConsole implements the console Session factory for Podman-managed apps.
+// It scans the apps map, checks the app type, and returns the appropriate Session.
+// Returns errConsoleAppNotFound if the app is not tracked by this monitor.
+func (m *PodmanMonitor) resolveConsole(appName, consoleType string) (appconsole.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var found Application
+	for _, app := range m.apps {
+		if app.Name() == appName {
+			found = app
+			break
+		}
+	}
+	if found == nil {
+		return nil, errConsoleAppNotFound
+	}
+
+	if found.AppType() != v1beta1.AppTypeVm {
+		return nil, fmt.Errorf("app %q has type %q: only VM apps support console", appName, found.AppType())
+	}
+
+	ct := v1beta1.GetDeviceApplicationConsoleParamsConsoleType(consoleType)
+	if ct != v1beta1.ConsoleTypeSerial && ct != v1beta1.ConsoleTypeVnc {
+		return nil, fmt.Errorf("app %q: unsupported console type %q for VM (supported: serial, vnc)", appName, consoleType)
+	}
+
+	// The container name comes from podman events via workload tracking — it is the authoritative
+	// runtime name and requires no spec-side derivation.
+	// KubeVirt VM pods have two containers: an infra/pause container (suffix "-infra") and the
+	// actual virt-launcher compute container (suffix "-compute"). Exec must target the compute
+	// container; the infra container has no tools or sockets.
+	containerName := ""
+	for _, w := range found.Workloads() {
+		if isFinishedStatus(w.Status) || w.Status == StatusExited {
+			continue
+		}
+		if strings.HasSuffix(w.Name, "-compute") {
+			containerName = w.Name
+			break
+		}
+	}
+	if containerName == "" {
+		return nil, fmt.Errorf("app %q %w", appName, appconsole.ErrAppNotReady)
+	}
+
+	m.log.Infof("console: selected container %q for app %q (type=%s)", containerName, appName, ct)
+
+	// The VM may run in a rootless Podman namespace. Use the same user that owns
+	// the application so the console exec can see the tracked compute container.
+	podman, err := m.clientFactory(found.User())
+	if err != nil {
+		return nil, fmt.Errorf("creating podman client for console: %w", err)
+	}
+
+	if ct == v1beta1.ConsoleTypeVnc {
+		return appconsole.NewVMVNCSession(containerName, podman, m.log), nil
+	}
+
+	return appconsole.NewVMSerialSession(containerName, podman, m.log), nil
+}

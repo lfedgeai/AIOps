@@ -1,0 +1,2895 @@
+package v1beta1
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/url"
+	"reflect"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"text/template"
+	"text/template/parse"
+	"time"
+
+	"github.com/flightctl/flightctl/internal/api/common"
+	"github.com/flightctl/flightctl/internal/contextutil"
+	"github.com/flightctl/flightctl/internal/quadlet"
+	"github.com/flightctl/flightctl/internal/util"
+	"github.com/flightctl/flightctl/internal/util/validation"
+	"github.com/robfig/cron/v3"
+	"github.com/samber/lo"
+	"sigs.k8s.io/yaml"
+)
+
+const (
+	maxBase64CertificateLength  = 20 * 1024 * 1024
+	maxInlineLength             = 1024 * 1024
+	privilegedPortRangeStart    = 1
+	nonPrivilegedPortRangeStart = 1024
+	portRangeEnd                = 65535
+)
+
+var (
+	ErrStartGraceDurationExceedsCronInterval = errors.New("startGraceDuration exceeds the cron interval between schedule times")
+	ErrInfoAlertLessThanWarn                 = errors.New("info alert percentage must be less than warning")
+	ErrInfoAlertLessThanCritical             = errors.New("info alert percentage must be less than critical")
+	ErrWarnAlertLessThanCritical             = errors.New("warning alert percentage must be less than critical")
+	ErrDuplicateAlertSeverity                = errors.New("duplicate alertRule severity")
+	ErrDuplicateMonitorType                  = errors.New("duplicate monitorType in resources")
+	ErrInvalidCPUMonitorField                = errors.New("invalid field for CPU monitor")
+	ErrInvalidMemoryMonitorField             = errors.New("invalid field for Memory monitor")
+	ErrClaimPathRequiredDynamicOrg           = errors.New("claimPath is required for dynamic assignment")
+	ErrClaimPathRequiredDynamicRole          = errors.New("claimPath is required for dynamic role assignment")
+	ErrMappedIdentityNotFound                = errors.New("mapped identity not found in context")
+	ErrInvalidMappedIdentityType             = errors.New("invalid mapped identity type in context")
+	ErrIssuerRequired                        = errors.New("issuer is required")
+	ErrClientIdRequired                      = errors.New("clientId is required")
+	ErrAuthorizationUrlRequired              = errors.New("authorizationUrl is required")
+	ErrTokenUrlRequired                      = errors.New("tokenUrl is required")
+	ErrUserinfoUrlRequired                   = errors.New("userinfoUrl is required")
+	ErrOrganizationNameRequired              = errors.New("organizationName is required for static assignment")
+	ErrRolesRequired                         = errors.New("at least one role is required for static role assignment")
+	ErrK8sProviderConfigOnly                 = errors.New("k8s provider type can only be created from configuration, not via API")
+	ErrAapProviderConfigOnly                 = errors.New("aap provider type can only be created from configuration, not via API")
+	ErrDynamicOrgMappingAdminOnly            = errors.New("only flightctl-admin users are allowed to create auth providers with dynamic organization mapping")
+	ErrPerUserOrgMappingAdminOnly            = errors.New("only flightctl-admin users are allowed to create auth providers with per-user organization mapping")
+	ErrStaticRoleMappingAdminOnly            = errors.New("only flightctl-admin users are allowed to create static role mappings for flightctl-admin")
+)
+
+type Validator interface {
+	Validate() []error
+}
+
+func (d Device) Validate() []error {
+	allErrs := []error{}
+	allErrs = append(allErrs, validation.ValidateResourceName(d.Metadata.Name)...)
+	allErrs = append(allErrs, validation.ValidateLabels(d.Metadata.Labels)...)
+	allErrs = append(allErrs, validation.ValidateAnnotations(d.Metadata.Annotations)...)
+	if d.Spec != nil {
+		allErrs = append(allErrs, d.Spec.Validate(false)...)
+	}
+
+	return allErrs
+}
+
+// ValidateUpdate ensures immutable fields are unchanged for Device.
+func (d *Device) ValidateUpdate(newObj *Device) []error {
+	return validateImmutableCoreFields(d.Metadata.Name, newObj.Metadata.Name,
+		d.ApiVersion, newObj.ApiVersion,
+		d.Kind, newObj.Kind,
+		d.Status, newObj.Status)
+}
+
+func (r DeviceSpec) Validate(fleetTemplate bool) []error {
+	allErrs := []error{}
+	if r.UpdatePolicy != nil {
+		allErrs = append(allErrs, r.UpdatePolicy.Validate()...)
+	}
+	if r.Consoles != nil {
+		allErrs = append(allErrs, fmt.Errorf("consoles are not supported through this api"))
+	}
+	if r.Os != nil {
+		if len(r.Os.Image) > 0 {
+			allErrs = append(allErrs, validateOciImageReference(&r.Os.Image, "spec.os.image", fleetTemplate)...)
+		} else if r.Os.CatalogItemRef != nil {
+			allErrs = append(allErrs, r.Os.CatalogItemRef.Validate()...)
+		}
+		if len(r.Os.Image) > 0 && r.Os.CatalogItemRef != nil {
+			allErrs = append(allErrs, errors.New("cannot have both image and catalog item ref for device OS"))
+		}
+		if r.Os.DeltaImage != nil {
+			allErrs = append(allErrs, fmt.Errorf("spec.os.deltaImage is read-only and cannot be set directly; the control plane generates it in the rendered device spec"))
+		}
+	}
+	if r.Config != nil {
+		allErrs = append(allErrs, validateConfigs(*r.Config, fleetTemplate)...)
+	}
+	if r.Applications != nil {
+		allErrs = append(allErrs, validateApplications(*r.Applications, fleetTemplate)...)
+	}
+	if r.Resources != nil {
+		// Individual resource validation
+		for _, resource := range *r.Resources {
+			allErrs = append(allErrs, resource.Validate()...)
+		}
+
+		// Cross-resource validation
+		allErrs = append(allErrs, validateResourceMonitor(*r.Resources)...)
+	}
+	if r.Systemd != nil && r.Systemd.MatchPatterns != nil {
+		for i, matchPattern := range *r.Systemd.MatchPatterns {
+			allErrs = append(allErrs, validation.ValidateSystemdName(&matchPattern, fmt.Sprintf("spec.systemd.matchPatterns[%d]", i))...)
+		}
+	}
+	return allErrs
+}
+
+func validateConfigs(configs []ConfigProviderSpec, fleetTemplate bool) []error {
+	allErrs := []error{}
+	seenPath := make(map[string]struct{}, len(configs))
+	seenNames := make(map[string]struct{}, len(configs))
+	for i, config := range configs {
+		t, err := config.Type()
+		if err != nil {
+			allErrs = append(allErrs, err)
+			return allErrs
+		}
+
+		var configName string
+		switch t {
+		case GitConfigProviderType:
+			provider, err := config.AsGitConfigProviderSpec()
+			if err != nil {
+				allErrs = append(allErrs, err)
+				break
+			}
+			configName = provider.Name
+			allErrs = append(allErrs, provider.Validate(fleetTemplate)...)
+		case HttpConfigProviderType:
+			provider, err := config.AsHttpConfigProviderSpec()
+			if err != nil {
+				allErrs = append(allErrs, err)
+				break
+			}
+			configName = provider.Name
+			path := provider.HttpRef.FilePath
+			if _, exists := seenPath[path]; exists {
+				allErrs = append(allErrs, fmt.Errorf("spec.config[%d].httpRef, device path must be unique for all config providers: %s", i, path))
+			} else {
+				seenPath[path] = struct{}{}
+			}
+			allErrs = append(allErrs, provider.Validate(fleetTemplate)...)
+		case InlineConfigProviderType:
+			provider, err := config.AsInlineConfigProviderSpec()
+			if err != nil {
+				allErrs = append(allErrs, err)
+				break
+			}
+			configName = provider.Name
+
+			for j, inline := range provider.Inline {
+				path := inline.Path
+				if _, exists := seenPath[path]; exists {
+					allErrs = append(allErrs, fmt.Errorf("spec.config[%d].inline[%d], device path must be unique for all config providers: %s", i, j, path))
+				} else {
+					seenPath[path] = struct{}{}
+				}
+			}
+			allErrs = append(allErrs, provider.Validate(fleetTemplate)...)
+		case KubernetesSecretProviderType:
+			provider, err := config.AsKubernetesSecretProviderSpec()
+			if err != nil {
+				allErrs = append(allErrs, err)
+				break
+			}
+			configName = provider.Name
+			allErrs = append(allErrs, provider.Validate(fleetTemplate)...)
+		default:
+			allErrs = append(allErrs, fmt.Errorf("unknown config provider type: %s", t))
+		}
+
+		// configName is empty only when type-specific decoding failed (break above).
+		// Empty names are separately rejected by each provider's Validate() (ValidateConfigName enforces minLen=1).
+		if configName != "" {
+			if _, exists := seenNames[configName]; exists {
+				allErrs = append(allErrs, fmt.Errorf("spec.config[%d]: duplicate config provider name: %s", i, configName))
+			} else {
+				seenNames[configName] = struct{}{}
+			}
+		}
+	}
+	return allErrs
+}
+
+func (a HookAction) Validate(path string) []error {
+	allErrs := []error{}
+
+	t, err := a.Type()
+	if err != nil {
+		allErrs = append(allErrs, err)
+		return allErrs
+	}
+
+	switch t {
+	case HookActionTypeRun:
+		runAction, err := a.AsHookActionRun()
+		if err != nil {
+			allErrs = append(allErrs, err)
+			return allErrs
+		}
+		allErrs = append(allErrs, validation.ValidateString(&runAction.Run, path+".run", 1, 2048, nil, "")...)
+		// TODO: pull the extra validation done by the agent up here
+		allErrs = append(allErrs, validation.ValidateStringMap(runAction.EnvVars, path+".envVars", 1, 256, nil, nil, "")...)
+		allErrs = append(allErrs, validation.ValidateFileOrDirectoryPath(runAction.WorkDir, path+".workDir")...)
+	default:
+		// if we hit this case, it means that the type should be added to the switch statement above
+		allErrs = append(allErrs, fmt.Errorf("%s: unknown hook action type: %s", path, t))
+	}
+
+	if a.If != nil {
+		for i, condition := range *a.If {
+			allErrs = append(allErrs, condition.Validate(fmt.Sprintf("%s.if[%d]", path, i))...)
+		}
+	}
+
+	return allErrs
+}
+
+func (c HookCondition) Validate(path string) []error {
+	allErrs := []error{}
+
+	t, err := c.Type()
+	if err != nil {
+		allErrs = append(allErrs, err)
+		return allErrs
+	}
+
+	switch t {
+	case HookConditionTypeExpression:
+		expression, err := c.AsHookConditionExpression()
+		if err != nil {
+			allErrs = append(allErrs, err)
+		}
+		allErrs = append(allErrs, validation.ValidateString(&expression, path, 1, 2048, nil, "")...)
+	case HookConditionTypePathOp:
+		pathOpCondition, err := c.AsHookConditionPathOp()
+		if err != nil {
+			allErrs = append(allErrs, err)
+		}
+		allErrs = append(allErrs, validation.ValidateFileOrDirectoryPath(&pathOpCondition.Path, path+".path")...)
+	default:
+		// if we hit this case, it means that the type should be added to the switch statement above
+		allErrs = append(allErrs, fmt.Errorf("%s: unknown hook condition type: %s", path, t))
+	}
+
+	return allErrs
+}
+
+func (r ResourceMonitor) Validate() []error {
+	allErrs := []error{}
+
+	monitorType, err := r.Discriminator()
+	if err != nil {
+		allErrs = append(allErrs, err)
+	}
+
+	switch monitorType {
+	case "CPU":
+		spec, err := r.AsCpuResourceMonitorSpec()
+		if err != nil {
+			allErrs = append(allErrs, err)
+		}
+		// CPU monitors should not have a path field
+		if hasPathField(r.union) {
+			allErrs = append(allErrs, fmt.Errorf("%w: CPU monitors cannot have a path field", ErrInvalidCPUMonitorField))
+		}
+		allErrs = append(allErrs, validateAlertRules(spec.AlertRules, spec.SamplingInterval)...)
+	case "Disk":
+		spec, err := r.AsDiskResourceMonitorSpec()
+		if err != nil {
+			allErrs = append(allErrs, err)
+		}
+		allErrs = append(allErrs, validation.ValidateString(&spec.Path, "spec.resources[].disk.path", 0, 2048, nil, "")...)
+		allErrs = append(allErrs, validateAlertRules(spec.AlertRules, spec.SamplingInterval)...)
+	case "Memory":
+		spec, err := r.AsMemoryResourceMonitorSpec()
+		if err != nil {
+			allErrs = append(allErrs, err)
+		}
+		// Memory monitors should not have a path field
+		if hasPathField(r.union) {
+			allErrs = append(allErrs, fmt.Errorf("%w: Memory monitors cannot have a path field", ErrInvalidMemoryMonitorField))
+		}
+		allErrs = append(allErrs, validateAlertRules(spec.AlertRules, spec.SamplingInterval)...)
+	default:
+		allErrs = append(allErrs, fmt.Errorf("unknown monitor type valid types are CPU, Disk and Memory: %s", monitorType))
+	}
+
+	return allErrs
+}
+
+func validateAlertRules(alertRules []ResourceAlertRule, samplingInterval string) []error {
+	var allErrs []error
+	seen := make(map[ResourceAlertSeverityType]struct{})
+	percentages := make(map[ResourceAlertSeverityType]float32)
+
+	for _, rule := range alertRules {
+		if _, exists := seen[rule.Severity]; exists {
+			allErrs = append(allErrs, fmt.Errorf("%w: %s", ErrDuplicateAlertSeverity, rule.Severity))
+			continue
+		}
+		seen[rule.Severity] = struct{}{}
+		percentages[rule.Severity] = rule.Percentage
+		allErrs = append(allErrs, rule.Validate(samplingInterval)...)
+	}
+
+	info, hasInfo := percentages[ResourceAlertSeverityTypeInfo]
+	warning, hasWarning := percentages[ResourceAlertSeverityTypeWarning]
+	critical, hasCritical := percentages[ResourceAlertSeverityTypeCritical]
+
+	if hasInfo && hasWarning && info >= warning {
+		allErrs = append(allErrs, ErrInfoAlertLessThanWarn)
+	}
+	if hasInfo && hasCritical && info >= critical {
+		allErrs = append(allErrs, ErrInfoAlertLessThanCritical)
+	}
+	if hasWarning && hasCritical && warning >= critical {
+		allErrs = append(allErrs, ErrWarnAlertLessThanCritical)
+	}
+
+	return allErrs
+}
+
+func (r ResourceAlertRule) Validate(specSampleInterval string) []error {
+	allErrs := []error{}
+
+	sampleInterval, err := time.ParseDuration(specSampleInterval)
+	if err != nil {
+		allErrs = append(allErrs, fmt.Errorf("invalid sampling interval: %s", err))
+	}
+	if r.Percentage < 0 || r.Percentage > 100 {
+		allErrs = append(allErrs, fmt.Errorf("percentage must be between 0 and 100: %v", r.Percentage))
+	}
+	durationInterval, err := time.ParseDuration(r.Duration)
+	if err != nil {
+		allErrs = append(allErrs, fmt.Errorf("invalid duration: %s", err))
+	}
+	if sampleInterval >= durationInterval {
+		allErrs = append(allErrs, fmt.Errorf("sampling interval %s must be less than the duration: %s", sampleInterval.String(), durationInterval.String()))
+	}
+	if r.Description != "" {
+		allErrs = append(allErrs, validation.ValidateString(&r.Description, "spec.resources[].alertRules.description", 1, 256, nil, "")...)
+	}
+	return allErrs
+}
+
+func (c GitConfigProviderSpec) Validate(fleetTemplate bool) []error {
+	allErrs := []error{}
+	allErrs = append(allErrs, validation.ValidateConfigName(&c.Name, "spec.config[].name")...)
+	allErrs = append(allErrs, validation.ValidateResourceNameReference(&c.GitRef.Repository, "spec.config[].gitRef.repository")...)
+
+	containsParams, paramErrs := validateParametersInString(&c.GitRef.TargetRevision, "spec.config[].gitRef.targetRevision", fleetTemplate)
+	allErrs = append(allErrs, paramErrs...)
+	if !containsParams {
+		allErrs = append(allErrs, validation.ValidateString(&c.GitRef.TargetRevision, "spec.config[].gitRef.targetRevision", 0, 1024, nil, "")...)
+	}
+
+	containsParams, paramErrs = validateParametersInString(&c.GitRef.Path, "spec.config[].gitRef.path", fleetTemplate)
+	allErrs = append(allErrs, paramErrs...)
+	if !containsParams {
+		allErrs = append(allErrs, validation.ValidateString(&c.GitRef.Path, "spec.config[].gitRef.path", 0, 2048, nil, "")...)
+	}
+	return allErrs
+}
+
+func (c KubernetesSecretProviderSpec) Validate(fleetTemplate bool) []error {
+	allErrs := []error{}
+	allErrs = append(allErrs, validation.ValidateConfigName(&c.Name, "spec.config[].name")...)
+
+	containsParams, paramErrs := validateParametersInString(&c.SecretRef.Name, "spec.config[].secretRef.name", fleetTemplate)
+	allErrs = append(allErrs, paramErrs...)
+	if !containsParams {
+		allErrs = append(allErrs, validation.ValidateGenericName(&c.SecretRef.Name, "spec.config[].secretRef.name")...)
+	}
+
+	containsParams, paramErrs = validateParametersInString(&c.SecretRef.Namespace, "spec.config[].secretRef.namespace", fleetTemplate)
+	allErrs = append(allErrs, paramErrs...)
+	if !containsParams {
+		allErrs = append(allErrs, validation.ValidateGenericName(&c.SecretRef.Namespace, "spec.config[].secretRef.namespace")...)
+	}
+
+	containsParams, paramErrs = validateParametersInString(&c.SecretRef.MountPath, "spec.config[].secretRef.mountPath", fleetTemplate)
+	allErrs = append(allErrs, paramErrs...)
+	if !containsParams {
+		allErrs = append(allErrs, validation.ValidateFilePath(&c.SecretRef.MountPath, "spec.config[].secretRef.mountPath")...)
+		if err := validation.DenyForbiddenDevicePath(c.SecretRef.MountPath); err != nil {
+			allErrs = append(allErrs, fmt.Errorf("spec.config[].secretRef.mountPath: %w", err))
+		}
+	}
+
+	return allErrs
+}
+
+func (c InlineConfigProviderSpec) Validate(fleetTemplate bool) []error {
+	allErrs := []error{}
+	allErrs = append(allErrs, validation.ValidateConfigName(&c.Name, "spec.config[].name")...)
+	for i := range c.Inline {
+		containsParams, paramErrs := validateParametersInString(&c.Inline[i].Path, fmt.Sprintf("spec.config[].inline[%d].path", i), fleetTemplate)
+		allErrs = append(allErrs, paramErrs...)
+		if !containsParams {
+			allErrs = append(allErrs, validation.ValidateFilePath(&c.Inline[i].Path, fmt.Sprintf("spec.config[].inline[%d].path", i))...)
+			if err := validation.DenyForbiddenDevicePath(c.Inline[i].Path); err != nil {
+				allErrs = append(allErrs, fmt.Errorf("spec.config[].inline[%d].path: %w", i, err))
+			}
+		}
+
+		allErrs = append(allErrs, validation.ValidateLinuxUserGroup(c.Inline[i].User.String(), fmt.Sprintf("spec.config[].inline[%d].user", i))...)
+		allErrs = append(allErrs, validation.ValidateLinuxUserGroup(c.Inline[i].Group, fmt.Sprintf("spec.config[].inline[%d].group", i))...)
+		allErrs = append(allErrs, validation.ValidateLinuxFileMode(c.Inline[i].Mode, fmt.Sprintf("spec.config[].inline[%d].mode", i))...)
+
+		if c.Inline[i].ContentEncoding != nil && *(c.Inline[i].ContentEncoding) == EncodingBase64 {
+			// Contents should be base64 encoded and limited to 1MB (1024*1024=1048576 bytes)
+			allErrs = append(allErrs, validation.ValidateBase64Field(c.Inline[i].Content, fmt.Sprintf("spec.config[].inline[%d].content", i), maxInlineLength)...)
+			// Can ignore errors because we just validated it in the previous line
+			b, _ := base64.StdEncoding.DecodeString(c.Inline[i].Content)
+			_, paramErrs = validateParametersInString(lo.ToPtr(string(b)), "spec.config[].inline[%d].content", fleetTemplate)
+			allErrs = append(allErrs, paramErrs...)
+		} else if c.Inline[i].ContentEncoding == nil || (c.Inline[i].ContentEncoding != nil && *(c.Inline[i].ContentEncoding) == EncodingPlain) {
+			// Contents should be limited to 1MB (1024*1024=1048576 bytes)
+			allErrs = append(allErrs, validation.ValidateString(&c.Inline[i].Content, fmt.Sprintf("spec.config[].inline[%d].content", i), 0, maxInlineLength, nil, "")...)
+			_, paramErrs = validateParametersInString(&c.Inline[i].Content, fmt.Sprintf("spec.config[].inline[%d].content", i), fleetTemplate)
+			allErrs = append(allErrs, paramErrs...)
+		} else {
+			allErrs = append(allErrs, fmt.Errorf("unknown contentEncoding: %s", *(c.Inline[i].ContentEncoding)))
+		}
+	}
+	return allErrs
+}
+
+func (h HttpConfigProviderSpec) Validate(fleetTemplate bool) []error {
+	allErrs := []error{}
+	allErrs = append(allErrs, validation.ValidateConfigName(&h.Name, "spec.config[].name")...)
+	allErrs = append(allErrs, validation.ValidateResourceNameReference(&h.HttpRef.Repository, "spec.config[].httpRef.repository")...)
+
+	containsParams, paramErrs := validateParametersInString(&h.HttpRef.FilePath, "spec.config[].httpRef.filePath", fleetTemplate)
+	allErrs = append(allErrs, paramErrs...)
+	if !containsParams {
+		allErrs = append(allErrs, validation.ValidateFilePath(&h.HttpRef.FilePath, "spec.config[].httpRef.filePath")...)
+		if err := validation.DenyForbiddenDevicePath(h.HttpRef.FilePath); err != nil {
+			allErrs = append(allErrs, fmt.Errorf("spec.config[].httpRef.filePath: %w", err))
+		}
+	}
+
+	containsParams, paramErrs = validateParametersInString(h.HttpRef.Suffix, "spec.config[].httpRef.suffix", fleetTemplate)
+	allErrs = append(allErrs, paramErrs...)
+	if !containsParams {
+		allErrs = append(allErrs, validation.ValidateString(h.HttpRef.Suffix, "spec.config[].httpRef.suffix", 0, 2048, nil, "")...)
+	}
+
+	return allErrs
+}
+
+func (r EnrollmentRequest) Validate() []error {
+	allErrs := []error{}
+	allErrs = append(allErrs, validation.ValidateResourceName(r.Metadata.Name)...)
+	allErrs = append(allErrs, validation.ValidateLabels(r.Metadata.Labels)...)
+	allErrs = append(allErrs, validation.ValidateAnnotations(r.Metadata.Annotations)...)
+	allErrs = append(allErrs, validation.ValidateCSRWithTCGSupport([]byte(r.Spec.Csr))...)
+	if r.Spec.OsMode != nil && *r.Spec.OsMode != OsModeImage && *r.Spec.OsMode != OsModePackage {
+		allErrs = append(allErrs, fmt.Errorf("spec.osMode: invalid value %q (must be %q or %q)", *r.Spec.OsMode, OsModeImage, OsModePackage))
+	}
+
+	return allErrs
+}
+
+// ValidateUpdate ensures immutable fields are unchanged for EnrollmentRequest.
+func (er *EnrollmentRequest) ValidateUpdate(newObj *EnrollmentRequest) []error {
+	return validateImmutableCoreFields(er.Metadata.Name, newObj.Metadata.Name,
+		er.ApiVersion, newObj.ApiVersion,
+		er.Kind, newObj.Kind,
+		er.Status, newObj.Status)
+}
+
+func (r EnrollmentRequestApproval) Validate() []error {
+	allErrs := []error{}
+	allErrs = append(allErrs, validation.ValidateLabelsWithPath(r.Labels, "labels")...)
+	return allErrs
+}
+
+func (r CertificateSigningRequest) Validate() []error {
+	allErrs := []error{}
+	allErrs = append(allErrs, validation.ValidateResourceName(r.Metadata.Name)...)
+	allErrs = append(allErrs, validation.ValidateLabels(r.Metadata.Labels)...)
+	allErrs = append(allErrs, validation.ValidateAnnotations(r.Metadata.Annotations)...)
+	allErrs = append(allErrs, validation.ValidateCSRUsages(r.Spec.Usages)...)
+	allErrs = append(allErrs, validation.ValidateExpirationSeconds(r.Spec.ExpirationSeconds)...)
+	allErrs = append(allErrs, validation.ValidateSignerName(r.Spec.SignerName)...)
+	allErrs = append(allErrs, validation.ValidateCSRWithTCGSupport(r.Spec.Request)...)
+	return allErrs
+}
+
+// ValidateUpdate ensures immutable fields are unchanged for CertificateSigningRequest.
+func (csr *CertificateSigningRequest) ValidateUpdate(newObj *CertificateSigningRequest) []error {
+	return validateImmutableCoreFields(csr.Metadata.Name, newObj.Metadata.Name,
+		csr.ApiVersion, newObj.ApiVersion,
+		csr.Kind, newObj.Kind,
+		csr.Status, newObj.Status)
+}
+
+func (b *Batch_Limit) Validate() []error {
+	if b == nil {
+		return nil
+	}
+	intVal, err := b.AsBatchLimit1()
+	if err == nil {
+		if intVal <= 0 {
+			return []error{errors.New("absolute limit value must be positive integer")}
+		}
+		return nil
+	}
+	p, err := b.AsPercentage()
+	if err != nil {
+		return []error{fmt.Errorf("limit must either an integer value or a percentage: %w", err)}
+	}
+	if err = validatePercentage(p); err != nil {
+		return []error{err}
+	}
+	return nil
+}
+
+func (b *Batch) Validate() []error {
+	var errs []error
+	if b == nil {
+		return []error{errors.New("a batch in a batch sequence must not be null")}
+	}
+	errs = append(errs, b.Selector.Validate()...)
+	errs = append(errs, b.Limit.Validate()...)
+	if b.SuccessThreshold != nil {
+		if err := validatePercentage(*b.SuccessThreshold); err != nil {
+			errs = append(errs, fmt.Errorf("batch success threshold: %w", err))
+		}
+	}
+	return errs
+}
+
+func (b BatchSequence) Validate() []error {
+	var errs []error
+	for _, batch := range lo.FromPtr(b.Sequence) {
+		errs = append(errs, batch.Validate()...)
+	}
+	return errs
+}
+
+func (r *RolloutDeviceSelection) Validate() []error {
+	var errs []error
+	if r == nil {
+		return nil
+	}
+	i, err := r.ValueByDiscriminator()
+	if err != nil {
+		errs = append(errs, err)
+	} else {
+		switch v := i.(type) {
+		case BatchSequence:
+			errs = append(errs, v.Validate()...)
+		}
+	}
+	return errs
+}
+
+func (d *DisruptionBudget) Validate() []error {
+	var errs []error
+	if d == nil {
+		return nil
+	}
+	if d.MinAvailable == nil && d.MaxUnavailable == nil {
+		errs = append(errs, errors.New("at least one of [MinAvailable, MaxUnavailable] must be defined in disruption budget"))
+	}
+	groupBy := lo.FromPtr(d.GroupBy)
+	if len(groupBy) != len(lo.Uniq(groupBy)) {
+		errs = append(errs, errors.New("groupBy items must be unique"))
+	}
+	for _, key := range groupBy {
+		if keyErrs := validation.ValidateLabelKey(key); len(keyErrs) > 0 {
+			errs = append(errs, fmt.Errorf("invalid groupBy key %q: %s", key, strings.Join(keyErrs, "; ")))
+		}
+	}
+	return errs
+}
+
+func (r *RolloutPolicy) Validate() []error {
+	var errs []error
+	if r == nil {
+		return nil
+	}
+	if r.DeviceSelection == nil && r.DisruptionBudget == nil && r.DeltaGeneration == nil {
+		errs = append(errs, errors.New("at least one of [DeviceSelection, DisruptionBudget, DeltaGeneration] must be defined"))
+	}
+	errs = append(errs, r.DeviceSelection.Validate()...)
+	errs = append(errs, r.DisruptionBudget.Validate()...)
+	if r.SuccessThreshold != nil {
+		if err := validatePercentage(*r.SuccessThreshold); err != nil {
+			errs = append(errs, fmt.Errorf("rollout policy success threshold: %w", err))
+		}
+	}
+	return errs
+}
+
+func (r Fleet) Validate() []error {
+	allErrs := []error{}
+	allErrs = append(allErrs, validation.ValidateResourceName(r.Metadata.Name)...)
+	allErrs = append(allErrs, validation.ValidateLabels(r.Metadata.Labels)...)
+	allErrs = append(allErrs, validation.ValidateAnnotations(r.Metadata.Annotations)...)
+	allErrs = append(allErrs, r.Spec.Selector.Validate()...)
+	allErrs = append(allErrs, r.Spec.RolloutPolicy.Validate()...)
+
+	// Validate the Device spec settings
+	allErrs = append(allErrs, r.Spec.Template.Spec.Validate(true)...)
+
+	return allErrs
+}
+
+// ValidateUpdate ensures immutable fields are unchanged for Fleet.
+func (f *Fleet) ValidateUpdate(newObj *Fleet) []error {
+	return validateImmutableCoreFields(f.Metadata.Name, newObj.Metadata.Name,
+		f.ApiVersion, newObj.ApiVersion,
+		f.Kind, newObj.Kind,
+		f.Status, newObj.Status)
+}
+
+func (u DeviceUpdatePolicySpec) Validate() []error {
+	allErrs := []error{}
+	if u.DownloadSchedule != nil {
+		if err := u.DownloadSchedule.Validate(); err != nil {
+			allErrs = append(allErrs, err...)
+		}
+	}
+	if u.UpdateSchedule != nil {
+		if err := u.UpdateSchedule.Validate(); err != nil {
+			allErrs = append(allErrs, err...)
+		}
+	}
+
+	return allErrs
+}
+
+func (u UpdateSchedule) Validate() []error {
+	var allErrs []error
+	if u.TimeZone != nil {
+		if err := validateTimeZone(lo.FromPtr(u.TimeZone)); err != nil {
+			allErrs = append(allErrs, err...)
+		}
+	}
+
+	// allow only the standard 5 input cron syntax e.g. "* * * * *"
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	schedule, err := parser.Parse(u.At)
+	if err != nil {
+		allErrs = append(allErrs, fmt.Errorf("invalid cron schedule: %s", err))
+	}
+
+	if err := validateGraceDuration(schedule, u.StartGraceDuration); err != nil {
+		allErrs = append(allErrs, err)
+	}
+
+	return allErrs
+}
+
+func (r *Repository) Validate() []error {
+	if r == nil {
+		return nil
+	}
+	allErrs := []error{}
+	allErrs = append(allErrs, validation.ValidateResourceName(r.Metadata.Name)...)
+	allErrs = append(allErrs, validation.ValidateLabels(r.Metadata.Labels)...)
+	allErrs = append(allErrs, validation.ValidateAnnotations(r.Metadata.Annotations)...)
+
+	specType, err := r.Spec.Discriminator()
+	if err != nil {
+		allErrs = append(allErrs, fmt.Errorf("invalid repository spec: %w", err))
+		return allErrs
+	}
+
+	switch specType {
+	case string(RepoSpecTypeOci):
+		ociRepoSpec, err := r.Spec.AsOciRepoSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid OCI repository spec: %w", err))
+			return allErrs
+		}
+		allErrs = append(allErrs, validation.ValidateHostIPOrFQDNWithOptionalPort(&ociRepoSpec.Registry, "spec.registry")...)
+		repositorySet := ociRepoSpec.Repository != nil && *ociRepoSpec.Repository != ""
+		namespaceSet := ociRepoSpec.Namespace != nil && *ociRepoSpec.Namespace != ""
+		if repositorySet && namespaceSet {
+			allErrs = append(allErrs, fmt.Errorf("spec.repository and spec.namespace are mutually exclusive"))
+		}
+		if repositorySet {
+			allErrs = append(allErrs, validation.ValidateString(ociRepoSpec.Repository, "spec.repository", 1, 255, validation.OciImageNameRegexp, validation.OciImageNameFmt)...)
+		}
+		if namespaceSet {
+			allErrs = append(allErrs, validation.ValidateString(ociRepoSpec.Namespace, "spec.namespace", 1, 255, validation.OciImageNameRegexp, validation.OciImageNameFmt)...)
+		}
+		if ociRepoSpec.DeltaStorageTarget != nil && *ociRepoSpec.DeltaStorageTarget {
+			accessMode := lo.FromPtrOr(ociRepoSpec.AccessMode, Read)
+			if accessMode != ReadWrite {
+				allErrs = append(allErrs, fmt.Errorf("spec.accessMode must be ReadWrite when spec.deltaStorageTarget is true"))
+			}
+		}
+		if ociRepoSpec.OciAuth != nil {
+			dockerAuth, err := ociRepoSpec.OciAuth.AsDockerAuth()
+			if err != nil {
+				allErrs = append(allErrs, fmt.Errorf("invalid OCI auth config: %w", err))
+			} else {
+				allErrs = append(allErrs, validation.ValidateString(&dockerAuth.Username, "spec.ociAuth.username", 1, 256, nil, "")...)
+				allErrs = append(allErrs, validation.ValidateString(&dockerAuth.Password, "spec.ociAuth.password", 1, 8192, nil, "")...)
+			}
+		}
+		if ociRepoSpec.CaCrt != nil {
+			allErrs = append(allErrs, validation.ValidateBase64Field(*ociRepoSpec.CaCrt, "spec.ca.crt", maxBase64CertificateLength)...)
+		}
+		if ociRepoSpec.BaseImages != nil {
+			allErrs = append(allErrs, validateBaseImages(*ociRepoSpec.BaseImages)...)
+		}
+	case string(RepoSpecTypeHttp):
+		httpRepoSpec, err := r.Spec.AsHttpRepoSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid HTTP repository spec: %w", err))
+			return allErrs
+		}
+		allErrs = append(allErrs, validation.ValidateString(&httpRepoSpec.Url, "spec.url", 1, 2048, nil, "")...)
+		if httpRepoSpec.HttpConfig != nil {
+			allErrs = append(allErrs, validateHttpConfig(httpRepoSpec.HttpConfig)...)
+		}
+	case string(RepoSpecTypeGit):
+		gitRepoSpec, err := r.Spec.AsGitRepoSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid Git repository spec: %w", err))
+			return allErrs
+		}
+		allErrs = append(allErrs, validation.ValidateString(&gitRepoSpec.Url, "spec.url", 1, 2048, nil, "")...)
+		// Validate that only one of httpConfig or sshConfig is specified
+		if gitRepoSpec.HttpConfig != nil && gitRepoSpec.SshConfig != nil {
+			allErrs = append(allErrs, fmt.Errorf("only one of httpConfig or sshConfig can be specified for a Git repository"))
+		}
+		if gitRepoSpec.HttpConfig != nil {
+			allErrs = append(allErrs, validateHttpConfig(gitRepoSpec.HttpConfig)...)
+		}
+		if gitRepoSpec.SshConfig != nil {
+			allErrs = append(allErrs, validateSshConfig(gitRepoSpec.SshConfig)...)
+		}
+	default:
+		allErrs = append(allErrs, fmt.Errorf("unknown repository type: %s", specType))
+	}
+
+	return allErrs
+}
+
+// ValidateUpdate ensures immutable fields are unchanged for Repository.
+func (r *Repository) ValidateUpdate(newObj *Repository) []error {
+	return validateImmutableCoreFields(r.Metadata.Name, newObj.Metadata.Name,
+		r.ApiVersion, newObj.ApiVersion,
+		r.Kind, newObj.Kind,
+		r.Status, newObj.Status)
+}
+
+func (r ResourceSync) Validate() []error {
+	allErrs := []error{}
+	allErrs = append(allErrs, validation.ValidateResourceName(r.Metadata.Name)...)
+	allErrs = append(allErrs, validation.ValidateLabels(r.Metadata.Labels)...)
+	allErrs = append(allErrs, validation.ValidateAnnotations(r.Metadata.Annotations)...)
+	allErrs = append(allErrs, validation.ValidateResourceNameReference(&r.Spec.Repository, "spec.repository")...)
+	allErrs = append(allErrs, validation.ValidateGitRevision(&r.Spec.TargetRevision, "spec.targetRevision")...)
+	allErrs = append(allErrs, validation.ValidateString(&r.Spec.Path, "spec.path", 0, 2048, nil, "")...)
+	return allErrs
+}
+
+// ValidateUpdate ensures immutable fields are unchanged for ResourceSync.
+func (rs *ResourceSync) ValidateUpdate(newObj *ResourceSync) []error {
+	allErrs := validateImmutableCoreFields(rs.Metadata.Name, newObj.Metadata.Name,
+		rs.ApiVersion, newObj.ApiVersion,
+		rs.Kind, newObj.Kind,
+		rs.Status, newObj.Status)
+
+	normalizeType := func(t *ResourceSyncType) ResourceSyncType {
+		if t == nil {
+			return ResourceSyncTypeFleet
+		}
+		return *t
+	}
+	oldType := normalizeType(rs.Spec.Type)
+	newType := normalizeType(newObj.Spec.Type)
+	if oldType != newType {
+		allErrs = append(allErrs, fmt.Errorf("spec.type is immutable once set (was %q, got %q)", oldType, newType))
+	}
+
+	return allErrs
+}
+
+func (tv TemplateVersion) Validate() []error {
+	allErrs := []error{}
+	allErrs = append(allErrs, validation.ValidateResourceName(tv.Metadata.Name)...)
+	allErrs = append(allErrs, validation.ValidateResourceOwner(tv.Metadata.Owner, lo.ToPtr(FleetKind))...)
+	_, passedOwnerResource, _ := util.GetResourceOwner(tv.Metadata.Owner)
+	if passedOwnerResource != tv.Spec.Fleet {
+		allErrs = append(allErrs, errors.New("metadata.owner and spec.fleet must match"))
+	}
+	return allErrs
+}
+
+func (l *LabelSelector) Validate() []error {
+	if l != nil && l.MatchExpressions == nil && l.MatchLabels == nil {
+		return []error{errors.New("at least one of [matchLabels,matchExpressions] must appear in a label selector")}
+	}
+	return nil
+}
+
+func (d *DeviceSystemInfo) IsEmpty() bool {
+	empty := DeviceSystemInfo{}
+	return reflect.DeepEqual(*d, empty)
+}
+
+func validateHttpConfig(config *HttpConfig) []error {
+	var errs []error
+	if config != nil {
+		if config.CaCrt != nil {
+			errs = append(errs, validation.ValidateBase64Field(*config.CaCrt, "spec.httpConfig.CaCrt", maxBase64CertificateLength)...)
+		}
+
+		if (config.Username != nil && config.Password == nil) || (config.Username == nil && config.Password != nil) {
+			errs = append(errs, fmt.Errorf("both username and password must be provided together"))
+		}
+		if (config.TlsCrt != nil && config.TlsKey == nil) || (config.TlsCrt == nil && config.TlsKey != nil) {
+			errs = append(errs, fmt.Errorf("both tlsCrt and tlsKey must be provided together"))
+		}
+
+		if config.Username != nil && config.Password != nil {
+			errs = append(errs, validation.ValidateString(config.Username, "spec.httpConfig.username", 1, 256, nil, "")...)
+			errs = append(errs, validation.ValidateString(config.Password, "spec.httpConfig.password", 1, 256, nil, "")...)
+		}
+
+		if config.TlsCrt != nil && config.TlsKey != nil {
+			errs = append(errs, validation.ValidateBase64Field(*config.TlsCrt, "spec.httpConfig.TlsCrt", maxBase64CertificateLength)...)
+			errs = append(errs, validation.ValidateBase64Field(*config.TlsKey, "spec.httpConfig.TlsKey", maxBase64CertificateLength)...)
+		}
+
+		if config.Token != nil {
+			errs = append(errs, validation.ValidateBearerToken(config.Token, "spec.httpConfig.token")...)
+		}
+	}
+	return errs
+}
+
+func validateBaseImages(baseImages []BaseImageEntry) []error {
+	var errs []error
+	seenImageNames := make(map[string]int, len(baseImages))
+	for i, entry := range baseImages {
+		path := fmt.Sprintf("spec.baseImages[%d]", i)
+		errs = append(errs, validation.ValidateString(&entry.ImageName, path+".imageName", 1, 255, validation.OciImageNameRegexp, validation.OciImageNameFmt)...)
+		if firstIdx, exists := seenImageNames[entry.ImageName]; exists {
+			errs = append(errs, fmt.Errorf("%s.imageName: duplicate imageName %q (already defined at spec.baseImages[%d].imageName)", path, entry.ImageName, firstIdx))
+		} else {
+			seenImageNames[entry.ImageName] = i
+		}
+		seen := make(map[string]struct{}, len(entry.Tags))
+		for j, tag := range entry.Tags {
+			tagCopy := tag
+			errs = append(errs, validation.ValidateString(&tagCopy, fmt.Sprintf("%s.tags[%d]", path, j), 1, 128, validation.OciImageTagRegexp, validation.OciImageTagFmt)...)
+			if _, exists := seen[tag]; exists {
+				errs = append(errs, fmt.Errorf("%s.tags[%d]: duplicate tag %q", path, j, tag))
+			} else {
+				seen[tag] = struct{}{}
+			}
+		}
+	}
+	return errs
+}
+
+func validateSshConfig(config *SshConfig) []error {
+	var errs []error
+	if config != nil {
+		// Check if passphrase is specified without private key
+		if config.PrivateKeyPassphrase != nil && config.SshPrivateKey == nil {
+			errs = append(errs, fmt.Errorf("spec.sshConfig.privateKeyPassphrase cannot be specified without sshConfig.sshPrivateKey"))
+		}
+
+		if config.PrivateKeyPassphrase != nil {
+			errs = append(errs, validation.ValidateString(config.PrivateKeyPassphrase, "spec.sshConfig.privateKeyPassphrase", 1, 256, nil, "")...)
+		}
+		if config.SshPrivateKey != nil {
+			errs = append(errs, validation.ValidateBase64Field(*config.SshPrivateKey, "spec.sshConfig.SshPrivateKey", maxBase64CertificateLength)...)
+		}
+	}
+
+	return errs
+}
+
+func (a ApplicationProviderSpec) Validate() []error {
+	allErrs := []error{}
+	name, _ := a.GetName()
+	allErrs = append(allErrs, validation.ValidateString(name, "spec.applications[].name", 1, validation.DNS1123MaxLength, validation.GenericNameRegexp, validation.Dns1123LabelFmt)...)
+	return allErrs
+}
+
+func (a InlineApplicationProviderSpec) Validate(appType AppType, fleetTemplate bool) []error {
+	allErrs := []error{}
+	allErrs = append(allErrs, validateApplicationDeltaHintsReadOnly(nil, a.DeltaImages, "spec.applications[]")...)
+
+	var appValidator applicationValidator
+	switch appType {
+	case AppTypeCompose:
+		appValidator = &composeValidator{paths: make(map[string]struct{})}
+	case AppTypeQuadlet:
+		appValidator = &quadletValidator{quadlets: make(map[string]*common.QuadletReferences)}
+	default:
+		appValidator = &unknownAppTypeValidator{appType}
+	}
+
+	seenPath := make(map[string]struct{}, len(a.Inline))
+	for i := range a.Inline {
+		path := a.Inline[i].Path
+		// ensure uniqueness of path per application
+		if _, exists := seenPath[path]; exists {
+			allErrs = append(allErrs, fmt.Errorf("duplicate inline path: %s", path))
+		} else {
+			seenPath[path] = struct{}{}
+		}
+		allErrs = append(allErrs, a.Inline[i].Validate(i, appValidator, fleetTemplate)...)
+	}
+
+	allErrs = append(allErrs, appValidator.Validate()...)
+	return allErrs
+}
+
+func (c ApplicationContent) Validate(index int, appValidator applicationValidator, fleetTemplate bool) []error {
+	var allErrs []error
+	pathPrefix := fmt.Sprintf("spec.applications[].inline[%d]", index)
+
+	// validate path
+	containsParams, paramErrs := validateParametersInString(&c.Path, pathPrefix+".path", fleetTemplate)
+	allErrs = append(allErrs, paramErrs...)
+	if !containsParams {
+		allErrs = append(allErrs, validation.ValidateRelativePath(&c.Path, pathPrefix+".path", 253)...)
+	}
+
+	content := lo.FromPtr(c.Content)
+	if content == "" {
+		return allErrs
+	}
+
+	var decodedBytes []byte
+	var decodedStr string
+	contentPath := fmt.Sprintf("%s.content", pathPrefix)
+	if c.IsBase64() {
+		var err error
+		decodedBytes, err = base64.StdEncoding.DecodeString(content)
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("decode base64 content: %w", err))
+			return allErrs
+		}
+		decodedStr = string(decodedBytes)
+	} else if c.IsPlain() {
+		decodedStr = content
+		decodedBytes = []byte(content)
+	} else {
+		allErrs = append(allErrs, fmt.Errorf("unknown encoding type: %s", *c.ContentEncoding))
+		return allErrs
+	}
+
+	// validate content
+	allErrs = append(allErrs, validation.ValidateString(&decodedStr, contentPath, 0, maxInlineLength, nil, "")...)
+	_, paramErrs = validateParametersInString(&decodedStr, contentPath, fleetTemplate)
+	allErrs = append(allErrs, paramErrs...)
+	allErrs = append(allErrs, appValidator.ValidateContents(c.Path, decodedBytes, fleetTemplate)...)
+
+	return allErrs
+}
+
+func (c ApplicationContent) IsBase64() bool {
+	return c.ContentEncoding != nil && *c.ContentEncoding == EncodingBase64
+}
+
+func (c ApplicationContent) IsPlain() bool {
+	return c.ContentEncoding == nil || *c.ContentEncoding == EncodingPlain
+}
+
+func validateApplications(apps []ApplicationProviderSpec, fleetTemplate bool) []error {
+	allErrs := []error{}
+	seenAppNames := make(map[string]struct{})
+	seenPublishedPorts := make(map[string]string)
+
+	for _, app := range apps {
+		appType, err := app.Discriminator()
+		if err != nil || appType == "" {
+			allErrs = append(allErrs, fmt.Errorf("app type must be defined"))
+			continue
+		}
+
+		appName, err := ensureAppName(app)
+		if err != nil {
+			allErrs = append(allErrs, err)
+			continue
+		}
+
+		if _, exists := seenAppNames[appName]; exists {
+			allErrs = append(allErrs, fmt.Errorf("duplicate application name: %s", appName))
+			continue
+		}
+		seenAppNames[appName] = struct{}{}
+
+		allErrs = append(allErrs, app.Validate()...)
+
+		switch AppType(appType) {
+		case AppTypeContainer:
+			allErrs = append(allErrs, validateContainerApplication(app, appName, fleetTemplate)...)
+			allErrs = append(allErrs, validateApplicationPortConflicts(app, appName, AppTypeContainer, seenPublishedPorts)...)
+		case AppTypeHelm:
+			allErrs = append(allErrs, ValidateHelmApplication(app, appName, fleetTemplate)...)
+		case AppTypeCompose:
+			allErrs = append(allErrs, validateComposeApplication(app, appName, fleetTemplate)...)
+		case AppTypeQuadlet:
+			allErrs = append(allErrs, validateQuadletApplication(app, appName, fleetTemplate)...)
+			allErrs = append(allErrs, validateQuadletApplicationPortConflicts(app, appName, seenPublishedPorts)...)
+		case AppTypeVm:
+			allErrs = append(allErrs, validateVmApplication(app, appName, fleetTemplate)...)
+			allErrs = append(allErrs, validateApplicationPortConflicts(app, appName, AppTypeVm, seenPublishedPorts)...)
+		default:
+			allErrs = append(allErrs, fmt.Errorf("unknown application type: %s", appType))
+		}
+	}
+
+	return allErrs
+}
+
+func validateApplicationPortConflicts(app ApplicationProviderSpec, appName string, appType AppType, seenPorts map[string]string) []error {
+	var ports *[]ApplicationPort
+	var portsField string
+	switch appType {
+	case AppTypeContainer:
+		container, err := app.AsContainerApplication()
+		if err != nil {
+			return nil
+		}
+		ports = container.Ports
+		portsField = "ports"
+	case AppTypeVm:
+		vm, err := app.AsVmApplication()
+		if err != nil {
+			return nil
+		}
+		ports = vm.PublishPorts
+		portsField = "publishPorts"
+	default:
+		return nil
+	}
+	if ports == nil {
+		return nil
+	}
+
+	pathPrefix := fmt.Sprintf("spec.applications[%s].%s", appName, portsField)
+	var allErrs []error
+	for i, port := range *ports {
+		portKey, ok := publishedPortKey(port)
+		if !ok {
+			// The format and range validator reports the more useful error for
+			// malformed entries; they cannot participate in conflict detection.
+			continue
+		}
+
+		if previousApp, exists := seenPorts[portKey]; exists {
+			allErrs = append(allErrs, fmt.Errorf("%s[%d]: host port %s is already used by application %q", pathPrefix, i, portKey, previousApp))
+			continue
+		}
+		seenPorts[portKey] = appName
+	}
+	return allErrs
+}
+
+// publishedPortKey normalizes a typed host-to-guest mapping for conflict checks.
+func publishedPortKey(port string) (string, bool) {
+	if !containerPortPattern.MatchString(port) {
+		return "", false
+	}
+
+	colonParts := strings.SplitN(port, ":", 2)
+	hostPort, err := strconv.Atoi(colonParts[0])
+	if err != nil || hostPort < privilegedPortRangeStart || hostPort > portRangeEnd {
+		return "", false
+	}
+	guestPort, err := strconv.Atoi(strings.SplitN(colonParts[1], "/", 2)[0])
+	if err != nil || guestPort < privilegedPortRangeStart || guestPort > portRangeEnd {
+		return "", false
+	}
+
+	protocol := "tcp"
+	if protocolParts := strings.SplitN(colonParts[1], "/", 2); len(protocolParts) == 2 {
+		protocol = protocolParts[1]
+	}
+	return fmt.Sprintf("%d/%s", hostPort, protocol), true
+}
+
+// validateQuadletApplicationPortConflicts checks inline Quadlet container units
+// against the device-wide published-port set used by VM and container apps.
+func validateQuadletApplicationPortConflicts(app ApplicationProviderSpec, appName string, seenPorts map[string]string) []error {
+	quadletApp, err := app.AsQuadletApplication()
+	if err != nil || quadletApp.Type() != InlineApplicationProviderType {
+		// validateQuadletApplication reports malformed provider conversions; avoid
+		// duplicating that error while keeping conflict detection best effort.
+		return nil
+	}
+
+	inlineSpec, err := quadletApp.AsInlineApplicationProviderSpec()
+	if err != nil {
+		// The application validator reports this conversion error with its normal
+		// provider path; avoid emitting a second error here.
+		return nil
+	}
+
+	var allErrs []error
+	for _, inline := range inlineSpec.Inline {
+		if inline.Content == nil || !strings.HasSuffix(inline.Path, quadlet.ContainerExtension) {
+			continue
+		}
+
+		content, err := decodeApplicationContent(inline)
+		if err != nil {
+			// ApplicationContent.Validate already reports decoding errors with the
+			// inline content path.
+			continue
+		}
+		unit, err := quadlet.NewUnit(content)
+		if err != nil {
+			// ValidateContents already reports Quadlet parse errors with the file
+			// path, so there is no additional conflict data to process.
+			continue
+		}
+		ports, err := unit.LookupAll(quadlet.ContainerGroup, quadlet.PublishPortKey)
+		if err != nil {
+			// Missing [Container]/PublishPort is valid for other Quadlet files and
+			// produces no published host port to track.
+			continue
+		}
+
+		pathPrefix := fmt.Sprintf("spec.applications[%s].inline[%s].content", appName, inline.Path)
+		for _, port := range ports {
+			for _, portKey := range quadletPublishedPortKeys(port) {
+				if previousApp, exists := seenPorts[portKey]; exists {
+					allErrs = append(allErrs, fmt.Errorf("%s: host port %s is already used by application %q", pathPrefix, portKey, previousApp))
+					continue
+				}
+				seenPorts[portKey] = appName
+			}
+		}
+	}
+	return allErrs
+}
+
+// quadletPublishedPortKeys returns normalized host-port/protocol keys for a
+// Quadlet PublishPort value, expanding an explicitly configured host range.
+func quadletPublishedPortKeys(port string) []string {
+	portParts := strings.SplitN(port, "/", 2)
+	protocol := "tcp"
+	if len(portParts) == 2 {
+		protocol = portParts[1]
+	}
+	if protocol != "tcp" && protocol != "udp" && protocol != "sctp" {
+		return nil
+	}
+
+	colonParts := strings.Split(portParts[0], ":")
+	if len(colonParts) < 2 {
+		return nil
+	}
+	hostPortRange := colonParts[len(colonParts)-2]
+	rangeParts := strings.SplitN(hostPortRange, "-", 2)
+	start, err := strconv.Atoi(rangeParts[0])
+	if err != nil || start < privilegedPortRangeStart || start > portRangeEnd {
+		return nil
+	}
+	end := start
+	if len(rangeParts) == 2 {
+		end, err = strconv.Atoi(rangeParts[1])
+		if err != nil || end < start || end > portRangeEnd {
+			return nil
+		}
+	}
+
+	keys := make([]string, 0, end-start+1)
+	for hostPort := start; hostPort <= end; hostPort++ {
+		keys = append(keys, fmt.Sprintf("%d/%s", hostPort, protocol))
+	}
+	return keys
+}
+
+// validateApplicationLifecycleFieldsReadOnly rejects client-supplied values for
+// desiredState/restartGeneration: they are readOnly fields, only ever set by the device
+// render task overlaying the device-controller/applicationLifecycle annotation (via the
+// dedicated stop/start/restart device APIs), never by apply.
+func validateApplicationLifecycleFieldsReadOnly(desiredState *ApplicationDesiredState, restartGeneration *int, pathPrefix string) []error {
+	allErrs := []error{}
+	if desiredState != nil {
+		allErrs = append(allErrs, fmt.Errorf("%s.desiredState is read-only and cannot be set directly; use the stop/start device APIs instead", pathPrefix))
+	}
+	if restartGeneration != nil {
+		allErrs = append(allErrs, fmt.Errorf("%s.restartGeneration is read-only and cannot be set directly; use the restart device API instead", pathPrefix))
+	}
+	return allErrs
+}
+
+func validateExclusiveAppSource(image string, catalogItemRef CatalogItemRefSpec) []error {
+	if image != "" && (catalogItemRef != CatalogItemRefSpec{}) {
+		return []error{errors.New("cannot have both image and catalogItemRef on application")}
+	}
+	return nil
+}
+
+func validateContainerApplication(app ApplicationProviderSpec, appName string, fleetTemplate bool) []error {
+	allErrs := []error{}
+	pathPrefix := fmt.Sprintf("spec.applications[%s]", appName)
+
+	container, err := app.AsContainerApplication()
+	if err != nil {
+		return []error{fmt.Errorf("invalid container application: %w", err)}
+	}
+
+	allErrs = append(allErrs, validateApplicationLifecycleFieldsReadOnly(container.DesiredState, container.RestartGeneration, pathPrefix)...)
+
+	switch container.Type() {
+	case ImageApplicationProviderType:
+		spec, err := container.AsImageApplicationProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid container image provider: %w", err))
+		} else {
+			allErrs = append(allErrs, validateOciImageReference(&spec.Image, pathPrefix+".image", fleetTemplate)...)
+			allErrs = append(allErrs, validateApplicationDeltaHintsReadOnly(spec.DeltaImage, spec.DeltaImages, pathPrefix)...)
+		}
+		catalogItemRefSpec, _ := container.AsCatalogItemRefApplicationProviderSpec()
+		allErrs = append(allErrs, validateExclusiveAppSource(spec.Image, catalogItemRefSpec.CatalogItemRef)...)
+	case CatalogItemRefApplicationProviderType:
+		spec, err := container.AsCatalogItemRefApplicationProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid container catalog item ref provider: %w", err))
+		} else {
+			allErrs = append(allErrs, spec.Validate()...)
+		}
+		imageSpec, _ := container.AsImageApplicationProviderSpec()
+		allErrs = append(allErrs, validateExclusiveAppSource(imageSpec.Image, spec.CatalogItemRef)...)
+	default:
+		allErrs = append(allErrs, fmt.Errorf("unknown container provider type: %s", container.Type()))
+	}
+
+	allErrs = append(allErrs, validateContainerPorts(container.Ports, pathPrefix+".ports")...)
+
+	if container.Resources != nil && container.Resources.Limits != nil {
+		allErrs = append(allErrs, validatePodmanCPULimit(container.Resources.Limits.Cpu, pathPrefix+".resources.limits.cpu")...)
+		allErrs = append(allErrs, validatePodmanMemoryLimit(container.Resources.Limits.Memory, pathPrefix+".resources.limits.memory")...)
+	}
+
+	allErrs = append(allErrs, validateEnvVars(container.EnvVars, pathPrefix)...)
+	allErrs = append(allErrs, validateApplicationVolumes(container.Volumes, appName, AppTypeContainer, fleetTemplate)...)
+
+	return allErrs
+}
+
+// ValidateHelmApplication validates a Helm application for API apply; lifecycle fields are rejected.
+func ValidateHelmApplication(app ApplicationProviderSpec, appName string, fleetTemplate bool) []error {
+	return validateHelmApplication(app, appName, fleetTemplate, false)
+}
+
+// ValidateHelmApplicationForAgent allows desiredState/restartGeneration from rendered agent specs.
+func ValidateHelmApplicationForAgent(app ApplicationProviderSpec, appName string, fleetTemplate bool) []error {
+	return validateHelmApplication(app, appName, fleetTemplate, true)
+}
+
+func validateHelmApplication(app ApplicationProviderSpec, appName string, fleetTemplate bool, allowLifecycleFields bool) []error {
+	allErrs := []error{}
+	pathPrefix := fmt.Sprintf("spec.applications[%s]", appName)
+
+	helm, err := app.AsHelmApplication()
+	if err != nil {
+		return []error{fmt.Errorf("invalid helm application: %w", err)}
+	}
+
+	if !allowLifecycleFields {
+		allErrs = append(allErrs, validateApplicationLifecycleFieldsReadOnly(helm.DesiredState, helm.RestartGeneration, pathPrefix)...)
+	}
+
+	switch helm.Type() {
+	case ImageApplicationProviderType:
+		spec, err := helm.AsImageApplicationProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid helm image provider: %w", err))
+		} else {
+			allErrs = append(allErrs, validateOciImageReference(&spec.Image, pathPrefix+".image", fleetTemplate)...)
+			if !allowLifecycleFields {
+				allErrs = append(allErrs, validateApplicationDeltaHintsReadOnly(spec.DeltaImage, spec.DeltaImages, pathPrefix)...)
+			}
+		}
+		catalogItemRefSpec, _ := helm.AsCatalogItemRefApplicationProviderSpec()
+		allErrs = append(allErrs, validateExclusiveAppSource(spec.Image, catalogItemRefSpec.CatalogItemRef)...)
+	case CatalogItemRefApplicationProviderType:
+		spec, err := helm.AsCatalogItemRefApplicationProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid helm catalog item ref provider: %w", err))
+		} else {
+			allErrs = append(allErrs, spec.Validate()...)
+		}
+		imageSpec, _ := helm.AsImageApplicationProviderSpec()
+		allErrs = append(allErrs, validateExclusiveAppSource(imageSpec.Image, spec.CatalogItemRef)...)
+	default:
+		allErrs = append(allErrs, fmt.Errorf("unknown helm provider type: %s", helm.Type()))
+	}
+
+	if helm.Namespace != nil && *helm.Namespace != "" {
+		allErrs = append(allErrs, validation.ValidateGenericName(helm.Namespace, pathPrefix+".namespace")...)
+	}
+
+	if helm.ValuesFiles != nil {
+		for i, vf := range *helm.ValuesFiles {
+			allErrs = append(allErrs, validation.ValidateHelmValuesFile(&vf, fmt.Sprintf("%s.valuesFiles[%d]", pathPrefix, i), validation.DNS1123MaxLength)...)
+		}
+	}
+
+	return allErrs
+}
+
+func validateComposeApplication(app ApplicationProviderSpec, appName string, fleetTemplate bool) []error {
+	allErrs := []error{}
+	pathPrefix := fmt.Sprintf("spec.applications[%s]", appName)
+
+	compose, err := app.AsComposeApplication()
+	if err != nil {
+		return []error{fmt.Errorf("invalid compose application: %w", err)}
+	}
+
+	allErrs = append(allErrs, validateApplicationLifecycleFieldsReadOnly(compose.DesiredState, compose.RestartGeneration, pathPrefix)...)
+
+	switch compose.Type() {
+	case ImageApplicationProviderType:
+		imageSpec, err := compose.AsImageApplicationProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid compose image provider: %w", err))
+		} else {
+			allErrs = append(allErrs, validateOciImageReference(&imageSpec.Image, pathPrefix+".image", fleetTemplate)...)
+			allErrs = append(allErrs, validateApplicationDeltaHintsReadOnly(imageSpec.DeltaImage, imageSpec.DeltaImages, pathPrefix)...)
+		}
+		catalogItemRefSpec, _ := compose.AsCatalogItemRefApplicationProviderSpec()
+		allErrs = append(allErrs, validateExclusiveAppSource(imageSpec.Image, catalogItemRefSpec.CatalogItemRef)...)
+	case CatalogItemRefApplicationProviderType:
+		spec, err := compose.AsCatalogItemRefApplicationProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid compose catalog item ref provider: %w", err))
+		} else {
+			allErrs = append(allErrs, spec.Validate()...)
+		}
+		imageSpec, _ := compose.AsImageApplicationProviderSpec()
+		allErrs = append(allErrs, validateExclusiveAppSource(imageSpec.Image, spec.CatalogItemRef)...)
+	case InlineApplicationProviderType:
+		inlineSpec, err := compose.AsInlineApplicationProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid compose inline provider: %w", err))
+		} else {
+			allErrs = append(allErrs, inlineSpec.Validate(AppTypeCompose, fleetTemplate)...)
+		}
+	default:
+		allErrs = append(allErrs, errors.New("unknown compose provider type"))
+	}
+
+	allErrs = append(allErrs, validateEnvVars(compose.EnvVars, pathPrefix)...)
+	allErrs = append(allErrs, validateApplicationVolumes(compose.Volumes, appName, AppTypeCompose, fleetTemplate)...)
+
+	return allErrs
+}
+
+func validateQuadletApplication(app ApplicationProviderSpec, appName string, fleetTemplate bool) []error {
+	allErrs := []error{}
+	pathPrefix := fmt.Sprintf("spec.applications[%s]", appName)
+
+	quadlet, err := app.AsQuadletApplication()
+	if err != nil {
+		return []error{fmt.Errorf("invalid quadlet application: %w", err)}
+	}
+
+	allErrs = append(allErrs, validateApplicationLifecycleFieldsReadOnly(quadlet.DesiredState, quadlet.RestartGeneration, pathPrefix)...)
+
+	providerType := quadlet.Type()
+	switch providerType {
+	case ImageApplicationProviderType:
+		imageSpec, err := quadlet.AsImageApplicationProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid quadlet image provider: %w", err))
+		} else {
+			allErrs = append(allErrs, validateOciImageReference(&imageSpec.Image, pathPrefix+".image", fleetTemplate)...)
+			allErrs = append(allErrs, validateApplicationDeltaHintsReadOnly(imageSpec.DeltaImage, imageSpec.DeltaImages, pathPrefix)...)
+		}
+		catalogItemRefSpec, _ := quadlet.AsCatalogItemRefApplicationProviderSpec()
+		allErrs = append(allErrs, validateExclusiveAppSource(imageSpec.Image, catalogItemRefSpec.CatalogItemRef)...)
+	case CatalogItemRefApplicationProviderType:
+		spec, err := quadlet.AsCatalogItemRefApplicationProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid quadlet catalog item ref provider: %w", err))
+		} else {
+			allErrs = append(allErrs, spec.Validate()...)
+		}
+		imageSpec, _ := quadlet.AsImageApplicationProviderSpec()
+		allErrs = append(allErrs, validateExclusiveAppSource(imageSpec.Image, spec.CatalogItemRef)...)
+	case InlineApplicationProviderType:
+		inlineSpec, err := quadlet.AsInlineApplicationProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid quadlet inline provider: %w", err))
+		} else {
+			allErrs = append(allErrs, inlineSpec.Validate(AppTypeQuadlet, fleetTemplate)...)
+			allErrs = append(allErrs, validateKubeYamlDirectives(inlineSpec, pathPrefix)...)
+		}
+	default:
+		allErrs = append(allErrs, fmt.Errorf("unknown quadlet provider type: %s", providerType))
+	}
+
+	allErrs = append(allErrs, validateEnvVars(quadlet.EnvVars, pathPrefix)...)
+	allErrs = append(allErrs, validateApplicationVolumes(quadlet.Volumes, appName, AppTypeQuadlet, fleetTemplate)...)
+
+	return allErrs
+}
+
+// validateKubeYamlDirectives checks that every .kube file in inlineSpec has its
+// Yaml= target present in the inline set and that the target is a valid Pod manifest.
+// Content is decoded from base64 when necessary so validation is consistent regardless
+// of how the caller encoded the inline files.
+func validateKubeYamlDirectives(inlineSpec InlineApplicationProviderSpec, pathPrefix string) []error {
+	// Build a lookup map of path → decoded content for all inline files.
+	fileContents := make(map[string][]byte, len(inlineSpec.Inline))
+	for _, f := range inlineSpec.Inline {
+		if f.Content == nil {
+			continue
+		}
+		decoded, err := decodeApplicationContent(f)
+		if err != nil {
+			continue // malformed encoding is already caught by ApplicationContent.Validate
+		}
+		fileContents[f.Path] = decoded
+	}
+
+	var errs []error
+	for _, f := range inlineSpec.Inline {
+		if !strings.HasSuffix(f.Path, ".kube") || f.Content == nil {
+			continue
+		}
+		kubeBytes, ok := fileContents[f.Path]
+		if !ok {
+			continue
+		}
+		yamlFile := parseKubeYamlDirective(string(kubeBytes))
+		if yamlFile == "" {
+			continue
+		}
+		targetBytes, ok := fileContents[yamlFile]
+		if !ok {
+			errs = append(errs, fmt.Errorf("%s.inline[%s]: Yaml=%s references a file not present in the inline set",
+				pathPrefix, f.Path, yamlFile))
+			continue
+		}
+		errs = append(errs, validatePodManifest(targetBytes, pathPrefix+".inline["+yamlFile+"]")...)
+	}
+	return errs
+}
+
+// decodeApplicationContent returns the decoded byte content of an ApplicationContent entry,
+// handling both plain and base64 encodings.
+func decodeApplicationContent(f ApplicationContent) ([]byte, error) {
+	if f.Content == nil {
+		return nil, fmt.Errorf("nil content")
+	}
+	if f.IsBase64() {
+		return base64.StdEncoding.DecodeString(*f.Content)
+	}
+	return []byte(*f.Content), nil
+}
+
+// parseKubeYamlDirective extracts the value of the Yaml= key from the [Kube] section
+// of a quadlet unit file. Returns an empty string if the directive is absent or the
+// content cannot be parsed.
+func parseKubeYamlDirective(kubeContent string) string {
+	unit, err := quadlet.NewUnit([]byte(kubeContent))
+	if err != nil {
+		return ""
+	}
+	v, err := unit.Lookup(quadlet.KubeGroup, quadlet.KubeYamlKey)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(v)
+}
+
+type podManifestMeta struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+}
+
+// validatePodManifest checks that the given YAML content is a valid Kubernetes Pod manifest.
+func validatePodManifest(content []byte, pathPrefix string) []error {
+	var meta podManifestMeta
+	if err := yaml.Unmarshal(content, &meta); err != nil {
+		return []error{fmt.Errorf("%s: must be valid YAML: %w", pathPrefix, err)}
+	}
+	if strings.TrimSpace(meta.APIVersion) == "" {
+		return []error{fmt.Errorf("%s: apiVersion must be set", pathPrefix)}
+	}
+	if meta.Kind != "Pod" {
+		return []error{fmt.Errorf("%s: kind must be \"Pod\", got %q", pathPrefix, meta.Kind)}
+	}
+	return nil
+}
+
+func validateVmApplication(app ApplicationProviderSpec, appName string, fleetTemplate bool) []error {
+	allErrs := []error{}
+	pathPrefix := fmt.Sprintf("spec.applications[%s]", appName)
+
+	vm, err := app.AsVmApplication()
+	if err != nil {
+		return []error{fmt.Errorf("invalid vm application: %w", err)}
+	}
+
+	allErrs = append(allErrs, validateApplicationLifecycleFieldsReadOnly(vm.DesiredState, vm.RestartGeneration, pathPrefix)...)
+	allErrs = append(allErrs, validateContainerPorts(vm.PublishPorts, pathPrefix+".publishPorts")...)
+
+	switch vm.Type() {
+	case ImageApplicationProviderType:
+		imageSpec, err := vm.AsImageApplicationProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid vm image provider: %w", err))
+		} else {
+			allErrs = append(allErrs, validateOciImageReference(&imageSpec.Image, pathPrefix+".image", fleetTemplate)...)
+			allErrs = append(allErrs, validateApplicationDeltaHintsReadOnly(imageSpec.DeltaImage, imageSpec.DeltaImages, pathPrefix)...)
+		}
+	case InlineApplicationProviderType:
+		inlineSpec, err := vm.AsInlineApplicationProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid vm inline provider: %w", err))
+		} else {
+			allErrs = append(allErrs, validateApplicationDeltaHintsReadOnly(nil, inlineSpec.DeltaImages, pathPrefix)...)
+			v := &vmValidator{appName: appName}
+			seenPath := make(map[string]struct{}, len(inlineSpec.Inline))
+			for i := range inlineSpec.Inline {
+				path := inlineSpec.Inline[i].Path
+				if _, exists := seenPath[path]; exists {
+					allErrs = append(allErrs, fmt.Errorf("duplicate inline path: %s", path))
+					continue
+				}
+				seenPath[path] = struct{}{}
+				allErrs = append(allErrs, inlineSpec.Inline[i].Validate(i, v, fleetTemplate)...)
+			}
+			allErrs = append(allErrs, v.Validate()...)
+		}
+	default:
+		allErrs = append(allErrs, fmt.Errorf("%s: unknown vm provider type", pathPrefix))
+	}
+
+	return allErrs
+}
+
+func validateEnvVars(envVars *map[string]string, pathPrefix string) []error {
+	return validation.ValidateStringMap(envVars, pathPrefix+".envVars", 1, validation.DNS1123MaxLength, validation.EnvVarNameRegexp, nil, "")
+}
+
+func validateApplicationVolumes(volumes *[]ApplicationVolume, appName string, appType AppType, fleetTemplate bool) []error {
+	if volumes == nil {
+		return nil
+	}
+
+	allErrs := []error{}
+	seenVolumeNames := make(map[string]struct{})
+
+	for i, vol := range *volumes {
+		path := fmt.Sprintf("spec.applications[%s].volumes[%d]", appName, i)
+		if _, exists := seenVolumeNames[vol.Name]; exists {
+			allErrs = append(allErrs, fmt.Errorf("duplicate volume name for application: %s", vol.Name))
+			continue
+		}
+		seenVolumeNames[vol.Name] = struct{}{}
+
+		allErrs = append(allErrs, validation.ValidateString(&vol.Name, path+".name", 1, 253, validation.GenericNameRegexp, "")...)
+		allErrs = append(allErrs, validateVolume(vol, path, fleetTemplate, appType)...)
+	}
+
+	return allErrs
+}
+
+func validateVolume(vol ApplicationVolume, path string, fleetTemplate bool, appType AppType) []error {
+	var errs []error
+
+	if vol.ReclaimPolicy != nil && *vol.ReclaimPolicy != Retain {
+		errs = append(errs, fmt.Errorf("%s.reclaimPolicy: only %q is supported", path, Retain))
+	}
+
+	providerType, err := vol.Type()
+	if err != nil {
+		return []error{fmt.Errorf("invalid application volume provider: %w", err)}
+	}
+
+	switch providerType {
+	case ImageApplicationVolumeProviderType:
+		imgProvider, err := vol.AsImageVolumeProviderSpec()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("invalid image application volume provider: %w", err))
+		} else {
+			errs = append(errs, validateImageVolumeSource(imgProvider.Image, path+".image", fleetTemplate)...)
+		}
+		if appType == AppTypeContainer {
+			errs = append(errs, fmt.Errorf("image application volume provider invalid for app type: %s", appType))
+		}
+	case MountApplicationVolumeProviderType:
+		mountProvider, err := vol.AsMountVolumeProviderSpec()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("invalid mount application volume provider: %w", err))
+		} else {
+			pathParts := strings.Split(mountProvider.Mount.Path, ":")
+			errs = append(errs, validation.ValidateFilePath(&pathParts[0], path+".mount.path")...)
+		}
+		if appType != AppTypeContainer {
+			errs = append(errs, fmt.Errorf("mount application volume provider invalid for app type: %s", appType))
+		}
+	case ImageMountApplicationVolumeProviderType:
+		provider, err := vol.AsImageMountVolumeProviderSpec()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("invalid image mount application volume provider: %w", err))
+		} else {
+			pathParts := strings.Split(provider.Mount.Path, ":")
+			errs = append(errs, validation.ValidateFilePath(&pathParts[0], path+".mount.path")...)
+			errs = append(errs, validateImageVolumeSource(provider.Image, path+".image", fleetTemplate)...)
+		}
+		if appType != AppTypeContainer {
+			errs = append(errs, fmt.Errorf("image mount application volume provider invalid for app type: %s", appType))
+		}
+
+	default:
+		errs = append(errs, fmt.Errorf("unknown application volume provider type: %s", providerType))
+	}
+
+	return errs
+}
+
+func validateImageVolumeSource(source ImageVolumeSource, path string, fleetTemplate bool) []error {
+	var errs []error
+
+	hasRef := source.Reference != ""
+	hasCatalogRef := source.CatalogItemRef != nil
+
+	if hasRef && hasCatalogRef {
+		errs = append(errs, fmt.Errorf("%s: cannot have both reference and catalogItemRef", path))
+	}
+	if !hasRef && !hasCatalogRef {
+		errs = append(errs, fmt.Errorf("%s: must have either reference or catalogItemRef", path))
+	}
+
+	if hasRef {
+		errs = append(errs, validateOciImageReference(&source.Reference, path+".reference", fleetTemplate)...)
+	}
+	if hasCatalogRef {
+		errs = append(errs, source.CatalogItemRef.Validate()...)
+	}
+
+	return errs
+}
+
+func validateContainerPorts(ports *[]ApplicationPort, path string) []error {
+	if ports == nil || len(*ports) == 0 {
+		return nil
+	}
+
+	var allErrs []error
+
+	for i, portString := range *ports {
+		formatErr := fmt.Errorf("%s[%d]: must be in format 'portnumber:portnumber[/protocol]', got %q", path, i, portString)
+		if !containerPortPattern.MatchString(portString) {
+			allErrs = append(allErrs, formatErr)
+			continue
+		}
+		// Strip optional /protocol suffix from the guest port before numeric validation.
+		colonParts := strings.SplitN(portString, ":", 2)
+		guestPort := strings.SplitN(colonParts[1], "/", 2)[0]
+		portNumbers := []string{colonParts[0], guestPort}
+
+		for _, port := range portNumbers {
+			numberErr := fmt.Errorf("%s[%d]: must be a number in the valid port range of [1, 65535], got: %q", path, i, port)
+			portNumber, err := strconv.Atoi(port)
+			if err != nil {
+				allErrs = append(allErrs, fmt.Errorf("%w: %w", numberErr, err))
+				continue
+			}
+			if portNumber < privilegedPortRangeStart || portNumber > portRangeEnd {
+				allErrs = append(allErrs, numberErr)
+			}
+		}
+	}
+	return allErrs
+}
+
+func validatePodmanCPULimit(cpu *string, path string) []error {
+	var errs []error
+	if cpu == nil {
+		return errs
+	}
+
+	val, err := strconv.ParseFloat(*cpu, 64)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("%s: must be a valid number, got %q", path, *cpu))
+	} else if val < 0 {
+		errs = append(errs, fmt.Errorf("%s: must be positive. got %q", path, *cpu))
+	}
+	return errs
+}
+
+var containerPortPattern = regexp.MustCompile(`^[0-9]+:[0-9]+(/(tcp|udp|sctp))?$`)
+
+var podmanMemoryLimitPattern = regexp.MustCompile(`^[0-9]+[bkmg]?$`)
+
+func validatePodmanMemoryLimit(memory *string, path string) []error {
+	if memory == nil {
+		return nil
+	}
+
+	if !podmanMemoryLimitPattern.MatchString(*memory) {
+		return []error{fmt.Errorf("%s: must be in format 'number[unit]' where unit is b, k, m, or g, got %q", path, *memory)}
+	}
+	return nil
+}
+
+func ensureAppName(app ApplicationProviderSpec) (string, error) {
+	name, err := app.GetName()
+	if err != nil {
+		return "", err
+	}
+	if name != nil && *name != "" {
+		return *name, nil
+	}
+
+	appType, err := app.GetAppType()
+	if err != nil {
+		return "", fmt.Errorf("failed to get app type: %w", err)
+	}
+
+	switch appType {
+	case AppTypeContainer:
+		container, err := app.AsContainerApplication()
+		if err != nil {
+			return "", fmt.Errorf("invalid container application: %w", err)
+		}
+		if container.Type() == ImageApplicationProviderType {
+			spec, err := container.AsImageApplicationProviderSpec()
+			if err == nil {
+				if spec.Image != "" {
+					return spec.Image, nil
+				}
+			}
+		}
+		return "", fmt.Errorf("container image cannot be empty when application name is not provided")
+	case AppTypeHelm:
+		helm, err := app.AsHelmApplication()
+		if err != nil {
+			return "", fmt.Errorf("invalid helm application: %w", err)
+		}
+		if helm.Type() == ImageApplicationProviderType {
+			spec, err := helm.AsImageApplicationProviderSpec()
+			if err == nil {
+				if spec.Image != "" {
+					return spec.Image, nil
+				}
+			}
+		}
+		return "", fmt.Errorf("helm image cannot be empty when application name is not provided")
+	case AppTypeCompose:
+		compose, err := app.AsComposeApplication()
+		if err != nil {
+			return "", fmt.Errorf("invalid compose application: %w", err)
+		}
+		providerType := compose.Type()
+		if providerType == ImageApplicationProviderType {
+			imageSpec, err := compose.AsImageApplicationProviderSpec()
+			if err != nil {
+				return "", fmt.Errorf("invalid compose image provider: %w", err)
+			}
+			if imageSpec.Image == "" {
+				return "", fmt.Errorf("compose image cannot be empty when application name is not provided")
+			}
+			return imageSpec.Image, nil
+		}
+		return "", fmt.Errorf("inline compose application name cannot be empty")
+	case AppTypeQuadlet:
+		quadlet, err := app.AsQuadletApplication()
+		if err != nil {
+			return "", fmt.Errorf("invalid quadlet application: %w", err)
+		}
+		providerType := quadlet.Type()
+		if providerType == ImageApplicationProviderType {
+			imageSpec, err := quadlet.AsImageApplicationProviderSpec()
+			if err != nil {
+				return "", fmt.Errorf("invalid quadlet image provider: %w", err)
+			}
+			if imageSpec.Image == "" {
+				return "", fmt.Errorf("quadlet image cannot be empty when application name is not provided")
+			}
+			return imageSpec.Image, nil
+		}
+		return "", fmt.Errorf("inline quadlet application name cannot be empty")
+	case AppTypeVm:
+		vm, err := app.AsVmApplication()
+		if err != nil {
+			return "", fmt.Errorf("invalid vm application: %w", err)
+		}
+		providerType := vm.Type()
+		if providerType == ImageApplicationProviderType {
+			imageSpec, err := vm.AsImageApplicationProviderSpec()
+			if err != nil {
+				return "", fmt.Errorf("invalid vm image provider: %w", err)
+			}
+			if imageSpec.Image == "" {
+				return "", fmt.Errorf("vm image cannot be empty when application name is not provided")
+			}
+			return imageSpec.Image, nil
+		}
+		return "", fmt.Errorf("inline vm application name cannot be empty")
+	default:
+		return "", fmt.Errorf("unsupported application type: %s", appType)
+	}
+}
+
+// note: this regex was taken from the github.com/kubernetes/kubernetes/pkg/apis/batch/validation/validation.go
+// https://data.iana.org/time-zones/theory.html#naming
+// * A name must not be empty, or contain '//', or start or end with '/'.
+// * Do not use the file name components '.' and '..'.
+// * Within a file name component, use only ASCII letters, '.', '-' and '_'.
+// * Do not use digits, as that might create an ambiguity with POSIX TZ strings.
+// * A file name component must not exceed 14 characters or start with '-'
+//
+// 0-9 and + characters are tolerated to accommodate legacy compatibility names
+var validTimeZoneCharacters = regexp.MustCompile(`^[A-Za-z\.\-_0-9+]{1,14}$`)
+
+// validateTimeZone validates the time zone string. it must be a valid IANA time zone identifier.
+func validateTimeZone(timeZone string) []error {
+	allErrs := []error{}
+
+	if len(timeZone) == 0 {
+		allErrs = append(allErrs, fmt.Errorf("time zone must not be empty"))
+		return allErrs
+	}
+
+	// the default time zone is "Local"
+	if strings.EqualFold(timeZone, "Local") {
+		return allErrs
+	}
+
+	// we only support non ambiguous time zones with 3 characters
+	validThreeLetterZones := map[string]bool{
+		"GMT": true,
+		"UTC": true,
+	}
+
+	if len(timeZone) == 3 {
+		if _, ok := validThreeLetterZones[timeZone]; !ok {
+			allErrs = append(allErrs, fmt.Errorf("invalid time zone: %s", timeZone))
+		}
+		return allErrs
+	}
+
+	// split the time zone identifier into parts
+	parts := strings.Split(timeZone, "/")
+	for _, part := range parts {
+		if part == "." || part == ".." || strings.HasPrefix(part, "-") || !validTimeZoneCharacters.MatchString(part) {
+			allErrs = append(allErrs, fmt.Errorf("invalid time zone component: %s", part))
+			return allErrs
+		}
+	}
+
+	if _, err := time.LoadLocation(timeZone); err != nil {
+		allErrs = append(allErrs, fmt.Errorf("invalid time zone: %s: %w", timeZone, err))
+	}
+
+	return allErrs
+}
+
+func validateGraceDuration(schedule cron.Schedule, duration string) error {
+	// validating the duration first so that we can potentially report more issues
+	// to the caller if malformed duration is also applied
+	graceDuration, err := time.ParseDuration(duration)
+	if err != nil {
+		return fmt.Errorf("invalid duration: %w", err)
+	}
+
+	if schedule == nil {
+		return fmt.Errorf("invalid schedule: cannot validate grace duration")
+	}
+
+	start := time.Now()
+	var cronTimes []time.Time
+	// test through the next 5 cron times
+	for i := 0; i < 5; i++ {
+		start = schedule.Next(start)
+		cronTimes = append(cronTimes, start)
+	}
+
+	// Calculate the minimum interval between cron times
+	for i := 1; i < len(cronTimes); i++ {
+		interval := cronTimes[i].Sub(cronTimes[i-1])
+		if graceDuration > interval {
+			return fmt.Errorf("%w: %s", ErrStartGraceDurationExceedsCronInterval, graceDuration)
+		}
+	}
+
+	return nil
+}
+
+// validateOciImageReference validates an OCI image reference, with template support if fleetTemplate is true
+func validateOciImageReference(imageRef *string, path string, fleetTemplate bool) []error {
+	containsParams, paramErrs := validateParametersInString(imageRef, path, fleetTemplate)
+	allErrs := append([]error{}, paramErrs...)
+
+	if !containsParams {
+		allErrs = append(allErrs, validation.ValidateOciImageReference(imageRef, path)...)
+	} else {
+		allErrs = append(allErrs, validation.ValidateOciImageReferenceWithTemplates(imageRef, path)...)
+	}
+
+	return allErrs
+}
+
+// validateApplicationDeltaHintsReadOnly rejects control-plane-generated fields
+// when they appear in a client-submitted desired application spec.
+func validateApplicationDeltaHintsReadOnly(
+	deltaImage *string,
+	deltaImages *[]ImageDeltaHint,
+	pathPrefix string,
+) []error {
+	var allErrs []error
+	if deltaImage != nil {
+		allErrs = append(allErrs, fmt.Errorf("%s.deltaImage is read-only and cannot be set directly; the control plane generates it in the rendered application spec", pathPrefix))
+	}
+	if deltaImages == nil {
+		return allErrs
+	}
+	allErrs = append(allErrs, fmt.Errorf("%s.deltaImages is read-only and cannot be set directly; the control plane generates it in the rendered application spec", pathPrefix))
+	return allErrs
+}
+
+func validateParametersInString(s *string, path string, fleetTemplate bool) (bool, []error) {
+	// If we're not dealing with a fleet template, assume no parameters
+	if s == nil || !fleetTemplate {
+		return false, []error{}
+	}
+
+	allErrs := []error{}
+
+	t, err := template.New("t").Option("missingkey=zero").Funcs(GetGoTemplateFuncMap()).Parse(*s)
+	if err != nil {
+		return false, validation.FormatInvalidError(*s, path, fmt.Sprintf("invalid parameter syntax: %v", err))
+	}
+
+	// Ensure template has only supported types (recursively, to catch
+	// disallowed constructs nested inside conditionals).
+	if err := validateTemplateNodes(t.Root.Nodes, 0); err != nil {
+		return false, validation.FormatInvalidError(*s, path, err.Error())
+	}
+
+	// Validate field access paths statically across all branches, so that
+	// invalid references (e.g. .metadata.annotations) are caught even in
+	// conditional branches that a dummy render would not execute.
+	if err := validateTemplateFieldAccess(t.Root.Nodes, true); err != nil {
+		return false, validation.FormatInvalidError(*s, path, err.Error())
+	}
+
+	// Execute against a dummy device to catch remaining runtime errors
+	// (type mismatches, incorrect function usage, etc.).
+	dev := &Device{
+		Metadata: ObjectMeta{
+			Name:   lo.ToPtr("name"),
+			Labels: &map[string]string{},
+		},
+	}
+
+	output, err := ExecuteGoTemplateOnDevice(t, dev)
+	if err != nil {
+		return false, validation.FormatInvalidError(*s, path, fmt.Sprintf("cannot apply parameters, possibly because they access invalid fields: %v", err))
+	}
+	return output != *s, allErrs
+}
+
+const maxTemplateNestingDepth = 10
+
+func validateTemplateNodes(nodes []parse.Node, depth int) error {
+	if depth > maxTemplateNestingDepth {
+		return fmt.Errorf("template exceeds maximum nesting depth of %d", maxTemplateNestingDepth)
+	}
+	for _, node := range nodes {
+		switch n := node.(type) {
+		case *parse.TextNode:
+		case *parse.ActionNode:
+		case *parse.IfNode:
+			if err := validateBranchNode(&n.BranchNode, depth+1); err != nil {
+				return err
+			}
+		case *parse.WithNode:
+			if err := validateBranchNode(&n.BranchNode, depth+1); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("template contains unsupported elements: %s", node.String())
+		}
+	}
+	return nil
+}
+
+func validateBranchNode(b *parse.BranchNode, depth int) error {
+	if b.List != nil {
+		if err := validateTemplateNodes(b.List.Nodes, depth); err != nil {
+			return fmt.Errorf("in branch body: %w", err)
+		}
+	}
+	if b.ElseList != nil {
+		if err := validateTemplateNodes(b.ElseList.Nodes, depth); err != nil {
+			return fmt.Errorf("in else branch: %w", err)
+		}
+	}
+	return nil
+}
+
+// validateTemplateFieldAccess walks every branch of the AST and checks that
+// field access paths reference only exposed device fields (.metadata.name and
+// .metadata.labels). The rootContext flag tracks whether the current dot (.)
+// is the root device map; inside a "with" body the dot is rebound, so
+// dot-relative field paths are not validated. However, $-rooted paths
+// (e.g. $.metadata.name) always reference the root and are validated
+// regardless of context.
+func validateTemplateFieldAccess(nodes []parse.Node, rootContext bool) error {
+	for _, node := range nodes {
+		switch n := node.(type) {
+		case *parse.ActionNode:
+			if err := validatePipeFieldPaths(n.Pipe, rootContext); err != nil {
+				return err
+			}
+		case *parse.IfNode:
+			if err := validatePipeFieldPaths(n.Pipe, rootContext); err != nil {
+				return err
+			}
+			if n.List != nil {
+				if err := validateTemplateFieldAccess(n.List.Nodes, rootContext); err != nil {
+					return err
+				}
+			}
+			if n.ElseList != nil {
+				if err := validateTemplateFieldAccess(n.ElseList.Nodes, rootContext); err != nil {
+					return err
+				}
+			}
+		case *parse.WithNode:
+			if err := validatePipeFieldPaths(n.Pipe, rootContext); err != nil {
+				return err
+			}
+			if n.List != nil {
+				if err := validateTemplateFieldAccess(n.List.Nodes, false); err != nil {
+					return err
+				}
+			}
+			if n.ElseList != nil {
+				if err := validateTemplateFieldAccess(n.ElseList.Nodes, rootContext); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validatePipeFieldPaths(pipe *parse.PipeNode, rootContext bool) error {
+	if pipe == nil {
+		return nil
+	}
+	for _, cmd := range pipe.Cmds {
+		for _, arg := range cmd.Args {
+			if field, ok := arg.(*parse.FieldNode); ok {
+				if rootContext {
+					if err := validateFieldPath(field.Ident); err != nil {
+						return err
+					}
+				} else if len(field.Ident) > 0 && field.Ident[0] == "metadata" {
+					return fmt.Errorf("template references root field inside 'with' body: .%s (use $.%s to access root fields)",
+						strings.Join(field.Ident, "."), strings.Join(field.Ident, "."))
+				}
+			}
+			if v, ok := arg.(*parse.VariableNode); ok && len(v.Ident) > 1 && v.Ident[0] == "$" {
+				if err := validateFieldPath(v.Ident[1:]); err != nil {
+					return err
+				}
+			}
+			if chain, ok := arg.(*parse.ChainNode); ok {
+				if err := validateChainFieldPaths(chain); err != nil {
+					return err
+				}
+			}
+			if nested, ok := arg.(*parse.PipeNode); ok {
+				if err := validatePipeFieldPaths(nested, rootContext); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateChainFieldPaths(chain *parse.ChainNode) error {
+	if len(chain.Field) > 0 {
+		return fmt.Errorf("template contains unsupported chained field access: %s", chain.String())
+	}
+	return nil
+}
+
+func validateFieldPath(ident []string) error {
+	if len(ident) == 0 {
+		return nil
+	}
+	if ident[0] != "metadata" || len(ident) < 2 {
+		return fmt.Errorf("template references unsupported field: .%s", strings.Join(ident, "."))
+	}
+	switch ident[1] {
+	case "name":
+		if len(ident) > 2 {
+			return fmt.Errorf("template references unsupported field: .%s", strings.Join(ident, "."))
+		}
+	case "labels":
+		if len(ident) > 3 {
+			return fmt.Errorf("template references unsupported field: .%s", strings.Join(ident, "."))
+		}
+	default:
+		return fmt.Errorf("template references unsupported field: .%s", strings.Join(ident, "."))
+	}
+	return nil
+}
+
+func validatePercentage(p Percentage) error {
+	pattern := `^(100|[1-9]?[0-9])%$`
+	matched, err := regexp.MatchString(pattern, p)
+	if err != nil {
+		return fmt.Errorf("failed to match percentage %s: %w", p, err)
+	}
+	if !matched {
+		return fmt.Errorf("'%s' doesn't match percentage pattern '%s'", p, pattern)
+	}
+	return nil
+}
+
+// validateImmutableCoreFields is a helper used by ValidateUpdate to ensure name, apiVersion, kind and status are unchanged.
+func validateImmutableCoreFields(currentName, newName *string, currentAPIVersion, newAPIVersion, currentKind, newKind string, currentStatus, newStatus interface{}) []error {
+	var errs []error
+	if newName == nil || *currentName != *newName {
+		errs = append(errs, fmt.Errorf("metadata.name is immutable"))
+	}
+	if currentAPIVersion != newAPIVersion {
+		errs = append(errs, fmt.Errorf("apiVersion is immutable"))
+	}
+	if currentKind != newKind {
+		errs = append(errs, fmt.Errorf("kind is immutable"))
+	}
+	if !reflect.DeepEqual(currentStatus, newStatus) {
+		errs = append(errs, fmt.Errorf("status is immutable"))
+	}
+	return errs
+}
+
+// validateResourceMonitor performs cross-resource validation for ResourceMonitor arrays
+func validateResourceMonitor(resources []ResourceMonitor) []error {
+	var allErrs []error
+
+	// Validate no duplicate monitorTypes exist across resources
+	// Each monitorType (CPU, Disk, Memory) should only appear once in the resources array
+	seenMonitorTypes := make(map[string]struct{})
+	for _, resource := range resources {
+		monitorType, err := resource.Discriminator()
+		if err == nil {
+			if _, exists := seenMonitorTypes[monitorType]; exists {
+				allErrs = append(allErrs, fmt.Errorf("%w: %s", ErrDuplicateMonitorType, monitorType))
+			} else {
+				seenMonitorTypes[monitorType] = struct{}{}
+			}
+		}
+	}
+
+	return allErrs
+}
+
+// hasPathField checks if the raw JSON contains a "path" field
+func hasPathField(rawJSON []byte) bool {
+	var data map[string]interface{}
+	if err := json.Unmarshal(rawJSON, &data); err != nil {
+		return false
+	}
+	_, exists := data["path"]
+	return exists
+}
+
+func (a *AuthProvider) Validate(ctx context.Context) []error {
+	allErrs := []error{}
+	allErrs = append(allErrs, validation.ValidateResourceName(a.Metadata.Name)...)
+	allErrs = append(allErrs, validation.ValidateLabels(a.Metadata.Labels)...)
+	allErrs = append(allErrs, validation.ValidateAnnotations(a.Metadata.Annotations)...)
+	allErrs = append(allErrs, a.Spec.Validate(ctx, false)...)
+
+	return allErrs
+}
+
+// ValidateUpdate ensures immutable fields are unchanged and required fields are not deleted for AuthProvider.
+func (a *AuthProvider) ValidateUpdate(ctx context.Context, oldObj *AuthProvider) []error {
+	allErrs := validateImmutableCoreFields(oldObj.Metadata.Name, a.Metadata.Name,
+		oldObj.ApiVersion, a.ApiVersion,
+		oldObj.Kind, a.Kind,
+		nil, nil) // AuthProvider doesn't have status
+
+	// Validate the new spec (receiver 'a' is the new object)
+	allErrs = append(allErrs, a.Spec.ValidateUpdate(ctx, &oldObj.Spec)...)
+
+	return allErrs
+}
+
+// validateAbsoluteURL returns an error if the value is not a valid absolute URL with a scheme and host.
+func validateAbsoluteURL(fieldName, value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("%s must be a valid URL with scheme and host", fieldName)
+	}
+	return nil
+}
+
+// ValidateAuthProviderPrompt validates authorization prompts for API and configured providers.
+func ValidateAuthProviderPrompt(prompt *string) error {
+	if prompt == nil || *prompt == "" {
+		return nil
+	}
+	for i := range len(*prompt) {
+		if (*prompt)[i] < ' ' || (*prompt)[i] > '~' {
+			return fmt.Errorf("prompt must contain printable ASCII values separated by spaces")
+		}
+	}
+	values := strings.Fields(*prompt)
+	if len(values) == 0 {
+		return fmt.Errorf("prompt must not contain only spaces")
+	}
+	if slices.Contains(values, "none") {
+		for _, value := range values {
+			if value != "none" {
+				return fmt.Errorf("prompt value none cannot be combined with another value")
+			}
+		}
+	}
+	return nil
+}
+
+func (o *OIDCProviderSpec) Validate(ctx context.Context, isUpdate bool) []error {
+	allErrs := []error{}
+
+	if o.Issuer == "" {
+		allErrs = append(allErrs, ErrIssuerRequired)
+	} else if err := validateAbsoluteURL("issuer", o.Issuer); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if o.ClientId == "" {
+		allErrs = append(allErrs, ErrClientIdRequired)
+	}
+
+	if err := ValidateAuthProviderPrompt(o.Prompt); err != nil {
+		allErrs = append(allErrs, err)
+	}
+
+	// Validate organization assignment
+	allErrs = append(allErrs, o.OrganizationAssignment.Validate(ctx)...)
+
+	// Validate role assignment
+	allErrs = append(allErrs, o.RoleAssignment.Validate(ctx)...)
+
+	return allErrs
+}
+
+func (o *OAuth2ProviderSpec) Validate(ctx context.Context, isUpdate bool) []error {
+	allErrs := []error{}
+
+	if o.AuthorizationUrl == "" {
+		allErrs = append(allErrs, ErrAuthorizationUrlRequired)
+	} else if err := validateAbsoluteURL("authorizationUrl", o.AuthorizationUrl); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if o.TokenUrl == "" {
+		allErrs = append(allErrs, ErrTokenUrlRequired)
+	} else if err := validateAbsoluteURL("tokenUrl", o.TokenUrl); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if o.UserinfoUrl == "" {
+		allErrs = append(allErrs, ErrUserinfoUrlRequired)
+	} else if err := validateAbsoluteURL("userinfoUrl", o.UserinfoUrl); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if o.ClientId == "" {
+		allErrs = append(allErrs, ErrClientIdRequired)
+	}
+	if o.Issuer != nil && *o.Issuer != "" {
+		if err := validateAbsoluteURL("issuer", *o.Issuer); err != nil {
+			allErrs = append(allErrs, err)
+		}
+	}
+
+	if err := ValidateAuthProviderPrompt(o.Prompt); err != nil {
+		allErrs = append(allErrs, err)
+	}
+
+	// Validate introspection field is present
+	if o.Introspection == nil {
+		allErrs = append(allErrs, fmt.Errorf("introspection field is required for OAuth2 providers"))
+	}
+
+	// Validate organization assignment
+	allErrs = append(allErrs, o.OrganizationAssignment.Validate(ctx)...)
+
+	// Validate role assignment
+	allErrs = append(allErrs, o.RoleAssignment.Validate(ctx)...)
+
+	return allErrs
+}
+
+func (a *AuthProviderSpec) Validate(ctx context.Context, isUpdate bool) []error {
+	allErrs := []error{}
+
+	// Get the discriminator to determine which type of provider this is
+	discriminator, err := a.Discriminator()
+	if err != nil {
+		allErrs = append(allErrs, fmt.Errorf("invalid auth provider spec: %w", err))
+		return allErrs
+	}
+
+	switch discriminator {
+	case string(Oidc):
+		oidcSpec, err := a.AsOIDCProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid OIDC provider spec: %w", err))
+		} else {
+			allErrs = append(allErrs, (&oidcSpec).Validate(ctx, isUpdate)...)
+		}
+	case string(Oauth2):
+		oauth2Spec, err := a.AsOAuth2ProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid OAuth2 provider spec: %w", err))
+		} else {
+			allErrs = append(allErrs, (&oauth2Spec).Validate(ctx, isUpdate)...)
+		}
+	case string(K8s):
+		allErrs = append(allErrs, ErrK8sProviderConfigOnly)
+	case string(Aap):
+		allErrs = append(allErrs, ErrAapProviderConfigOnly)
+	default:
+		allErrs = append(allErrs, fmt.Errorf("unknown provider type: %s", discriminator))
+	}
+
+	return allErrs
+}
+
+// ValidateUpdate ensures required fields are not deleted for AuthProviderSpec.
+func (a *AuthProviderSpec) ValidateUpdate(ctx context.Context, oldSpec *AuthProviderSpec) []error {
+	allErrs := []error{}
+
+	// Check both old and new provider types for OAuth2 to validate introspection field
+	oldDiscriminator, oldErr := oldSpec.Discriminator()
+	if oldErr != nil {
+		allErrs = append(allErrs, fmt.Errorf("invalid old auth provider spec: %w", oldErr))
+		return allErrs
+	}
+
+	newDiscriminator, newErr := a.Discriminator()
+	if newErr != nil {
+		allErrs = append(allErrs, fmt.Errorf("invalid new auth provider spec: %w", newErr))
+		return allErrs
+	}
+
+	// If the old provider was OAuth2, check for introspection removal
+	if oldDiscriminator == string(Oauth2) {
+		oldOAuth2Spec, err := oldSpec.AsOAuth2ProviderSpec()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("failed to parse old OAuth2 provider spec: %w", err))
+			return allErrs
+		}
+
+		// Check if new provider is also OAuth2
+		if newDiscriminator == string(Oauth2) {
+			newOAuth2Spec, err := a.AsOAuth2ProviderSpec()
+			if err != nil {
+				allErrs = append(allErrs, fmt.Errorf("invalid new OAuth2 provider spec: %w", err))
+				return allErrs
+			}
+
+			// Check if introspection is being removed
+			if oldOAuth2Spec.Introspection != nil && newOAuth2Spec.Introspection == nil {
+				allErrs = append(allErrs, fmt.Errorf("introspection field cannot be removed once set"))
+			}
+		}
+	}
+
+	// Run standard validation with isUpdate=true
+	allErrs = append(allErrs, a.Validate(ctx, true)...)
+
+	return allErrs
+}
+
+func (a AuthOrganizationAssignment) Validate(ctx context.Context) []error {
+	allErrs := []error{}
+
+	// Get the discriminator to determine which type of assignment this is
+	discriminator, err := a.Discriminator()
+	if err != nil {
+		allErrs = append(allErrs, fmt.Errorf("invalid organization assignment: %w", err))
+		return allErrs
+	}
+
+	switch discriminator {
+	case string(AuthStaticOrganizationAssignmentTypeStatic):
+		static, err := a.AsAuthStaticOrganizationAssignment()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid static organization assignment: %w", err))
+		} else {
+			allErrs = append(allErrs, static.Validate(ctx)...)
+		}
+	case string(AuthDynamicOrganizationAssignmentTypeDynamic):
+		dynamic, err := a.AsAuthDynamicOrganizationAssignment()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid dynamic organization assignment: %w", err))
+		} else {
+			allErrs = append(allErrs, dynamic.Validate(ctx)...)
+		}
+	case string(PerUser):
+		perUser, err := a.AsAuthPerUserOrganizationAssignment()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid per-user organization assignment: %w", err))
+		} else {
+			allErrs = append(allErrs, perUser.Validate(ctx)...)
+		}
+	default:
+		allErrs = append(allErrs, fmt.Errorf("unknown organization assignment type: %s", discriminator))
+	}
+
+	return allErrs
+}
+
+func (a AuthStaticOrganizationAssignment) Validate(ctx context.Context) []error {
+	allErrs := []error{}
+
+	if a.OrganizationName == "" {
+		allErrs = append(allErrs, ErrOrganizationNameRequired)
+	}
+
+	// For non-admin users, validate that the static organization matches their current organization
+	mappedIdentity, ok := contextutil.GetMappedIdentityFromContext(ctx)
+	if !ok {
+		allErrs = append(allErrs, ErrMappedIdentityNotFound)
+		return allErrs
+	}
+
+	// Check if user is super admin
+	hasAdminRole := mappedIdentity.IsSuperAdmin()
+
+	// If user is not admin, they can only assign to their current organization
+	if !hasAdminRole {
+		organizations := mappedIdentity.GetOrganizations()
+		// Check if the organization name matches any of the user's organizations
+		hasMatchingOrg := false
+		for _, org := range organizations {
+			if org.ExternalID == a.OrganizationName {
+				hasMatchingOrg = true
+				break
+			}
+		}
+		if !hasMatchingOrg {
+			// Build a list of valid organization names for error message
+			validOrgs := make([]string, len(organizations))
+			for i, org := range organizations {
+				validOrgs[i] = org.ExternalID
+			}
+			allErrs = append(allErrs, fmt.Errorf("non-admin users can only assign to one of their current organizations: %v", validOrgs))
+		}
+	}
+
+	return allErrs
+}
+
+func (a AuthDynamicOrganizationAssignment) Validate(ctx context.Context) []error {
+	allErrs := []error{}
+
+	if len(a.ClaimPath) == 0 {
+		allErrs = append(allErrs, ErrClaimPathRequiredDynamicOrg)
+	}
+
+	// Only flightctl-admin is allowed to create auth providers with dynamic org mapping
+	mappedIdentity, ok := contextutil.GetMappedIdentityFromContext(ctx)
+	if !ok {
+		allErrs = append(allErrs, ErrMappedIdentityNotFound)
+		return allErrs
+	}
+
+	// Only super admin users can create dynamic organization mappings
+	if !mappedIdentity.IsSuperAdmin() {
+		allErrs = append(allErrs, ErrDynamicOrgMappingAdminOnly)
+	}
+
+	return allErrs
+}
+
+func (a AuthPerUserOrganizationAssignment) Validate(ctx context.Context) []error {
+	allErrs := []error{}
+
+	// Per-user assignment doesn't require additional validation
+	// The organization name will be generated from the user's identity
+
+	// Only flightctl-admin is allowed to create auth providers with per-user org mapping
+	mappedIdentity, ok := contextutil.GetMappedIdentityFromContext(ctx)
+	if !ok {
+		allErrs = append(allErrs, ErrMappedIdentityNotFound)
+		return allErrs
+	}
+
+	// Only super admin users can create per-user organization mappings
+	if !mappedIdentity.IsSuperAdmin() {
+		allErrs = append(allErrs, ErrPerUserOrgMappingAdminOnly)
+	}
+
+	return allErrs
+}
+
+func (a AuthRoleAssignment) Validate(ctx context.Context) []error {
+	allErrs := []error{}
+
+	// Get the discriminator to determine which type of assignment this is
+	discriminator, err := a.Discriminator()
+	if err != nil {
+		allErrs = append(allErrs, fmt.Errorf("invalid role assignment: %w", err))
+		return allErrs
+	}
+
+	switch discriminator {
+	case string(AuthStaticRoleAssignmentTypeStatic):
+		static, err := a.AsAuthStaticRoleAssignment()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid static role assignment: %w", err))
+		} else {
+			allErrs = append(allErrs, static.Validate(ctx)...)
+		}
+	case string(AuthDynamicRoleAssignmentTypeDynamic):
+		dynamic, err := a.AsAuthDynamicRoleAssignment()
+		if err != nil {
+			allErrs = append(allErrs, fmt.Errorf("invalid dynamic role assignment: %w", err))
+		} else {
+			allErrs = append(allErrs, dynamic.Validate(ctx)...)
+		}
+	default:
+		allErrs = append(allErrs, fmt.Errorf("unknown role assignment type: %s", discriminator))
+	}
+
+	return allErrs
+}
+
+func (a AuthStaticRoleAssignment) Validate(ctx context.Context) []error {
+	allErrs := []error{}
+
+	if len(a.Roles) == 0 {
+		allErrs = append(allErrs, ErrRolesRequired)
+	}
+
+	// Validate that all roles are non-empty strings
+	for i, role := range a.Roles {
+		if role == "" {
+			allErrs = append(allErrs, fmt.Errorf("role at index %d cannot be empty", i))
+		}
+		if !slices.Contains(KnownExternalRoles, role) {
+			allErrs = append(allErrs, fmt.Errorf("role at index %d is not a valid role: %s", i, role))
+		}
+	}
+
+	// Check if any role is flightctl-admin - only super admins can create static mappings for this role
+	hasAdminRole := false
+	for _, role := range a.Roles {
+		if role == ExternalRoleAdmin {
+			hasAdminRole = true
+			break
+		}
+	}
+
+	if hasAdminRole {
+		mappedIdentity, ok := contextutil.GetMappedIdentityFromContext(ctx)
+		if !ok {
+			allErrs = append(allErrs, ErrMappedIdentityNotFound)
+			return allErrs
+		}
+
+		// Only super admin users can create static role mappings for flightctl-admin
+		if !mappedIdentity.IsSuperAdmin() {
+			allErrs = append(allErrs, ErrStaticRoleMappingAdminOnly)
+		}
+	}
+
+	return allErrs
+}
+
+func (a AuthDynamicRoleAssignment) Validate(ctx context.Context) []error {
+	allErrs := []error{}
+
+	if len(a.ClaimPath) == 0 {
+		allErrs = append(allErrs, ErrClaimPathRequiredDynamicRole)
+	}
+
+	return allErrs
+}
+
+func (s SystemdActiveStateType) Validate() error {
+	validStates := []SystemdActiveStateType{
+		SystemdActiveStateActivating,
+		SystemdActiveStateActive,
+		SystemdActiveStateDeactivating,
+		SystemdActiveStateFailed,
+		SystemdActiveStateInactive,
+		SystemdActiveStateMaintenance,
+		SystemdActiveStateRefreshing,
+		SystemdActiveStateReloading,
+		SystemdActiveStateUnknown,
+	}
+	if !slices.Contains(validStates, s) {
+		return fmt.Errorf("invalid systemd active state: %s", s)
+	}
+	return nil
+}
+
+func (s SystemdEnableStateType) Validate() error {
+	validStates := []SystemdEnableStateType{
+		SystemdEnableStateAlias,
+		SystemdEnableStateBad,
+		SystemdEnableStateDisabled,
+		SystemdEnableStateEmpty,
+		SystemdEnableStateEnabled,
+		SystemdEnableStateEnabledRuntime,
+		SystemdEnableStateGenerated,
+		SystemdEnableStateIndirect,
+		SystemdEnableStateLinked,
+		SystemdEnableStateLinkedRuntime,
+		SystemdEnableStateMasked,
+		SystemdEnableStateMaskedRuntime,
+		SystemdEnableStateStatic,
+		SystemdEnableStateTransient,
+		SystemdEnableStateUnknown,
+	}
+	if !slices.Contains(validStates, s) {
+		return fmt.Errorf("invalid systemd enable state: %s", s)
+	}
+	return nil
+}
+
+func (s SystemdLoadStateType) Validate() error {
+	validStates := []SystemdLoadStateType{
+		SystemdLoadStateBadSetting,
+		SystemdLoadStateError,
+		SystemdLoadStateLoaded,
+		SystemdLoadStateMasked,
+		SystemdLoadStateMerged,
+		SystemdLoadStateNotFound,
+		SystemdLoadStateStub,
+		SystemdLoadStateUnknown,
+	}
+	if !slices.Contains(validStates, s) {
+		return fmt.Errorf("invalid systemd load state: %s", s)
+	}
+	return nil
+}
+
+func (s CatalogItemRefApplicationProviderSpec) Validate() []error {
+	return s.CatalogItemRef.Validate()
+}
+
+func (s CatalogItemRefSpec) Validate() []error {
+	var allErrs []error
+	if len(s.Catalog) == 0 || len(s.Item) == 0 || len(s.Version) == 0 {
+		allErrs = append(allErrs, errors.New("catalog, item, and version are all required fields in a catalogItemRef"))
+	}
+	if s.Catalog != strings.TrimSpace(s.Catalog) || s.Item != strings.TrimSpace(s.Item) || s.Version != strings.TrimSpace(s.Version) {
+		allErrs = append(allErrs, errors.New("catalog, item, and version must not contain leading or trailing whitespace"))
+	}
+	return allErrs
+}
+
+const (
+	enrollmentHookPolicyRequiredName = "default"
+	enrollmentHookDefaultTimeout     = "30s"
+	enrollmentHookMaxTimeout         = 5 * time.Minute
+	enrollmentHookDefaultMaxAttempts = 5
+	enrollmentHookMinMaxAttempts     = 1
+	enrollmentHookMaxMaxAttempts     = 20
+	enrollmentHookDefaultBackoff     = "exponential"
+	enrollmentHookDefaultBackoffDly  = "2s"
+	enrollmentHookDefaultMaxBackoff  = "2m"
+	enrollmentHookDefaultDeadline    = "10m"
+)
+
+// Validate validates an EnrollmentHookPolicy and applies defaults.
+// This method mutates the receiver by setting default values for omitted fields.
+func (p *EnrollmentHookPolicy) Validate() []error {
+	if p == nil {
+		return nil
+	}
+	var allErrs []error
+
+	if p.Metadata.Name == nil || *p.Metadata.Name != enrollmentHookPolicyRequiredName {
+		allErrs = append(allErrs, fmt.Errorf("metadata.name must be %q", enrollmentHookPolicyRequiredName))
+	}
+	allErrs = append(allErrs, validation.ValidateLabels(p.Metadata.Labels)...)
+	allErrs = append(allErrs, validation.ValidateAnnotations(p.Metadata.Annotations)...)
+
+	stage := &p.Spec.AfterEnrolling
+
+	// Default failurePolicy to Block
+	if stage.FailurePolicy == nil {
+		def := FailurePolicyBlock
+		stage.FailurePolicy = &def
+	}
+	if *stage.FailurePolicy != FailurePolicyBlock && *stage.FailurePolicy != FailurePolicyContinue {
+		allErrs = append(allErrs, fmt.Errorf("spec.afterEnrolling.failurePolicy must be %q or %q", FailurePolicyBlock, FailurePolicyContinue))
+	}
+
+	// Gate-only policy: no controlPlaneActions is valid
+	if stage.ControlPlaneActions == nil || len(*stage.ControlPlaneActions) == 0 {
+		return allErrs
+	}
+
+	for i, action := range *stage.ControlPlaneActions {
+		prefix := fmt.Sprintf("spec.afterEnrolling.controlPlaneActions[%d]", i)
+		allErrs = append(allErrs, validateEnrollmentHookAction(&(*stage.ControlPlaneActions)[i], action, prefix)...)
+	}
+
+	return allErrs
+}
+
+// Validate validates a LabelSyncMapping resource.
+func (m *LabelSyncMapping) Validate() []error {
+	if m == nil {
+		return nil
+	}
+
+	allErrs := validation.ValidateResourceName(m.Metadata.Name)
+	allErrs = append(allErrs, validation.ValidateLabels(m.Metadata.Labels)...)
+	allErrs = append(allErrs, validation.ValidateAnnotations(m.Metadata.Annotations)...)
+	if m.Spec.ResourceType != LabelSyncMappingSpecResourceTypeDevice {
+		allErrs = append(allErrs, fmt.Errorf("spec.resourceType must be %q", LabelSyncMappingSpecResourceTypeDevice))
+	}
+	if m.Spec.Expression == "" {
+		allErrs = append(allErrs, errors.New("spec.expression must not be empty"))
+	}
+	if m.Spec.Key != nil && len(validation.ValidateLabelKey(*m.Spec.Key)) > 0 {
+		allErrs = append(allErrs, fmt.Errorf("spec.key must be a valid qualified label key"))
+	}
+	return allErrs
+}
+
+// ValidateUpdate ensures resource identity and type remain immutable.
+func (m *LabelSyncMapping) ValidateUpdate(newObj *LabelSyncMapping) []error {
+	if newObj == nil {
+		return []error{errors.New("updated LabelSyncMapping must not be nil")}
+	}
+	var err []error
+	if newObj.Metadata.Name != nil && (m.Metadata.Name == nil || *m.Metadata.Name != *newObj.Metadata.Name) {
+		err = append(err, errors.New("metadata.name is immutable"))
+	}
+	if m.Spec.ResourceType != newObj.Spec.ResourceType {
+		err = append(err, errors.New("spec.resourceType is immutable"))
+	}
+	return err
+}
+
+func validateEnrollmentHookAction(action *EnrollmentHookHttpAction, orig EnrollmentHookHttpAction, prefix string) []error {
+	var allErrs []error
+
+	if action.Url == "" {
+		allErrs = append(allErrs, fmt.Errorf("%s.url must not be empty", prefix))
+		return allErrs
+	}
+
+	parsed, err := url.Parse(action.Url)
+	if err != nil {
+		allErrs = append(allErrs, fmt.Errorf("%s.url is not a valid URL: %w", prefix, err))
+		return allErrs
+	}
+	if parsed.Host == "" || parsed.Hostname() == "" {
+		allErrs = append(allErrs, fmt.Errorf("%s.url must include a host", prefix))
+		return allErrs
+	}
+	if parsed.Scheme != "https" {
+		allErrs = append(allErrs, fmt.Errorf("%s.url must use HTTPS scheme", prefix))
+	}
+
+	host := parsed.Hostname()
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() {
+			allErrs = append(allErrs, fmt.Errorf("%s.url must not use a loopback address", prefix))
+		}
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			allErrs = append(allErrs, fmt.Errorf("%s.url must not use a link-local address", prefix))
+		}
+	}
+
+	// Default and validate timeout
+	if action.Timeout == nil {
+		def := enrollmentHookDefaultTimeout
+		action.Timeout = &def
+	}
+	if action.Timeout != nil {
+		d, parseErr := time.ParseDuration(*action.Timeout)
+		if parseErr != nil {
+			allErrs = append(allErrs, fmt.Errorf("%s.timeout is not a valid duration: %w", prefix, parseErr))
+		} else if d <= 0 {
+			allErrs = append(allErrs, fmt.Errorf("%s.timeout must be positive", prefix))
+		} else if d > enrollmentHookMaxTimeout {
+			allErrs = append(allErrs, fmt.Errorf("%s.timeout must not exceed %s", prefix, enrollmentHookMaxTimeout))
+		}
+	}
+
+	// Default and validate retry
+	if action.Retry != nil {
+		allErrs = append(allErrs, validateAndDefaultRetry(action.Retry, prefix+".retry")...)
+	}
+
+	return allErrs
+}
+
+func validateAndDefaultRetry(retry *EnrollmentHookRetryPolicy, prefix string) []error {
+	var allErrs []error
+
+	if retry.MaxAttempts == nil {
+		def := enrollmentHookDefaultMaxAttempts
+		retry.MaxAttempts = &def
+	}
+	if *retry.MaxAttempts < enrollmentHookMinMaxAttempts || *retry.MaxAttempts > enrollmentHookMaxMaxAttempts {
+		allErrs = append(allErrs, fmt.Errorf("%s.maxAttempts must be between %d and %d", prefix, enrollmentHookMinMaxAttempts, enrollmentHookMaxMaxAttempts))
+	}
+
+	if retry.BackoffPolicy == nil {
+		def := enrollmentHookDefaultBackoff
+		retry.BackoffPolicy = &def
+	}
+	if retry.BackoffDelay == nil {
+		def := enrollmentHookDefaultBackoffDly
+		retry.BackoffDelay = &def
+	}
+	if retry.BackoffDelay != nil {
+		if d, err := time.ParseDuration(*retry.BackoffDelay); err != nil {
+			allErrs = append(allErrs, fmt.Errorf("%s.backoffDelay is not a valid duration: %w", prefix, err))
+		} else if d <= 0 {
+			allErrs = append(allErrs, fmt.Errorf("%s.backoffDelay must be positive", prefix))
+		}
+	}
+
+	if retry.MaxBackoff == nil {
+		def := enrollmentHookDefaultMaxBackoff
+		retry.MaxBackoff = &def
+	}
+	if retry.MaxBackoff != nil {
+		if d, err := time.ParseDuration(*retry.MaxBackoff); err != nil {
+			allErrs = append(allErrs, fmt.Errorf("%s.maxBackoff is not a valid duration: %w", prefix, err))
+		} else if d <= 0 {
+			allErrs = append(allErrs, fmt.Errorf("%s.maxBackoff must be positive", prefix))
+		}
+	}
+
+	if retry.Deadline == nil {
+		def := enrollmentHookDefaultDeadline
+		retry.Deadline = &def
+	}
+	if retry.Deadline != nil {
+		if d, err := time.ParseDuration(*retry.Deadline); err != nil {
+			allErrs = append(allErrs, fmt.Errorf("%s.deadline is not a valid duration: %w", prefix, err))
+		} else if d <= 0 {
+			allErrs = append(allErrs, fmt.Errorf("%s.deadline must be positive", prefix))
+		}
+	}
+
+	return allErrs
+}

@@ -1,0 +1,491 @@
+version: "2"
+
+run:
+  concurrency: 4
+  tests: true
+
+output:
+  formats:
+    text:
+      print-issued-lines: true
+      print-linter-name: true
+
+issues:
+  uniq-by-line: true
+
+linters:
+  enable:
+    - copyloopvar
+    - depguard
+    - errcheck
+    - gocyclo
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nolintlint
+    - staticcheck
+    - unconvert
+    - unused
+
+  settings:
+    staticcheck:
+      checks:
+        - "all"
+        - "-QF*"
+        - "-ST*"
+
+    govet:
+      settings:
+        printf:
+          funcs:
+            - Infof
+            - Warnf
+            - Errorf
+            - Fatalf
+
+    gosec:
+      excludes:
+        - G101
+        - G104
+        - G115
+        - G117
+        - G118
+        - G120
+        - G122
+        - G301
+        - G302
+        - G602
+        - G703
+        - G704
+        - G705
+
+    nolintlint:
+      allow-unused: true
+
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: "math/rand$"
+              desc: "Use math/rand/v2 instead"
+
+        server-no-agent:
+          list-mode: lax
+          files:
+            - "**/internal/helm/**"
+            - "**/internal/tasks/**"
+            - "**/internal/delta_worker/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/agent$"
+              desc: "Server-side code must not import agent internals"
+            - pkg: "github.com/flightctl/flightctl/internal/agent/"
+              desc: "Server-side code must not import agent internals"
+
+        service-no-api:
+          list-mode: lax
+          files:
+            - "**/internal/service/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/api$"
+              desc: "Use internal/domain instead of api/ in service layer"
+            - pkg: "github.com/flightctl/flightctl/api/"
+              desc: "Use internal/domain instead of api/ in service layer"
+
+        store-no-api:
+          list-mode: lax
+          files:
+            - "**/internal/store/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/api$"
+              desc: "Use internal/domain instead of api/ in store layer"
+            - pkg: "github.com/flightctl/flightctl/api/"
+              desc: "Use internal/domain instead of api/ in store layer"
+
+        imagebuilder-service-no-api:
+          list-mode: lax
+          files:
+            - "**/internal/imagebuilder_api/service/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/api$"
+              desc: "Use internal/imagebuilder_api/domain instead of api/ in imagebuilder service layer"
+            - pkg: "github.com/flightctl/flightctl/api/"
+              desc: "Use internal/imagebuilder_api/domain instead of api/ in imagebuilder service layer"
+
+        imagebuilder-store-no-api:
+          list-mode: lax
+          files:
+            - "**/internal/imagebuilder_api/store/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/api$"
+              desc: "Use internal/imagebuilder_api/domain instead of api/ in imagebuilder store layer"
+            - pkg: "github.com/flightctl/flightctl/api/"
+              desc: "Use internal/imagebuilder_api/domain instead of api/ in imagebuilder store layer"
+
+        imagebuilder-worker-no-api:
+          list-mode: lax
+          files:
+            - "**/internal/imagebuilder_worker/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/api$"
+              desc: "Use internal/imagebuilder_api/domain instead of api/ in imagebuilder worker"
+            - pkg: "github.com/flightctl/flightctl/api/"
+              desc: "Use internal/imagebuilder_api/domain instead of api/ in imagebuilder worker"
+
+        test-no-k8s-client:
+          list-mode: lax
+          files:
+            - "**/test/**"
+            - "!**/test/e2e/infra/k8s/**"
+          deny:
+            - pkg: "k8s.io/client-go/"
+              desc: "K8s client-go only in test/e2e/infra/k8s; use infra providers from tests"
+
+        # EDM-4844: only the owning service (plus composition/migration/metrics
+        # allowlists) may import each resource store package.
+        store-authprovider-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/service/authprovider/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/api_server/server.go"
+            - "!**/internal/imagebuilder_api/server.go"
+            - "!**/internal/remote_access_server/server.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/authprovider$"
+              desc: "Use internal/service/authprovider instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/authprovider/"
+              desc: "Use internal/service/authprovider instead of importing the store (EDM-4844)"
+
+        store-catalog-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/service/catalog/**"
+            - "!**/internal/service/common/**"
+            - "!**/internal/service/device/**"
+            - "!**/internal/service/fleet/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/api_server/server.go"
+            - "!**/internal/api_server/agentserver/server.go"
+            - "!**/internal/imagebuilder_api/server.go"
+            - "!**/internal/remote_access_server/server.go"
+            - "!**/internal/periodic_checker/server.go"
+            - "!**/internal/imagebuilder_worker/worker.go"
+            - "!**/internal/worker_server/server.go"
+            - "!**/internal/delta_worker/server.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/catalog$"
+              desc: "Use internal/service/catalog instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/catalog/"
+              desc: "Use internal/service/catalog instead of importing the store (EDM-4844)"
+
+        store-certificatesigningrequest-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/service/certificatesigningrequest/**"
+            - "!**/internal/service/enrollmentrequest/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/api_server/server.go"
+            - "!**/internal/api_server/agentserver/server.go"
+            - "!**/internal/imagebuilder_worker/worker.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/certificatesigningrequest$"
+              desc: "Use internal/service/certificatesigningrequest instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/certificatesigningrequest/"
+              desc: "Use internal/service/certificatesigningrequest instead of importing the store (EDM-4844)"
+
+        store-checkpoint-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/service/checkpoint/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/periodic_checker/server.go"
+            - "!**/internal/worker_server/server.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/checkpoint$"
+              desc: "Use internal/service/checkpoint instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/checkpoint/"
+              desc: "Use internal/service/checkpoint instead of importing the store (EDM-4844)"
+
+        store-dependencyref-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/service/dependencyref/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/periodic_checker/server.go"
+            - "!**/internal/worker_server/server.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/dependencyref$"
+              desc: "Use internal/service/dependencyref instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/dependencyref/"
+              desc: "Use internal/service/dependencyref instead of importing the store (EDM-4844)"
+
+        store-device-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/delta_worker/server.go"
+            - "!**/internal/delta_worker/service/status.go"
+            - "!**/internal/service/device/**"
+            - "!**/internal/service/catalog/**"
+            - "!**/internal/service/common/**"
+            - "!**/internal/service/enrollmentrequest/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/api_server/server.go"
+            - "!**/internal/api_server/agentserver/server.go"
+            - "!**/internal/remote_access_server/server.go"
+            - "!**/internal/periodic_checker/server.go"
+            - "!**/internal/worker_server/server.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/device$"
+              desc: "Use internal/service/device instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/device/"
+              desc: "Use internal/service/device instead of importing the store (EDM-4844)"
+
+        store-enrollmentrequest-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/service/enrollmentrequest/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/api_server/server.go"
+            - "!**/internal/api_server/agentserver/server.go"
+            - "!**/internal/imagebuilder_worker/worker.go"
+            - "!**/internal/worker_server/server.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/enrollmentrequest$"
+              desc: "Use internal/service/enrollmentrequest instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/enrollmentrequest/"
+              desc: "Use internal/service/enrollmentrequest instead of importing the store (EDM-4844)"
+
+        store-event-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/delta_worker/server.go"
+            - "!**/internal/service/event/**"
+            # events emits/persists via the event store (internal emitter used by other services).
+            - "!**/internal/service/events/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/api_server/server.go"
+            - "!**/internal/api_server/agentserver/server.go"
+            - "!**/internal/imagebuilder_api/server.go"
+            - "!**/internal/remote_access_server/server.go"
+            - "!**/internal/periodic_checker/server.go"
+            - "!**/internal/worker_server/server.go"
+            - "!**/internal/imagebuilder_worker/worker.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/event$"
+              desc: "Use internal/service/event instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/event/"
+              desc: "Use internal/service/event instead of importing the store (EDM-4844)"
+
+        store-fleet-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/delta_worker/server.go"
+            - "!**/internal/delta_worker/service/status.go"
+            - "!**/internal/service/fleet/**"
+            - "!**/internal/service/catalog/**"
+            - "!**/internal/service/common/**"
+            - "!**/internal/service/device/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/api_server/server.go"
+            - "!**/internal/api_server/agentserver/server.go"
+            - "!**/internal/remote_access_server/server.go"
+            - "!**/internal/periodic_checker/server.go"
+            - "!**/internal/worker_server/server.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/fleet$"
+              desc: "Use internal/service/fleet instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/fleet/"
+              desc: "Use internal/service/fleet instead of importing the store (EDM-4844)"
+
+        store-organization-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/service/organization/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/api_server/server.go"
+            - "!**/internal/api_server/agentserver/server.go"
+            - "!**/internal/imagebuilder_api/server.go"
+            - "!**/internal/remote_access_server/server.go"
+            - "!**/internal/periodic_checker/server.go"
+            - "!**/internal/imagebuilder_worker/worker.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/organization$"
+              desc: "Use internal/service/organization instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/organization/"
+              desc: "Use internal/service/organization instead of importing the store (EDM-4844)"
+
+        store-repository-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/delta_worker/server.go"
+            - "!**/internal/service/repository/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/api_server/server.go"
+            - "!**/internal/imagebuilder_api/server.go"
+            - "!**/internal/periodic_checker/server.go"
+            - "!**/internal/worker_server/server.go"
+            - "!**/internal/imagebuilder_worker/worker.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/repository$"
+              desc: "Use internal/service/repository instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/repository/"
+              desc: "Use internal/service/repository instead of importing the store (EDM-4844)"
+
+        store-resourcesync-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/service/resourcesync/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/api_server/server.go"
+            - "!**/internal/periodic_checker/server.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/resourcesync$"
+              desc: "Use internal/service/resourcesync instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/resourcesync/"
+              desc: "Use internal/service/resourcesync instead of importing the store (EDM-4844)"
+
+        store-syncstate-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/service/syncstate/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/periodic_checker/server.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/syncstate$"
+              desc: "Use internal/service/syncstate instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/syncstate/"
+              desc: "Use internal/service/syncstate instead of importing the store (EDM-4844)"
+
+        store-templateversion-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/delta_worker/server.go"
+            - "!**/internal/service/templateversion/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/api_server/server.go"
+            - "!**/internal/periodic_checker/server.go"
+            - "!**/internal/worker_server/server.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/templateversion$"
+              desc: "Use internal/service/templateversion instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/templateversion/"
+              desc: "Use internal/service/templateversion instead of importing the store (EDM-4844)"
+
+        store-vulnerabilityfinding-owners-only:
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/service/vulnerabilityfinding/**"
+            - "!**/cmd/**"
+            - "!**/internal/migration/**"
+            - "!**/internal/instrumentation/metrics/**"
+            - "!**/internal/api_server/server.go"
+            - "!**/internal/periodic_checker/server.go"
+            - "!**/test/**"
+          deny:
+            - pkg: "github.com/flightctl/flightctl/internal/store/vulnerabilityfinding$"
+              desc: "Use internal/service/vulnerabilityfinding instead of importing the store (EDM-4844)"
+            - pkg: "github.com/flightctl/flightctl/internal/store/vulnerabilityfinding/"
+              desc: "Use internal/service/vulnerabilityfinding instead of importing the store (EDM-4844)"
+
+  exclusions:
+    presets:
+      - std-error-handling
+      - common-false-positives
+      - legacy
+    rules:
+      - text: 'declaration of "err" shadows declaration at'
+        linters:
+          - govet
+      - text: "non-constant format string in call to"
+        linters:
+          - govet
+    paths:
+      - bin
+      - deploy
+      - docs
+      - examples
+      - hack
+      - packaging
+      - reports
+      - internal/auth/issuer/pam
+
+formatters:
+  enable:
+    - gci
+    - gofmt

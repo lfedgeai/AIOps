@@ -1,0 +1,60 @@
+name: "Integration tests"
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'release-*'
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration-tests:
+    runs-on: "ubuntu-24.04"
+    steps:
+      - name: Checkout current commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v46
+        with:
+          since_last_remote_commit: 'true'
+          files_ignore: |
+            .spelling
+            README.md
+            docs/**
+            .github/**
+            examples/**
+            packaging/rpm/**
+
+      - name: Setup all dependencies
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        uses: ./.github/actions/setup-dependencies
+
+      - name: Running integration tests
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: |
+          make integration-test INTEGRATION_PROCS=4
+        env:
+          DISABLE_FIPS: true
+
+      - name: Upload JUnit results
+        if: always() && steps.changed-files.outputs.any_changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-integration-test
+          path: reports/junit_integration_test.xml
+          if-no-files-found: ignore
+

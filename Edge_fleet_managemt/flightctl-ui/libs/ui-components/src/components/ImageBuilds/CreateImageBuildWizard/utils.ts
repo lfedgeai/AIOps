@@ -1,0 +1,283 @@
+import { type TFunction } from 'i18next';
+import * as Yup from 'yup';
+
+import {
+  ApiVersion,
+  BindingType,
+  ExportFormatType,
+  type ImageBuild,
+  type ImageBuildDestination,
+  type ImageBuildSource,
+  type ImageBuildUserConfiguration,
+  type ImageExport,
+  ResourceKind,
+} from '@flightctl/types/imagebuilder';
+import { validImageBuildName, validateSshPublicKey } from '../../form/validations';
+import { type ImageBuildFormValues } from './types';
+import { type ImageBuildWithExports } from '../../../types/extraTypes';
+import { defaultInitialValues } from '../../ImagePromotion/utils';
+import { getImagePromotionValidationSchema } from '../../ImagePromotion/utils';
+
+const OCI_IMAGE_NAME_MAX_LENGTH = 255;
+const OCI_IMAGE_NAME_REGEX = /^[a-z0-9]+(?:[._-]+[a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-]+[a-z0-9]+)*)*$/;
+const OCI_IMAGE_NAME_VALID_CHARS = /^[a-z0-9._/-]+$/;
+
+const OCI_IMAGE_TAG_MAX_LENGTH = 128;
+const OCI_IMAGE_TAG_REGEX = /^[\w][\w.-]{0,127}$/;
+const OCI_IMAGE_TAG_VALID_CHARS = /^[\w.-]+$/;
+
+const USERNAME_MAX_LENGTH = 256;
+const USERNAME_REGEX = /^[A-Za-z0-9_.][A-Za-z0-9_.-]*\$?$/;
+
+/** Returns an error message for image name: invalid chars, or invalid format. */
+export const getImageNameValidationError = (value: string, t: TFunction): string | undefined => {
+  if (!value) return undefined;
+  if (value.length > OCI_IMAGE_NAME_MAX_LENGTH) {
+    return t('Image name must not exceed {{max}} characters.', { max: OCI_IMAGE_NAME_MAX_LENGTH });
+  }
+  if (!OCI_IMAGE_NAME_VALID_CHARS.test(value)) {
+    return t('Image name may only contain alphanumeric characters, dots, underscores, hyphens, and slashes.');
+  }
+  if (!OCI_IMAGE_NAME_REGEX.test(value)) {
+    return t('Only alphanumeric characters are allowed at the start and end of each path component.');
+  }
+  return undefined;
+};
+
+export const getImageTagValidationError = (value: string, t: TFunction): string | undefined => {
+  if (!value) return undefined;
+  if (value.length > OCI_IMAGE_TAG_MAX_LENGTH) {
+    return t('Image tag must not exceed {{max}} characters.', { max: OCI_IMAGE_TAG_MAX_LENGTH });
+  }
+  if (!OCI_IMAGE_TAG_VALID_CHARS.test(value)) {
+    return t('Image tag may only contain letters, numbers, underscores, dots, and hyphens.');
+  }
+  if (!OCI_IMAGE_TAG_REGEX.test(value)) {
+    return t('Image tag must start with a letter, number, or underscore.');
+  }
+  return undefined;
+};
+
+const getUsernameValidationError = (username: string, t: TFunction): string | undefined => {
+  if (/\s/.test(username)) {
+    return t('Username cannot contain spaces');
+  }
+  if (username.length > USERNAME_MAX_LENGTH) {
+    return t('Username must not exceed {{max}} characters.', { max: USERNAME_MAX_LENGTH });
+  }
+  if (!USERNAME_REGEX.test(username)) {
+    return t(
+      "Must start with a letter, digit, underscore, or dot. It may include hyphens, and can end with a trailing '$'.",
+    );
+  }
+  return undefined;
+};
+
+const validImageBuildImageFields = (t: TFunction) =>
+  Yup.object<ImageBuildSource | ImageBuildDestination>({
+    repository: Yup.string().required(t('Repository is required')),
+    imageName: Yup.string()
+      .required(t('Image name is required'))
+      .test('oci-image-name', function (value) {
+        if (!value) return true;
+        const error = getImageNameValidationError(value, t);
+        return error ? this.createError({ message: error }) : true;
+      }),
+    imageTag: Yup.string()
+      .required(t('Image tag is required'))
+      .test('oci-image-tag', function (value) {
+        if (!value) return true;
+        const error = getImageTagValidationError(value, t);
+        return error ? this.createError({ message: error }) : true;
+      }),
+  });
+
+export const getValidationSchema = (t: TFunction) => {
+  return Yup.lazy((values: ImageBuildFormValues) => {
+    const imageBuildSchema = Yup.object<ImageBuildFormValues>({
+      buildName: validImageBuildName(t),
+      source: validImageBuildImageFields(t).required(t('Source image is required')),
+      destination: validImageBuildImageFields(t).required(t('Target image is required')),
+      bindingType: Yup.string<BindingType>().required(t('Binding type is required')),
+      userConfiguration: Yup.object<ImageBuildUserConfiguration>({
+        username: values.remoteAccessEnabled
+          ? Yup.string()
+              .required(t('Username is required'))
+              .test('flightctl-username', function (value) {
+                if (!value) return true;
+                const error = getUsernameValidationError(value, t);
+                return error ? this.createError({ message: error }) : true;
+              })
+          : Yup.string(),
+        publickey: values.remoteAccessEnabled
+          ? Yup.string()
+              .required(t('SSH public key is required'))
+              .test('flightctl-ssh-public-key', function (publicKey) {
+                if (!publicKey) {
+                  return true;
+                }
+                const error = validateSshPublicKey(publicKey, t);
+                return error ? this.createError({ message: error }) : true;
+              })
+          : Yup.string(),
+      }),
+    });
+
+    if (values.promoteToCatalog) {
+      return imageBuildSchema.concat(getImagePromotionValidationSchema(t));
+    }
+
+    return imageBuildSchema;
+  });
+};
+
+// Returns an array with one item per format (VMDK, QCOW2, ISO), where each item is either
+// undefined or the latest ImageExport for that format.
+const getImageExportsByFormat = (imageExports?: ImageExport[]): { imageExports: (ImageExport | undefined)[] } => {
+  const formatMap: Partial<Record<ExportFormatType, ImageExport>> = {};
+
+  imageExports?.forEach((ie) => {
+    const format = ie.spec.format;
+    const existing = formatMap[format];
+
+    if (!existing) {
+      formatMap[format] = ie;
+    } else {
+      // Compare creation timestamps to keep the most recent
+      const existingTimestamp = existing.metadata.creationTimestamp || '';
+      const currentTimestamp = ie.metadata.creationTimestamp;
+
+      if (existingTimestamp && currentTimestamp) {
+        const existingTime = new Date(existingTimestamp).getTime();
+        const currentTime = new Date(currentTimestamp).getTime();
+        if (currentTime > existingTime) {
+          formatMap[format] = ie;
+        }
+      }
+    }
+  });
+
+  return {
+    imageExports: [
+      formatMap[ExportFormatType.ExportFormatTypeISO],
+      formatMap[ExportFormatType.ExportFormatTypeQCOW2DiskContainer],
+      formatMap[ExportFormatType.ExportFormatTypeQCOW2],
+      formatMap[ExportFormatType.ExportFormatTypeVMDK],
+    ],
+  };
+};
+
+export const toImageBuildWithExports = (imageBuild: ImageBuild): ImageBuildWithExports => {
+  const allExports = imageBuild.imageexports || [];
+  const imageExportsByFormat = getImageExportsByFormat(allExports);
+  const latestExports = [...imageExportsByFormat.imageExports];
+
+  // Disable the rule as we want to omit the "imageexports" field
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { imageexports, ...imageBuildWithoutExports } = imageBuild;
+  return {
+    ...imageBuildWithoutExports,
+    imageExports: latestExports,
+  };
+};
+
+export const getInitialValues = (): ImageBuildFormValues => {
+  return {
+    ...defaultInitialValues,
+    promoteToCatalog: true,
+    buildName: '',
+    source: {
+      repository: '',
+      imageName: '',
+      imageTag: '',
+    },
+    destination: {
+      repository: '',
+      imageName: '',
+      imageTag: '',
+    },
+    bindingType: BindingType.BindingTypeEarly,
+    exportFormats: [],
+    onboarding: false,
+    remoteAccessEnabled: false,
+    userConfiguration: {
+      username: '',
+      publickey: '',
+    },
+  };
+};
+
+// Generates a random 6-digit hex hash
+const getHash = () =>
+  Math.floor(Math.random() * 0x1000000)
+    .toString(16)
+    .padStart(6, '0');
+
+const generateExportName = (imageBuildName: string, format: ExportFormatType) => {
+  const formatKey = format === ExportFormatType.ExportFormatTypeQCOW2DiskContainer ? 'qcow2-disk' : format;
+  return `${imageBuildName}-${formatKey}-${getHash()}`;
+};
+
+export const getImageBuildResource = (values: ImageBuildFormValues): ImageBuild => {
+  const name = values.buildName;
+  const spec: ImageBuild['spec'] = {
+    source: values.source,
+    destination: values.destination,
+    binding: {
+      type: values.bindingType,
+    },
+  };
+
+  if (values.onboarding) {
+    spec.onboarding = true;
+  }
+
+  // Allow the user to uncheck the toggle without having cleared the fields
+  const username = values.userConfiguration.username || '';
+  const publickey = values.userConfiguration.publickey || '';
+  if (values.remoteAccessEnabled && username && publickey) {
+    spec.userConfiguration = {
+      username,
+      publickey,
+    };
+  }
+
+  return {
+    apiVersion: ApiVersion.ApiVersionV1alpha1,
+    kind: ResourceKind.IMAGE_BUILD,
+    metadata: {
+      name,
+    },
+    spec,
+  };
+};
+
+export const getImageExportResource = (imageBuildName: string, format: ExportFormatType): ImageExport => {
+  const exportName = generateExportName(imageBuildName, format);
+
+  return {
+    apiVersion: ApiVersion.ApiVersionV1alpha1,
+    kind: ResourceKind.IMAGE_EXPORT,
+    metadata: {
+      name: exportName,
+    },
+    spec: {
+      source: {
+        type: 'imageBuild',
+        imageBuildRef: imageBuildName,
+      },
+      format,
+    },
+  };
+};
+
+export const getImageExportResources = (
+  values: Pick<ImageBuildFormValues, 'exportFormats'>,
+  imageBuildName: string,
+): ImageExport[] => {
+  if (!values.exportFormats || values.exportFormats.length === 0) {
+    return [];
+  }
+
+  return values.exportFormats.map((format) => getImageExportResource(imageBuildName, format));
+};

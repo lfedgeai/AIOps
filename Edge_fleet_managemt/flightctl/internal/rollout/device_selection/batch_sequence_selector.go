@@ -1,0 +1,643 @@
+package device_selection
+
+import (
+	"context"
+	"crypto/md5" // #nosec G401,G501
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/service/common"
+	deviceservice "github.com/flightctl/flightctl/internal/service/device"
+	fleetservice "github.com/flightctl/flightctl/internal/service/fleet"
+	"github.com/flightctl/flightctl/internal/store/selector"
+	"github.com/flightctl/flightctl/internal/util"
+	"github.com/google/uuid"
+	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
+)
+
+type querySelectorParts struct {
+	fieldSelectorList      []string
+	labelSelectorList      []string
+	annotationSelectorList []string
+}
+
+func newQuerySelectorParts() *querySelectorParts {
+	return &querySelectorParts{}
+}
+
+func (q *querySelectorParts) listParams() (domain.ListDevicesParams, *selector.AnnotationSelector) {
+	var ret domain.ListDevicesParams
+	var annotationSelector *selector.AnnotationSelector
+
+	if len(q.fieldSelectorList) > 0 {
+		ret.FieldSelector = lo.ToPtr(strings.Join(q.fieldSelectorList, ","))
+	}
+	if len(q.labelSelectorList) > 0 {
+		ret.LabelSelector = lo.ToPtr(strings.Join(q.labelSelectorList, ","))
+	}
+	if len(q.annotationSelectorList) > 0 {
+		annotationSelector = selector.NewAnnotationSelectorOrDie(strings.Join(q.annotationSelectorList, ","))
+	}
+	return ret, annotationSelector
+}
+
+func (q *querySelectorParts) withSelectedForRollout() *querySelectorParts {
+	q.annotationSelectorList = append(q.annotationSelectorList, domain.MatchExpression{
+		Key:      domain.DeviceAnnotationSelectedForRollout,
+		Operator: domain.Exists,
+	}.String())
+	return q
+}
+
+func (q *querySelectorParts) withOwner(fleetName string) *querySelectorParts {
+	q.fieldSelectorList = append(q.fieldSelectorList, "metadata.owner"+"="+util.ResourceOwner(domain.FleetKind, fleetName))
+	return q
+}
+
+func (q *querySelectorParts) withLabelSelector(l *domain.LabelSelector) *querySelectorParts {
+	if l != nil {
+		q.labelSelectorList = append(q.labelSelectorList, lo.MapToSlice(lo.FromPtr(l.MatchLabels), func(k, v string) string { return k + "=" + v })...)
+		q.labelSelectorList = append(q.labelSelectorList, lo.Map(lo.FromPtr(l.MatchExpressions), func(e domain.MatchExpression, _ int) string { return e.String() })...)
+	}
+	return q
+}
+
+func (q *querySelectorParts) withoutRolledOut(templateVersionName string) *querySelectorParts {
+	q.annotationSelectorList = append(q.annotationSelectorList, domain.MatchExpression{
+		Key:      domain.DeviceAnnotationTemplateVersion,
+		Operator: domain.NotIn,
+		Values:   lo.ToPtr([]string{templateVersionName}),
+	}.String())
+	return q
+}
+
+func (q *querySelectorParts) withRolledOut(templateVersionName string) *querySelectorParts {
+	q.annotationSelectorList = append(q.annotationSelectorList, domain.MatchExpression{
+		Key:      domain.DeviceAnnotationTemplateVersion,
+		Operator: domain.In,
+		Values:   lo.ToPtr([]string{templateVersionName}),
+	}.String())
+	return q
+}
+
+func (q *querySelectorParts) withoutDisconnected() *querySelectorParts {
+	q.fieldSelectorList = append(q.fieldSelectorList, "status.summary.status!=Unknown")
+	return q
+}
+
+func newBatchSequenceSelector(sequence domain.BatchSequence, updateTimeout time.Duration, deviceSvc deviceservice.Service, fleetSvc fleetservice.Service, orgId uuid.UUID, fleet *domain.Fleet, templateVersionName string, log logrus.FieldLogger) RolloutDeviceSelector {
+	return &batchSequenceSelector{
+		BatchSequence:       sequence,
+		deviceSvc:           deviceSvc,
+		fleetSvc:            fleetSvc,
+		orgId:               orgId,
+		fleetName:           lo.FromPtr(fleet.Metadata.Name),
+		fleet:               fleet,
+		templateVersionName: templateVersionName,
+		updateTimeout:       updateTimeout,
+		log:                 log,
+	}
+}
+
+type batchSequenceSelector struct {
+	domain.BatchSequence
+	deviceSvc           deviceservice.Service
+	fleetSvc            fleetservice.Service
+	orgId               uuid.UUID
+	fleet               *domain.Fleet
+	fleetName           string
+	templateVersionName string
+	updateTimeout       time.Duration
+	log                 logrus.FieldLogger
+}
+
+func (b *batchSequenceSelector) IsRolloutNew() bool {
+	dtv, exists := b.fleet.GetAnnotation(domain.FleetAnnotationDeployingTemplateVersion)
+	if !exists {
+		return true
+	}
+
+	// If the deploying template version is not the same as the template version of the fleet,
+	// then the rollout is considered new
+	return b.templateVersionName != dtv
+}
+
+func (b *batchSequenceSelector) getPreviousBatchSequenceDigest() (string, bool) {
+	return b.fleet.GetAnnotation(domain.FleetAnnotationDeviceSelectionConfigDigest)
+}
+
+func (b *batchSequenceSelector) batchSequenceDigest() (string, error) {
+	marshalled, err := json.Marshal(&b.BatchSequence)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", md5.Sum(marshalled)), nil // #nosec G401,G501
+}
+
+func (b *batchSequenceSelector) IsDefinitionUpdated() (bool, error) {
+	previousBatchSequenceDigest, exists := b.getPreviousBatchSequenceDigest()
+	if !exists {
+		return true, nil
+	}
+	currentBatchSequenceDigest, err := b.batchSequenceDigest()
+	if err != nil {
+		return false, err
+	}
+	return previousBatchSequenceDigest != currentBatchSequenceDigest, nil
+}
+
+func (b *batchSequenceSelector) OnNewRollout(ctx context.Context) error {
+	b.log.Infof("%v/%s: OnNewRollout. Template version %s", b.orgId, b.fleetName, b.templateVersionName)
+	batchSequenceDigest, err := b.batchSequenceDigest()
+	if err != nil {
+		return err
+	}
+	annotations := map[string]string{
+		domain.FleetAnnotationDeployingTemplateVersion:    b.templateVersionName,
+		domain.FleetAnnotationDeviceSelectionConfigDigest: batchSequenceDigest,
+	}
+	return common.ApiStatusToErr(b.fleetSvc.UpdateFleetAnnotations(ctx, b.orgId, b.fleetName, annotations, nil))
+}
+
+func (b *batchSequenceSelector) getCurrentBatch(ctx context.Context) (int, error) {
+	fleet, status := b.fleetSvc.GetFleet(ctx, b.orgId, b.fleetName, domain.GetFleetParams{})
+	if status.Code != http.StatusOK {
+		return 0, common.ApiStatusToErr(status)
+	}
+	annotations := lo.FromPtr(fleet.Metadata.Annotations)
+	if annotations == nil {
+		return 0, fmt.Errorf("couldn't get fleet %s/%s", b.orgId.String(), b.fleetName)
+	}
+	currentBatchStr, exists := annotations[domain.FleetAnnotationBatchNumber]
+	if !exists {
+		return -1, nil
+	}
+	currentBatch, err := strconv.ParseInt(currentBatchStr, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return int(currentBatch), nil
+}
+
+func (b *batchSequenceSelector) setCurrentBatch(ctx context.Context, currentBatch int) error {
+	b.log.Infof("%v/%s: setCurrentBatch. Batch number %d", b.orgId, b.fleetName, currentBatch)
+	annotations := map[string]string{
+		domain.FleetAnnotationBatchNumber: strconv.FormatInt(int64(currentBatch), 10),
+	}
+	return common.ApiStatusToErr(b.fleetSvc.UpdateFleetAnnotations(ctx, b.orgId, b.fleetName, annotations, nil))
+}
+
+func (b *batchSequenceSelector) HasMoreSelections(ctx context.Context) (bool, error) {
+	currentBatch, err := b.getCurrentBatch(ctx)
+	if err != nil {
+		return false, err
+	}
+	return currentBatch <= len(lo.FromPtr(b.Sequence)), nil
+}
+
+// Advance to the next batch
+func (b *batchSequenceSelector) Advance(ctx context.Context) error {
+	b.log.Infof("%v/%s:In Advance", b.orgId, b.fleetName)
+	currentBatch, err := b.getCurrentBatch(ctx)
+	if err != nil {
+		return err
+	}
+	selection, err := b.currentSelection(ctx, currentBatch)
+	if err != nil {
+		return err
+	}
+
+	// Remove the marking for the current batch devices
+	if err = selection.unmark(ctx); err != nil {
+		return err
+	}
+
+	// Indicate that the batch is not approved
+	if err = b.clearApproval(ctx); err != nil {
+		return err
+	}
+	nextBatch := currentBatch + 1
+	if nextBatch > len(lo.FromPtr(b.Sequence))+1 {
+		return fmt.Errorf("batch number overflow")
+	}
+	selection, err = b.currentSelection(ctx, nextBatch)
+	if err != nil {
+		return err
+	}
+
+	// Save the new batch number in the database
+	if err = b.setCurrentBatch(ctx, nextBatch); err != nil {
+		return fmt.Errorf("failed to set current batch: %w", err)
+	}
+	// Mark the devices that participate in the batch
+	switch {
+	case nextBatch < len(lo.FromPtr(b.Sequence)):
+		if err = selection.markBatchSelection(ctx); err != nil {
+			return fmt.Errorf("failed to mark devices current batch: %w", err)
+		}
+	case nextBatch == len(lo.FromPtr(b.Sequence)):
+		if err = selection.markRemainingDevices(ctx); err != nil {
+			return fmt.Errorf("failed to mark devices current batch: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (b *batchSequenceSelector) clearApproval(ctx context.Context) error {
+	return common.ApiStatusToErr(b.fleetSvc.UpdateFleetAnnotations(ctx, b.orgId, b.fleetName, make(map[string]string), []string{domain.FleetAnnotationRolloutApproved}))
+}
+
+func (b *batchSequenceSelector) resetApprovalAndCompletionReport(ctx context.Context) error {
+	annotations := make(map[string]string)
+	if !lo.HasKey(lo.FromPtr(b.fleet.Metadata.Annotations), domain.FleetAnnotationRolloutApprovalMethod) {
+
+		// TODO: Return to manual when manual approval will be supported by the UI
+		annotations[domain.FleetAnnotationRolloutApprovalMethod] = "automatic"
+	}
+	return common.ApiStatusToErr(b.fleetSvc.UpdateFleetAnnotations(ctx, b.orgId, b.fleetName, annotations, []string{
+		domain.FleetAnnotationRolloutApproved, domain.FleetAnnotationLastBatchCompletionReport}))
+}
+
+func (b *batchSequenceSelector) batchName(currentBatch int) string {
+	printableBatchNum := currentBatch + 1
+	switch {
+	case currentBatch == -1:
+		return domain.PreliminaryBatchName
+	case currentBatch >= 0 && currentBatch < len(lo.FromPtr(b.Sequence)):
+		return fmt.Sprintf("batch %d", printableBatchNum)
+	case currentBatch == len(lo.FromPtr(b.Sequence)):
+		return domain.FinalImplicitBatchName
+	default:
+		return fmt.Sprintf("unexpected batch %d", printableBatchNum)
+	}
+}
+
+func (b *batchSequenceSelector) currentSelection(ctx context.Context, currentBatch int) (*batchSelection, error) {
+	var batch *domain.Batch
+	if currentBatch < -1 || currentBatch > len(lo.FromPtr(b.Sequence))+1 {
+		return nil, fmt.Errorf("batch number out of bounds")
+	}
+	fleet, status := b.fleetSvc.GetFleet(ctx, b.orgId, b.fleetName, domain.GetFleetParams{})
+	if status.Code != http.StatusOK {
+		return nil, common.ApiStatusToErr(status)
+	}
+	if currentBatch >= 0 && currentBatch < len(lo.FromPtr(b.Sequence)) {
+		batch = lo.ToPtr(lo.FromPtr(b.Sequence)[currentBatch])
+	}
+	batchName := b.batchName(currentBatch)
+	return &batchSelection{
+		batch:               batch,
+		batchNum:            currentBatch,
+		batchName:           batchName,
+		deviceSvc:           b.deviceSvc,
+		fleetSvc:            b.fleetSvc,
+		orgId:               b.orgId,
+		fleetName:           b.fleetName,
+		templateVersionName: b.templateVersionName,
+		fleet:               fleet,
+		updateTimeout:       b.updateTimeout,
+		log:                 b.log,
+		conditionEmitter:    newConditionEmitter(b.orgId, b.fleetName, batchName, b.fleetSvc),
+	}, nil
+}
+
+func (b *batchSequenceSelector) CurrentSelection(ctx context.Context) (Selection, error) {
+	currentBatch, err := b.getCurrentBatch(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return b.currentSelection(ctx, currentBatch)
+}
+
+func (b *batchSequenceSelector) UnmarkRolloutSelection(ctx context.Context) error {
+	return common.ApiStatusToErr(b.deviceSvc.UnmarkDevicesRolloutSelection(ctx, b.orgId, b.fleetName))
+}
+
+func (b *batchSequenceSelector) Reset(ctx context.Context) error {
+	b.log.Infof("%v/%s:In Reset", b.orgId, b.fleetName)
+	if err := b.UnmarkRolloutSelection(ctx); err != nil {
+		return err
+	}
+	if err := b.resetApprovalAndCompletionReport(ctx); err != nil {
+		return err
+	}
+	return b.setCurrentBatch(ctx, -1)
+}
+
+type batchSelection struct {
+	batch               *domain.Batch
+	batchNum            int
+	batchName           string
+	deviceSvc           deviceservice.Service
+	fleetSvc            fleetservice.Service
+	orgId               uuid.UUID
+	fleetName           string
+	templateVersionName string
+	fleet               *domain.Fleet
+	updateTimeout       time.Duration
+	conditionEmitter    *conditionEmitter
+	log                 logrus.FieldLogger
+}
+
+func (b *batchSelection) IsApproved() bool {
+	approvedStr, exists := b.fleet.GetAnnotation(domain.FleetAnnotationRolloutApproved)
+	if !exists {
+		return false
+	}
+	return approvedStr == "true"
+}
+
+func (b *batchSelection) IsRolledOut(ctx context.Context) (bool, error) {
+	// A rolled out device is one that its template version is the same as the expected template version
+	// A rolled out batch is a batch that for every of its devices there is no device that its template
+	// version is not equal to the expected template version
+	newQuerySelectorParts().withOwner(b.fleetName).withSelectedForRollout().withoutRolledOut(b.templateVersionName).listParams()
+	listParams, annotationSelector := newQuerySelectorParts().
+		withOwner(b.fleetName).
+		withSelectedForRollout().
+		withoutRolledOut(b.templateVersionName).
+		listParams()
+	count, status := b.deviceSvc.CountDevices(ctx, b.orgId, listParams, annotationSelector)
+	if status.Code != http.StatusOK {
+		return false, common.ApiStatusToErr(status)
+	}
+	return count == 0, nil
+}
+
+func (b *batchSelection) getSuccessThreshold() (int, error) {
+	var (
+		ret int
+		err error
+	)
+	successThreshold := b.fleet.Spec.RolloutPolicy.SuccessThreshold
+	if b.batch != nil && b.batch.SuccessThreshold != nil {
+		successThreshold = b.batch.SuccessThreshold
+	}
+	if successThreshold != nil {
+		ret, err = util.PercentageAsInt(*successThreshold)
+		if err != nil {
+			return 0, err
+		}
+	} else {
+		ret = DefaultSuccessThreshold
+	}
+	return ret, nil
+}
+
+func (b *batchSelection) getLastCompletionReport() (domain.RolloutBatchCompletionReport, bool, error) {
+	var report domain.RolloutBatchCompletionReport
+	completionReportStr, exists := b.fleet.GetAnnotation(domain.FleetAnnotationLastBatchCompletionReport)
+	if !exists {
+		return report, false, nil
+	}
+	if err := json.Unmarshal([]byte(completionReportStr), &report); err != nil {
+		return report, false, fmt.Errorf("failed to unmarshal completion report: %w", err)
+	}
+	return report, true, nil
+}
+
+func (b *batchSelection) getLastSuccessPercentage() (int, bool, error) {
+	report, exists, err := b.getLastCompletionReport()
+	if err != nil || !exists {
+		return 0, exists, err
+	}
+	return int(report.SuccessPercentage), true, nil
+}
+
+func (b *batchSelection) isApprovalMethodAutomatic() bool {
+	approvalMethod, _ := b.fleet.GetAnnotation(domain.FleetAnnotationRolloutApprovalMethod)
+	return approvalMethod == "automatic"
+}
+
+// A batch may be approved atotmatically only if its approval method is "automatic" and the
+// success percentage of the previous batch is greater or equal to the success threshold
+func (b *batchSelection) MayApproveAutomatically() (bool, error) {
+	if b.batchNum == -1 {
+		return true, nil
+	}
+	if !b.isApprovalMethodAutomatic() {
+		return false, nil
+	}
+	successThreshold, err := b.getSuccessThreshold()
+	if err != nil {
+		return false, err
+	}
+	lastSuccessPercentage, exists, err := b.getLastSuccessPercentage()
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return true, nil
+	}
+
+	return lastSuccessPercentage >= successThreshold, nil
+}
+
+func (b *batchSelection) Approve(ctx context.Context) error {
+	b.log.Infof("%v/%s:In Approve", b.orgId, b.fleetName)
+	annotations := map[string]string{
+		domain.FleetAnnotationRolloutApproved: "true",
+	}
+	return common.ApiStatusToErr(b.fleetSvc.UpdateFleetAnnotations(ctx, b.orgId, b.fleetName, annotations, nil))
+}
+
+// A group of device is considered as completed successfully if the rendered template version is the same as the
+// template version of the fleet and same-rendered-version is true
+func (b *batchSelection) isUpdateCompletedSuccessfully(c domain.DeviceCompletionCount) bool {
+	return c.SameTemplateVersion && c.SameRenderedVersion
+}
+
+func (b *batchSelection) isFailed(c domain.DeviceCompletionCount) bool {
+	return c.SameTemplateVersion && c.UpdatingReason == domain.UpdateStateError
+}
+
+func (b *batchSelection) isTimedOut(c domain.DeviceCompletionCount) bool {
+	return c.SameTemplateVersion && c.UpdateTimedOut
+}
+
+// IsComplete checks is the total number of devices in a batch is the same as the number of completed
+func (b *batchSelection) IsComplete(ctx context.Context) (bool, error) {
+	counts, status := b.deviceSvc.GetDeviceCompletionCounts(ctx, b.orgId, util.ResourceOwner(domain.FleetKind, b.fleetName), b.templateVersionName, &b.updateTimeout)
+	if status.Code != http.StatusOK {
+		return false, common.ApiStatusToErr(status)
+	}
+
+	// A device is counted in total if it has completed successfully, or it is in update.
+	total := lo.Sum(lo.Map(counts, func(c domain.DeviceCompletionCount, _ int) int64 {
+		return c.Count
+	}))
+
+	// A device is counted as completed if it has completed successfully or, it is in error state or its update is timed out
+	complete := lo.Sum(lo.Map(counts, func(c domain.DeviceCompletionCount, _ int) int64 {
+		return lo.Ternary(b.isUpdateCompletedSuccessfully(c) || c.SameTemplateVersion && (c.UpdatingReason == domain.UpdateStateError || c.UpdateTimedOut), c.Count, 0)
+	}))
+	return total == complete, nil
+}
+
+func (b *batchSelection) completionReport(counts []domain.DeviceCompletionCount) domain.RolloutBatchCompletionReport {
+	ret := domain.RolloutBatchCompletionReport{
+		BatchName: b.batchName,
+	}
+
+	for _, c := range counts {
+		ret.Total += c.Count
+		if b.isUpdateCompletedSuccessfully(c) {
+			ret.Successful += c.Count
+		} else if b.isFailed(c) {
+			ret.Failed += c.Count
+		} else if b.isTimedOut(c) {
+			ret.TimedOut += c.Count
+		}
+	}
+	ret.SuccessPercentage = 100
+	if ret.Total != 0 {
+		ret.SuccessPercentage = ret.Successful * 100 / ret.Total
+	}
+	return ret
+}
+
+func (b *batchSelection) SetCompletionReport(ctx context.Context) error {
+	counts, status := b.deviceSvc.GetDeviceCompletionCounts(ctx, b.orgId, util.ResourceOwner(domain.FleetKind, b.fleetName), b.templateVersionName, &b.updateTimeout)
+	if status.Code != http.StatusOK {
+		return common.ApiStatusToErr(status)
+	}
+
+	report := b.completionReport(counts)
+	if report.Total == 0 {
+		return nil
+	}
+	out, err := json.Marshal(&report)
+	if err != nil {
+		return fmt.Errorf("failed to marshal completion report: %w", err)
+	}
+	outStr := string(out)
+	b.log.Infof("%v/%s:In SetCompletionReport: %s", b.orgId, b.fleetName, outStr)
+	annotations := map[string]string{
+		domain.FleetAnnotationLastBatchCompletionReport: outStr,
+	}
+	return common.ApiStatusToErr(b.fleetSvc.UpdateFleetAnnotations(ctx, b.orgId, b.fleetName, annotations, nil))
+}
+
+func (b *batchSelection) batchCounts(ctx context.Context) (int, int, error) {
+	parts := newQuerySelectorParts().
+		withOwner(b.fleetName).
+		withLabelSelector(b.batch.Selector)
+	listParams, annotationSelector := parts.listParams()
+	total, status := b.deviceSvc.CountDevices(ctx, b.orgId, listParams, annotationSelector)
+	if status.Code != http.StatusOK {
+		return 0, 0, common.ApiStatusToErr(status)
+	}
+	listParams, annotationSelector = parts.withRolledOut(b.templateVersionName).listParams()
+	rolledOut, status := b.deviceSvc.CountDevices(ctx, b.orgId, listParams, annotationSelector)
+	if status.Code != http.StatusOK {
+		return 0, 0, common.ApiStatusToErr(status)
+	}
+	return int(rolledOut), int(total), nil
+}
+
+func (b *batchSelection) calculateLimit(ctx context.Context) (*int, error) {
+	if b.batch == nil || b.batch.Limit == nil {
+		return nil, nil
+	}
+	unifiedBatchLimit := *b.batch.Limit
+	intBatchLimit, intErr := unifiedBatchLimit.AsBatchLimit1()
+	if intErr == nil {
+		return &intBatchLimit, nil
+	}
+	percentageStr, pErr := unifiedBatchLimit.AsPercentage()
+	if pErr != nil {
+		return nil, errors.Join(intErr, pErr)
+	}
+	percentage, err := util.PercentageAsInt(percentageStr)
+	if err != nil {
+		return nil, err
+	}
+	if percentage == 100 {
+		// Ignore limit
+		return nil, nil
+	}
+	rolledOut, total, err := b.batchCounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	res := int(math.Round(float64(total)*float64(percentage)/100.0)) - rolledOut
+	return &res, nil
+}
+
+func (b *batchSelection) unmark(ctx context.Context) error {
+	return common.ApiStatusToErr(b.deviceSvc.UnmarkDevicesRolloutSelection(ctx, b.orgId, b.fleetName))
+}
+
+func (b *batchSelection) markBatchSelection(ctx context.Context) error {
+	if b.batch == nil {
+		return nil
+	}
+	limit, err := b.calculateLimit(ctx)
+	if err != nil {
+		return err
+	}
+	if limit != nil && *limit <= 0 {
+		// Limit already reached.  Do not mark any device for rollout
+		return nil
+	}
+	listParams, annotationSelector := newQuerySelectorParts().
+		withOwner(b.fleetName).
+		withLabelSelector(b.batch.Selector).
+		withoutRolledOut(b.templateVersionName).
+		withoutDisconnected().
+		listParams()
+	return common.ApiStatusToErr(b.deviceSvc.MarkDevicesRolloutSelection(ctx, b.orgId, listParams, annotationSelector, limit))
+}
+
+func (b *batchSelection) markRemainingDevices(ctx context.Context) error {
+	listParams, annotationSelector := newQuerySelectorParts().
+		withOwner(b.fleetName).
+		withoutRolledOut(b.templateVersionName).
+		listParams()
+	return common.ApiStatusToErr(b.deviceSvc.MarkDevicesRolloutSelection(ctx, b.orgId, listParams, annotationSelector, nil))
+}
+
+func (b *batchSelection) Devices(ctx context.Context) (*domain.DeviceList, error) {
+	listParams, annotationSelector := newQuerySelectorParts().
+		withOwner(b.fleetName).
+		withSelectedForRollout().
+		listParams()
+	result, status := b.deviceSvc.ListDevices(ctx, b.orgId, listParams, annotationSelector)
+	return result, common.ApiStatusToErr(status)
+}
+
+func (b *batchSelection) OnRollout(ctx context.Context) error {
+	return b.conditionEmitter.active(ctx)
+}
+
+func (b *batchSelection) OnSuspended(ctx context.Context) error {
+	if b.isApprovalMethodAutomatic() {
+		report, exists, err := b.getLastCompletionReport()
+		if err != nil {
+			return fmt.Errorf("failed to get last completion report: %w", err)
+		}
+		if !exists {
+			return fmt.Errorf("last completion report doesn't exist")
+		}
+		successThreshold, err := b.getSuccessThreshold()
+		if err != nil {
+			return fmt.Errorf("failed to get succuess threshold: %w", err)
+		}
+		return b.conditionEmitter.suspended(ctx, successThreshold, report)
+	} else {
+		return b.conditionEmitter.waiting(ctx)
+	}
+}
+
+func (b *batchSelection) OnFinish(ctx context.Context) error {
+	return b.conditionEmitter.inactive(ctx)
+}

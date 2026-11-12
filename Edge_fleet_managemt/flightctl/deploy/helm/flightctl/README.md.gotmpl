@@ -1,0 +1,318 @@
+# {{ .Name }}
+
+![Version: {{ .Version }}](https://img.shields.io/badge/Version-{{ .Version | replace "-" "--" }}-informational?style=flat-square) ![Type: {{ .Type }}](https://img.shields.io/badge/Type-{{ .Type }}-informational?style=flat-square) {{ if .AppVersion }}![AppVersion: {{ .AppVersion }}](https://img.shields.io/badge/AppVersion-{{ .AppVersion | replace "-" "--" }}-informational?style=flat-square){{ end }}
+
+{{ .Description }}
+
+{{ if .Home }}**Homepage:** <{{ .Home }}>{{ end }}
+
+{{ if .Sources }}
+**Sources:**
+{{- range .Sources }}
+- <{{ . }}>
+{{- end }}
+{{ end }}
+
+{{ if .Maintainers }}
+## Maintainers
+
+| Name | Email | Url |
+| ---- | ------ | --- |
+{{- range .Maintainers }}
+| {{ if .Name }}{{ .Name }}{{ end }} | {{ if .Email }}<{{ .Email }}>{{ end }} | {{ if .Url }}<{{ .Url }}>{{ end }} |
+{{- end }}
+{{ end }}
+
+{{ if .Dependencies }}
+## Requirements
+
+| Repository | Name | Version |
+|------------|------|---------|
+{{- range .Dependencies }}
+| {{ if .Repository }}{{ .Repository }}{{ else }}{{ .Name }}{{ end }} | {{ .Name }} | {{ .Version }} |
+{{- end }}
+{{ end }}
+
+## Prerequisites
+
+### Pod Security Standards
+
+The `flightctl-imagebuilder-worker` component requires elevated privileges to build OS images using osbuild/bootc. It needs:
+
+- Privileged container access
+- Host device access (`/dev`, `/sys`, `/lib/modules`)
+- Capabilities: `SYS_ADMIN`, `MKNOD`, `SYS_CHROOT`, `SETFCAP`
+
+The `flightctl-delta-worker` component runs `oci-delta` to generate OS and application image deltas. The container must run as root and add `SYS_ADMIN`. A restricted policy assigns a non-root uid, and delta generation then fails while creating the delta.
+
+If your namespace enforces the "restricted" or "baseline" Pod Security Standard, you will see warnings during deployment. To suppress these warnings, configure the namespace labels:
+
+```bash
+kubectl label namespace <namespace> \
+  pod-security.kubernetes.io/enforce=privileged \
+  pod-security.kubernetes.io/warn=privileged \
+  pod-security.kubernetes.io/audit=privileged
+```
+
+On OpenShift clusters, the chart automatically creates a security context constraint (SCC) for the `flightctl-imagebuilder-worker` and `flightctl-delta-worker` service accounts.
+
+For additional ImageBuilder Worker configuration options (custom RPM repositories, RHEL entitlement certificates), see the [ImageBuilder configuration documentation](../../../docs/user/installing/configuring-imagebuilder.md).
+
+SBOM defaults (see `imageBuilderWorker.sbom` and `imageBuilderWorker.serviceImages.syft` in the parameters table): when `serviceImages.syft.image` is empty, the worker uses `docker.io/anchore/syft:v1.44.0`. Podman and bootc-image-builder use their own defaults when those image fields are empty.
+
+If you don't need image building capabilities, you can disable the imagebuilder-worker:
+
+```yaml
+imageBuilderWorker:
+  enabled: false
+```
+
+## Installation
+
+### Install Chart
+
+```bash
+# Install with default values
+helm install my-{{ .Name }} oci://quay.io/flightctl/charts/{{ .Name }}
+
+# Install with custom values
+helm install my-{{ .Name }} oci://quay.io/flightctl/charts/{{ .Name }} -f values.yaml
+
+# Install for development environment
+helm install my-{{ .Name }} oci://quay.io/flightctl/charts/{{ .Name }} -f values.dev.yaml
+
+# Install for ACM (Advanced Cluster Management) integration
+helm install my-{{ .Name }} oci://quay.io/flightctl/charts/{{ .Name }} -f values.acm.yaml
+
+# Install in specific namespace
+helm install my-{{ .Name }} oci://quay.io/flightctl/charts/{{ .Name }} --namespace flightctl --create-namespace
+```
+
+{{ if eq .Name "flightctl" }}
+### Install from the OpenShift Software Catalog
+
+Prerequisites:
+
+- You have access to an OpenShift Kubernetes cluster (4.19+) with cluster admin permissions.
+
+Procedure:
+
+1. In the OpenShift console with the **Administrator** view selected, navigate to **Home > Projects**, click **Create Project**, enter `flightctl` as the project name, and click **Create**.
+
+2. Navigate to **Ecosystem > Software Catalog**. In the search bar below **All Items**, enter `flightcontrol`, select the **Flight Control** tile, and click **Create**.
+
+3. Verify that the selected project is `flightctl`. Optionally select a Flight Control version to install, then click **Create**.
+
+4. Navigate to **Workloads > Pods** and wait for the pods to reach `Running` or `Completed` state.
+
+5. Navigate to **Networking > Routes** and select the `flightctl-ui` route.
+
+6. Select the URL shown under **Location** to access the Flight Control UI with your current user account and credentials.
+
+If you need to access the service using the `flightctl` CLI, select **Copy login command** to view the command to use.
+
+{{ end }}
+
+### Upgrade Chart
+
+{{ .Name | title }} uses Helm **pre-upgrade hooks** and a controlled sequence of steps to keep data consistent and minimize downtime:
+
+1. **Scale down selected services** — services listed in `upgradeHooks.scaleDown.deployments` are **scaled to 0 in order** for a clean shutdown.
+2. **Migration dry-run** — validates database migrations to catch issues early.
+3. **Database migration (expand-only)** — applies backward-compatible schema changes.
+4. **Service update & restart** — workloads are updated to the new spec and rolled out.
+
+Example upgrade hooks configuration:
+
+```yaml
+upgradeHooks:
+  scaleDown:
+    deployments:
+      - flightctl-api
+      - flightctl-worker
+  databaseMigrationDryRun: true  # default true
+```
+
+Note: On fresh installs, migrations run as a regular Job (not a hook).
+
+Basic upgrade command:
+
+```bash
+helm upgrade my-{{ .Name }} oci://quay.io/flightctl/charts/{{ .Name }}
+```
+
+Upgrade to a specific chart version:
+
+```bash
+helm upgrade \
+  --version <new-version> \
+  my-{{ .Name }} oci://quay.io/flightctl/charts/{{ .Name }}
+```
+
+**Best Practices:**
+
+* Consider `--atomic` so Helm waits and **automatically rolls back** if the upgrade fails.
+* Before major upgrades, back up the database and configuration to ensure a clean restore point.
+* **Preview the diff before upgrading** with the [Helm diff plugin](https://github.com/databus23/helm-diff).
+
+**Upgrade Notes (1.0 → 1.1):**
+
+* When the UI is deployed as a plugin to multicluster engine, the TLS secret was renamed from `flightctl-ui-serving-cert` to `flightctl-ui-server-tls`. After upgrading, the old secret is orphaned. Once the UI pod is running successfully, you can safely delete it with `kubectl delete secret flightctl-ui-serving-cert -n <namespace>`.
+
+### Rollbacks
+
+Use rollbacks to revert to a previously successful revision if an upgrade causes issues. Use `helm history` to identify the target revision, then roll back if needed.
+
+Show release history and see failure reasons in the DESCRIPTION column:
+
+```bash
+$ helm history my-{{ .Name }}
+REVISION  UPDATED  STATUS    CHART          APP VERSION  DESCRIPTION
+1         ...      deployed  {{ .Name }}-x.y.z  <appver>     Install complete
+2         ...      failed    {{ .Name }}-x.y.z  <appver>     Upgrade "my-{{ .Name }}" failed: context deadline exceeded
+```
+
+Roll back to the previous successful revision (#1) and wait until it's healthy:
+
+```bash
+$ helm rollback my-{{ .Name }} 1 --wait
+Rollback was a success! Happy Helming!
+```
+
+Verify that history reflects the rollback:
+
+```bash
+$ helm history my-{{ .Name }}
+REVISION  UPDATED  STATUS      CHART          APP VERSION  DESCRIPTION
+1         ...      superseded  {{ .Name }}-x.y.z  <appver>     Install complete
+2         ...      failed      {{ .Name }}-x.y.z  <appver>     Upgrade "my-{{ .Name }}" failed: context deadline exceeded
+3         ...      deployed    {{ .Name }}-x.y.z  <appver>     Rollback to 1
+```
+
+
+### Monitoring
+
+Use these commands to inspect the current release state, values, and installed releases.
+
+Show current release status and notes:
+
+```bash
+helm status my-{{ .Name }}
+```
+
+Show user-supplied values (add `--all` to include chart defaults as well):
+
+```bash
+helm get values my-{{ .Name }}
+helm get values my-{{ .Name }} --all
+```
+
+List releases and observe revision bump/status after an upgrade attempt:
+
+```bash
+$ helm list
+NAME        NAMESPACE  REVISION  UPDATED  STATUS    CHART           APP VERSION
+my-{{ .Name }}   ...        1         ...      deployed  {{ .Name }}-x.y.z   <appver>
+my-{{ .Name }}   ...        2         ...      failed    {{ .Name }}-x.y.z   <appver>
+```
+
+
+### Uninstall Chart
+
+```bash
+helm uninstall my-{{ .Name }}
+```
+
+## Usage
+
+After installation, {{ .Name }} will be available in your cluster.
+
+{{ if eq .Name "flightctl" }}
+### Accessing Flight Control
+
+1. **API Access**: The Flight Control API will be available at the configured endpoint
+2. **UI Access**: If enabled, the web UI will be accessible through the configured route/ingress
+3. **Agent Connection**: Devices can connect using the agent endpoint
+
+### TLS/SSL Certificate Configuration
+
+When using external PostgreSQL databases with TLS/SSL, Flight Control supports multiple certificate management options:
+
+#### Option 1: Kubernetes ConfigMap/Secret (Production)
+
+```bash
+# Create certificate resources
+kubectl create configmap postgres-ca-cert \
+  --from-file=ca-cert.pem=/path/to/ca-cert.pem
+
+kubectl create secret generic postgres-client-certs \
+  --from-file=client-cert.pem=/path/to/client-cert.pem \
+  --from-file=client-key.pem=/path/to/client-key.pem
+```
+
+```yaml
+# Configure in values.yaml
+db:
+  type: "external"
+  external:
+    hostname: "postgres.example.com"
+    sslmode: "verify-ca"
+    tlsConfigMapName: "postgres-ca-cert"     # ConfigMap containing CA certificate
+    tlsSecretName: "postgres-client-certs"   # Secret containing client certificates
+```
+
+**TLS/SSL Modes:**
+- `disable` - No TLS/SSL (not recommended for production)
+- `allow` - TLS/SSL if available, otherwise plain connection
+- `prefer` - TLS/SSL preferred, fallback to plain connection
+- `require` - TLS/SSL required, no certificate verification
+- `verify-ca` - TLS/SSL required, verify server certificate against CA
+- `verify-full` - TLS/SSL required, verify certificate and hostname
+
+For complete TLS/SSL configuration details, see the [external database documentation](../../../docs/user/external-database.md).
+{{ end }}
+
+For more detailed configuration options, see the [Values](#values) section below.
+
+{{ template "chart.valuesSection" . }}
+
+## Environment-Specific Values Files
+
+This chart includes additional values files for different deployment scenarios:
+
+### `values.dev.yaml`
+
+Development environment configuration with:
+
+- Local development settings
+- Debug configurations
+- Development-specific image tags
+
+### `values.acm.yaml`
+
+Advanced Cluster Management (ACM) integration configuration with:
+
+- ACM-specific authentication settings
+- Red Hat registry images
+- ACM integration parameters
+
+To use these files:
+
+```bash
+# Development deployment
+helm install my-flightctl oci://quay.io/flightctl/charts/flightctl -f values.dev.yaml
+
+# ACM integration deployment
+helm install my-flightctl oci://quay.io/flightctl/charts/flightctl -f values.acm.yaml
+
+# Combine multiple values files (later files override earlier ones)
+helm install my-flightctl oci://quay.io/flightctl/charts/flightctl -f values.yaml -f values.acm.yaml -f my-custom.yaml
+```
+
+## Contributing
+
+Please read the [contributing guidelines](https://github.com/flightctl/flightctl/blob/main/CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
+
+## License
+
+This project is licensed under the Apache License 2.0 - see the [LICENSE](https://github.com/flightctl/flightctl/blob/main/LICENSE) file for details.

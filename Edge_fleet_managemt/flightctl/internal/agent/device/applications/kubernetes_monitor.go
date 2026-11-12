@@ -1,0 +1,689 @@
+package applications
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/agent/client"
+	appconsole "github.com/flightctl/flightctl/internal/agent/device/applications/console"
+	"github.com/flightctl/flightctl/internal/agent/device/applications/helm"
+	"github.com/flightctl/flightctl/internal/agent/device/applications/lifecycle"
+	"github.com/flightctl/flightctl/internal/agent/device/applications/provider"
+	"github.com/flightctl/flightctl/internal/agent/device/dependency"
+	"github.com/flightctl/flightctl/internal/agent/device/errors"
+	"github.com/flightctl/flightctl/internal/agent/device/fileio"
+	"github.com/flightctl/flightctl/pkg/log"
+)
+
+const (
+	// pod phases
+	podPhasePending   = "Pending"
+	podPhaseRunning   = "Running"
+	podPhaseSucceeded = "Succeeded"
+	podPhaseFailed    = "Failed"
+
+	// container waiting reasons
+	containerReasonCrashLoopBackOff         = "CrashLoopBackOff"
+	containerReasonImagePullBackOff         = "ImagePullBackOff"
+	containerReasonCreateContainerConfigErr = "CreateContainerConfigError"
+	containerReasonCreateContainerErr       = "CreateContainerError"
+	containerReasonInvalidImageName         = "InvalidImageName"
+
+	// container terminated reasons
+	containerReasonOOMKilled = "OOMKilled"
+
+	maxCachedCRIDigestLookups = 128
+	pullableImagePrefix       = "docker-pullable://"
+)
+
+// KubernetesMonitor monitors Kubernetes-based applications such as Helm releases.
+type KubernetesMonitor struct {
+	*monitor
+
+	clients            client.CLIClients
+	rwFactory          fileio.ReadWriterFactory
+	pullConfigResolver dependency.PullConfigResolver
+
+	digestCache criDigestCache
+}
+
+type criDigestCache struct {
+	mu    sync.Mutex
+	entry map[string][]string
+	order []string
+}
+
+// NewKubernetesMonitor creates a new KubernetesMonitor with lazy initialization.
+// Kubernetes availability is checked at operation time via k8sClient.Resolve().
+func NewKubernetesMonitor(
+	log *log.PrefixLogger,
+	clients client.CLIClients,
+	rwFactory fileio.ReadWriterFactory,
+	pullConfigResolver dependency.PullConfigResolver,
+) *KubernetesMonitor {
+	m := newMonitor(log, "kubernetes",
+		handlerRegistration{
+			appType: v1beta1.AppTypeHelm,
+			handler: lifecycle.NewHelmHandler(log, clients, lifecycle.OSExecutableResolver{}, rwFactory),
+		},
+	)
+
+	return &KubernetesMonitor{
+		monitor:            m,
+		clients:            clients,
+		rwFactory:          rwFactory,
+		pullConfigResolver: pullConfigResolver,
+	}
+}
+
+// Ensure adds an application to be monitored.
+func (m *KubernetesMonitor) Ensure(app Application) error {
+	return m.monitor.Ensure(app)
+}
+
+// Remove removes an application from monitoring.
+func (m *KubernetesMonitor) Remove(app Application) error {
+	return m.monitor.Remove(app)
+}
+
+// Update updates an existing application, preserving workloads from the old app.
+func (m *KubernetesMonitor) Update(app Application) error {
+	return m.monitor.updateWithWorkloads(app)
+}
+
+// CreateCommand implements streamingMonitor interface.
+func (m *KubernetesMonitor) CreateCommand(ctx context.Context) (*exec.Cmd, error) {
+	kubeconfigPath, err := m.clients.Kube().ResolveKubeconfig()
+	if err != nil {
+		return nil, fmt.Errorf("resolving kubeconfig: %w", err)
+	}
+	return m.clients.Kube().WatchPodsCmd(ctx,
+		client.WithKubeKubeconfig(kubeconfigPath),
+		client.WithKubeLabels([]string{helm.AppLabelKey}),
+	)
+}
+
+// Parser implements streamingMonitor interface.
+func (m *KubernetesMonitor) Parser() streamParser {
+	return jsonStreamParser{}
+}
+
+// HandleEvent implements streamingMonitor interface.
+func (m *KubernetesMonitor) HandleEvent(ctx context.Context, data []byte) {
+	m.handlePodEvent(ctx, data)
+}
+
+// OnRestart implements streamingMonitor interface.
+func (m *KubernetesMonitor) OnRestart() {
+	m.clearAllWorkloads()
+}
+
+func (m *KubernetesMonitor) startMonitor(ctx context.Context) error {
+	return m.startStreaming(ctx, m)
+}
+
+func (m *KubernetesMonitor) stopMonitor() error {
+	return m.stopStreaming()
+}
+
+// Stop stops the Kubernetes monitor.
+func (m *KubernetesMonitor) Stop() error {
+	return m.stopMonitor()
+}
+
+// Drain stops and removes all applications.
+func (m *KubernetesMonitor) Drain(ctx context.Context) error {
+	m.drainActions()
+
+	if err := m.drain(ctx); err != nil {
+		return err
+	}
+
+	return m.ExecuteActions(ctx)
+}
+
+// QueueLifecycle compares the new spec's lifecycle intent against the stored intent on
+// the tracked application and queues ActionStop, ActionStart, or ActionRestart as needed.
+// The stored desiredState/restartGeneration are only advanced by StopApp/StartApp/RestartApp
+// once the corresponding action succeeds, so a failed action is retried on the next sync.
+// No-op if the app is not tracked or if intent is unchanged.
+func (m *KubernetesMonitor) QueueLifecycle(appID string, desiredState v1beta1.ApplicationDesiredState, restartGeneration int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	app, ok := m.apps[appID]
+	if !ok {
+		return
+	}
+
+	currentState := app.DesiredState()
+	currentGen := app.RestartGeneration()
+
+	var actionType lifecycle.ActionType
+	switch {
+	case restartGeneration > currentGen && desiredState == v1beta1.ApplicationDesiredStateRunning:
+		actionType = lifecycle.ActionRestart
+	case desiredState != currentState:
+		if desiredState == v1beta1.ApplicationDesiredStateStopped {
+			actionType = lifecycle.ActionStop
+		} else {
+			actionType = lifecycle.ActionStart
+		}
+	default:
+		return
+	}
+
+	m.actions = append(m.actions, lifecycle.Action{
+		ID:                appID,
+		Name:              app.Name(),
+		Lifetime:          app.ImageSnapshot().Lifetime,
+		AppType:           app.AppType(),
+		Path:              app.Path(),
+		Type:              actionType,
+		RestartGeneration: restartGeneration,
+		Spec:              app.ActionSpec(),
+	})
+}
+
+// StopApp stops the Helm application identified by appID by scaling its workloads to 0.
+func (m *KubernetesMonitor) StopApp(ctx context.Context, appID string) error {
+	_, action, _, err := m.lifecycleDispatch(appID)
+	if err != nil {
+		return err
+	}
+	action.Type = lifecycle.ActionStop
+	return m.applyLifecycleAction(ctx, action)
+}
+
+// StartApp re-applies the Helm chart for the application identified by appID.
+func (m *KubernetesMonitor) StartApp(ctx context.Context, appID string) error {
+	_, action, _, err := m.lifecycleDispatch(appID)
+	if err != nil {
+		return err
+	}
+	action.Type = lifecycle.ActionStart
+	return m.applyLifecycleAction(ctx, action)
+}
+
+// RestartApp scales workloads to 0 then re-applies the chart for the application identified by appID.
+func (m *KubernetesMonitor) RestartApp(ctx context.Context, appID string, restartGeneration int) error {
+	_, action, _, err := m.lifecycleDispatch(appID)
+	if err != nil {
+		return err
+	}
+	action.Type = lifecycle.ActionRestart
+	action.RestartGeneration = restartGeneration
+	return m.applyLifecycleAction(ctx, action)
+}
+
+// lifecycleDispatch looks up the application and builds a lifecycle.Action from its current fields.
+func (m *KubernetesMonitor) lifecycleDispatch(appID string) (lifecycle.LifecycleHandler, lifecycle.Action, Application, error) {
+	m.mu.Lock()
+	app, ok := m.apps[appID]
+	m.mu.Unlock()
+
+	if !ok {
+		return nil, lifecycle.Action{}, nil, fmt.Errorf("%w: %s", errors.ErrAppNotFound, appID)
+	}
+
+	handler, ok := m.handlers[app.AppType()].(lifecycle.LifecycleHandler)
+	if !ok {
+		return nil, lifecycle.Action{}, nil, fmt.Errorf("%w: no lifecycle handler for app type %s", errors.ErrUnsupportedAppType, app.AppType())
+	}
+
+	action := lifecycle.Action{
+		ID:       app.ID(),
+		Name:     app.Name(),
+		Lifetime: app.ImageSnapshot().Lifetime,
+		AppType:  app.AppType(),
+		Path:     app.Path(),
+		Spec:     app.ActionSpec(),
+	}
+	return handler, action, app, nil
+}
+
+// applyLifecycleAction runs Stop/Start/Restart using the provided action (including Spec).
+func (m *KubernetesMonitor) applyLifecycleAction(ctx context.Context, action lifecycle.Action) error {
+	m.mu.Lock()
+	app, ok := m.apps[action.ID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("%w: %s", errors.ErrAppNotFound, action.ID)
+	}
+
+	handler, ok := m.handlers[action.AppType].(lifecycle.LifecycleHandler)
+	if !ok {
+		return fmt.Errorf("%w: no lifecycle handler for app type %s", errors.ErrUnsupportedAppType, action.AppType)
+	}
+
+	switch action.Type {
+	case lifecycle.ActionStop:
+		if err := handler.Stop(ctx, action); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		app.SetDesiredState(v1beta1.ApplicationDesiredStateStopped)
+		m.mu.Unlock()
+	case lifecycle.ActionStart:
+		if err := handler.Start(ctx, action); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		app.SetDesiredState(v1beta1.ApplicationDesiredStateRunning)
+		m.mu.Unlock()
+	case lifecycle.ActionRestart:
+		if err := handler.Restart(ctx, action); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		app.SetRestartGeneration(action.RestartGeneration)
+		m.mu.Unlock()
+	default:
+		return fmt.Errorf("unsupported lifecycle action type: %s", action.Type)
+	}
+	return nil
+}
+
+// ExecuteActions executes all queued actions.
+func (m *KubernetesMonitor) ExecuteActions(ctx context.Context) error {
+	return m.executeActions(ctx)
+}
+
+func (m *KubernetesMonitor) executeActions(ctx context.Context) error {
+	actions := m.drainActions()
+
+	// Group structural actions (Add/Update/Remove) by app type for batch execution.
+	// Lifecycle actions (Stop/Start/Restart) are dispatched directly below.
+	groupedActions := make(map[v1beta1.AppType][]lifecycle.Action)
+	for i := range actions {
+		action := actions[i]
+		if action.Type == lifecycle.ActionStop || action.Type == lifecycle.ActionStart || action.Type == lifecycle.ActionRestart {
+			continue
+		}
+		if _, ok := m.handlers[action.AppType]; !ok {
+			return fmt.Errorf("%w: no action handler registered: %s", errors.ErrUnsupportedAppType, action.AppType)
+		}
+		groupedActions[action.AppType] = append(groupedActions[action.AppType], action)
+	}
+
+	for appType, typeActions := range groupedActions {
+		if err := m.handlers[appType].Execute(ctx, typeActions); err != nil {
+			return fmt.Errorf("execute kubernetes actions: %w", err)
+		}
+	}
+
+	// After installing or updating an app, apply desiredState=stopped if the operator
+	// wants it off. The install/update handler always starts workloads; stop them here.
+	for _, a := range actions {
+		if a.Type != lifecycle.ActionAdd && a.Type != lifecycle.ActionUpdate {
+			continue
+		}
+		m.mu.Lock()
+		app, ok := m.apps[a.ID]
+		m.mu.Unlock()
+		if !ok || app.DesiredState() != v1beta1.ApplicationDesiredStateStopped {
+			continue
+		}
+		m.log.Infof("Stopping application %s (desiredState: stopped, post-install)", a.Name)
+		stopAction := a
+		stopAction.Type = lifecycle.ActionStop
+		if err := m.applyLifecycleAction(ctx, stopAction); err != nil {
+			m.log.Warnf("Failed to stop application %s after install: %v", a.Name, err)
+		}
+	}
+
+	// Dispatch explicit lifecycle actions queued by QueueLifecycle.
+	for _, a := range actions {
+		switch a.Type {
+		case lifecycle.ActionStop:
+			m.log.Infof("Stopping application %s", a.Name)
+			if err := m.applyLifecycleAction(ctx, a); err != nil {
+				m.log.Warnf("Failed to stop application %s: %v", a.Name, err)
+			}
+		case lifecycle.ActionStart:
+			m.log.Infof("Starting application %s", a.Name)
+			if err := m.applyLifecycleAction(ctx, a); err != nil {
+				m.log.Warnf("Failed to start application %s: %v", a.Name, err)
+			}
+		case lifecycle.ActionRestart:
+			m.log.Infof("Restarting application %s", a.Name)
+			if err := m.applyLifecycleAction(ctx, a); err != nil {
+				m.log.Warnf("Failed to restart application %s: %v", a.Name, err)
+			}
+		}
+	}
+
+	if m.hasApps() {
+		if err := m.startMonitor(ctx); err != nil {
+			return fmt.Errorf("failed to start kubernetes monitor: %w", err)
+		}
+	} else {
+		if err := m.stopMonitor(); err != nil {
+			return fmt.Errorf("failed to stop kubernetes monitor: %w", err)
+		}
+	}
+
+	return nil
+}
+
+type kubernetesWatchEvent struct {
+	Type   string        `json:"type"`
+	Object kubernetesPod `json:"object"`
+}
+
+type kubernetesPod struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Metadata   struct {
+		Name      string            `json:"name"`
+		Namespace string            `json:"namespace"`
+		UID       string            `json:"uid"`
+		Labels    map[string]string `json:"labels,omitempty"`
+	} `json:"metadata"`
+	Spec   kubernetesPodSpec   `json:"spec"`
+	Status kubernetesPodStatus `json:"status"`
+}
+
+type kubernetesPodSpec struct {
+	Containers     []kubernetesContainerSpec `json:"containers,omitempty"`
+	InitContainers []kubernetesContainerSpec `json:"initContainers,omitempty"`
+}
+
+type kubernetesContainerSpec struct {
+	Name  string `json:"name"`
+	Image string `json:"image"`
+}
+
+type kubernetesPodStatus struct {
+	Phase                 string                      `json:"phase"`
+	ContainerStatuses     []kubernetesContainerStatus `json:"containerStatuses,omitempty"`
+	InitContainerStatuses []kubernetesContainerStatus `json:"initContainerStatuses,omitempty"`
+}
+
+type kubernetesContainerStatus struct {
+	Name         string                       `json:"name"`
+	ImageID      string                       `json:"imageID,omitempty"`
+	Ready        bool                         `json:"ready"`
+	RestartCount int                          `json:"restartCount"`
+	State        kubernetesContainerStateInfo `json:"state,omitempty"`
+}
+
+type kubernetesContainerStateInfo struct {
+	Waiting    *kubernetesContainerStateWaiting    `json:"waiting,omitempty"`
+	Running    *kubernetesContainerStateRunning    `json:"running,omitempty"`
+	Terminated *kubernetesContainerStateTerminated `json:"terminated,omitempty"`
+}
+
+type kubernetesContainerStateWaiting struct {
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+type kubernetesContainerStateRunning struct {
+	StartedAt time.Time `json:"startedAt,omitempty"`
+}
+
+type kubernetesContainerStateTerminated struct {
+	ExitCode   int       `json:"exitCode"`
+	Reason     string    `json:"reason,omitempty"`
+	FinishedAt time.Time `json:"finishedAt,omitempty"`
+}
+
+func (m *KubernetesMonitor) handlePodEvent(ctx context.Context, data []byte) {
+	var event kubernetesWatchEvent
+	if err := json.Unmarshal(data, &event); err != nil {
+		m.log.Errorf("Failed to decode kubernetes watch event: %s %v", string(data), err)
+		return
+	}
+
+	pod := &event.Object
+	if pod.Kind != "Pod" {
+		m.log.Debugf("Ignoring non-pod event: %s", pod.Kind)
+		return
+	}
+
+	releaseID, ok := pod.Metadata.Labels[helm.AppLabelKey]
+	if !ok {
+		m.log.Debugf("Pod %s missing %s label, skipping", pod.Metadata.Name, helm.AppLabelKey)
+		return
+	}
+
+	m.mu.Lock()
+	app, ok := m.apps[releaseID]
+	m.mu.Unlock()
+	if !ok {
+		m.log.Debugf("Application not found for release: %s", releaseID)
+		return
+	}
+
+	switch event.Type {
+	case "DELETED":
+		m.removeWorkload(app, pod)
+	case "ADDED", "MODIFIED":
+		m.updatePodStatus(ctx, app, pod)
+	default:
+		m.log.Warnf("Unknown watch event type: %s", event.Type)
+	}
+}
+
+func (m *KubernetesMonitor) removeWorkload(app Application, pod *kubernetesPod) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if app.RemoveWorkload(pod.Metadata.Name) {
+		m.log.Debugf("Removed deleted pod: %s from app %s", pod.Metadata.Name, app.Name())
+	}
+}
+
+func (m *KubernetesMonitor) updatePodStatus(ctx context.Context, app Application, pod *kubernetesPod) {
+	status := m.mapPodPhaseToStatus(pod)
+	restarts := m.getPodRestartCount(pod)
+	images := m.collectPodImages(ctx, pod)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	workload, exists := app.Workload(pod.Metadata.Name)
+	if exists {
+		workload.Status = status
+		workload.Images = images
+		if pod.Metadata.UID != workload.ID {
+			workload.ID = pod.Metadata.UID
+			workload.Restarts = restarts
+		} else if restarts > workload.Restarts {
+			workload.Restarts = restarts
+		}
+		return
+	}
+
+	m.log.Debugf("Adding pod: %s to app %s", pod.Metadata.Name, app.Name())
+	app.AddWorkload(&Workload{
+		ID:       pod.Metadata.UID,
+		Images:   images,
+		Name:     pod.Metadata.Name,
+		Status:   status,
+		Restarts: restarts,
+	})
+}
+
+func (m *KubernetesMonitor) collectPodImages(ctx context.Context, pod *kubernetesPod) []WorkloadImage {
+	statuses := make(map[string]kubernetesContainerStatus, len(pod.Status.ContainerStatuses)+len(pod.Status.InitContainerStatuses))
+	for _, status := range pod.Status.ContainerStatuses {
+		statuses[status.Name] = status
+	}
+	for _, status := range pod.Status.InitContainerStatuses {
+		statuses[status.Name] = status
+	}
+
+	containers := make([]kubernetesContainerSpec, 0, len(pod.Spec.Containers)+len(pod.Spec.InitContainers))
+	containers = append(containers, pod.Spec.Containers...)
+	containers = append(containers, pod.Spec.InitContainers...)
+	images := make([]WorkloadImage, 0, len(containers))
+	for _, container := range containers {
+		if container.Image == "" {
+			continue
+		}
+		images = append(images, WorkloadImage{
+			Image:  container.Image,
+			Digest: m.resolveImageDigest(ctx, container.Image, statuses[container.Name].ImageID),
+		})
+	}
+	return images
+}
+
+// resolveImageDigest uses the pod's registry-qualified image ID when available.
+// Opaque IDs identify local CRI images, whose repo digests identify the selected
+// registry content rather than an unverified desired reference or config object.
+func (m *KubernetesMonitor) resolveImageDigest(ctx context.Context, image, imageID string) string {
+	observedID := digestFromKubernetesImageID(image, imageID)
+	if imageID == "" || strings.HasPrefix(imageID, pullableImagePrefix) ||
+		digestFromKubernetesImageID(image, pullableImagePrefix+imageID) != "" {
+		return observedID
+	}
+	cri := m.clients.CRI()
+	if cri == nil {
+		return observedID
+	}
+	runtimeID := imageID
+	if _, id, found := strings.Cut(imageID, "://"); found {
+		runtimeID = id
+	}
+	repoDigests, cached := m.digestCache.get(runtimeID)
+	if cached {
+		if repoDigest, matched := matchingImageRepoDigest(image, repoDigests); matched {
+			return repoDigest
+		}
+	}
+	var opts []client.ClientOption
+	if optsFn := provider.CRIImageOptions(m.pullConfigResolver); optsFn != nil {
+		opts = optsFn()
+	}
+	repoDigests, err := cri.ImageRepoDigests(ctx, runtimeID, opts...)
+	if err != nil {
+		m.log.Debugf("Could not inspect CRI image %q for digest: %v", imageID, err)
+		return observedID
+	}
+	m.digestCache.set(runtimeID, repoDigests)
+	repoDigest, _ := matchingImageRepoDigest(image, repoDigests)
+	return repoDigest
+}
+
+func (c *criDigestCache) get(runtimeID string) ([]string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	repoDigests, found := c.entry[runtimeID]
+	if !found {
+		return nil, false
+	}
+	return append([]string(nil), repoDigests...), true
+}
+
+func (c *criDigestCache) set(runtimeID string, repoDigests []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.entry == nil {
+		c.entry = make(map[string][]string)
+	}
+	if _, exists := c.entry[runtimeID]; !exists {
+		if len(c.order) == maxCachedCRIDigestLookups {
+			delete(c.entry, c.order[0])
+			copy(c.order, c.order[1:])
+			c.order = c.order[:len(c.order)-1]
+		}
+		c.order = append(c.order, runtimeID)
+	}
+	c.entry[runtimeID] = append([]string(nil), repoDigests...)
+}
+
+// matchingImageRepoDigest distinguishes missing repository metadata from a
+// known ambiguous observation, which remains unknown without another lookup.
+func matchingImageRepoDigest(image string, repoDigests []string) (string, bool) {
+	var observed string
+	for _, repoDigest := range repoDigests {
+		digest := digestFromKubernetesImageID(image, pullableImagePrefix+repoDigest)
+		if digest == "" {
+			continue
+		}
+		// Repo digests can include both an index and its platform manifest.
+		// Their order cannot establish which registry object was observed.
+		if observed != "" && observed != digest {
+			return "", true
+		}
+		observed = digest
+	}
+	return observed, observed != ""
+}
+
+func (m *KubernetesMonitor) mapPodPhaseToStatus(pod *kubernetesPod) StatusType {
+	switch pod.Status.Phase {
+	case podPhasePending:
+		return StatusInit
+	case podPhaseRunning:
+		if m.hasContainerErrors(pod) {
+			return StatusDied
+		}
+		if m.allContainersReady(pod) {
+			return StatusRunning
+		}
+		return StatusInit
+	case podPhaseSucceeded:
+		return StatusExited
+	case podPhaseFailed:
+		return StatusDied
+	default:
+		return StatusInit
+	}
+}
+
+func (m *KubernetesMonitor) allContainersReady(pod *kubernetesPod) bool {
+	if len(pod.Status.ContainerStatuses) == 0 {
+		return false
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if !cs.Ready {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *KubernetesMonitor) hasContainerErrors(pod *kubernetesPod) bool {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting != nil {
+			switch cs.State.Waiting.Reason {
+			case containerReasonCrashLoopBackOff,
+				containerReasonImagePullBackOff,
+				containerReasonCreateContainerConfigErr,
+				containerReasonCreateContainerErr,
+				containerReasonInvalidImageName:
+				return true
+			}
+		}
+		if cs.State.Terminated != nil && cs.State.Terminated.Reason == containerReasonOOMKilled {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *KubernetesMonitor) getPodRestartCount(pod *kubernetesPod) int {
+	var total int
+	for _, cs := range pod.Status.ContainerStatuses {
+		total += cs.RestartCount
+	}
+	return total
+}
+
+// resolveConsole is a stub — Kubernetes app console is not yet implemented.
+// Returns errConsoleAppNotFound so the caller tries the next monitor.
+func (m *KubernetesMonitor) resolveConsole(_, _ string) (appconsole.Session, error) {
+	return nil, errConsoleAppNotFound
+}

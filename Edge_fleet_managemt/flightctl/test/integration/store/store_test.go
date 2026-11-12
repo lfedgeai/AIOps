@@ -1,0 +1,659 @@
+package store_test
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/pem"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/flightctl/flightctl/internal/config"
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/migration"
+	"github.com/flightctl/flightctl/internal/store"
+	catalogstore "github.com/flightctl/flightctl/internal/store/catalog"
+	csrstore "github.com/flightctl/flightctl/internal/store/certificatesigningrequest"
+	devicestore "github.com/flightctl/flightctl/internal/store/device"
+	labelsyncmappingstore "github.com/flightctl/flightctl/internal/store/labelsyncmapping"
+	"github.com/flightctl/flightctl/internal/store/model"
+	organizationstore "github.com/flightctl/flightctl/internal/store/organization"
+	"github.com/flightctl/flightctl/internal/store/selector"
+	fcrypto "github.com/flightctl/flightctl/pkg/crypto"
+	flightlog "github.com/flightctl/flightctl/pkg/log"
+	testutil "github.com/flightctl/flightctl/test/util"
+	"github.com/flightctl/flightctl/test/util/testdb"
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
+)
+
+var testEnrollmentSignerName = config.NewDefault().CA.DeviceEnrollmentSignerName
+
+type legacyCertificateSigningRequest struct {
+	model.Resource
+	Spec   *model.JSONField[domain.CertificateSigningRequestSpec]   `gorm:"type:jsonb"`
+	Status *model.JSONField[domain.CertificateSigningRequestStatus] `gorm:"type:jsonb"`
+}
+
+func (legacyCertificateSigningRequest) TableName() string { return "certificate_signing_requests" }
+
+const (
+	enrollmentSignerName = "historical.example/changed"
+	otherSignerName      = "other.example/issuer"
+)
+
+var _ = Describe("DataStore Migration Tests", func() {
+	// createFreshDBWithOrgs sets up a minimal database that simulates a pre-catalog
+	// installation: only the organizations table exists, with the given orgs pre-inserted.
+	// Caller must use DeleteTestDB for cleanup.
+	createFreshDBWithOrgs := func(ctx context.Context, freshLog *logrus.Logger, orgIDs []uuid.UUID) (*config.Config, string, *gorm.DB) {
+		freshCfg, freshDbName, freshGormDb, err := testdb.CreateEmptyTestDB(ctx, freshLog, "test_backfill_", store.InitDB)
+		Expect(err).NotTo(HaveOccurred())
+
+		db := freshGormDb.WithContext(ctx)
+		Expect(db.AutoMigrate(&model.Organization{})).To(Succeed())
+		Expect(db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS org_external_id_idx
+			ON organizations (external_id) WHERE external_id <> ''`).Error).To(Succeed())
+
+		for _, id := range orgIDs {
+			Expect(db.Create(&model.Organization{
+				ID:          id,
+				ExternalID:  "ext-" + id.String()[:8],
+				DisplayName: "Org " + id.String()[:8],
+			}).Error).To(Succeed())
+		}
+
+		return freshCfg, freshDbName, freshGormDb
+	}
+
+	writeInitialMappingManifest := func(content string) string {
+		path := filepath.Join(GinkgoT().TempDir(), "mappings.yaml")
+		Expect(os.WriteFile(path, []byte(content), 0o600)).To(Succeed())
+		return path
+	}
+
+	Context("Initial LabelSyncMapping migration", func() {
+		It("When migration runs it should seed each existing organization after mapping schemas are ready and preserve unowned labels", func() {
+			freshCtx := testutil.StartSpecTracerForGinkgo(suiteCtx)
+			freshLog := flightlog.InitLogs()
+			org1ID := uuid.New()
+			org2ID := uuid.New()
+			freshCfg, freshDbName, freshGormDb := createFreshDBWithOrgs(freshCtx, freshLog, []uuid.UUID{org1ID, org2ID})
+			defer func() {
+				Expect(testdb.DeleteTestDB(freshCtx, freshLog, freshCfg, freshGormDb, freshDbName)).To(Succeed())
+			}()
+
+			deviceStore := devicestore.NewDeviceStore(freshGormDb, freshLog.WithField("pkg", "device-store"))
+			Expect(deviceStore.InitialMigration(freshCtx)).To(Succeed())
+			labels := map[string]string{"operator.example.com/role": "preserved"}
+			testutil.CreateTestDevice(freshCtx, deviceStore, org1ID, "legacy-device", nil, nil, &labels)
+			Expect(freshGormDb.Migrator().DropColumn(&model.DeviceLabel{}, "LabelSyncMappingID")).To(Succeed())
+			Expect(freshGormDb.Migrator().HasColumn(&model.DeviceLabel{}, "label_sync_mapping_id")).To(BeFalse())
+
+			manifest := writeInitialMappingManifest(`
+- apiVersion: flightctl.io/v1beta1
+  kind: LabelSyncMapping
+  metadata:
+    name: system-info
+  spec:
+    resourceType: Device
+    expression: '{}'
+`)
+			Expect(migration.RunWithInitialLabelSyncMappings(freshCtx, freshGormDb, freshLog, true, manifest, testEnrollmentSignerName)).To(MatchError(migration.ErrDryRunComplete))
+			Expect(freshGormDb.Migrator().HasColumn(&model.DeviceLabel{}, "label_sync_mapping_id")).To(BeFalse())
+
+			Expect(migration.RunWithInitialLabelSyncMappings(freshCtx, freshGormDb, freshLog, false, manifest, testEnrollmentSignerName)).To(Succeed())
+
+			Expect(freshGormDb.Migrator().HasColumn(&model.DeviceLabel{}, "label_sync_mapping_id")).To(BeTrue())
+			mappingStore := labelsyncmappingstore.NewStore(freshGormDb, freshLog.WithField("pkg", "labelsyncmapping-store"))
+			for _, orgID := range []uuid.UUID{org1ID, org2ID} {
+				mapping, err := mappingStore.Get(freshCtx, orgID, "system-info")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(mapping.Spec.Expression).To(Equal("{}"))
+				Expect(mapping.Status).NotTo(BeNil())
+				Expect((*mapping.Status.Conditions)[0].Reason).To(Equal("Pending"))
+
+				var row model.LabelSyncMapping
+				Expect(freshGormDb.Where("org_id = ? AND name = ?", orgID, "system-info").Take(&row).Error).To(Succeed())
+				Expect(row.Owner).To(BeNil())
+			}
+
+			var legacyLabel model.DeviceLabel
+			Expect(freshGormDb.Where("org_id = ? AND device_name = ? AND label_key = ?", org1ID, "legacy-device", "operator.example.com/role").Take(&legacyLabel).Error).To(Succeed())
+			Expect(legacyLabel.LabelValue).To(Equal("preserved"))
+			Expect(legacyLabel.LabelSyncMappingID).To(BeNil())
+		})
+
+		It("When an entry conflicts it should preserve the existing mapping and continue seeding once", func() {
+			freshCtx := testutil.StartSpecTracerForGinkgo(suiteCtx)
+			freshLog := flightlog.InitLogs()
+			org1ID := uuid.New()
+			org2ID := uuid.New()
+			freshCfg, freshDbName, freshGormDb := createFreshDBWithOrgs(freshCtx, freshLog, []uuid.UUID{org1ID, org2ID})
+			defer func() {
+				Expect(testdb.DeleteTestDB(freshCtx, freshLog, freshCfg, freshGormDb, freshDbName)).To(Succeed())
+			}()
+
+			Expect(migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)).To(Succeed())
+			mappingStore := labelsyncmappingstore.NewStore(freshGormDb, freshLog.WithField("pkg", "labelsyncmapping-store"))
+			name := "shared-name"
+			_, err := mappingStore.Create(freshCtx, org1ID, &domain.LabelSyncMapping{
+				Metadata: domain.ObjectMeta{Name: &name},
+				Spec: domain.LabelSyncMappingSpec{
+					ResourceType: domain.LabelSyncMappingDevice,
+					Expression:   "{'source': 'operator'}",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			manifest := writeInitialMappingManifest(`
+- apiVersion: flightctl.io/v1beta1
+  kind: LabelSyncMapping
+  metadata:
+    name: shared-name
+  spec:
+    resourceType: Device
+    expression: "{'source': 'manifest'}"
+- apiVersion: flightctl.io/v1beta1
+  kind: LabelSyncMapping
+  metadata:
+    name: later-entry
+  spec:
+    resourceType: Device
+    expression: '{}'
+`)
+			Expect(migration.RunWithInitialLabelSyncMappings(freshCtx, freshGormDb, freshLog, false, manifest, testEnrollmentSignerName)).To(Succeed())
+
+			operatorMapping, err := mappingStore.Get(freshCtx, org1ID, "shared-name")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(operatorMapping.Spec.Expression).To(Equal("{'source': 'operator'}"))
+			for _, orgID := range []uuid.UUID{org1ID, org2ID} {
+				laterMapping, err := mappingStore.Get(freshCtx, orgID, "later-entry")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(laterMapping.Spec.Expression).To(Equal("{}"))
+			}
+			manifestMapping, err := mappingStore.Get(freshCtx, org2ID, "shared-name")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(manifestMapping.Spec.Expression).To(Equal("{'source': 'manifest'}"))
+
+			org3ID := uuid.New()
+			organizationStore := organizationstore.NewOrganizationStore(freshGormDb)
+			Expect(testutil.CreateTestOrganization(freshCtx, organizationStore, org3ID)).To(Succeed())
+			Expect(os.WriteFile(manifest, []byte(`
+- apiVersion: flightctl.io/v1beta1
+  kind: LabelSyncMapping
+  metadata:
+    name: after-first-run
+  spec:
+    resourceType: Device
+    expression: '{}'
+`), 0o600)).To(Succeed())
+			Expect(migration.RunWithInitialLabelSyncMappings(freshCtx, freshGormDb, freshLog, false, manifest, testEnrollmentSignerName)).To(Succeed())
+			var laterOrgMappings int64
+			Expect(freshGormDb.Model(&model.LabelSyncMapping{}).Where("org_id = ?", org3ID).Count(&laterOrgMappings).Error).To(Succeed())
+			Expect(laterOrgMappings).To(Equal(int64(0)))
+		})
+
+		It("When the manifest is unreadable it should log the failure without recording the attempt", func() {
+			freshCtx := testutil.StartSpecTracerForGinkgo(suiteCtx)
+			freshLog := flightlog.InitLogs()
+			orgID := uuid.New()
+			freshCfg, freshDbName, freshGormDb := createFreshDBWithOrgs(freshCtx, freshLog, []uuid.UUID{orgID})
+			defer func() {
+				Expect(testdb.DeleteTestDB(freshCtx, freshLog, freshCfg, freshGormDb, freshDbName)).To(Succeed())
+			}()
+
+			manifest := filepath.Join(GinkgoT().TempDir(), "missing-mappings.yaml")
+			var logOutput bytes.Buffer
+			migrationLog := logrus.New()
+			migrationLog.SetOutput(&logOutput)
+			migrationLog.SetLevel(logrus.WarnLevel)
+			Expect(migration.RunWithInitialLabelSyncMappings(freshCtx, freshGormDb, migrationLog, false, manifest, testEnrollmentSignerName)).To(Succeed())
+			Expect(logOutput.String()).To(ContainSubstring("Initial label-sync mappings were not attempted"))
+
+			var markerCount int64
+			Expect(freshGormDb.Model(&model.SchemaMigration{}).Where("key = ?", "seed_initial_label_sync_mappings_v1").Count(&markerCount).Error).To(Succeed())
+			Expect(markerCount).To(Equal(int64(0)))
+
+			Expect(os.WriteFile(manifest, []byte(`
+- apiVersion: flightctl.io/v1beta1
+  kind: LabelSyncMapping
+  metadata:
+    name: appeared-later
+  spec:
+    resourceType: Device
+    expression: '{}'
+`), 0o600)).To(Succeed())
+			Expect(migration.RunWithInitialLabelSyncMappings(freshCtx, freshGormDb, migrationLog, false, manifest, testEnrollmentSignerName)).To(Succeed())
+			var mappingCount int64
+			Expect(freshGormDb.Model(&model.LabelSyncMapping{}).Where("org_id = ?", orgID).Count(&mappingCount).Error).To(Succeed())
+			Expect(mappingCount).To(Equal(int64(1)))
+			Expect(freshGormDb.Model(&model.SchemaMigration{}).Where("key = ?", "seed_initial_label_sync_mappings_v1").Count(&markerCount).Error).To(Succeed())
+			Expect(markerCount).To(Equal(int64(1)))
+		})
+	})
+
+	Context("Default catalog backfill", func() {
+		It("When upgrading from a pre-catalog installation, it should create a default catalog for every org", func() {
+			freshCtx := testutil.StartSpecTracerForGinkgo(suiteCtx)
+			freshLog := flightlog.InitLogs()
+
+			org1ID := uuid.New()
+			org2ID := uuid.New()
+			freshCfg, freshDbName, freshGormDb := createFreshDBWithOrgs(freshCtx, freshLog, []uuid.UUID{org1ID, org2ID})
+			defer func() {
+				Expect(testdb.DeleteTestDB(freshCtx, freshLog, freshCfg, freshGormDb, freshDbName)).To(Succeed())
+			}()
+
+			Expect(migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)).To(Succeed())
+			catalogStore := catalogstore.NewCatalogStore(freshGormDb, freshLog.WithField("pkg", "catalog-store"))
+
+			for _, orgID := range []uuid.UUID{org1ID, org2ID} {
+				catalog, err := catalogStore.Get(freshCtx, orgID, domain.DefaultCatalogName)
+				Expect(err).ToNot(HaveOccurred(), "org %s should have a default catalog after upgrade", orgID)
+				Expect(*catalog.Metadata.Name).To(Equal(domain.DefaultCatalogName))
+				Expect(*catalog.Spec.DisplayName).To(Equal(domain.DefaultCatalogDisplayName))
+			}
+		})
+
+		It("When upgrading, it should not create a default catalog for orgs that already have a catalog", func() {
+			freshCtx := testutil.StartSpecTracerForGinkgo(suiteCtx)
+			freshLog := flightlog.InitLogs()
+
+			orgWithCatalogID := uuid.New()
+			orgWithoutCatalogID := uuid.New()
+			freshCfg, freshDbName, freshGormDb := createFreshDBWithOrgs(freshCtx, freshLog, []uuid.UUID{orgWithCatalogID, orgWithoutCatalogID})
+			defer func() {
+				Expect(testdb.DeleteTestDB(freshCtx, freshLog, freshCfg, freshGormDb, freshDbName)).To(Succeed())
+			}()
+
+			// Also migrate the catalogs table and pre-insert a catalog for one org,
+			// simulating an installation that already has a custom catalog.
+			db := freshGormDb.WithContext(freshCtx)
+			Expect(db.AutoMigrate(&model.Catalog{})).To(Succeed())
+			customDisplayName := "My Custom Catalog"
+			Expect(db.Create(&model.Catalog{
+				Resource: model.Resource{OrgID: orgWithCatalogID, Name: "my-custom-catalog"},
+				Spec:     model.MakeJSONField(domain.CatalogSpec{DisplayName: &customDisplayName}),
+			}).Error).To(Succeed())
+
+			Expect(migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)).To(Succeed())
+			catalogStore := catalogstore.NewCatalogStore(freshGormDb, freshLog.WithField("pkg", "catalog-store"))
+
+			// Org with no prior catalog should have received a default catalog.
+			catalog, err := catalogStore.Get(freshCtx, orgWithoutCatalogID, domain.DefaultCatalogName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(*catalog.Metadata.Name).To(Equal(domain.DefaultCatalogName))
+
+			// Org that already had a catalog should still have exactly one catalog.
+			catalogs, err := catalogStore.List(freshCtx, orgWithCatalogID, store.ListParams{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(catalogs.Items).To(HaveLen(1), "org with an existing catalog must not receive an additional default catalog")
+			Expect(*catalogs.Items[0].Metadata.Name).To(Equal("my-custom-catalog"))
+		})
+
+		It("When an org only has owned catalogs, it should still receive a default catalog", func() {
+			freshCtx := testutil.StartSpecTracerForGinkgo(suiteCtx)
+			freshLog := flightlog.InitLogs()
+
+			orgID := uuid.New()
+			freshCfg, freshDbName, freshGormDb := createFreshDBWithOrgs(freshCtx, freshLog, []uuid.UUID{orgID})
+			defer func() {
+				Expect(testdb.DeleteTestDB(freshCtx, freshLog, freshCfg, freshGormDb, freshDbName)).To(Succeed())
+			}()
+
+			// Migrate the catalogs table and pre-insert a catalog that has an owner
+			// (e.g. created by a ResourceSync), simulating an installation where all existing
+			// catalogs are owned resources.
+			db := freshGormDb.WithContext(freshCtx)
+			Expect(db.AutoMigrate(&model.Catalog{})).To(Succeed())
+			ownedCatalogName := "rs-owned-catalog"
+			ownerRef := "ResourceSync/some-resourcesync"
+			Expect(db.Create(&model.Catalog{
+				Resource: model.Resource{OrgID: orgID, Name: ownedCatalogName, Owner: &ownerRef},
+				Spec:     model.MakeJSONField(domain.CatalogSpec{}),
+			}).Error).To(Succeed())
+
+			Expect(migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)).To(Succeed())
+			catalogStore := catalogstore.NewCatalogStore(freshGormDb, freshLog.WithField("pkg", "catalog-store"))
+
+			// The org only had owned catalogs, so the backfill must add the default one.
+			defaultCatalog, err := catalogStore.Get(freshCtx, orgID, domain.DefaultCatalogName)
+			Expect(err).ToNot(HaveOccurred(), "org with only owned catalogs should receive a default catalog")
+			Expect(*defaultCatalog.Metadata.Name).To(Equal(domain.DefaultCatalogName))
+
+			// The owned catalog must still be there – nothing was deleted.
+			catalogs, err := catalogStore.List(freshCtx, orgID, store.ListParams{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(catalogs.Items).To(HaveLen(2), "org should have both the owned catalog and the new default catalog")
+		})
+
+		It("When running migrations again after the user deleted the default catalog, it should not recreate it", func() {
+			freshCtx := testutil.StartSpecTracerForGinkgo(suiteCtx)
+			freshLog := flightlog.InitLogs()
+
+			// Use a fresh DB so the test user owns all tables and can run RunMigrations
+			// multiple times without DDL permission errors (which occur with the template
+			// DB strategy where tables are owned by the admin user, not the test user).
+			freshCfg, freshDbName, freshGormDb, err := testdb.CreateEmptyTestDB(freshCtx, freshLog, "test_backfill_restart_", store.InitDB)
+			Expect(err).NotTo(HaveOccurred())
+			defer func() {
+				Expect(testdb.DeleteTestDB(freshCtx, freshLog, freshCfg, freshGormDb, freshDbName)).To(Succeed())
+			}()
+
+			catalogStore := catalogstore.NewCatalogStore(freshGormDb, freshLog.WithField("pkg", "catalog-store"))
+
+			// First migration: creates schema, backfills catalogs, records migration key.
+			Expect(migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)).To(Succeed())
+
+			// Verify the default catalog was created for the default org.
+			_, err = catalogStore.Get(freshCtx, store.NullOrgId, domain.DefaultCatalogName)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Simulate the user intentionally deleting the default catalog.
+			_, err = catalogStore.Delete(freshCtx, store.NullOrgId, domain.DefaultCatalogName)
+			Expect(err).To(Succeed())
+
+			// Confirm it is gone.
+			_, err = catalogStore.Get(freshCtx, store.NullOrgId, domain.DefaultCatalogName)
+			Expect(err).To(HaveOccurred(), "default catalog should be absent after deletion")
+
+			// Simulate a server restart: migrations run again.
+			Expect(migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)).To(Succeed())
+
+			// The catalog must not have been recreated because the migration key is already recorded.
+			_, err = catalogStore.Get(freshCtx, store.NullOrgId, domain.DefaultCatalogName)
+			Expect(err).To(HaveOccurred(), "default catalog deleted by user must not be recreated on restart")
+		})
+	})
+
+	Context("Auth provider URL normalization", func() {
+		It("When upgrading, it should strip trailing slashes from stored OIDC and OAuth2 URL fields", func() {
+			freshCtx := testutil.StartSpecTracerForGinkgo(suiteCtx)
+			freshLog := flightlog.InitLogs()
+
+			orgID := uuid.New()
+			freshCfg, freshDbName, freshGormDb := createFreshDBWithOrgs(freshCtx, freshLog, []uuid.UUID{orgID})
+			defer func() {
+				Expect(testdb.DeleteTestDB(freshCtx, freshLog, freshCfg, freshGormDb, freshDbName)).To(Succeed())
+			}()
+
+			Expect(migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)).To(Succeed())
+
+			db := freshGormDb.WithContext(freshCtx)
+			Expect(db.Where("key = ?", "normalize_auth_provider_urls_v1").Delete(&model.SchemaMigration{}).Error).To(Succeed())
+
+			oidcSpec := domain.AuthProviderSpec{}
+			Expect(oidcSpec.FromOIDCProviderSpec(domain.OIDCProviderSpec{
+				ProviderType: domain.Oidc,
+				Issuer:       "HTTPS://IdP.Example.COM/Realm/Master/",
+				ClientId:     "oidc-client",
+			})).To(Succeed())
+			Expect(db.Create(&model.AuthProvider{
+				Resource: model.Resource{OrgID: orgID, Name: "legacy-oidc"},
+				Spec:     model.MakeJSONField(oidcSpec),
+			}).Error).To(Succeed())
+
+			oauth2Introspection := &domain.OAuth2Introspection{}
+			Expect(oauth2Introspection.FromRfc7662IntrospectionSpec(domain.Rfc7662IntrospectionSpec{
+				Type: domain.IntrospectionTypeRfc7662,
+				Url:  "https://idp.example.com/introspect",
+			})).To(Succeed())
+			oauth2Spec := domain.AuthProviderSpec{}
+			Expect(oauth2Spec.FromOAuth2ProviderSpec(domain.OAuth2ProviderSpec{
+				ProviderType:     domain.Oauth2,
+				AuthorizationUrl: "HTTPS://IdP.Example.COM/oauth2/authorize/",
+				TokenUrl:         "HTTPS://IdP.Example.COM/token/",
+				UserinfoUrl:      "HTTPS://IdP.Example.COM/userinfo/",
+				ClientId:         "oauth2-client",
+				Introspection:    oauth2Introspection,
+			})).To(Succeed())
+			Expect(db.Create(&model.AuthProvider{
+				Resource: model.Resource{OrgID: orgID, Name: "legacy-oauth2"},
+				Spec:     model.MakeJSONField(oauth2Spec),
+			}).Error).To(Succeed())
+
+			Expect(migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)).To(Succeed())
+
+			var oidcRow model.AuthProvider
+			Expect(db.Where("org_id = ? AND name = ?", orgID, "legacy-oidc").First(&oidcRow).Error).To(Succeed())
+			gotOIDC, err := oidcRow.Spec.Data.AsOIDCProviderSpec()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(gotOIDC.Issuer).To(Equal("https://idp.example.com/Realm/Master"))
+
+			var oauth2Row model.AuthProvider
+			Expect(db.Where("org_id = ? AND name = ?", orgID, "legacy-oauth2").First(&oauth2Row).Error).To(Succeed())
+			gotOAuth2, err := oauth2Row.Spec.Data.AsOAuth2ProviderSpec()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(gotOAuth2.AuthorizationUrl).To(Equal("https://idp.example.com/oauth2/authorize"))
+			Expect(gotOAuth2.TokenUrl).To(Equal("https://idp.example.com/token"))
+			Expect(gotOAuth2.UserinfoUrl).To(Equal("https://idp.example.com/userinfo"))
+		})
+
+		It("When two providers would collide after normalization, migration should fail", func() {
+			freshCtx := testutil.StartSpecTracerForGinkgo(suiteCtx)
+			freshLog := flightlog.InitLogs()
+
+			orgID := uuid.New()
+			freshCfg, freshDbName, freshGormDb := createFreshDBWithOrgs(freshCtx, freshLog, []uuid.UUID{orgID})
+			defer func() {
+				Expect(testdb.DeleteTestDB(freshCtx, freshLog, freshCfg, freshGormDb, freshDbName)).To(Succeed())
+			}()
+
+			Expect(migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)).To(Succeed())
+
+			db := freshGormDb.WithContext(freshCtx)
+			Expect(db.Where("key = ?", "normalize_auth_provider_urls_v1").Delete(&model.SchemaMigration{}).Error).To(Succeed())
+
+			for _, nameIssuer := range []struct {
+				name   string
+				issuer string
+			}{
+				{name: "oidc-a", issuer: "https://idp.example.com"},
+				{name: "oidc-b", issuer: "HTTPS://IdP.Example.COM/"},
+			} {
+				spec := domain.AuthProviderSpec{}
+				Expect(spec.FromOIDCProviderSpec(domain.OIDCProviderSpec{
+					ProviderType: domain.Oidc,
+					Issuer:       nameIssuer.issuer,
+					ClientId:     "same-client",
+				})).To(Succeed())
+				Expect(db.Create(&model.AuthProvider{
+					Resource: model.Resource{OrgID: orgID, Name: nameIssuer.name},
+					Spec:     model.MakeJSONField(spec),
+				}).Error).To(Succeed())
+			}
+
+			err := migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("would share issuer"))
+		})
+
+		It("When two providers differ only by host case, migration should fail on collision", func() {
+			freshCtx := testutil.StartSpecTracerForGinkgo(suiteCtx)
+			freshLog := flightlog.InitLogs()
+
+			orgID := uuid.New()
+			freshCfg, freshDbName, freshGormDb := createFreshDBWithOrgs(freshCtx, freshLog, []uuid.UUID{orgID})
+			defer func() {
+				Expect(testdb.DeleteTestDB(freshCtx, freshLog, freshCfg, freshGormDb, freshDbName)).To(Succeed())
+			}()
+
+			Expect(migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)).To(Succeed())
+
+			db := freshGormDb.WithContext(freshCtx)
+			Expect(db.Where("key = ?", "normalize_auth_provider_urls_v1").Delete(&model.SchemaMigration{}).Error).To(Succeed())
+
+			for _, nameIssuer := range []struct {
+				name   string
+				issuer string
+			}{
+				{name: "oidc-lower", issuer: "https://idp.example.com"},
+				{name: "oidc-upper", issuer: "https://IdP.Example.COM"},
+			} {
+				spec := domain.AuthProviderSpec{}
+				Expect(spec.FromOIDCProviderSpec(domain.OIDCProviderSpec{
+					ProviderType: domain.Oidc,
+					Issuer:       nameIssuer.issuer,
+					ClientId:     "same-client",
+				})).To(Succeed())
+				Expect(db.Create(&model.AuthProvider{
+					Resource: model.Resource{OrgID: orgID, Name: nameIssuer.name},
+					Spec:     model.MakeJSONField(spec),
+				}).Error).To(Succeed())
+			}
+
+			err := migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("would share issuer"))
+		})
+	})
+
+	Context("Vulnerability finding source backfill", func() {
+		It("When upgrading, it should add a nullable source column and backfill pre-existing rows to trustify in batches", func() {
+			freshCtx := testutil.StartSpecTracerForGinkgo(suiteCtx)
+			freshLog := flightlog.InitLogs()
+
+			orgID := uuid.New()
+			freshCfg, freshDbName, freshGormDb := createFreshDBWithOrgs(freshCtx, freshLog, []uuid.UUID{orgID})
+			defer func() {
+				Expect(testdb.DeleteTestDB(freshCtx, freshLog, freshCfg, freshGormDb, freshDbName)).To(Succeed())
+			}()
+
+			Expect(migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)).To(Succeed())
+
+			db := freshGormDb.WithContext(freshCtx)
+
+			// The source column must exist after migration.
+			Expect(db.Migrator().HasColumn(&model.VulnerabilityFinding{}, "source")).To(BeTrue())
+
+			// Reset the once-only guard so the backfill re-runs against the row
+			// we insert below (the initial run had no findings to backfill).
+			Expect(db.Where("key = ?", "backfill_vulnerability_source_v1").Delete(&model.SchemaMigration{}).Error).To(Succeed())
+
+			const legacyFindingCount = 1001
+
+			// Insert more than one backfill batch of rows written before the source
+			// column existed, so every row initially has a NULL source.
+			Expect(db.Exec(`
+				INSERT INTO vulnerability_findings (image_digest, cve_id, status, severity, first_seen_at, updated_at)
+				SELECT
+					'sha256:legacy-' || n,
+					'CVE-2020-' || n,
+					'affected',
+					'High',
+					NOW(),
+					NOW()
+				FROM generate_series(1, ?) AS n`, legacyFindingCount).Error).To(Succeed())
+
+			var missingSources int64
+			Expect(db.Model(&model.VulnerabilityFinding{}).Where("source IS NULL").Count(&missingSources).Error).To(Succeed())
+			Expect(missingSources).To(Equal(int64(legacyFindingCount)))
+
+			Expect(migration.Run(freshCtx, freshGormDb, freshLog.WithField("pkg", "store"), false, testEnrollmentSignerName)).To(Succeed())
+
+			Expect(db.Model(&model.VulnerabilityFinding{}).Where("source IS NULL").Count(&missingSources).Error).To(Succeed())
+			Expect(missingSources).To(BeZero())
+
+			var backfilledSources int64
+			Expect(db.Model(&model.VulnerabilityFinding{}).
+				Where("source = ?", config.VulnerabilityBackendTrustify).
+				Count(&backfilledSources).Error).To(Succeed())
+			Expect(backfilledSources).To(Equal(int64(legacyFindingCount)))
+
+			var marker model.SchemaMigration
+			Expect(db.Where("key = ?", "backfill_vulnerability_source_v1").First(&marker).Error).To(Succeed())
+		})
+	})
+})
+
+var _ = Describe("Normal retained certificate migration", func() {
+	var suite *certificatePersistenceSuite
+	BeforeEach(func() { suite = newCertificatePersistenceSuite() })
+
+	It("When migrating an old schema it should derive exact leaf keys only for the enrollment signer and retain duplicate ambiguity", func() {
+		cfg, name, database, err := testdb.CreateEmptyTestDB(suite.Ctx, suite.Log, "legacy_csr_", store.InitDB)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { Expect(testdb.DeleteTestDB(suite.Ctx, suite.Log, cfg, database, name)).To(Succeed()) })
+		Expect(database.AutoMigrate(&model.Organization{}, &legacyCertificateSigningRequest{})).To(Succeed())
+		Expect(database.Migrator().HasColumn(&legacyCertificateSigningRequest{}, "certificate_digest")).To(BeFalse())
+		Expect(database.Create(&model.Organization{ID: suite.OrgID, ExternalID: "legacy-digest", DisplayName: "Legacy"}).Error).To(Succeed())
+		request := newStoredCSR()
+		parsed, err := fcrypto.ParseCSR(request.Spec.Request)
+		Expect(err).NotTo(HaveOccurred())
+		leaf, err := suite.caClient.IssueRequestedClientCertificate(suite.Ctx, parsed, 3600)
+		Expect(err).NotTo(HaveOccurred())
+		certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
+		alternate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Headers: map[string]string{"Comment": "old encoding"}, Bytes: leaf.Raw})
+		rows := []struct {
+			name       string
+			signerName string
+			retained   []byte
+		}{
+			{name: "first", signerName: enrollmentSignerName, retained: certificate},
+			{name: "second", signerName: enrollmentSignerName, retained: alternate},
+			{name: "malformed", signerName: enrollmentSignerName, retained: []byte("not PEM")},
+			{name: "unissued", signerName: enrollmentSignerName},
+			{name: "foreign", signerName: otherSignerName, retained: certificate},
+		}
+		for _, row := range rows {
+			status := domain.CertificateSigningRequestStatus{Conditions: []domain.Condition{}}
+			if row.retained != nil {
+				status.Certificate = &row.retained
+			}
+			Expect(database.Create(&legacyCertificateSigningRequest{Resource: model.Resource{OrgID: suite.OrgID, Name: row.name},
+				Spec: model.MakeJSONField(domain.CertificateSigningRequestSpec{SignerName: row.signerName}), Status: model.MakeJSONField(status)}).Error).To(Succeed())
+		}
+		padding := make([]legacyCertificateSigningRequest, 505)
+		for index := range padding {
+			padding[index] = legacyCertificateSigningRequest{Resource: model.Resource{OrgID: suite.OrgID, Name: fmt.Sprintf("padding-%04d", index)},
+				Spec: model.MakeJSONField(domain.CertificateSigningRequestSpec{})}
+		}
+		Expect(database.Create(&padding).Error).To(Succeed())
+		Expect(migration.Run(suite.Ctx, database, suite.Log, true, enrollmentSignerName)).To(MatchError(migration.ErrDryRunComplete))
+		Expect(database.Migrator().HasColumn(&legacyCertificateSigningRequest{}, "certificate_digest")).To(BeFalse())
+		Expect(migration.Run(suite.Ctx, database, suite.Log, false, enrollmentSignerName)).To(Succeed())
+		Expect(database.Migrator().HasIndex(&model.CertificateSigningRequest{}, "idx_csr_org_certificate_digest")).To(BeTrue())
+		var definition string
+		Expect(database.Raw("SELECT indexdef FROM pg_indexes WHERE tablename = 'certificate_signing_requests' AND indexname = 'idx_csr_org_certificate_digest'").Scan(&definition).Error).To(Succeed())
+		Expect(definition).To(ContainSubstring("(org_id, certificate_digest)"))
+		Expect(definition).NotTo(ContainSubstring("UNIQUE"))
+		digest := sha256.Sum256(leaf.Raw)
+		filter := selector.NewFieldSelectorOrDie("internal.certificateDigest="+hex.EncodeToString(digest[:]), selector.WithPrivateSelectors())
+		var indexed int64
+		Expect(database.Table("certificate_signing_requests").Where("name IN ? AND certificate_digest IS NOT NULL", []string{"first", "second"}).Count(&indexed).Error).To(Succeed())
+		Expect(indexed).To(Equal(int64(2)))
+		Expect(database.Table("certificate_signing_requests").Where("name = ? AND certificate_digest IS NOT NULL", "foreign").Count(&indexed).Error).To(Succeed())
+		Expect(indexed).To(BeZero())
+		provider := csrstore.NewCertificateSigningRequestStore(database, suite.Log, enrollmentSignerName)
+		listed, err := provider.List(suite.Ctx, suite.OrgID, store.ListParams{FieldSelector: filter})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listed.Items).To(HaveLen(2))
+		Expect(migration.Run(suite.Ctx, database, suite.Log, false, enrollmentSignerName)).To(Succeed())
+		_, err = provider.Delete(suite.Ctx, suite.OrgID, "second")
+		Expect(err).NotTo(HaveOccurred())
+		listed, err = provider.List(suite.Ctx, suite.OrgID, store.ListParams{FieldSelector: filter})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listed.Items).To(HaveLen(1))
+		Expect(listed.Items[0].Metadata.Name).To(Equal(lo.ToPtr("first")))
+	})
+
+	It("When old certificate encoding is invalid it should roll back migration and permit a corrected retry", func() {
+		cfg, name, database, err := testdb.CreateEmptyTestDB(suite.Ctx, suite.Log, "invalid_csr_", store.InitDB)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { Expect(testdb.DeleteTestDB(suite.Ctx, suite.Log, cfg, database, name)).To(Succeed()) })
+		Expect(database.AutoMigrate(&model.Organization{}, &legacyCertificateSigningRequest{})).To(Succeed())
+		Expect(database.Create(&model.Organization{ID: suite.OrgID, ExternalID: "invalid-digest", DisplayName: "Invalid"}).Error).To(Succeed())
+		Expect(database.Exec(`INSERT INTO certificate_signing_requests (org_id, name, spec, status) VALUES (?, 'invalid', '{"signerName":"historical.example/changed"}', '{"certificate":"!bad-base64!"}')`, suite.OrgID).Error).To(Succeed())
+		Expect(migration.Run(suite.Ctx, database, suite.Log, false, enrollmentSignerName)).To(MatchError(ContainSubstring("retained certificate encoding")))
+		Expect(database.Migrator().HasColumn(&legacyCertificateSigningRequest{}, "certificate_digest")).To(BeFalse())
+		Expect(database.Exec(`UPDATE certificate_signing_requests SET status = '{"certificate":null}' WHERE name = 'invalid'`).Error).To(Succeed())
+		Expect(migration.Run(suite.Ctx, database, suite.Log, false, enrollmentSignerName)).To(Succeed())
+	})
+})

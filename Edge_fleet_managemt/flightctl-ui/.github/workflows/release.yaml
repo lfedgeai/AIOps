@@ -1,0 +1,105 @@
+name: Release a new version
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+env:
+  NODE_OPTIONS: '--max-old-space-size=8192'
+
+jobs:
+  publish-to-npm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Check workflow runs in a release branch
+        run: |
+          TAG_NAME="${{ github.event.release.tag_name }}"
+
+          # Extract major.minor version from tag (e.g., v0.10.5-rc1 -> 0.10)
+          TAG_VERSION=$(echo "${TAG_NAME}" | sed 's/^v//' | grep -oE '^[0-9]+\.[0-9]+')
+          if [[ -z "${TAG_VERSION}" ]]; then
+            echo "✗ Error: Could not extract version from tag ${TAG_NAME}"
+            exit 1
+          fi
+
+          EXPECTED_BRANCH="release-${TAG_VERSION}"
+          echo "Tag version: ${TAG_VERSION}.x"
+          echo "Expected release branch: ${EXPECTED_BRANCH}"
+
+          # Get the commit SHA for the tag
+          TAG_COMMIT=$(git rev-list -n 1 "${TAG_NAME}")
+          echo "Tag ${TAG_NAME} points to commit: ${TAG_COMMIT}"
+
+          # Get all branches containing this commit
+          BRANCHES=$(git branch -r --contains ${TAG_COMMIT} | sed 's|^[[:space:]]*origin/||' | grep -v HEAD)
+          echo "Branches containing this commit:"
+          echo "${BRANCHES}"
+
+          # Check if the expected release branch contains this commit
+          if echo "${BRANCHES}" | grep -q "^${EXPECTED_BRANCH}$"; then
+            echo "✓ Tag ${TAG_NAME} is on the correct release branch: ${EXPECTED_BRANCH}"
+          else
+            echo "✗ Error: Tag ${TAG_NAME} (version ${TAG_VERSION}) is not on branch ${EXPECTED_BRANCH}"
+            echo "Available branches: ${BRANCHES}"
+            exit 1
+          fi
+
+      - name: Lookup for workspaces to be published
+        run: |
+          declare -a LIBS=()
+          for pkg in libs/*/package.json; do
+            if [[ "$(jq '.private != true' "${pkg}")" = "true" ]]; then
+              LIBS+=("${pkg:5:-13}")
+            fi
+          done
+          echo "LIBS=${LIBS[@]}" >> $GITHUB_ENV
+          (IFS=,; printf 'The following workspaces will be published: [%s]\n' "${LIBS[*]}")
+
+      - name: Configuring git
+        run: |
+          git config user.name '${{ github.actor }}'
+          git config user.email '${{ github.actor }}@users.noreply.github.com'
+
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 22.x
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Bump workspaces to ${{ github.ref_name }}
+        run: |
+          for LIB in $(echo ${LIBS}); do
+            echo Bumping @flightctl/"${LIB}"
+            npm -w @flightctl/"${LIB}" version "${GITHUB_REF_NAME:1}"
+          done
+
+      - name: Build
+        run: npm run build:libs
+
+      - name: Publish workspaces to NPM
+        env:
+          NPM_TOKEN: ${{ secrets.NPMJS_FLIGHTCTL_RELEASE_TOKEN }}
+        run: |
+          npm config set @scope:registry //registry.npmjs.org/
+          npm config set //registry.npmjs.org/:_authToken ${NPM_TOKEN}
+          for LIB in $(echo ${LIBS}); do
+            printf 'Publishing @flightctl/%s\n' "${LIB}"
+            npm -w @flightctl/${LIB} publish --access public
+            # Verify the package has been published before publishing another one.
+            until [[ "$(npm show @flightctl/${LIB} --json | jq -r '.version')" = "${GITHUB_REF_NAME:1}" ]]; do
+              printf '@flightctl/%s has not ben published yet\n' "${LIB}"
+              sleep ${{ vars.NPM_PUBLISH_DELAY }}
+              echo "Retrying..."
+            done
+          done

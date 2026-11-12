@@ -1,0 +1,371 @@
+package bridge
+
+import (
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/textproto"
+	"net/url"
+	"path"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/flightctl/flightctl-ui/common"
+	"github.com/flightctl/flightctl-ui/config"
+	clientorigin "github.com/flightctl/flightctl-ui/origin"
+	"github.com/gorilla/websocket"
+	log "github.com/sirupsen/logrus"
+)
+
+var (
+	websocketPingInterval = 30 * time.Second
+	websocketTimeout      = 30 * time.Second
+	websocketHeaders      = []string{
+		textproto.CanonicalMIMEHeaderKey("Connection"),
+		textproto.CanonicalMIMEHeaderKey("Sec-Websocket-Extensions"),
+		textproto.CanonicalMIMEHeaderKey("Sec-Websocket-Key"),
+		textproto.CanonicalMIMEHeaderKey("Sec-Websocket-Version"),
+		textproto.CanonicalMIMEHeaderKey("Upgrade"),
+	}
+)
+
+// maxWSCloseReasonBytes is the RFC 6455 limit for a close-frame reason (control payload
+// is at most 125 bytes, 2 of which are the status code).
+const maxWSCloseReasonBytes = 123
+
+// maxDialErrorBodyBytes caps how much of a failed Dial response body we read when building
+// the close reason for the browser.
+const maxDialErrorBodyBytes = 1024
+
+// Matches flightctl/internal/consts: machine-readable app console error signaling that the
+// VM application has no active compute workload (stopped / still starting).
+const (
+	appConsoleErrorCodeHeader   = "X-Flightctl-App-Console-Error"
+	appConsoleErrorCodeNotReady = "app-not-ready"
+	appConsoleNotReadyCloseCode = 4002
+)
+
+// truncateWSCloseReason bounds msg to fit in a WebSocket close frame reason field.
+func truncateWSCloseReason(msg string) string {
+	if len(msg) <= maxWSCloseReasonBytes {
+		return msg
+	}
+	return strings.ToValidUTF8(msg[:maxWSCloseReasonBytes], "")
+}
+
+// dialErrorCloseReason builds a close reason of the form "<status> <detail>" so the UI can
+// map the status code while still receiving the backend/agent error text.
+// Falls back to the HTTP status text when the body is empty.
+func dialErrorCloseReason(statusCode int, resp *http.Response) string {
+	detail := http.StatusText(statusCode)
+	if resp != nil && resp.Body != nil {
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				log.Warnf("Failed to close dial error response body: %v", err)
+			}
+		}()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxDialErrorBodyBytes))
+		if err == nil {
+			if trimmed := strings.TrimSpace(string(body)); trimmed != "" {
+				detail = trimmed
+			}
+		}
+	}
+	return truncateWSCloseReason(fmt.Sprintf("%d %s", statusCode, detail))
+}
+
+// dialErrorCloseCode picks a WebSocket close code for a failed Dial. Prefers the backend's
+// app-not-ready code (4002) over a generic internal server error.
+func dialErrorCloseCode(resp *http.Response) int {
+	if resp != nil && resp.Header.Get(appConsoleErrorCodeHeader) == appConsoleErrorCodeNotReady {
+		return appConsoleNotReadyCloseCode
+	}
+	return websocket.CloseInternalServerErr
+}
+
+type TerminalBridge struct {
+	TlsConfig *tls.Config
+}
+
+func writeCloseFrame(writeMutex *sync.Mutex, dest *websocket.Conn, code int, text string) {
+	deadline := time.Now().Add(websocketTimeout)
+	msg := websocket.FormatCloseMessage(code, text)
+
+	if writeMutex != nil {
+		writeMutex.Lock()
+		defer writeMutex.Unlock()
+	}
+
+	if err := dest.WriteControl(websocket.CloseMessage, msg, deadline); err != nil {
+		log.Warnf("Failed to write close frame: %v", err)
+	}
+}
+
+func copyMsgs(writeMutex *sync.Mutex, dest, src *websocket.Conn) error {
+	for {
+		messageType, msg, err := src.ReadMessage()
+		if err != nil {
+			var closeErr *websocket.CloseError
+			if errors.As(err, &closeErr) {
+				writeCloseFrame(writeMutex, dest, closeErr.Code, closeErr.Text)
+			}
+			return err
+		}
+
+		if writeMutex == nil {
+			err = dest.WriteMessage(messageType, msg)
+		} else {
+			writeMutex.Lock()
+			err = dest.WriteMessage(messageType, msg)
+			writeMutex.Unlock()
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// buildDeviceConsoleURL constructs a websocket URL for the device console endpoint.
+// It extracts and validates the deviceId from the request path, sanitizes the query string,
+// and safely builds the URL using Go's url package to prevent SSRF attacks.
+func buildDeviceConsoleURL(r *http.Request) (string, error) {
+	deviceId, found := strings.CutPrefix(r.URL.Path, "/api/terminal/")
+	if !found || !common.IsSafeResourceName(deviceId) {
+		return "", fmt.Errorf("invalid deviceId")
+	}
+
+	// Sanitize query string
+	sanitizedQuery, err := sanitizeQueryForSSRF(r.URL.RawQuery)
+	if err != nil {
+		return "", fmt.Errorf("invalid query string: %w", err)
+	}
+
+	// Parse the base API URL to safely construct the websocket URL
+	baseURL, err := url.Parse(config.FctlApiUrl)
+	if err != nil {
+		return "", fmt.Errorf("invalid base API URL: %w", err)
+	}
+
+	// Websocket scheme must match backend API transport
+	wsScheme := "wss"
+	if strings.EqualFold(baseURL.Scheme, "http") {
+		wsScheme = "ws"
+	}
+
+	// Construct the websocket URL safely using url.URL to prevent SSRF
+	consoleURL := &url.URL{
+		Scheme: wsScheme,
+		Host:   baseURL.Host,
+		Path:   path.Join("/ws/v1/devices", deviceId, "console"),
+	}
+
+	// Add query parameters if present
+	if sanitizedQuery != "" {
+		parsedQuery, err := url.ParseQuery(sanitizedQuery)
+		if err != nil {
+			return "", fmt.Errorf("invalid sanitized query string: %w", err)
+		}
+		consoleURL.RawQuery = parsedQuery.Encode()
+	}
+
+	return consoleURL.String(), nil
+}
+
+// checkOrigin validates the Origin header against allowed origins.
+// It allows:
+//   - Requests without an Origin header (same-origin from browsers)
+//   - Requests from the configured BaseUiUrl origin
+//   - Same-origin requests (Origin matches request Host)
+//   - OpenShift console plugin proxy only: Origin is the console's documented placeholder
+//     (http://localhost) and X-Forwarded-Host/Proto match BASE_UI_URL — not a blanket bypass
+//     for arbitrary Origin values when forwarded headers match the destination host
+//
+// Host comparisons are case-insensitive per RFC 3986.
+func checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	xfh := r.Header.Get("X-Forwarded-Host")
+	effectiveOrigin := clientorigin.EffectiveRequestOrigin(r)
+
+	// If no Origin header is present, allow the request (same-origin from browsers).
+	if origin == "" {
+		return true
+	}
+
+	originURL, err := url.Parse(origin)
+	if err != nil {
+		log.Warnf("Rejected WebSocket connection - invalid Origin header: %q", origin)
+		return false
+	}
+
+	baseURL, err := url.Parse(config.BaseUiUrl)
+	if err != nil {
+		log.WithError(err).Debugf("WebSocket origin check: failed to parse BaseUiUrl")
+	} else if clientorigin.FromURL(originURL) == clientorigin.FromURL(baseURL) {
+		return true
+	}
+
+	// Allow same-origin requests (direct access to the proxy, not via console plugin).
+	if clientorigin.FromURL(originURL) == clientorigin.DirectRequestOrigin(r) {
+		return true
+	}
+
+	if isOpenShiftConsolePluginProxyOriginAllowed(r, origin, baseURL, xfh, effectiveOrigin) {
+		return true
+	}
+
+	log.Debugf(
+		"Rejected WebSocket connection - Origin=%q requestHost=%q BASE_UI_URL=%q effectiveOrigin=%q xForwardedHost=%q",
+		origin, r.Host, config.BaseUiUrl, effectiveOrigin, xfh,
+	)
+	return false
+}
+
+// isOpenShiftConsolePluginProxyOriginAllowed permits the console WebSocket backend hop only when
+// Origin is openshift/console's fixed placeholder (http://localhost), not when an attacker
+// supplies another Origin but forges X-Forwarded-Host to match BASE_UI_URL.
+func isOpenShiftConsolePluginProxyOriginAllowed(
+	r *http.Request,
+	origin string,
+	baseURL *url.URL,
+	xfh, effectiveOrigin string,
+) bool {
+	if config.OcpPlugin != "true" {
+		return false
+	}
+	if !config.ShouldTrustForwardedHeaders(r) || strings.TrimSpace(xfh) == "" {
+		return false
+	}
+	if baseURL == nil {
+		return false
+	}
+	if !clientorigin.IsOpenShiftConsoleProxyWebSocketOrigin(origin) {
+		return false
+	}
+	return clientorigin.FromURL(baseURL) == effectiveOrigin
+}
+
+func (t TerminalBridge) HandleTerminal(w http.ResponseWriter, r *http.Request) {
+	if !isWebsocketUpgrade(r) {
+		errMsg := "not a websocket connection"
+		log.Warn(errMsg)
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(errMsg))
+		return
+	}
+
+	consoleURL, err := buildDeviceConsoleURL(r)
+	if err != nil {
+		log.Warnf("Failed to build console URL: %v", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	deviceId, _ := strings.CutPrefix(r.URL.Path, "/api/terminal/")
+	log.Infof("Starting terminal session for device: %s", deviceId)
+	t.bridgeWebSocket(w, r, consoleURL, fmt.Sprintf("device: %s", deviceId))
+}
+
+func isWebsocketUpgrade(r *http.Request) bool {
+	for _, upgrade := range r.Header["Upgrade"] {
+		if strings.EqualFold(upgrade, "websocket") {
+			return true
+		}
+	}
+	return false
+}
+
+func (t TerminalBridge) bridgeWebSocket(w http.ResponseWriter, r *http.Request, consoleURL, sessionLabel string) {
+	dialer := &websocket.Dialer{
+		TLSClientConfig: t.TlsConfig,
+	}
+
+	headers := http.Header{}
+	for key := range r.Header {
+		if !slices.Contains(websocketHeaders, textproto.CanonicalMIMEHeaderKey(key)) {
+			headers.Add(key, r.Header.Get(key))
+		}
+	}
+
+	backend, resp, err := dialer.Dial(consoleURL, headers)
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to dial backend: '%v'", err)
+		statusCode := http.StatusBadGateway
+		if resp == nil || resp.StatusCode == 0 {
+			log.Warn(errMsg)
+		} else {
+			statusCode = resp.StatusCode
+			if resp.Request == nil {
+				log.Warnf("%s Status: '%v' (no request object)", errMsg, resp.Status)
+			} else {
+				log.Warnf("%s Status: '%v' URL: '%v'", errMsg, resp.Status, resp.Request.URL)
+			}
+		}
+		log.Warnf("dial statusCode: '%v'", statusCode)
+
+		// On any backend error, upgrade the client to WebSocket to send a close frame.
+		// Include the response body (agent/API message) so the UI can show more than
+		// a generic status text such as "404 Not Found".
+		closeReason := dialErrorCloseReason(statusCode, resp)
+		closeCode := dialErrorCloseCode(resp)
+		upgrader := &websocket.Upgrader{
+			Subprotocols: websocket.Subprotocols(r),
+			CheckOrigin:  checkOrigin,
+		}
+		frontend, upgErr := upgrader.Upgrade(w, r, nil)
+		if upgErr != nil {
+			log.Warnf("Failed to upgrade websocket for error response: %v", upgErr)
+			return
+		}
+		_ = frontend.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(closeCode, closeReason), time.Now().Add(5*time.Second))
+		frontend.Close()
+		return
+	}
+	defer backend.Close()
+
+	upgrader := &websocket.Upgrader{
+		Subprotocols: websocket.Subprotocols(r),
+		CheckOrigin:  checkOrigin,
+	}
+
+	frontend, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Warnf("Failed to upgrade websocket to client: '%v'", err)
+		return
+	}
+
+	ticker := time.NewTicker(websocketPingInterval)
+	var writeMutex sync.Mutex // Needed because ticker & copy are writing to frontend in separate goroutines
+
+	defer func() {
+		log.Infof("Closing terminal session for %s", sessionLabel)
+		ticker.Stop()
+		frontend.Close()
+	}()
+
+	errc := make(chan error, 2)
+
+	// Can't just use io.Copy here since browsers care about frame headers.
+	go func() { errc <- copyMsgs(nil, frontend, backend) }()
+	go func() { errc <- copyMsgs(&writeMutex, backend, frontend) }()
+
+	for {
+		select {
+		case <-errc:
+			// Only wait for a single error and let the defers close both connections.
+			return
+		case <-ticker.C:
+			writeMutex.Lock()
+			// Send pings to client to prevent load balancers and other middlemen from closing the connection early
+			err := frontend.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(websocketTimeout))
+			writeMutex.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}
+}

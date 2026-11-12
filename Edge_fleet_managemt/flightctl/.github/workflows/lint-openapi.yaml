@@ -1,0 +1,35 @@
+name: "API Quality"
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'release-*'
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-openapi:
+    runs-on: "ubuntu-24.04"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v46
+        with:
+          since_last_remote_commit: 'true'
+          files: |
+            .spectral.yaml
+            api/**/openapi.yaml
+
+      - name: Running Spectral Linter
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: make lint-openapi

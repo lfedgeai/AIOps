@@ -1,0 +1,980 @@
+# Disable debug information package creation
+%define debug_package %{nil}
+
+%global goipath github.com/flightctl/flightctl
+
+# SELinux specifics
+%global selinuxtype targeted
+%define selinux_policyver 3.14.3-67
+
+# RHEL-compatible builds use the OpenSSL FIPS validator.
+%global fips_enabled 0%{?rhel}
+
+Name:           flightctl
+# Version and Release are automatically updated by Packit during build
+# Do not manually change these values - they will be overwritten
+Version:        0.6.0
+Release:        1%{?dist}
+Summary:        Flight Control service
+
+%gometa
+
+License:        Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT
+URL:            %{gourl}
+
+Source0:         1%{?dist}
+
+%if %{fips_enabled}
+BuildRequires:  (golang >= 1.26.10 with golang < 1.27)
+%else
+BuildRequires:  golang
+%endif
+BuildRequires:  make
+BuildRequires:  git
+BuildRequires:  openssl-devel
+BuildRequires:  systemd-rpm-macros
+
+Requires: openssl
+
+%global flightctl_target flightctl.target
+
+
+%description
+# Main package is empty and not created.
+
+# cli sub-package
+%package cli
+Summary: Flight Control CLI
+Recommends: bash-completion
+%description cli
+flightctl is the CLI for controlling the Flight Control service.
+
+# agent sub-package
+%package agent
+Summary: Flight Control management agent
+
+Requires: flightctl-selinux = %{version}
+Recommends: flightctl-greenboot
+Recommends: oci-delta
+Requires: jq
+Requires: sudo
+
+%description agent
+The flightctl-agent package provides the management agent for the Flight Control fleet management service.
+
+# greenboot sub-package
+%package greenboot
+Summary: Greenboot integration for the Flight Control agent
+Requires: greenboot
+Requires: flightctl-agent = %{version}
+
+%description greenboot
+The flightctl-greenboot package provides greenboot health checks, bootc timer
+masking, and greenboot configuration for the Flight Control agent on
+image-mode (bootc) systems.
+
+# selinux sub-package
+%package selinux
+Summary: SELinux policies for the Flight Control management agent
+BuildRequires: selinux-policy >= %{selinux_policyver}
+BuildRequires: selinux-policy-devel >= %{selinux_policyver}
+BuildRequires: container-selinux
+BuildArch: noarch
+Requires: selinux-policy >= %{selinux_policyver}
+
+# For restorecon
+Requires: policycoreutils
+# For semanage
+Requires: policycoreutils-python-utils
+# For policy macros
+Requires: container-selinux
+
+%description selinux
+The flightctl-selinux package provides the SELinux policy modules required by the Flight Control management agent.
+
+# services sub-package
+%package services
+Summary: Flight Control services
+Requires: bash
+Requires: openssl
+Requires: podman
+Requires: python3-pyyaml
+BuildRequires: systemd-rpm-macros
+%{?systemd_requires}
+Requires: selinux-policy-targeted
+Obsoletes: flightctl-telemetry-gateway < %{version}-%{release}
+
+%description services
+The flightctl-services package provides installation and setup of files for running containerized Flight Control services
+
+%package observability
+Summary: Complete Flight Control observability stack
+Requires:       flightctl-services = %{version}-%{release}
+Requires:       /usr/sbin/semanage
+Requires:       /usr/sbin/restorecon
+Requires:       podman
+Requires:       systemd
+%{?systemd_requires}
+Requires:       selinux-policy-targeted
+
+%description observability
+This package provides the Flight Control Observability Stack, including
+Prometheus for metric storage and Grafana for visualization.
+
+# catalog-collector sub-package
+%package catalog-collector
+Summary: Flight Control catalog collector
+Requires:       podman
+Requires:       systemd
+BuildRequires:  systemd-rpm-macros
+%{?systemd_requires}
+Requires:       selinux-policy-targeted
+
+%description catalog-collector
+The flightctl-catalog-collector package provides a Quadlet unit that runs the
+containerized Flight Control catalog collector, which imports catalogs from
+external registries such as the Kubeflow Model Registry into Flight Control.
+
+The collector has no usable default pipeline, so the unit does not start until
+a configuration file exists at
+%{_sysconfdir}/flightctl/flightctl-catalog-collector/config.yaml. Example
+configurations are installed under
+%{_datadir}/flightctl/flightctl-catalog-collector/examples.
+
+This sub-package is independent of flightctl-services: the collector can run
+on a host that only forwards catalogs to a remote Flight Control service.
+
+%files observability
+# Shared directories (also owned by services package)
+%dir %{_datadir}/flightctl
+%dir %{_datadir}/flightctl/flightctl-grafana
+%dir %{_datadir}/flightctl/flightctl-prometheus
+%dir %{_datadir}/flightctl/flightctl-userinfo-proxy
+%dir %{_datadir}/containers/systemd
+
+# Grafana configuration templates and static files
+%{_datadir}/flightctl/flightctl-grafana/grafana.ini.template
+%{_datadir}/flightctl/flightctl-grafana/grafana-datasources.yaml
+%{_datadir}/flightctl/flightctl-grafana/grafana-dashboards.yaml
+
+# Grafana provisioning files installed directly to /etc
+%config(noreplace) /etc/flightctl/flightctl-grafana/provisioning/datasources/grafana-datasources.yaml
+%config(noreplace) /etc/flightctl/flightctl-grafana/provisioning/dashboards/grafana-dashboards.yaml
+%config(noreplace) /etc/flightctl/flightctl-grafana/provisioning/dashboards/flightctl/*.json
+
+# Prometheus static configuration
+%{_datadir}/flightctl/flightctl-prometheus/prometheus.yml
+
+# UserInfo Proxy configuration templates
+%{_datadir}/flightctl/flightctl-userinfo-proxy/env.template
+
+# Generated quadlet files (created during build by flightctl-standalone)
+%{_datadir}/containers/systemd/flightctl-grafana.container
+%{_datadir}/containers/systemd/flightctl-prometheus.container
+%{_datadir}/containers/systemd/flightctl-userinfo-proxy.container
+
+# Systemd target for full observability stack
+/usr/lib/systemd/system/flightctl-observability.target
+
+# Directories owned by the observability RPM
+# Note: Parent directories are also owned by services package (shared ownership is allowed)
+%dir /etc/flightctl
+%dir /etc/flightctl/pki
+%dir /etc/flightctl/pki/flightctl-grafana
+%dir /etc/flightctl/pki/flightctl-prometheus
+%dir /etc/flightctl/pki/flightctl-userinfo-proxy
+%dir /etc/flightctl/flightctl-grafana
+%dir /etc/flightctl/flightctl-grafana/provisioning
+%dir /etc/flightctl/flightctl-grafana/provisioning/datasources
+%dir /etc/flightctl/flightctl-grafana/provisioning/alerting
+%dir /etc/flightctl/flightctl-grafana/provisioning/dashboards
+%dir /etc/flightctl/flightctl-grafana/provisioning/dashboards/flightctl
+%dir /etc/flightctl/flightctl-grafana/certs
+%dir /etc/flightctl/flightctl-prometheus
+%dir /var/lib/prometheus
+%dir /var/lib/grafana
+
+# Ghost files for runtime-generated configuration
+%ghost /etc/flightctl/flightctl-grafana/grafana.ini
+
+
+%pre observability
+echo "Preparing to install Flight Control Observability Stack..."
+echo "Note: Observability stack can be installed independently of other Flight Control services."
+# Workaround: save observability state before upgrade so %%posttrans can restore it.
+# Needed because older versions' %%preun unconditionally stops services on upgrade.
+# Can be removed once all deployments have upgraded past this version.
+if [ "$1" -eq 2 ]; then
+    if /usr/bin/systemctl is-active --quiet flightctl-observability.target 2>/dev/null; then
+        touch /run/flightctl-observability-was-active
+    fi
+fi
+
+
+%post observability
+# On initial install: apply preset policy to enable/disable services based on system defaults
+%systemd_post flightctl-observability.target
+
+echo "Running post-install actions for Flight Control Observability Stack..."
+
+# Set ownership for persistent data directories
+chown 65534:65534 /var/lib/prometheus
+
+# Apply persistent SELinux contexts for volumes and configuration files.
+/usr/sbin/semanage fcontext -a -t container_file_t "/etc/flightctl/flightctl-prometheus(/.*)?" >/dev/null 2>&1 || :
+/usr/sbin/semanage fcontext -a -t container_file_t "/var/lib/prometheus(/.*)?" >/dev/null 2>&1 || :
+/usr/sbin/semanage fcontext -a -t container_file_t "/etc/flightctl/flightctl-grafana(/.*)?" >/dev/null 2>&1 || :
+/usr/sbin/semanage fcontext -a -t container_file_t "/var/lib/grafana(/.*)?" >/dev/null 2>&1 || :
+
+# Restore file contexts based on the new rules (and default rules)
+/usr/sbin/restorecon -RvF /etc/flightctl/flightctl-prometheus >/dev/null 2>&1 || :
+/usr/sbin/restorecon -RvF /var/lib/prometheus >/dev/null 2>&1 || :
+/usr/sbin/restorecon -RvF /etc/flightctl/flightctl-grafana >/dev/null 2>&1 || :
+/usr/sbin/restorecon -RvF /var/lib/grafana >/dev/null 2>&1 || :
+
+# Enable specific SELinux boolean if needed
+/usr/sbin/setsebool -P container_manage_cgroup on >/dev/null 2>&1 || :
+
+# Reload systemd daemon to pick up new quadlet files
+echo "Reloading systemd daemon..."
+/usr/bin/systemctl daemon-reload
+
+# On upgrade: mark the observability target for restart so PartOf= services restart
+if [ "$1" -ge 2 ] && [ -x "/usr/lib/systemd/systemd-update-helper" ]; then
+    /usr/lib/systemd/systemd-update-helper mark-restart-system-units flightctl-observability.target || :
+fi
+
+
+
+
+%preun observability
+echo "Running pre-uninstall actions for Flight Control Observability Stack..."
+# On package removal: stop and disable all services (PartOf= propagates to all services)
+%systemd_preun flightctl-observability.target
+
+
+%postun observability
+# On upgrade: mark services for restart after transaction
+%systemd_postun_with_restart flightctl-observability.target
+
+if [ $1 -eq 0 ]; then
+    # Clean up Podman containers associated with the services
+    /usr/bin/podman rm -f flightctl-grafana >/dev/null 2>&1 || :
+    /usr/bin/podman rm -f flightctl-userinfo-proxy >/dev/null 2>&1 || :
+    /usr/bin/podman rm -f flightctl-prometheus >/dev/null 2>&1 || :
+
+    # Note: Podman secrets are managed by the telemetry-gateway package
+    # and will be cleaned up when that package is uninstalled
+
+    # Remove SELinux fcontext rules added by this package
+    /usr/sbin/semanage fcontext -d -t container_file_t "/etc/flightctl/flightctl-grafana(/.*)?" >/dev/null 2>&1 || :
+    /usr/sbin/semanage fcontext -d -t container_file_t "/var/lib/grafana(/.*)?" >/dev/null 2>&1 || :
+    /usr/sbin/semanage fcontext -d -t container_file_t "/etc/flightctl/flightctl-prometheus(/.*)?" >/dev/null 2>&1 || :
+    /usr/sbin/semanage fcontext -d -t container_file_t "/var/lib/prometheus(/.*)?" >/dev/null 2>&1 || :
+
+    # Restore default SELinux contexts for affected directories
+    /usr/sbin/restorecon -RvF /etc/flightctl/flightctl-grafana >/dev/null 2>&1 || :
+    /usr/sbin/restorecon -RvF /var/lib/grafana >/dev/null 2>&1 || :
+    /usr/sbin/restorecon -RvF /etc/flightctl/flightctl-prometheus >/dev/null 2>&1 || :
+    /usr/sbin/restorecon -RvF /var/lib/prometheus >/dev/null 2>&1 || :
+
+    /usr/bin/systemctl daemon-reload >/dev/null 2>&1 || :
+fi
+
+%posttrans observability
+# Workaround: restore observability services if they were running before upgrade.
+# Needed because older versions' %%preun unconditionally stops services on upgrade.
+# Can be removed once all deployments have upgraded past this version.
+if [ -f /run/flightctl-observability-was-active ]; then
+    rm -f /run/flightctl-observability-was-active
+    /usr/bin/systemctl start flightctl-observability.target >/dev/null 2>&1 || :
+fi
+
+%prep
+%goprep -A
+%setup -q %{forgesetupargs}
+
+%build
+
+%if %{fips_enabled}
+%define disable_fips %{nil}
+%else
+%define disable_fips DISABLE_FIPS="true"
+%endif
+
+    # if this is a buggy version of go we need to set GOPROXY as workaround
+    # see https://github.com/golang/go/issues/61928
+    GOENVFILE=$(go env GOROOT)/go.env
+    if [[ ! -f "${GOENVFILE}" ]]; then
+        export GOPROXY='https://proxy.golang.org,direct'
+    fi
+
+    SOURCE_GIT_TAG="$(
+        tag=$(./hack/current-version 2>/dev/null || true);
+        if [ -z "$tag" ]; then
+            tag=$(echo "v%{version}" | tr '~' '-');
+        fi;
+        echo "${tag}";
+    )" \
+    SOURCE_GIT_TREE_STATE="clean" \
+    SOURCE_GIT_COMMIT="$(
+        commit=$( (git rev-parse HEAD 2>/dev/null || true) | cut -c1-9);
+        if [ -z "$commit" ]; then
+            commit=$(grep -v '^\$Format' packaging/rpm/git-metadata 2>/dev/null | tr -d '[:space:]');
+        fi;
+        if [ -z "$commit" ]; then
+            commit=$(echo %{version} | grep -o '[-~]g[0-9a-f]*' | sed 's/[-~]g//');
+        fi;
+        echo "${commit:-unknown}" | cut -c1-9;
+    )" \
+    %{?disable_fips} %make_build build-cli build-agent build-backup build-restore build-standalone build-mirror-images
+
+    # SELinux modules build
+    %make_build --directory packaging/selinux
+
+%if %{fips_enabled}
+    GOFLAGS='' GOBIN="$PWD/bin" go install github.com/flightctl/fips-validator@v0.0.0-20250930084220-ceca2caa6e48
+%endif
+
+
+%install
+    mkdir -p %{buildroot}/usr/bin
+    mkdir -p %{buildroot}/etc/flightctl
+    install -Dpm 0644 packaging/flightctl/label-sync/mappings.yaml %{buildroot}/etc/flightctl/label-sync/mappings.yaml
+    cp bin/flightctl %{buildroot}/usr/bin
+    cp bin/flightctl-backup %{buildroot}/usr/bin
+    cp bin/flightctl-restore %{buildroot}/usr/bin
+    cp bin/flightctl-mirror-images %{buildroot}/usr/bin
+    mkdir -p %{buildroot}/usr/lib/systemd/system
+    mkdir -p %{buildroot}/usr/lib/tmpfiles.d
+    mkdir -p %{buildroot}/usr/lib/flightctl/custom-info.d
+    mkdir -p %{buildroot}/usr/lib/flightctl/hooks.d/{afterupdating,beforeupdating,afterrebooting,beforerebooting}
+    mkdir -p %{buildroot}/usr/lib/greenboot/check/required.d
+    mkdir -p %{buildroot}/usr/lib/greenboot/red.d
+    mkdir -p %{buildroot}/usr/share/flightctl/functions
+    install -m 0755 packaging/greenboot/functions.sh %{buildroot}/usr/share/flightctl/functions/greenboot.sh
+    install -m 0755 packaging/greenboot/flightctl-agent-running-check.sh %{buildroot}/usr/lib/greenboot/check/required.d/20_check_flightctl_agent.sh
+    install -m 0755 packaging/greenboot/flightctl-agent-pre-rollback.sh %{buildroot}/usr/lib/greenboot/red.d/40_flightctl_agent_pre_rollback.sh
+    mkdir -p %{buildroot}/usr/libexec/flightctl
+    install -m 0755 packaging/flightctl/mask-bootc-timer.sh %{buildroot}/usr/libexec/flightctl/mask-bootc-timer.sh
+    install -m 0644 packaging/systemd/flightctl-mask-bootc-timer.service %{buildroot}/usr/lib/systemd/system
+    cp bin/flightctl-agent %{buildroot}/usr/bin
+    cp packaging/must-gather/flightctl-must-gather %{buildroot}/usr/bin
+    cp packaging/hooks.d/afterupdating/00-default.yaml %{buildroot}/usr/lib/flightctl/hooks.d/afterupdating
+    cp packaging/systemd/flightctl-agent.service %{buildroot}/usr/lib/systemd/system
+    echo "d /var/lib/flightctl 0755 root root -" > %{buildroot}/usr/lib/tmpfiles.d/flightctl.conf
+    # /home is /var/home on bootc images and a regular directory on RHEL.
+    echo "d /home/flightctl 0700 flightctl flightctl -" >> %{buildroot}/usr/lib/tmpfiles.d/flightctl.conf
+    echo "# systemd-tmpfiles configuration for CentOS bootc buildinfo directories" > %{buildroot}/usr/lib/tmpfiles.d/centos-buildinfo.conf
+    echo "d /var/roothome 0755 root root -" >> %{buildroot}/usr/lib/tmpfiles.d/centos-buildinfo.conf
+    echo "d /var/roothome/buildinfo 0755 root root -" >> %{buildroot}/usr/lib/tmpfiles.d/centos-buildinfo.conf
+    echo "d /var/roothome/buildinfo/content_manifests 0755 root root -" >> %{buildroot}/usr/lib/tmpfiles.d/centos-buildinfo.conf
+    bin/flightctl completion bash > flightctl-completion.bash
+    install -Dpm 0644 flightctl-completion.bash -t %{buildroot}/%{_datadir}/bash-completion/completions
+    bin/flightctl completion fish > flightctl-completion.fish
+    install -Dpm 0644 flightctl-completion.fish -t %{buildroot}/%{_datadir}/fish/vendor_completions.d/
+    bin/flightctl completion zsh > _flightctl-completion
+    install -Dpm 0644 _flightctl-completion -t %{buildroot}/%{_datadir}/zsh/site-functions/
+    install -d %{buildroot}%{_datadir}/selinux/packages/%{selinuxtype}
+    install -m644 packaging/selinux/*.bz2 %{buildroot}%{_datadir}/selinux/packages/%{selinuxtype}
+
+    install -Dpm 0644 packaging/flightctl-services-install.conf %{buildroot}%{_sysconfdir}/flightctl/flightctl-services-install.conf
+
+    mkdir -p %{buildroot}%{_sysusersdir}
+    install -Dpm 0644 packaging/rpm/sysusers.d/flightctl.conf %{buildroot}%{_sysusersdir}/flightctl.conf
+
+    install -Dpm 0440 packaging/rpm/sudoers.d/flightctl %{buildroot}/etc/sudoers.d/flightctl
+
+    # Collect license files (top-level + vendored dependencies if present)
+    rm -f licenses.list
+    find -type f \( -name LICENSE -o -name License \) | while read LICENSE_FILE; do
+        install -Dv -m0644 "${LICENSE_FILE}" "%{buildroot}%{_datadir}/licenses/%{NAME}/${LICENSE_FILE}"
+        echo "%%license %{_datadir}/licenses/%{NAME}/${LICENSE_FILE}" >> licenses.list
+    done
+    # Own intermediate directories so RPM removes them on uninstall
+    find "%{buildroot}%{_datadir}/licenses/%{NAME}" -mindepth 1 -type d | sort -r | while read DIR; do
+        echo "%%dir ${DIR#%{buildroot}}" >> licenses.list
+    done
+    touch licenses.list
+
+    # flightctl-services sub-package steps
+    # Use the flightctl-standalone render quadlets command to generate quadlet files with the correct image tags.
+    #
+    # The IMAGE_TAG is derived from the RPM version, which may include tildes (~)
+    # for proper version sorting (e.g., 0.5.1~rc1-1). However, the tagged images
+    # always use hyphens (-) instead of tildes (~). To ensure valid image tags we need
+    # to transform the version string by replacing tildes with hyphens.
+    IMAGE_TAG=$(echo %{version} | tr '~' '-')
+    %define images_config       packaging/images/%{?rhel:el%{rhel}}%{!?rhel:el9}/images.yaml
+
+    # Check if IMAGE_TAG matches a release version pattern (x.x.x or x.x.x-rcX).
+    # Release versions match: 1.2.3 or 1.2.3-rc1
+    # Development builds have additional suffixes like: 1.2.3-main-79-g54721648
+    if echo "${IMAGE_TAG}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$'; then
+        APPLY_UI_OVERRIDE="--flightctl-ui-tag-override"
+    else
+        APPLY_UI_OVERRIDE=""
+    fi
+
+    bin/flightctl-standalone render quadlets \
+        --config "%{images_config}" \
+        --flightctl-services-tag-override "${IMAGE_TAG}" \
+        ${APPLY_UI_OVERRIDE} \
+        --readonly-config-dir "%{buildroot}%{_datadir}/flightctl" \
+        --writeable-config-dir "%{buildroot}%{_sysconfdir}/flightctl" \
+        --quadlet-dir "%{buildroot}%{_datadir}/containers/systemd" \
+        --systemd-dir "%{buildroot}/usr/lib/systemd/system" \
+        --bin-dir "%{buildroot}/usr/bin" \
+        --var-tmp-dir "%{buildroot}%{_var}/tmp" \
+        --var-lib-dir "%{buildroot}/var/lib"
+
+    # Create host-side registry configuration directories bind-mounted by the
+    # worker Quadlets. The E2E setup populates these after deployment.
+    install -d -m 0755 \
+        %{buildroot}%{_sysconfdir}/flightctl/flightctl-worker/registries.conf.d \
+        %{buildroot}%{_sysconfdir}/flightctl/flightctl-delta-worker/registries.conf.d
+
+    mkdir -p %{buildroot}%{_sysconfdir}/flightctl/tpm-cas
+
+    # Copy services must gather script
+    cp packaging/must-gather/flightctl-services-must-gather %{buildroot}%{_bindir}
+
+    # Copy certificate and encryption key generation scripts
+    mkdir -p %{buildroot}%{_datadir}/flightctl
+    install -m 0755 deploy/helm/flightctl/scripts/generate-certificates.sh %{buildroot}%{_datadir}/flightctl/generate-certificates.sh
+    install -m 0755 deploy/helm/flightctl/scripts/generate-encryption-key.sh %{buildroot}%{_datadir}/flightctl/generate-encryption-key.sh
+
+    # Copy sos report flightctl plugin
+    mkdir -p %{buildroot}/usr/share/sosreport
+    cp packaging/sosreport/sos/report/plugins/flightctl.py %{buildroot}/usr/share/sosreport
+
+    # install observability
+     # Install pre-upgrade helper script to libexec
+     mkdir -p %{buildroot}%{_libexecdir}/flightctl
+     install -Dpm 0755 deploy/scripts/pre-upgrade-dry-run.sh %{buildroot}%{_libexecdir}/flightctl/pre-upgrade-dry-run.sh
+
+     # Observability quadlets are now rendered together with regular services above
+     # using flightctl-standalone render quadlets, which processes all components in deploy/podman/
+
+     # Install systemd targets for service grouping
+     install -m 0644 deploy/podman/flightctl-observability.target %{buildroot}/usr/lib/systemd/system/
+
+     # Create observability persistent data directories
+     mkdir -p %{buildroot}/var/lib/prometheus
+     mkdir -p %{buildroot}/var/lib/grafana
+
+%check
+    # Run the installed binary from the buildroot and capture its output
+    out="$("%{buildroot}%{_bindir}/flightctl-agent" version)"
+    echo "$out"
+
+    # Extract the parts after the colons
+    version=$(printf '%s\n' "$out" | sed -n 's/^Agent Version:[[:space:]]*//p')
+    commit=$(printf '%s\n' "$out" | sed -n 's/^Git Commit:[[:space:]]*//p')
+
+    # Fail if either is empty
+    if [ -z "$version" ]; then
+        echo "ERROR: Agent Version is empty"
+        exit 1
+    fi
+
+    if [ -z "$commit" ]; then
+        echo "ERROR: Git Commit is empty"
+        exit 1
+    fi
+
+%if %{fips_enabled}
+    bin/fips-validator binary %{buildroot}%{_bindir}/flightctl
+    bin/fips-validator binary %{buildroot}%{_bindir}/flightctl-agent
+    bin/fips-validator binary %{buildroot}%{_bindir}/flightctl-backup
+    bin/fips-validator binary %{buildroot}%{_bindir}/flightctl-restore
+    GOLANG_FIPS=1 OPENSSL_FORCE_FIPS_MODE=1 LD_DEBUG=symbols bin/flightctl version |& grep OPENSSL
+%endif
+
+%pre selinux
+%selinux_relabel_pre -s %{selinuxtype}
+
+%post selinux
+# Install SELinux module - if this fails, RPM installation will still continue
+if ! semodule -s %{selinuxtype} -i %{_datadir}/selinux/packages/%{selinuxtype}/flightctl_agent.pp.bz2; then
+    echo "ERROR: Failed to install flightctl SELinux policy (AST failure or compatibility issue)" >&2
+    exit 1
+fi
+
+%postun selinux
+if [ $1 -eq 0 ]; then
+    semodule -s %{selinuxtype} -r flightctl_agent 2>/dev/null || :
+fi
+
+%posttrans selinux
+%selinux_relabel_post -s %{selinuxtype}
+
+# File listings
+# No %%files section for the main package, so it won't be built
+
+%files cli -f licenses.list
+    %dir %{_datadir}/licenses/%{NAME}
+    %{_bindir}/flightctl
+    %{_bindir}/flightctl-backup
+    %{_bindir}/flightctl-restore
+    %{_bindir}/flightctl-mirror-images
+    %{_datadir}/bash-completion/completions/flightctl-completion.bash
+    %{_datadir}/fish/vendor_completions.d/flightctl-completion.fish
+    %{_datadir}/zsh/site-functions/_flightctl-completion
+
+%files agent
+    %license LICENSE
+    %dir /etc/flightctl
+    %{_bindir}/flightctl-agent
+    %{_bindir}/flightctl-must-gather
+    /usr/lib/flightctl/hooks.d/afterupdating/00-default.yaml
+    /usr/lib/systemd/system/flightctl-agent.service
+    /usr/lib/tmpfiles.d/flightctl.conf
+    /usr/lib/tmpfiles.d/centos-buildinfo.conf
+    /usr/share/sosreport/flightctl.py
+    %{_sysusersdir}/flightctl.conf
+    /etc/sudoers.d/*
+
+%files greenboot
+    /usr/share/flightctl/functions/greenboot.sh
+    /usr/lib/greenboot/check/required.d/20_check_flightctl_agent.sh
+    /usr/lib/greenboot/red.d/40_flightctl_agent_pre_rollback.sh
+    /usr/libexec/flightctl/mask-bootc-timer.sh
+    /usr/lib/systemd/system/flightctl-mask-bootc-timer.service
+
+%post agent
+# Create the regular user before applying tmpfiles rules that assign ownership
+# to it. The user entry persists in bootc/composefs images even when its home
+# directory, which is backed by /var/home on bootc images, does not.
+id -u flightctl 2>/dev/null || useradd --create-home --user-group flightctl
+
+# Ensure the agent data and home directories exist immediately for environments
+# where systemd-tmpfiles succeeds or via fallback.
+# Try systemd-tmpfiles first, fall back to manual creation if it fails
+/usr/bin/systemd-tmpfiles --create /usr/lib/tmpfiles.d/flightctl.conf || {
+    mkdir -p /var/lib/flightctl && \
+    chown root:root /var/lib/flightctl && \
+    chmod 0755 /var/lib/flightctl && \
+    mkdir -p ~flightctl && \
+    chown flightctl:flightctl ~flightctl && \
+    chmod 0700 ~flightctl
+}
+
+# These files prevent tmpfiles.d from managing the /var/roothome/buildinfo directory
+rm -f /var/roothome/buildinfo/content_manifests/content-sets.json
+rm -f /var/roothome/buildinfo/labels.json
+# Remove the directories so tmpfiles.d can recreate them properly
+rmdir /var/roothome/buildinfo/content_manifests 2>/dev/null || true
+rmdir /var/roothome/buildinfo 2>/dev/null || true
+
+INSTALL_DIR="/usr/lib/python$(python3 --version | sed 's/^.* \(3[.][0-9]*\).*$/\1/')/site-packages/sos/report/plugins"
+mkdir -p $INSTALL_DIR
+cp /usr/share/sosreport/flightctl.py $INSTALL_DIR
+chmod 0644 $INSTALL_DIR/flightctl.py
+rm -rf /usr/share/sosreport
+
+# This enables lingering for the user with a fallback when building in an env without an active systemd.
+loginctl enable-linger flightctl || (mkdir -p /var/lib/systemd/linger/ && touch /var/lib/systemd/linger/flightctl)
+mkdir -p ~flightctl/.config/{containers/systemd,systemd/user}
+mkdir -p ~flightctl/.local
+chown -R flightctl:flightctl ~flightctl/{.config,.local}
+
+%post greenboot
+# Enable greenboot-healthcheck if present (not enabled by default in greenboot-rs 0.16.x).
+# Must be unconditional: greenboot's own %%systemd_post preset removes greenboot-success.target
+# (renamed from greenboot-set-success.target) due to a CentOS preset mismatch. Re-running
+# `systemctl enable` recreates it via the Also= directive.
+# See: https://github.com/fedora-iot/greenboot-rs/issues/171
+# See: https://github.com/openshift/microshift/pull/5530
+systemctl enable --quiet greenboot-healthcheck 2>/dev/null || :
+# Disable stale unit if left enabled from a previous package version.
+systemctl disable flightctl-configure-greenboot.service 2>/dev/null || :
+# Mask bootc auto-update timer on first boot (bootc/composefs); the script
+# is also run directly below for immediate effect during RPM install.
+systemctl enable flightctl-mask-bootc-timer.service >/dev/null 2>&1 || :
+# Disable bootc automatic updates on bootc systems (flightctl manages updates).
+# mask-bootc-timer.sh applies the mask; flightctl-mask-bootc-timer.service re-runs on
+# boot when image-build %post changes do not persist on bootc/composefs disks.
+/usr/libexec/flightctl/mask-bootc-timer.sh 2>/dev/null || true
+
+%postun agent
+if [ "$1" -eq 0 ]; then
+    loginctl disable-linger flightctl || :
+fi
+
+%preun greenboot
+%systemd_preun flightctl-mask-bootc-timer.service
+
+%postun greenboot
+# Restore bootc automatic-update timer only on full removal (not upgrade)
+if [ "$1" -eq 0 ]; then
+    systemctl unmask bootc-fetch-apply-updates.timer 2>/dev/null || true
+    systemctl start bootc-fetch-apply-updates.timer 2>/dev/null || true
+fi
+
+%files selinux
+%{_datadir}/selinux/packages/%{selinuxtype}/flightctl_agent.pp.bz2
+
+%files services
+    %defattr(0644,root,root,-)
+    # Files mounted to system config
+    %dir %{_sysconfdir}/flightctl
+    %dir %{_sysconfdir}/flightctl/label-sync
+    %dir %{_sysconfdir}/flightctl/encryption
+    %dir %{_sysconfdir}/flightctl/pki
+    %dir %{_sysconfdir}/flightctl/pki/flightctl-api
+    %dir %{_sysconfdir}/flightctl/pki/flightctl-alertmanager-proxy
+    %dir %{_sysconfdir}/flightctl/pki/flightctl-pam-issuer
+    %dir %{_sysconfdir}/flightctl/pki/flightctl-gateway
+    %dir %{_sysconfdir}/flightctl/pki/flightctl-imagebuilder-api
+    %dir %{_sysconfdir}/flightctl/pki/flightctl-remote-access
+    %dir %{_sysconfdir}/flightctl/pki/flightctl-telemetry-gateway
+    %dir %{_sysconfdir}/flightctl/pki/db
+    %dir %{_sysconfdir}/flightctl/flightctl-alert-exporter
+    %dir %{_sysconfdir}/flightctl/flightctl-alertmanager-proxy
+    %dir %{_sysconfdir}/flightctl/flightctl-api
+    %dir %{_sysconfdir}/flightctl/tpm-cas
+    %dir %{_sysconfdir}/flightctl/flightctl-cli-artifacts
+    %dir %{_sysconfdir}/flightctl/flightctl-db-migrate
+    %dir %{_sysconfdir}/flightctl/flightctl-gateway
+    %dir %{_sysconfdir}/flightctl/flightctl-imagebuilder-api
+    %dir %{_sysconfdir}/flightctl/flightctl-imagebuilder-worker
+    %dir %{_sysconfdir}/flightctl/flightctl-remote-access
+    %dir %{_sysconfdir}/flightctl/flightctl-pam-issuer
+    %dir %{_sysconfdir}/flightctl/flightctl-periodic
+    %dir %{_sysconfdir}/flightctl/flightctl-ui
+    %dir %{_sysconfdir}/flightctl/flightctl-worker
+    %dir %{_sysconfdir}/flightctl/flightctl-worker/registries.conf.d
+    %dir %{_sysconfdir}/flightctl/flightctl-delta-worker
+    %dir %{_sysconfdir}/flightctl/flightctl-delta-worker/registries.conf.d
+    %dir %{_sysconfdir}/flightctl/flightctl-telemetry-gateway
+    %dir %{_sysconfdir}/flightctl/flightctl-telemetry-gateway/forward
+    %dir %{_sysconfdir}/flightctl/ssh
+    %config(noreplace) %{_sysconfdir}/flightctl/service-config.yaml
+    %config(noreplace) %{_sysconfdir}/flightctl/label-sync/mappings.yaml
+    %config(noreplace) %{_sysconfdir}/flightctl/flightctl-services-install.conf
+    %config(noreplace) %{_sysconfdir}/flightctl/ssh/known_hosts
+    %ghost /etc/flightctl/flightctl-telemetry-gateway/config.yaml
+
+    # Files mounted to data dir
+    %dir %attr(0755,root,root) %{_datadir}/flightctl
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-api
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-db
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-kv
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-alertmanager-proxy
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-ui
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-cli-artifacts
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-gateway
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-pam-issuer
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-alertmanager
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-alert-exporter
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-periodic
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-worker
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-delta-worker
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-db-migrate
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-imagebuilder-api
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-imagebuilder-worker
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-remote-access
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-telemetry-gateway
+    %dir %attr(0755,root,root) %{_var}/tmp/flightctl-builds
+    %dir %attr(0755,root,root) %{_var}/tmp/flightctl-exports
+    %{_datadir}/flightctl/flightctl-api/config.yaml.template
+    %{_datadir}/flightctl/flightctl-api/env.template
+    %attr(0755,root,root) %{_datadir}/flightctl/flightctl-db/enable-superuser.sh
+    %{_datadir}/flightctl/flightctl-kv/valkey.conf
+    %{_datadir}/flightctl/flightctl-ui/env.template
+    %attr(0755,root,root) %{_datadir}/flightctl/flightctl-ui/init.sh
+    %attr(0755,root,root) %{_datadir}/flightctl/init_utils.sh
+    %{_datadir}/flightctl/flightctl-cli-artifacts/env.template
+    %{_datadir}/flightctl/flightctl-alertmanager/alertmanager.yml
+    %{_datadir}/flightctl/flightctl-alertmanager-proxy/env.template
+    %{_datadir}/flightctl/flightctl-pam-issuer/config.yaml.template
+    %{_datadir}/flightctl/flightctl-gateway/nginx.conf.template
+    %{_datadir}/flightctl/flightctl-alertmanager-proxy/config.yaml.template
+    %{_datadir}/flightctl/flightctl-alert-exporter/config.yaml.template
+    %{_datadir}/flightctl/flightctl-periodic/config.yaml.template
+    %{_datadir}/flightctl/flightctl-worker/config.yaml.template
+    %{_datadir}/flightctl/flightctl-delta-worker/config.yaml.template
+    %{_datadir}/flightctl/flightctl-db-migrate/config.yaml.template
+    %{_datadir}/flightctl/flightctl-imagebuilder-api/config.yaml.template
+    %{_datadir}/flightctl/flightctl-imagebuilder-worker/config.yaml.template
+    %{_datadir}/flightctl/flightctl-remote-access/config.yaml.template
+    %{_datadir}/flightctl/flightctl-remote-access/env.template
+    %{_datadir}/flightctl/flightctl-telemetry-gateway/config.yaml.template
+
+    # Quadlet files (excluding observability components which are in separate packages)
+    %{_datadir}/containers/systemd/flightctl-api.container
+    %{_datadir}/containers/systemd/flightctl-worker.container
+    %{_datadir}/containers/systemd/flightctl-delta-worker.container
+    %{_datadir}/containers/systemd/flightctl-periodic.container
+    %{_datadir}/containers/systemd/flightctl-alert*.container
+    %{_datadir}/containers/systemd/flightctl-cli-artifacts*.container
+    %{_datadir}/containers/systemd/flightctl-db*.container
+    %{_datadir}/containers/systemd/flightctl-db*.volume
+    %{_datadir}/containers/systemd/flightctl-kv*.container
+    %{_datadir}/containers/systemd/flightctl-kv.volume
+    %{_datadir}/containers/systemd/flightctl-pam-issuer.container
+    %{_datadir}/containers/systemd/flightctl-pam-issuer-etc.volume
+    %{_datadir}/containers/systemd/flightctl-gateway.container
+    %{_datadir}/containers/systemd/flightctl-ui*.container
+    %{_datadir}/containers/systemd/flightctl-ui-certs.volume
+    %{_datadir}/containers/systemd/flightctl-imagebuilder*.container
+    %{_datadir}/containers/systemd/flightctl-remote-access.container
+    %{_datadir}/containers/systemd/flightctl-alertmanager.volume
+    %{_datadir}/containers/systemd/flightctl-telemetry-gateway.container
+    %{_datadir}/containers/systemd/flightctl.network
+    %{_datadir}/containers/systemd/flightctl-listeners.volume
+
+    # Handle permissions for scripts setting host config
+    %attr(0755,root,root) %{_datadir}/flightctl/init_db.sh
+    %attr(0755,root,root) %{_datadir}/flightctl/init_kv.sh
+    %attr(0755,root,root) %{_datadir}/flightctl/init_certs.sh
+    %attr(0755,root,root) %{_datadir}/flightctl/secrets.sh
+    %attr(0755,root,root) %{_datadir}/flightctl/yaml_helpers.py
+    %attr(0755,root,root) %{_datadir}/flightctl/generate-certificates.sh
+    %attr(0755,root,root) %{_datadir}/flightctl/generate-encryption-key.sh
+
+    # flightctl-services pre upgrade checks
+    %dir %{_libexecdir}/flightctl
+    %attr(0755,root,root) %{_libexecdir}/flightctl/pre-upgrade-dry-run.sh
+
+    # Files mounted to lib dir
+    /usr/lib/systemd/system/flightctl.target
+    /usr/lib/systemd/system/flightctl-certs-init.service
+    /usr/lib/systemd/system/flightctl-api-init.service
+
+    # Files mounted to bin dir
+    %attr(0755,root,root) %{_bindir}/flightctl-services-must-gather
+    %attr(0755,root,root) %{_bindir}/flightctl-standalone
+
+# Optional pre-upgrade database migration dry-run
+%pre services
+# $1 == 1 if it's an install
+# $1 == 2 if it's an upgrade
+if [ "$1" -eq 2 ]; then
+    IMAGE_TAG="$(echo %{version} | tr '~' '-')"
+    %define db_setup_registry   quay.io
+    %define db_setup_image      flightctl/flightctl-db-setup-%{?rhel:el%{rhel}}%{!?rhel:el9}
+    echo "flightctl: running pre upgrade checks, target version $IMAGE_TAG"
+    if [ -x "%{_libexecdir}/flightctl/pre-upgrade-dry-run.sh" ]; then
+        SCRIPT="%{_libexecdir}/flightctl/pre-upgrade-dry-run.sh"
+        # Versions before the EDM-3833 fix hardcode the wrong image name and overwrite
+        # the DB_SETUP_IMAGE env var. Detect this and patch just that line in a temp copy
+        # so the rest of the script (config reading, secrets, network) stays correct for
+        # the currently installed system state.
+        # Can be removed once all deployments have upgraded past the fix.
+        if grep -q 'DB_SETUP_IMAGE="quay.io/flightctl/flightctl-db-setup:' "$SCRIPT" 2>/dev/null; then
+            TMPSCRIPT=$(mktemp /tmp/flightctl-dry-run.XXXXXX.sh)
+            cp "$SCRIPT" "$TMPSCRIPT"
+            chmod +x "$TMPSCRIPT"
+            CORRECT_IMAGE="%{db_setup_registry}/%{db_setup_image}:${IMAGE_TAG}"
+            sed -i "s|DB_SETUP_IMAGE=.*|DB_SETUP_IMAGE=\"${CORRECT_IMAGE}\"|" "$TMPSCRIPT"
+            SCRIPT="$TMPSCRIPT"
+        fi
+        IMAGE_TAG="$IMAGE_TAG" \
+        DB_SETUP_REGISTRY="%{db_setup_registry}" \
+        DB_SETUP_IMAGE="%{db_setup_image}" \
+        CONFIG_PATH="%{_sysconfdir}/flightctl/flightctl-api/config.yaml" \
+        bash "$SCRIPT" "$IMAGE_TAG" "%{_sysconfdir}/flightctl/flightctl-api/config.yaml" || {
+            [ -z "${TMPSCRIPT:-}" ] || rm -f "$TMPSCRIPT"
+            echo "flightctl: dry-run failed; aborting upgrade." >&2
+            exit 1
+        }
+        [ -z "${TMPSCRIPT:-}" ] || rm -f "$TMPSCRIPT"
+    else
+        echo "flightctl: pre-upgrade-dry-run.sh not found at %{_libexecdir}/flightctl; skipping."
+    fi
+fi
+
+%post services
+# On initial install: apply preset policy to enable/disable services based on system defaults
+%systemd_post %{flightctl_target}
+
+# Enable specific SELinux boolean if needed
+/usr/sbin/setsebool -P container_manage_cgroup on >/dev/null 2>&1 || :
+
+# Reload systemd to recognize new container files
+/usr/bin/systemctl daemon-reload >/dev/null 2>&1 || :
+
+# On upgrade: mark the target for restart so all PartOf= services restart.
+# The OLD package's %%postun may not mark the target (older versions marked
+# individual services with an incomplete list). Marking is idempotent.
+if [ "$1" -ge 2 ] && [ -x "/usr/lib/systemd/systemd-update-helper" ]; then
+    /usr/lib/systemd/systemd-update-helper mark-restart-system-units %{flightctl_target} || :
+fi
+
+cfg="%{_sysconfdir}/flightctl/flightctl-services-install.conf"
+
+if [ "$1" -eq 1 ]; then # it's a fresh install
+  %{__cat} <<EOF
+[flightctl] Installed.
+
+Start services:
+  sudo systemctl start flightctl.target
+
+Check status:
+  systemctl list-units 'flightctl*' --all
+EOF
+fi
+
+# Suggest enabling migration dry-run if not set
+if [ -f "$cfg" ] && ! %{__grep} -q '^[[:space:]]*FLIGHTCTL_MIGRATION_DRY_RUN=1[[:space:]]*$' "$cfg"; then
+  %{__cat} <<EOF
+Recommendation:
+  A database migration dry-run before updates is currently DISABLED.
+  To enable it, edit:
+    $cfg
+  and set:
+    FLIGHTCTL_MIGRATION_DRY_RUN=1
+EOF
+fi
+
+if [ "$1" -eq 2 ]; then # it's an upgrade
+  # Migrate trustXForwardedHeaders: false -> true now that the nginx gateway
+  # terminates TLS and the UI must trust X-Forwarded-Proto/Host headers.
+  svcconfig="%{_sysconfdir}/flightctl/service-config.yaml"
+  if [ -f "$svcconfig" ]; then
+    %{__sed} -E -i 's/^([[:space:]]*trustXForwardedHeaders:[[:space:]]*)("false"|'"'"'false'"'"'|false)([[:space:]]*(#.*)?)$/\1true\3/' "$svcconfig" || :
+  fi
+
+  %{__cat} <<'EOF'
+[flightctl] Upgraded.
+
+Review status:
+  systemctl list-units 'flightctl*' --all
+EOF
+fi
+
+%preun services
+# On package removal: stop and disable all services
+%systemd_preun %{flightctl_target}
+%systemd_preun flightctl-network.service
+
+%postun services
+# On upgrade: mark services for restart after transaction completes
+%systemd_postun_with_restart %{flightctl_target}
+
+# On full removal: delete temporary build/export storage that may contain
+# leftover subdirectories from interrupted jobs (non-empty dirs RPM won't remove).
+if [ "$1" -eq 0 ]; then
+    rm -rf %{_var}/tmp/flightctl-builds || true
+    rm -rf %{_var}/tmp/flightctl-exports || true
+fi
+
+# If contexts were managed via policy, no cleanup is needed here.
+
+%posttrans services
+# Reload systemd after all file operations (install + old-file removal) are
+# complete.  The daemon-reload in %%post runs before the old package's files
+# are deleted, so quadlet files removed in this version are still visible to
+# systemd at that point.  A second reload here picks up those removals.
+/usr/bin/systemctl daemon-reload >/dev/null 2>&1 || :
+
+# Clean up stale systemd units from quadlet files removed in previous
+# versions.  Each unit may still be in systemd's active state from the
+# prior version; stop + reset-failed clears it so it no longer appears
+# in "systemctl list-units".
+# This block can be removed once all deployments have upgraded past this fix.
+#   flightctl-cli-artifacts-init      — removed in EDM-3783 (shipped in 1.0.0–1.1.2)
+#   flightctl-alertmanager-proxy-init — removed in EDM-2304 (shipped in 0.10.0)
+for unit in \
+    flightctl-cli-artifacts-init.service \
+    flightctl-alertmanager-proxy-init.service \
+; do
+    /usr/bin/systemctl stop "$unit" 2>/dev/null || :
+    /usr/bin/systemctl reset-failed "$unit" 2>/dev/null || :
+done
+
+%files catalog-collector
+    %defattr(0644,root,root,-)
+    # Shared directories (also owned by the agent and services packages)
+    %dir %{_sysconfdir}/flightctl
+    %dir %attr(0755,root,root) %{_datadir}/flightctl
+    %dir %{_datadir}/containers/systemd
+
+    # Administrator-supplied configuration, credentials, and CA bundles.
+    # Intentionally empty: the unit stays inactive until config.yaml exists.
+    %dir %{_sysconfdir}/flightctl/flightctl-catalog-collector
+
+    # Example configurations
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-catalog-collector
+    %dir %attr(0755,root,root) %{_datadir}/flightctl/flightctl-catalog-collector/examples
+    %{_datadir}/flightctl/flightctl-catalog-collector/examples/config-vanilla.yaml
+    %{_datadir}/flightctl/flightctl-catalog-collector/examples/config-rhoai-to-flightctl.yaml
+    %{_datadir}/flightctl/flightctl-catalog-collector/examples/vanilla-publish-8080.conf
+
+    # Quadlet unit
+    %{_datadir}/containers/systemd/flightctl-catalog-collector.container
+
+%post catalog-collector
+# Quadlet units are generated at daemon-reload time, so the generator has to
+# run before the unit exists. Enablement comes from the unit's [Install]
+# section, which the generator turns into the usual wants symlink.
+/usr/bin/systemctl daemon-reload >/dev/null 2>&1 || :
+
+if [ "$1" -eq 1 ]; then # fresh install
+  %{__cat} <<EOF
+[flightctl-catalog-collector] Installed.
+
+The collector does not start until it is configured. Copy an example:
+
+  sudo cp %{_datadir}/flightctl/flightctl-catalog-collector/examples/config-vanilla.yaml \\
+          %{_sysconfdir}/flightctl/flightctl-catalog-collector/config.yaml
+
+Edit it, then start the service:
+
+  sudo systemctl daemon-reload
+  sudo systemctl start flightctl-catalog-collector
+
+Health:  curl -s http://127.0.0.1:13133/readyz
+Metrics: curl -s http://127.0.0.1:8888/metrics
+EOF
+fi
+
+%preun catalog-collector
+%systemd_preun flightctl-catalog-collector.service
+
+%postun catalog-collector
+%systemd_postun_with_restart flightctl-catalog-collector.service
+
+%posttrans catalog-collector
+# Second reload after the old package's files are removed, so the generator
+# sees the final on-disk set of quadlet files.
+/usr/bin/systemctl daemon-reload >/dev/null 2>&1 || :
+
+%changelog
+* Tue Oct 06 2026 Flight Control Maintainers <flightctl@redhat.com> - 1.0-1
+- Add catalog-collector sub-package with Quadlet unit and example configurations
+* Wed Nov 26 2025 Dakota Crowder <dcrowder@redhat.com> - 1.0-1
+- Adding certificate generation service
+* Mon Nov 17 2025 Dakota Crowder <dcrowder@redhat.com> - 1.0-1
+- Refactoring quadlet install, add standalone utils
+* Wed Nov 12 2025 Ben Keith <bkeith@redhat.com> - 1.0-1
+- Make observability and telemetry-gateway packages require services package
+* Mon Oct 27 2025 Dakota Crowder <dcrowder@redhat.com> - 1.0-1
+- Add must-gather script for the services sub package
+* Wed Oct 8 2025 Ilya Skornyakov <iskornya@redhat.com> - 0.10.0
+- Add pre-upgrade database migration dry-run capability
+* Tue Jul 15 2025 Sam Batschelet <sbatsche@redhat.com> - 0.9.0-2
+- Improve selinux policy deps and install
+* Sun Jul 6 2025 Ori Amizur <oamizur@redhat.com> - 0.9.0-1
+- Add support for Flight Control standalone observability stack
+* Tue Apr 15 2025 Dakota Crowder <dcrowder@redhat.com> - 0.6.0-4
+- Add ability to create an AAP Oauth Application within flightctl-services sub-package
+* Fri Apr 11 2025 Dakota Crowder <dcrowder@redhat.com> - 0.6.0-3
+- Add versioning to container images within flightctl-services sub-package
+* Thu Apr 3 2025 Ori Amizur <oamizur@redhat.com> - 0.6.0-2
+- Add sos report plugin support
+* Mon Mar 31 2025 Dakota Crowder <dcrowder@redhat.com> - 0.6.0-1
+- Add services sub-package for installation of containerized flightctl services
+* Fri Feb 7 2025 Miguel Angel Ajo <majopela@redhat.com> - 0.4.0-1
+- Add selinux support for console pty access
+* Mon Nov 4 2024 Miguel Angel Ajo <majopela@redhat.com> - 0.3.0-1
+- Move the Release field to -1 so we avoid auto generating packages
+  with -5 all the time.
+* Wed Aug 21 2024 Sam Batschelet <sbatsche@redhat.com> - 0.0.1-5
+- Add must-gather script to provide a simple mechanism to collect agent debug
+* Wed Aug 7 2024 Sam Batschelet <sbatsche@redhat.com> - 0.0.1-4
+- Add basic greenboot support for failed flightctl-agent service
+* Wed Mar 13 2024 Ricardo Noriega <rnoriega@redhat.com> - 0.0.1-3
+- New specfile for both CLI and agent packages

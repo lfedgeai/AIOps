@@ -1,0 +1,35 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+kubeadmConfigPatches:
+- |
+  kind: ClusterConfiguration
+  apiServer:
+    extraArgs:
+      "service-node-port-range": "3000-32767"
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - containerPort: 3443 # flightctl API
+    hostPort: 3443
+    protocol: TCP
+  - containerPort: 7443 # flightctl agent endpoint API
+    hostPort: 7443
+    protocol: TCP
+  - containerPort: 9001 # ui
+    hostPort: 9001
+    protocol: TCP
+  - containerPort: 8090 # cli artifacts
+    hostPort: 8090
+    protocol: TCP
+  - containerPort: 16686 # jaeger ui
+    hostPort: 16686
+    protocol: TCP
+  - containerPort: 4317 # telemetry-gateway OTLP
+    hostPort: 4317
+    protocol: TCP
+  - containerPort: 9464 # telemetry-gateway Prometheus
+    hostPort: 9464
+    protocol: TCP
+  - containerPort: 8445 # imagebuilder API
+    hostPort: 8445
+    protocol: TCP

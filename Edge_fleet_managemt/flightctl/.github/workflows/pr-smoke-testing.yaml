@@ -1,0 +1,209 @@
+name: "Smoke tests"
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'release-*'
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Enable BuildKit for cache mounts
+  DOCKER_BUILDKIT: 1
+  BUILDKIT_PROGRESS: plain
+
+  QUAY_ORG: quay.io/flightctl
+  REGISTRY: quay.io
+  REGISTRY_OWNER: flightctl
+  REGISTRY_OWNER_TESTS: flightctl-tests
+  GITHUB_ACTIONS: true
+
+jobs:
+  # This line defines a job with the ID `check-links` that is stored within the `jobs` key.
+  smoke:
+    runs-on: "ubuntu-24.04"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v46
+        with:
+          since_last_remote_commit: 'true'
+          files_ignore: |
+            .spelling
+            README.md
+            docs/**
+            .github/**
+            examples/**
+            packaging/rpm/**
+
+      - name: Free Disk Space (Ubuntu)
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          large-packages: false # disabling this will result in ~4.6 GB not freed, but will save 2-3 minutes of exec time
+
+      - name: Setup all dependencies
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        uses: ./.github/actions/setup-dependencies
+
+      # Restore-only (see the paired "Save ..." steps below, run near the end of the job):
+      # these keys are the same across every PR/branch, and Actions cache save is scoped
+      # per-ref, so a unified actions/cache@v4 here would save an unrestorable throwaway
+      # copy on every single PR/branch run. Splitting restore/save lets the save be
+      # restricted to main (see build-images-and-charts.yaml's "Save Go cache" for the
+      # full rationale) while every ref still benefits from restoring main's copy.
+      - name: Restore Go modules cache
+        id: cache-go-restore
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Restore DNF cache
+        id: cache-dnf-restore
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            /var/cache/dnf
+            /var/lib/dnf
+          key: ${{ runner.os }}-dnf-smoke
+          restore-keys: |
+            ${{ runner.os }}-dnf-
+
+      - name: Restore bootc-image-builder cache
+        id: cache-bootc-restore
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            bin/dnf-cache
+            bin/osbuild-cache
+          key: ${{ runner.os }}-bootc-cache-smoke-${{ hashFiles('test/scripts/agent-images/Containerfile-e2e-base.local') }}
+          restore-keys: |
+            ${{ runner.os }}-bootc-cache-smoke-
+
+      - name: Set buildah cache path
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: echo "BUILDAH_CACHE_PATH=${TMPDIR:-/var/tmp}/buildah-cache-$(id -u)" >> "$GITHUB_ENV"
+
+      - name: Restore buildah cache
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.BUILDAH_CACHE_PATH }}
+          key: ${{ runner.os }}-buildah-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-buildah-
+
+      - name: Create cluster
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: make cluster
+
+      - name: Deploy
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: DISABLE_FIPS="true" make deploy
+
+      - name: Save buildah cache
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.BUILDAH_CACHE_PATH }}
+          key: ${{ runner.os }}-buildah-${{ github.run_id }}
+
+      - name: Save Go modules cache
+        # always(): populated by "Setup all dependencies"/build steps earlier in the job,
+        # so still worth saving even if a later step (Create cluster/Deploy) fails on main.
+        if: ${{ always() && steps.changed-files.outputs.any_changed == 'true' && github.ref == 'refs/heads/main' && steps.cache-go-restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+
+      - name: Save DNF cache
+        if: ${{ always() && steps.changed-files.outputs.any_changed == 'true' && github.ref == 'refs/heads/main' && steps.cache-dnf-restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /var/cache/dnf
+            /var/lib/dnf
+          key: ${{ runner.os }}-dnf-smoke
+
+      - name: Save bootc-image-builder cache
+        if: ${{ always() && steps.changed-files.outputs.any_changed == 'true' && github.ref == 'refs/heads/main' && steps.cache-bootc-restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            bin/dnf-cache
+            bin/osbuild-cache
+          key: ${{ runner.os }}-bootc-cache-smoke-${{ hashFiles('test/scripts/agent-images/Containerfile-e2e-base.local') }}
+
+      - name: Check
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: |
+          kubectl get pods --all-namespaces
+
+      - name: Apply device
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: bin/flightctl apply -f examples/device.yaml
+
+      - name: Apply fleet
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: bin/flightctl apply -f examples/fleet.yaml
+
+      - name: Apply enrollmentrequest
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: bin/flightctl apply -f examples/enrollmentrequest.yaml
+
+      - name: Apply repository
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: bin/flightctl apply -f examples/repository-flightctl.yaml
+
+      - name: Apply resourcesync
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: bin/flightctl apply -f examples/resourcesync.yaml
+
+      - name: Build the simulator
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: DISABLE_FIPS="true" make build-devicesimulator
+
+      - name: Simulator run
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: bin/devicesimulator --config bin/agent/etc/flightctl/config.yaml --count 1 --stop-after 1m 2>&1 | tee simulator-smoke.log
+
+      - name: Check simulator logs
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        uses: ./.github/actions/check-simulator-logs
+        with:
+          log-file: simulator-smoke.log
+
+      - name: Collect and Upload Logs
+        if: always() && steps.changed-files.outputs.any_changed == 'true'
+        uses: ./.github/actions/collect-logs
+        with:
+          namespace-external: 'flightctl-external'
+          namespace-internal: 'flightctl-internal'
+          log-directory: 'smoke-logs'

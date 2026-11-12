@@ -1,0 +1,712 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"crypto/x509"
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"net/http"
+	"os"
+	"os/user"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ccoveille/go-safecast"
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/agent/device/certmanager/provider"
+	"github.com/flightctl/flightctl/internal/crypto/signer"
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/kvstore"
+	"github.com/flightctl/flightctl/internal/org"
+	"github.com/flightctl/flightctl/pkg/certmanager"
+	fccrypto "github.com/flightctl/flightctl/pkg/crypto"
+	"github.com/flightctl/flightctl/pkg/k8sclient"
+	flightlog "github.com/flightctl/flightctl/pkg/log"
+	"github.com/flightctl/flightctl/test/harness"
+	"github.com/flightctl/flightctl/test/integration/integrationstack"
+	testutil "github.com/flightctl/flightctl/test/util"
+	"github.com/flightctl/flightctl/test/util/testdb"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/samber/lo"
+	"go.uber.org/mock/gomock"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/yaml"
+)
+
+const (
+	TIMEOUT = "60s"
+	POLLING = "250ms"
+
+	// Harness uses 2s for StatusUpdateInterval and SpecFetchInterval (test_harness.go).
+	// After ConflictPaused the agent invalidates lastStatus; the next status sync runs within one interval.
+	// Allow several cycles so the test is stable under load (GitHub runners often need >10s).
+	CONFLICT_PAUSED_STATUS_WAIT_TIMEOUT  = "45s"
+	CONFLICT_PAUSED_STATUS_POLL_INTERVAL = "500ms"
+)
+
+var (
+	suiteCtx      context.Context
+	redisHost     string
+	redisPort     uint
+	redisPassword domain.SecureString
+	redisCleanup  func()
+)
+
+func TestAgent(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Agent Suite")
+}
+
+var _ = BeforeSuite(func() {
+	suiteCtx = testutil.InitSuiteTracerForGinkgo("Agent Suite")
+	Expect(integrationstack.EnsureRunning(suiteCtx)).To(Succeed())
+
+	var err error
+	redisHost, redisPort, redisPassword, redisCleanup, err = testdb.CreateTestRedis(
+		suiteCtx, flightlog.InitLogs())
+	Expect(err).NotTo(HaveOccurred())
+})
+
+var _ = AfterSuite(func() {
+	if redisCleanup != nil {
+		redisCleanup()
+	}
+})
+
+var _ = Describe("Device Agent behavior", func() {
+	var (
+		ctx context.Context
+		h   *harness.TestHarness
+	)
+
+	BeforeEach(func() {
+		ctx = testutil.StartSpecTracerForGinkgo(suiteCtx)
+
+		var err error
+		h, err = harness.NewTestHarness(ctx, GinkgoT().TempDir(), func(err error) {
+			// this inline function handles any errors that are returned from go routines
+			fmt.Fprintf(os.Stderr, "Error in test harness go routine: %v\n", err)
+			GinkgoWriter.Printf("Error in go routine: %v\n", err)
+			GinkgoRecover()
+		}, harness.WithRedis(redisHost, redisPort, redisPassword))
+		// check for test harness creation errors
+		Expect(err).ToNot(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		h.Cleanup()
+	})
+
+	Context("enrollment", func() {
+		It("should submit a request for enrollment", func() {
+			deviceName := ""
+			Eventually(getEnrollmentDeviceName, TIMEOUT, POLLING).WithArguments(h, &deviceName).Should(BeTrue())
+		})
+
+		When("an enrollment request is approved", func() {
+			It("should mark enrollment request as approved", func() {
+				deviceName := ""
+				Eventually(getEnrollmentDeviceName, TIMEOUT, POLLING).WithArguments(h, &deviceName).Should(BeTrue())
+				approveEnrollment(h, deviceName, testutil.TestEnrollmentApproval())
+
+				// verify that the enrollment request is marked as approved
+				er, status := h.EnrollmentRequest.GetEnrollmentRequest(h.AuthenticatedContext(h.Context), org.DefaultID, deviceName)
+				Expect(status.Code).To(BeEquivalentTo(200))
+				Expect(er.Status.Conditions).ToNot(BeEmpty())
+
+				Expect(v1beta1.IsStatusConditionTrue(er.Status.Conditions, "Approved")).To(BeTrue())
+
+			})
+
+			It("should create a device", func() {
+				dev := enrollAndWaitForDevice(h, testutil.TestEnrollmentApproval())
+				Expect(dev.Metadata.Name).NotTo(BeNil())
+			})
+
+			It("should create a device, with the approval labels", func() {
+				// craft some specific labels we will test for in the device
+				approval := testutil.TestEnrollmentApproval()
+				const (
+					TEST_LABEL_1 = "label-1"
+					TEST_VALUE_1 = "value-1"
+					TEST_LABEL_2 = "label-2"
+					TEST_VALUE_2 = "value-2"
+				)
+				approval.Labels = &map[string]string{TEST_LABEL_1: TEST_VALUE_1, TEST_LABEL_2: TEST_VALUE_2}
+
+				dev := enrollAndWaitForDevice(h, approval)
+
+				Expect(*dev.Metadata.Labels).To(HaveKeyWithValue(TEST_LABEL_1, TEST_VALUE_1))
+				Expect(*dev.Metadata.Labels).To(HaveKeyWithValue(TEST_LABEL_2, TEST_VALUE_2))
+			})
+
+			It("should write the agent.crt to the device", func() {
+				dev := enrollAndWaitForDevice(h, testutil.TestEnrollmentApproval())
+
+				GinkgoWriter.Printf(
+					"Waiting for agent.crt file to be created on the device %s, with testDirPath: %s\n",
+					*dev.Metadata.Name, h.TestDirPath)
+
+				var fileInfo fs.FileInfo
+				Eventually(func() bool {
+					var err error
+					fileInfo, err = os.Stat(filepath.Join(h.TestDirPath, "/var/lib/flightctl/certs/agent.crt"))
+					if err != nil && os.IsNotExist(err) {
+						return false
+					}
+					return true
+				}, TIMEOUT, POLLING).Should(BeTrue())
+
+				Expect(fileInfo.Mode()).To(Equal(os.FileMode(0600)))
+			})
+
+		})
+
+		When("updating the agent device spec", func() {
+			It("should write any files to the device", func(ctx context.Context) {
+				const (
+					firstSecretKey    = "first-secret"
+					firstSecretValue  = "This is the first secret"
+					secondSecretKey   = "second-secret"
+					secondSecretValue = "Second secret"
+				)
+				secrets := map[string]string{
+					firstSecretKey:  firstSecretValue,
+					secondSecretKey: secondSecretValue,
+				}
+				mockSecret(h.GetMockK8sClient(), secrets)
+				fleet := getTestFleet("fleet.yaml")
+				_, status := h.Fleet.CreateFleet(h.AuthenticatedContext(h.Context), org.DefaultID, fleet)
+				Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+				approval := testutil.TestEnrollmentApproval()
+				approval.Labels = &map[string]string{"fleet": "default"}
+
+				dev := enrollAndWaitForDevice(h, approval)
+
+				waitForFile("/var/lib/flightctl/certs/agent.crt", *dev.Metadata.Name, h.TestDirPath, nil, nil)
+				waitForFile("/etc/motd", *dev.Metadata.Name, h.TestDirPath, lo.ToPtr("This system is managed by flightctl."), lo.ToPtr(0o0600))
+				waitForFile("/etc/testdir/encoded", *dev.Metadata.Name, h.TestDirPath, lo.ToPtr("This text is encoded."), lo.ToPtr(0o1775))
+
+				for key, value := range secrets {
+					fname := filepath.Join("/etc/secret/secretMountPath", key)
+					waitForFile(fname, *dev.Metadata.Name, h.TestDirPath, &value, lo.ToPtr(0644))
+				}
+			})
+		})
+
+		When("agent begins enrollment, and the enrollment is approved while the device is shutdown", func() {
+			It("the agent should start and complete enrollment successfully", func() {
+				deviceName := ""
+				Eventually(getEnrollmentDeviceName, TIMEOUT, POLLING).WithArguments(h, &deviceName).Should(BeTrue())
+
+				// shut down the agent before approving the enrollment request
+				GinkgoWriter.Printf("Agent has requested enrollment: %s, shutting it down\n", deviceName)
+				h.StopAgent()
+
+				// while the agent is down, we approve the enrollment for the device
+				approveEnrollment(h, deviceName, testutil.TestEnrollmentApproval())
+
+				// start the agent again
+				h.StartAgent()
+
+				// wait for the agent to retrieve the agent certificate from the EnrollmentRequest
+				Eventually(h.AgentDownloadedCertificate, TIMEOUT, POLLING).Should(BeTrue())
+			})
+		})
+
+		When("GetRenderedDevice returns ConflictPaused", func() {
+			It("agent invalidates lastStatus and pushes status on next sync", func() {
+				dev := enrollAndWaitForDevice(h, testutil.TestEnrollmentApproval())
+				deviceName := *dev.Metadata.Name
+				orgID := org.DefaultID
+
+				createMinimalRenderedConfig := func(contents string) (string, error) {
+					provider := v1beta1.ConfigProviderSpec{}
+					// Use an explicit file path under the agent root; empty Path makes path.Join(root, "") = root (a directory) and triggers "provided path is a directory".
+					// Set User/Group to current process so chown succeeds in test (agent runs as same user); otherwise default is root and chown fails with "operation not permitted".
+					uid, gid := os.Getuid(), os.Getgid()
+					files := []v1beta1.FileSpec{{
+						Path: "config-v1.txt", Content: contents,
+						User:  v1beta1.Username(strconv.Itoa(uid)),
+						Group: strconv.Itoa(gid),
+					}}
+					if err := provider.FromInlineConfigProviderSpec(v1beta1.InlineConfigProviderSpec{Inline: files}); err != nil {
+						return "", err
+					}
+					providers := &[]v1beta1.ConfigProviderSpec{provider}
+					b, err := json.Marshal(providers)
+					if err != nil {
+						return "", err
+					}
+					return string(b), nil
+				}
+
+				// Wait for rollout to complete and agent to report a rendered version (avoids racing with worker: we need store to have a version before we bump it).
+				Eventually(func() string {
+					d, st := h.Device.GetDevice(h.AuthenticatedContext(h.Context), orgID, deviceName)
+					Expect(st.Code).To(BeEquivalentTo(200))
+					if d.Status != nil && d.Status.Config.RenderedVersion != "" {
+						return d.Status.Config.RenderedVersion
+					}
+					return ""
+				}, TIMEOUT, POLLING).ShouldNot(BeEmpty())
+
+				// Update rendered once via the service so the rendered bus is notified (agent will see new version).
+				cfg, err := createMinimalRenderedConfig("config-v1")
+				Expect(err).ToNot(HaveOccurred())
+				st := h.Device.UpdateRenderedDevice(h.Context, orgID, deviceName, cfg, "", "hash1", "", nil, false, nil)
+				Expect(st.Code).To(BeEquivalentTo(200))
+				renderedDev, getErr := h.DeviceStore.GetRendered(h.Context, orgID, deviceName, nil, "")
+				Expect(getErr).ToNot(HaveOccurred())
+				renderedVersion := renderedDev.Version()
+				Expect(renderedVersion).ToNot(BeEmpty())
+
+				// Wait for agent to poll and report that version.
+				Eventually(func() string {
+					d, st := h.Device.GetDevice(h.AuthenticatedContext(h.Context), orgID, deviceName)
+					Expect(st.Code).To(BeEquivalentTo(200))
+					if d.Status != nil && d.Status.Config.RenderedVersion != "" {
+						return d.Status.Config.RenderedVersion
+					}
+					return ""
+				}, TIMEOUT, POLLING).Should(Equal(renderedVersion))
+
+				// Record original agent-reported status (e.g. OS) so we can verify the agent restores it after we overwrite.
+				devBefore, _ := h.Device.GetDevice(h.AuthenticatedContext(h.Context), orgID, deviceName)
+				Expect(devBefore.Status).ToNot(BeNil())
+				originalOsImage := devBefore.Status.Os.Image
+				GinkgoWriter.Printf("ConflictPaused test: recorded original Os.Image=%q (renderedVersion=%s)\n", originalOsImage, renderedVersion)
+
+				// Manually overwrite reported status so we can verify the agent pushes and restores the real one.
+				overwrittenDevice := *devBefore
+				overwrittenDevice.Status.Os.Image = "fake-os-overwritten-by-test"
+				_, replaceSt := h.Device.ReplaceDeviceStatus(h.AuthenticatedContext(h.Context), orgID, deviceName, overwrittenDevice, true)
+				Expect(replaceSt.Code).To(BeEquivalentTo(200))
+				GinkgoWriter.Printf("ConflictPaused test: overwrote device status Os.Image to fake value\n")
+
+				// "Restore" scenario: set annotation to a lower version so device (renderedVersion) > service -> ConflictPaused.
+				// Do not call UpdateRendered again; only set annotations.
+				ver, err := strconv.ParseInt(renderedVersion, 10, 64)
+				Expect(err).ToNot(HaveOccurred())
+				serviceVersion := strconv.FormatInt(ver-1, 10)
+
+				err = h.DeviceStore.UpdateAnnotations(h.Context, orgID, deviceName, map[string]string{
+					v1beta1.DeviceAnnotationAwaitingReconnect: "true", v1beta1.DeviceAnnotationRenderedVersion: serviceVersion,
+				}, nil)
+				Expect(err).ToNot(HaveOccurred())
+
+				awaitKey := kvstore.AwaitingReconnectionKey{OrgID: orgID, DeviceName: deviceName}
+				_, err = h.KVStore.SetNX(h.Context, awaitKey.ComposeKey(), []byte("true"))
+				Expect(err).ToNot(HaveOccurred())
+
+				renderedKey := fmt.Sprintf("v1/%s/device/%s/rendered", orgID, deviceName)
+				_, err = h.KVStore.GetOrSetNX(h.Context, renderedKey, []byte(renderedVersion))
+				Expect(err).ToNot(HaveOccurred())
+				GinkgoWriter.Printf("ConflictPaused test: set AwaitingReconnect, KV keys (serviceVersion=%s); waiting for agent to restore Os.Image to %q\n", serviceVersion, originalOsImage)
+
+				// Agent's next GetRenderedDevice(knownVersion=renderedVersion) will get 200 + ConflictPaused, invalidate lastStatus, and push on next sync.
+				// Verify that the agent's status overwrites our fake value and restores the original (e.g. OS image).
+				Eventually(func() string {
+					d, st := h.Device.GetDevice(h.AuthenticatedContext(h.Context), orgID, deviceName)
+					Expect(st.Code).To(BeEquivalentTo(200))
+					if d.Status == nil {
+						return ""
+					}
+					return d.Status.Os.Image
+				}, CONFLICT_PAUSED_STATUS_WAIT_TIMEOUT, CONFLICT_PAUSED_STATUS_POLL_INTERVAL).Should(Equal(originalOsImage),
+					"after ConflictPaused the agent should push status and restore original Os.Image (not fake-os-overwritten-by-test)")
+			})
+		})
+
+		When("rotating the device management certificate", func() {
+			It("renews the cert and switches to the renewal signer", func(ctx context.Context) {
+				const (
+					mgmtCertTTLSecondsEnv         = "FLIGHTCTL_TEST_MGMT_CERT_EXPIRY_SECONDS"
+					mgmtCertRenewBeforeSecondsEnv = "FLIGHTCTL_TEST_MGMT_CERT_RENEW_BEFORE_SECONDS"
+					certManagerSyncIntervalEnv    = "FLIGHTCTL_TEST_CERT_MANAGER_SYNC_INTERVAL"
+					agentCertRelPath              = "var/lib/flightctl/certs/agent.crt"
+
+					// Keep the test fast:
+					// - cert lifetime: 10m
+					// - renewBefore: 10m-1s => renewAt ≈ issuance+1s (CA NotBefore is now-1s)
+					// - sync every 2s (same as e2e cert rotation) so a first Sync that lands
+					//   before renewAt still retries inside TIMEOUT (default sync is 1h)
+					testCertTTLSeconds          = 10 * 60
+					testRenewBeforeSeconds      = testCertTTLSeconds - 1
+					testCertManagerSyncInterval = "2s"
+
+					expectedRenewalSignerName = "flightctl.io/device-management-renewal"
+
+					// Issuance time jitter only (avoid flakes).
+					ttlTolerance = 10 * time.Second
+				)
+
+				defer testutil.TestTempEnv(
+					mgmtCertTTLSecondsEnv, strconv.Itoa(testCertTTLSeconds),
+					mgmtCertRenewBeforeSecondsEnv, strconv.Itoa(testRenewBeforeSeconds),
+					certManagerSyncIntervalEnv, testCertManagerSyncInterval,
+				)()
+
+				// Harness auto-starts the agent in BeforeEach. Restart after TestTempEnv so
+				// cert manager Run() reads FLIGHTCTL_TEST_CERT_MANAGER_SYNC_INTERVAL (once).
+				h.RestartAgent()
+
+				// Enroll device and wait until the agent fetches its initial cert.
+				dev := enrollAndWaitForDevice(h, testutil.TestEnrollmentApproval())
+				deviceName := lo.FromPtr(dev.Metadata.Name)
+				Eventually(h.AgentDownloadedCertificate, TIMEOUT, POLLING).Should(BeTrue())
+
+				// Sanity: enrollment approved and server returned an initial certificate.
+				er, status := h.EnrollmentRequest.GetEnrollmentRequest(
+					h.AuthenticatedContext(h.Context),
+					org.DefaultID,
+					deviceName,
+				)
+				Expect(status.Code).To(BeEquivalentTo(200))
+				Expect(v1beta1.IsStatusConditionTrue(er.Status.Conditions, "Approved")).To(BeTrue())
+				Expect(er.Status.Certificate).ToNot(BeNil())
+
+				// Assert TTL override took effect (~10m).
+				initialCertPEM := lo.FromPtr(er.Status.Certificate)
+				initialCert, err := fccrypto.ParsePEMCertificate([]byte(initialCertPEM))
+				Expect(err).ToNot(HaveOccurred())
+
+				expectedTTL := time.Duration(testCertTTLSeconds) * time.Second
+				actualTTL := initialCert.NotAfter.Sub(initialCert.NotBefore)
+				Expect(actualTTL).To(BeNumerically(">", expectedTTL-ttlTolerance))
+				Expect(actualTTL).To(BeNumerically("<", expectedTTL+ttlTolerance))
+
+				agentCertPath := filepath.Join(h.TestDirPath, agentCertRelPath)
+				GinkgoWriter.Printf("Waiting for device %s to renew certificate (path=%s)\n", deviceName, agentCertPath)
+
+				// Wait until the on-disk agent cert is renewed (signer-name extension flips).
+				var renewedCert *x509.Certificate
+				Eventually(func() string {
+					agentCertPEM, err := os.ReadFile(agentCertPath)
+					Expect(err).ToNot(HaveOccurred())
+
+					agentCert, err := fccrypto.ParsePEMCertificate(agentCertPEM)
+					Expect(err).ToNot(HaveOccurred())
+					renewedCert = agentCert
+
+					signerName, err := signer.GetSignerNameExtension(agentCert)
+					Expect(err).ToNot(HaveOccurred())
+					return signerName
+				}, TIMEOUT, POLLING).Should(Equal(expectedRenewalSignerName))
+
+				// Expected status values are derived from the renewed cert.
+				Expect(renewedCert.SerialNumber).ToNot(BeNil())
+
+				serialBytes := renewedCert.SerialNumber.Bytes()
+				Expect(serialBytes).ToNot(BeEmpty())
+
+				serialHex := make([]byte, 0, len(serialBytes)*3-1)
+				for i, v := range serialBytes {
+					if i > 0 {
+						serialHex = append(serialHex, ':')
+					}
+					serialHex = append(serialHex, fmt.Sprintf("%02X", v)...)
+				}
+				expectedRenewedSerial := string(serialHex)
+				expectedNotAfter := renewedCert.NotAfter.UTC().Format(time.RFC3339)
+
+				// Verify device status reflects the renewed cert (serial + notAfter).
+				GinkgoWriter.Printf("Waiting for device %s systemInfo fields to update\n", deviceName)
+
+				Eventually(func() []string {
+					dev, status := h.Device.GetDevice(
+						h.AuthenticatedContext(h.Context),
+						org.DefaultID,
+						deviceName,
+					)
+					Expect(status.Code).To(BeEquivalentTo(200))
+
+					props := dev.Status.SystemInfo.AdditionalProperties
+					return []string{
+						props["managementCertSerial"],
+						props["managementCertNotAfter"],
+					}
+				}, TIMEOUT, POLLING).Should(Equal([]string{expectedRenewedSerial, expectedNotAfter}))
+			})
+		})
+
+		When("provisioning a CSR-managed certificate", func() {
+			It("auto-issues cert and writes files; validates CN and extensions", func(ctx context.Context) {
+				const (
+					certCNPrefix   = "test-certificate"
+					certSignerName = "flightctl.io/device-svc-client"
+				)
+
+				// prepare cert-manager config (DropInConfigProvider reads /etc/flightctl/certs.yaml)
+				csrCfg := map[string]any{
+					"signer":      certSignerName,
+					"common-name": fmt.Sprintf("%s-{{.DEVICE_ID}}", certCNPrefix),
+				}
+				csrRaw, err := json.Marshal(csrCfg)
+				Expect(err).ToNot(HaveOccurred())
+
+				storageCfg := map[string]any{
+					"cert-path": "var/lib/flightctl/certs/test.crt",
+					"key-path":  "var/lib/flightctl/certs/test.key",
+				}
+				storageRaw, err := json.Marshal(storageCfg)
+				Expect(err).ToNot(HaveOccurred())
+
+				certcfg := certmanager.CertificateConfig{
+					Name: certCNPrefix,
+					Provisioner: certmanager.ProvisionerConfig{
+						Type:   provider.ProvisionerTypeCSR,
+						Config: csrRaw,
+					},
+					Storage: certmanager.StorageConfig{
+						Type:   provider.StorageTypeFilesystem,
+						Config: storageRaw,
+					},
+				}
+
+				cfgBytes, err := yaml.Marshal([]certmanager.CertificateConfig{certcfg})
+				Expect(err).ToNot(HaveOccurred())
+
+				certsYaml := filepath.Join(h.TestDirPath, "etc", "flightctl", "certs.yaml")
+				Expect(os.MkdirAll(filepath.Dir(certsYaml), 0o755)).To(Succeed())
+				Expect(os.WriteFile(certsYaml, cfgBytes, 0o600)).To(Succeed())
+
+				dev := enrollAndWaitForDevice(h, testutil.TestEnrollmentApproval())
+				deviceName := lo.FromPtr(dev.Metadata.Name)
+
+				// wait for CSR to be created by agent
+				var csr v1beta1.CertificateSigningRequest
+				Eventually(func() bool {
+					list, status := h.CertificateSigningRequest.ListCertificateSigningRequests(h.AuthenticatedContext(h.Context), org.DefaultID, v1beta1.ListCertificateSigningRequestsParams{})
+					if status.Code != int32(200) || list == nil {
+						return false
+					}
+					for _, item := range list.Items {
+						if item.Spec.SignerName == certSignerName && item.Metadata.Name != nil {
+							name := lo.FromPtr(item.Metadata.Name)
+							if strings.HasPrefix(name, certCNPrefix+"-") && item.Status != nil && item.Status.Certificate != nil {
+								csr = item
+								return true
+							}
+						}
+					}
+					return false
+				}, TIMEOUT, POLLING).Should(BeTrue())
+
+				certBytes := lo.FromPtr(csr.Status.Certificate)
+				parsedCert, err := fccrypto.ParsePEMCertificate(certBytes)
+				Expect(err).ToNot(HaveOccurred())
+
+				// CN should equal template with device id
+				expectedCN := fmt.Sprintf("%s-%s", certCNPrefix, deviceName)
+				Expect(parsedCert.Subject.CommonName).To(Equal(expectedCN))
+
+				// signer name extension should match device-svc-client
+				signerName, err := signer.GetSignerNameExtension(parsedCert)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(signerName).To(Equal(certSignerName))
+
+				// fingerprint extension must match the suffix of CN after last '-'
+				idx := strings.LastIndex(parsedCert.Subject.CommonName, "-")
+				Expect(idx).To(BeNumerically(">", 0))
+				cnFingerprint := parsedCert.Subject.CommonName[idx+1:]
+				fpExt, err := signer.GetDeviceFingerprintExtension(parsedCert)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(fpExt).To(Equal(cnFingerprint))
+
+				//wait for certificate files to be written by agent
+				waitForFile("var/lib/flightctl/certs/test.crt", deviceName, h.TestDirPath, nil, lo.ToPtr(0o644))
+				waitForFile("var/lib/flightctl/certs/test.key", deviceName, h.TestDirPath, nil, lo.ToPtr(0o600))
+			})
+		})
+
+	})
+
+	Context("decommissioning", func() {
+		It("should delete all files in data directory during decommissioning", func() {
+			// Enroll the device first
+			dev := enrollAndWaitForDevice(h, testutil.TestEnrollmentApproval())
+			deviceName := lo.FromPtr(dev.Metadata.Name)
+
+			// Create test files in the data directory to verify they get deleted
+			dataDir := filepath.Join(h.TestDirPath, "var", "lib", "flightctl")
+			testFiles := []string{
+				filepath.Join(dataDir, "test-file-1.txt"),
+				filepath.Join(dataDir, "subdir", "test-file-2.txt"),
+				filepath.Join(dataDir, "another-dir", "nested", "test-file-3.txt"),
+			}
+
+			for _, testFile := range testFiles {
+				Expect(os.MkdirAll(filepath.Dir(testFile), 0o755)).To(Succeed())
+				Expect(os.WriteFile(testFile, []byte("test content"), 0o600)).To(Succeed())
+				GinkgoWriter.Printf("Created test file: %s\n", testFile)
+			}
+
+			// Verify files exist before decommissioning
+			for _, testFile := range testFiles {
+				_, err := os.Stat(testFile)
+				Expect(err).ToNot(HaveOccurred(), "Test file should exist before decommissioning")
+			}
+
+			// Ensure device is not already decommissioning (race condition in CI)
+			Eventually(func() bool {
+				currentDev, status := h.Device.GetDevice(h.AuthenticatedContext(h.Context), org.DefaultID, deviceName)
+				// Fail fast on server errors (404, 500, etc) instead of retrying and masking them
+				Expect(status.Code).To(Equal(int32(200)), "GetDevice should return 200 OK")
+				return currentDev.Spec == nil || currentDev.Spec.Decommissioning == nil
+			}, TIMEOUT, POLLING).Should(BeTrue(), "Device should not already be in decommissioning state")
+
+			// Trigger decommissioning with Unenroll target
+			GinkgoWriter.Printf("Triggering decommissioning for device: %s\n", deviceName)
+			decommissionRequest := v1beta1.DeviceDecommission{
+				Target: v1beta1.DeviceDecommissionTargetTypeUnenroll,
+			}
+			_, status := h.Device.DecommissionDevice(h.AuthenticatedContext(h.Context), org.DefaultID, deviceName, decommissionRequest)
+			if status.Code != http.StatusOK {
+				GinkgoWriter.Printf("DecommissionDevice failed with status %d: %v\n", status.Code, status)
+			}
+			Expect(status.Code).To(BeEquivalentTo(http.StatusOK), "DecommissionDevice should return 200 OK")
+
+			// Wait for decommissioning to complete - check that files are deleted
+			Eventually(func() bool {
+				// Check if any of the test files still exist
+				for _, testFile := range testFiles {
+					_, err := os.Stat(testFile)
+					if err == nil {
+						// File still exists
+						GinkgoWriter.Printf("File still exists: %s\n", testFile)
+						return false
+					}
+					if !os.IsNotExist(err) {
+						// Some other error occurred (not "file doesn't exist")
+						GinkgoWriter.Printf("Error checking file %s: %v\n", testFile, err)
+						return false
+					}
+					// File doesn't exist - this is what we want
+				}
+				GinkgoWriter.Println("All test files have been deleted")
+				return true
+			}, TIMEOUT, POLLING).Should(BeTrue(), "All files in data directory should be deleted during decommissioning")
+
+			// Verify the data directory itself still exists but is empty (or only contains subdirs that are empty)
+			entries, err := os.ReadDir(dataDir)
+			Expect(err).ToNot(HaveOccurred(), "Data directory must exist after decommissioning")
+
+			// Directory should be empty or only contain empty subdirectories
+			for _, entry := range entries {
+				if entry.IsDir() {
+					subEntries, subErr := os.ReadDir(filepath.Join(dataDir, entry.Name()))
+					Expect(subErr).ToNot(HaveOccurred())
+					Expect(subEntries).To(BeEmpty(), "Subdirectory should be empty after decommissioning")
+				} else {
+					Fail(fmt.Sprintf("Found unexpected file after decommissioning: %s", entry.Name()))
+				}
+			}
+		})
+	})
+})
+
+func enrollAndWaitForDevice(h *harness.TestHarness, approval *v1beta1.EnrollmentRequestApproval) *v1beta1.Device {
+	deviceName := ""
+	Eventually(getEnrollmentDeviceName, TIMEOUT, POLLING).WithArguments(h, &deviceName).Should(BeTrue())
+	approveEnrollment(h, deviceName, approval)
+
+	// verify that the device is created
+	dev, status := h.Device.GetDevice(h.AuthenticatedContext(h.Context), org.DefaultID, deviceName)
+	Expect(status.Code).To(BeEquivalentTo(200))
+	return dev
+}
+
+func approveEnrollment(h *harness.TestHarness, deviceName string, approval *v1beta1.EnrollmentRequestApproval) {
+	Expect(approval).NotTo(BeNil())
+	GinkgoWriter.Printf("Approving device enrollment: %s\n", deviceName)
+
+	// Approve
+	_, status := h.EnrollmentRequest.ApproveEnrollmentRequest(h.AuthenticatedContext(h.Context), org.DefaultID, deviceName, *approval)
+	Expect(status.Code).To(BeEquivalentTo(200))
+}
+
+func getEnrollmentDeviceName(h *harness.TestHarness, deviceName *string) bool {
+	list, status := h.EnrollmentRequest.ListEnrollmentRequests(h.AuthenticatedContext(h.Context), org.DefaultID, v1beta1.ListEnrollmentRequestsParams{})
+	Expect(status.Code).To(BeEquivalentTo(200))
+
+	if list == nil || len(list.Items) == 0 {
+		return false
+	}
+
+	Expect(*list.Items[0].Metadata.Name).ToNot(BeEmpty())
+	*deviceName = *list.Items[0].Metadata.Name
+
+	return true
+}
+
+func getTestFleet(fleetYaml string) v1beta1.Fleet {
+	fleetBytes, err := os.ReadFile(filepath.Join("testdata", fleetYaml))
+	Expect(err).ToNot(HaveOccurred())
+
+	u, err := user.Current()
+	Expect(err).ToNot(HaveOccurred())
+	fleetBytes = bytes.ReplaceAll(fleetBytes, []byte("_CURRENT_USER_"), []byte(u.Username))
+	fleetBytes = bytes.ReplaceAll(fleetBytes, []byte("_CURRENT_GROUP_"), []byte("'"+u.Gid+"'"))
+
+	var fleet v1beta1.Fleet
+	err = yaml.Unmarshal(fleetBytes, &fleet)
+	Expect(err).ToNot(HaveOccurred())
+
+	return fleet
+}
+
+func mockSecret(mockK8sClient *k8sclient.MockK8SClient, secrets map[string]string) {
+	mockK8sClient.EXPECT().GetSecret(gomock.Any(), "secret-namespace", "secret").
+		Return(&v1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secret",
+				Namespace: "secret-namespace",
+			},
+			Data: lo.MapValues(secrets, func(v, _ string) []byte {
+				return []byte(v)
+			}),
+		}, nil).AnyTimes()
+}
+
+func waitForFile(path, devName, testDirPath string, contents *string, mode *int) {
+	var fileInfo fs.FileInfo
+	var err error
+
+	GinkgoWriter.Printf(
+		"Waiting for file %s to be created on the device %s, with testDirPath: %s\n", path, devName, testDirPath)
+	Eventually(func() bool {
+		fileInfo, err = os.Stat(filepath.Join(testDirPath, path))
+		if err != nil && os.IsNotExist(err) {
+			return false
+		}
+		return true
+	}, TIMEOUT, POLLING).Should(BeTrue())
+
+	Expect(fileInfo.IsDir()).To(Equal(false))
+
+	if mode != nil {
+		filemode, err := safecast.ToUint32(*mode)
+		Expect(err).To(BeNil())
+		Expect(fileInfo.Mode().Perm()).To(Equal(os.FileMode(filemode).Perm()))
+		if *mode&0o1000 != 0 {
+			Expect(fileInfo.Mode() & os.ModeSticky).ToNot(Equal(0))
+		}
+		if *mode&0o2000 != 0 {
+			Expect(fileInfo.Mode() & os.ModeSetgid).ToNot(Equal(0))
+		}
+		if *mode&0o4000 != 0 {
+			Expect(fileInfo.Mode() & os.ModeSetuid).ToNot(Equal(0))
+		}
+	}
+	if contents != nil {
+		Expect(os.ReadFile(filepath.Join(testDirPath, path))).To(Equal([]byte(*contents)))
+	}
+}

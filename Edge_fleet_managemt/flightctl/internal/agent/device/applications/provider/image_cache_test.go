@@ -1,0 +1,269 @@
+package provider
+
+import (
+	"testing"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/agent/device/dependency"
+	"github.com/stretchr/testify/require"
+)
+
+func TestNestedTargetCacheGetSet(t *testing.T) {
+	require := require.New(t)
+	cache := NewOCITargetCache()
+
+	require.Equal(0, cache.Len())
+
+	entry, found := cache.Get("myapp")
+	require.False(found)
+	require.Empty(entry.Name)
+
+	imageBasedEntry := CacheEntry{
+		Name: "image-app",
+		Parent: dependency.OCIPullTarget{
+			Type:      dependency.OCITypePodmanImage,
+			Reference: "quay.io/myapp:v1",
+			Digest:    "sha256:abc123",
+		},
+		Children: []dependency.OCIPullTarget{
+			{Type: dependency.OCITypePodmanImage, Reference: "quay.io/redis:latest"},
+			{Type: dependency.OCITypePodmanImage, Reference: "quay.io/postgres:16"},
+		},
+	}
+	cache.Set(imageBasedEntry)
+	require.Equal(1, cache.Len())
+
+	entry, found = cache.Get("image-app")
+	require.True(found)
+	require.Equal("image-app", entry.Name)
+	require.Equal("sha256:abc123", entry.Parent.Digest)
+	require.Len(entry.Children, 2)
+}
+
+func TestNestedTargetCacheRequiresExactParentAndOwnerIdentity(t *testing.T) {
+	entry := CacheEntry{
+		Owner:  "alice",
+		Parent: dependency.OCIPullTarget{Reference: "quay.io/acme/app:latest", Digest: "sha256:old"},
+	}
+	for _, tt := range []struct {
+		name       string
+		ref        string
+		digest     string
+		owner      v1beta1.Username
+		inputsHash string
+		want       bool
+	}{
+		{name: "When the parent and owner match it should reuse the cache", ref: "quay.io/acme/app:latest", digest: "sha256:old", owner: "alice", want: true},
+		{name: "When the owner changes it should invalidate the cache", ref: "quay.io/acme/app:latest", digest: "sha256:old", owner: "bob"},
+		{name: "When the parent digest changes it should invalidate the cache", ref: "quay.io/acme/app:latest", digest: "sha256:new", owner: "alice"},
+		{name: "When the parent digest is unknown it should invalidate the cache", ref: "quay.io/acme/app:latest", owner: "alice"},
+		{name: "When the parent reference changes it should invalidate the cache", ref: "quay.io/acme/app:v2", digest: "sha256:old", owner: "alice"},
+		{name: "When the default owner differs from the cached owner it should invalidate the cache", ref: "quay.io/acme/app:latest", digest: "sha256:old", owner: "", want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, entry.IsValid(tt.ref, tt.digest, tt.owner, tt.inputsHash))
+		})
+	}
+}
+
+func TestNestedTargetCacheNormalizesEmptyRootOwner(t *testing.T) {
+	entry := CacheEntry{
+		Owner:  v1beta1.RootUsername,
+		Parent: dependency.OCIPullTarget{Reference: "quay.io/acme/app:latest", Digest: "sha256:old"},
+	}
+	require.True(t, entry.IsValid("quay.io/acme/app:latest", "sha256:old", "", ""))
+}
+
+func TestNestedTargetCacheGC(t *testing.T) {
+	testCases := []struct {
+		name           string
+		setupCache     func(*OCITargetCache)
+		activeNames    []string
+		expectedLen    int
+		expectedRemain []string
+	}{
+		{
+			name: "GC removes unreferenced applications",
+			setupCache: func(c *OCITargetCache) {
+				c.Set(CacheEntry{
+					Name:     "active1",
+					Parent:   dependency.OCIPullTarget{Reference: "quay.io/app1:v1", Digest: "sha256:aaa"},
+					Children: []dependency.OCIPullTarget{{Type: dependency.OCITypePodmanImage, Reference: "quay.io/redis:latest"}},
+				})
+				c.Set(CacheEntry{
+					Name:     "active2",
+					Parent:   dependency.OCIPullTarget{Reference: "quay.io/app2:v1", Digest: "sha256:bbb"},
+					Children: []dependency.OCIPullTarget{{Type: dependency.OCITypePodmanImage, Reference: "quay.io/postgres:16"}},
+				})
+				c.Set(CacheEntry{
+					Name:     "stale1",
+					Parent:   dependency.OCIPullTarget{Reference: "quay.io/app3:v1", Digest: "sha256:ccc"},
+					Children: []dependency.OCIPullTarget{{Type: dependency.OCITypePodmanImage, Reference: "quay.io/nginx:alpine"}},
+				})
+			},
+			activeNames:    []string{"active1", "active2"},
+			expectedLen:    2,
+			expectedRemain: []string{"active1", "active2"},
+		},
+		{
+			name: "GC with empty active list clears all",
+			setupCache: func(c *OCITargetCache) {
+				c.Set(CacheEntry{
+					Name:   "app1",
+					Parent: dependency.OCIPullTarget{Reference: "quay.io/app1:v1", Digest: "sha256:aaa"},
+				})
+				c.Set(CacheEntry{
+					Name:   "app2",
+					Parent: dependency.OCIPullTarget{Reference: "quay.io/app2:v1", Digest: "sha256:bbb"},
+				})
+			},
+			activeNames:    []string{},
+			expectedLen:    0,
+			expectedRemain: []string{},
+		},
+		{
+			name: "GC preserves all active applications",
+			setupCache: func(c *OCITargetCache) {
+				c.Set(CacheEntry{
+					Name:   "app1",
+					Parent: dependency.OCIPullTarget{Reference: "quay.io/app1:v1", Digest: "sha256:aaa"},
+				})
+				c.Set(CacheEntry{
+					Name:   "app2",
+					Parent: dependency.OCIPullTarget{Reference: "quay.io/app2:v1", Digest: "sha256:bbb"},
+				})
+			},
+			activeNames:    []string{"app1", "app2"},
+			expectedLen:    2,
+			expectedRemain: []string{"app1", "app2"},
+		},
+		{
+			name: "GC on empty cache is safe",
+			setupCache: func(c *OCITargetCache) {
+				// empty cache
+			},
+			activeNames:    []string{"app1"},
+			expectedLen:    0,
+			expectedRemain: []string{},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			require := require.New(t)
+			cache := NewOCITargetCache()
+			tc.setupCache(cache)
+
+			cache.GC(tc.activeNames)
+
+			require.Equal(tc.expectedLen, cache.Len())
+			for _, name := range tc.expectedRemain {
+				_, found := cache.Get(name)
+				require.True(found, "expected app %s to remain after GC", name)
+			}
+		})
+	}
+}
+
+func TestNestedTargetCacheClear(t *testing.T) {
+	require := require.New(t)
+	cache := NewOCITargetCache()
+
+	cache.Set(CacheEntry{
+		Name:     "image-app1",
+		Parent:   dependency.OCIPullTarget{Reference: "quay.io/app1:v1", Digest: "sha256:abc"},
+		Children: []dependency.OCIPullTarget{{Type: dependency.OCITypePodmanImage, Reference: "quay.io/redis:latest"}},
+	})
+	cache.Set(CacheEntry{
+		Name:     "image-app2",
+		Parent:   dependency.OCIPullTarget{Reference: "quay.io/app2:v1", Digest: "sha256:def"},
+		Children: []dependency.OCIPullTarget{{Type: dependency.OCITypePodmanImage, Reference: "quay.io/nginx:alpine"}},
+	})
+	require.Equal(2, cache.Len())
+
+	cache.Clear()
+	require.Equal(0, cache.Len())
+
+	_, found := cache.Get("image-app1")
+	require.False(found)
+	_, found = cache.Get("image-app2")
+	require.False(found)
+}
+
+func TestNestedTargetCacheOverwriteEntry(t *testing.T) {
+	require := require.New(t)
+	cache := NewOCITargetCache()
+
+	initialEntry := CacheEntry{
+		Name:     "myapp",
+		Parent:   dependency.OCIPullTarget{Reference: "quay.io/app:v1", Digest: "sha256:old"},
+		Children: []dependency.OCIPullTarget{{Type: dependency.OCITypePodmanImage, Reference: "quay.io/redis:6"}},
+	}
+	cache.Set(initialEntry)
+
+	entry, found := cache.Get("myapp")
+	require.True(found)
+	require.Equal("sha256:old", entry.Parent.Digest)
+	require.Len(entry.Children, 1)
+
+	updatedEntry := CacheEntry{
+		Name:   "myapp",
+		Parent: dependency.OCIPullTarget{Reference: "quay.io/app:v1", Digest: "sha256:new"},
+		Children: []dependency.OCIPullTarget{
+			{Type: dependency.OCITypePodmanImage, Reference: "quay.io/redis:7"},
+			{Type: dependency.OCITypePodmanImage, Reference: "quay.io/postgres:16"},
+		},
+	}
+	cache.Set(updatedEntry)
+
+	entry, found = cache.Get("myapp")
+	require.True(found)
+	require.Equal("sha256:new", entry.Parent.Digest)
+	require.Len(entry.Children, 2)
+	require.Equal(1, cache.Len()) // still only one entry
+}
+
+func TestNestedTargetCacheInvalidation(t *testing.T) {
+	require := require.New(t)
+	cache := NewOCITargetCache()
+
+	// Cache entry for image-based app with old digest
+	cache.Set(CacheEntry{
+		Name:     "myapp",
+		Parent:   dependency.OCIPullTarget{Reference: "quay.io/app:v1", Digest: "sha256:old"},
+		Children: []dependency.OCIPullTarget{{Type: dependency.OCITypePodmanImage, Reference: "quay.io/redis:6"}},
+	})
+
+	entry, found := cache.Get("myapp")
+	require.True(found)
+	require.NotNil(entry.Parent)
+
+	// Simulate parent image digest change (new version pulled)
+	currentDigest := "sha256:new"
+	require.NotEqual(entry.Parent.Digest, currentDigest, "should detect digest change for cache invalidation")
+
+	// Update cache with new digest and children (simulating re-extraction after invalidation)
+	cache.Set(CacheEntry{
+		Name:   "myapp",
+		Parent: dependency.OCIPullTarget{Reference: "quay.io/app:v1", Digest: "sha256:new"},
+		Children: []dependency.OCIPullTarget{
+			{Type: dependency.OCITypePodmanImage, Reference: "quay.io/redis:7"},
+			{Type: dependency.OCITypePodmanImage, Reference: "quay.io/postgres:16"},
+		},
+	})
+
+	entry, found = cache.Get("myapp")
+	require.True(found)
+	require.Equal("sha256:new", entry.Parent.Digest)
+	require.Len(entry.Children, 2)
+}
+
+func TestCacheEntryIsValid_WhenInputsChange_ItShouldInvalidate(t *testing.T) {
+	entry := CacheEntry{
+		Parent:     dependency.OCIPullTarget{Reference: "oci://registry.example.com/charts/app:1.0.0"},
+		InputsHash: "values-v1",
+	}
+
+	require.True(t, entry.IsValid(entry.Parent.Reference, "", v1beta1.RootUsername, "values-v1"))
+	require.False(t, entry.IsValid(entry.Parent.Reference, "", v1beta1.RootUsername, "values-v2"))
+}

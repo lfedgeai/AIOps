@@ -1,0 +1,275 @@
+import * as React from 'react';
+import { Trans } from 'react-i18next';
+import { Button, DropdownItem, Flex, FlexItem, Tab } from '@patternfly/react-core';
+
+import {
+  type Device,
+  type DeviceDecommission,
+  type DeviceDecommissionTargetType,
+  DeviceSummaryStatusType,
+  ResourceKind,
+} from '@flightctl/types';
+import { useFetchPeriodically } from '../../../hooks/useFetchPeriodically';
+import { useFetch } from '../../../hooks/useFetch';
+import { getDisabledTooltipProps } from '../../../utils/tooltip';
+import DetailsPage from '../../DetailsPage/DetailsPage';
+import DetailsPageActions, {
+  useDecommissionAction,
+  useDeleteAction,
+  useResumeAction,
+} from '../../DetailsPage/DetailsPageActions';
+import { useTranslation } from '../../../hooks/useTranslation';
+import { ROUTE, useNavigate } from '../../../hooks/useNavigate';
+import { useAppContext } from '../../../hooks/useAppContext';
+import DeviceDetailsTab from './DeviceDetailsTab';
+import TerminalTab from './TerminalTab';
+import DeviceLogsTab from './DeviceLogsTab';
+import {
+  getEditDisabledReason,
+  getResumeDisabledReason,
+  hasActiveConsoleSessions,
+  isDeviceEnrolled,
+} from '../../../utils/devices';
+import TabsNav from '../../TabsNav/TabsNav';
+import { RESOURCE, VERB } from '../../../types/rbac';
+import { usePermissionsContext } from '../../common/PermissionsContext';
+import EventsCard from '../../Events/EventsCard';
+import PageWithPermissions from '../../common/PageWithPermissions';
+import { YamlEditorLoader } from '../../common/CodeEditor/YamlEditor';
+import DeviceAliasEdit from './DeviceAliasEdit';
+import DeviceLastSeenHeader from './DeviceLastSeenHeader';
+import { SystemRestoreBanners } from '../../SystemRestore/SystemRestoreBanners';
+import DeviceDetailsCatalog from './DeviceDetailsCatalog';
+import ActionsDropdownList from '../../common/ActionsDropdownList';
+import { CatalogItemsProvider } from '../../Catalog/CatalogItemsContext';
+
+const deviceDetailsPermissions = [
+  { kind: RESOURCE.DEVICE_CONSOLE, verb: VERB.GET },
+  { kind: RESOURCE.DEVICE_APPLICATION_CONSOLE, verb: VERB.GET },
+  { kind: RESOURCE.DEVICE, verb: VERB.DELETE },
+  { kind: RESOURCE.DEVICE, verb: VERB.PATCH },
+  { kind: RESOURCE.DEVICE_DECOMMISSION, verb: VERB.UPDATE },
+  { kind: RESOURCE.DEVICE_RESUME, verb: VERB.UPDATE },
+];
+
+const DeviceDetailsPage = ({ children }: React.PropsWithChildren) => {
+  const { t } = useTranslation();
+  const {
+    router: { useParams, Routes, Route, Navigate },
+  } = useAppContext();
+  const { deviceId } = useParams() as { deviceId: string };
+  const navigate = useNavigate();
+  const { put, remove } = useFetch();
+  const [device, loading, error, refetch] = useFetchPeriodically<Required<Device>>({ endpoint: `devices/${deviceId}` });
+
+  const deviceLabels = device?.metadata.labels;
+  const deviceAlias = deviceLabels?.alias;
+  const deviceNameOrAlias = deviceAlias || deviceId;
+  const isEnrolled = !device || isDeviceEnrolled(device);
+
+  const { checkPermissions } = usePermissionsContext();
+  const [hasDeviceConsoleAccess, hasAppConsoleAccess, canDelete, hasEditPermissions, canDecommission, canResume] =
+    checkPermissions(deviceDetailsPermissions);
+
+  const canEdit = hasEditPermissions && isEnrolled;
+  const canViewTerminal = (hasDeviceConsoleAccess || hasAppConsoleAccess) && isEnrolled;
+  const canViewLogs = hasDeviceConsoleAccess && isEnrolled;
+
+  const tabKeys = [
+    'details',
+    ...(isEnrolled ? ['catalog'] : []),
+    'yaml',
+    ...(canViewTerminal ? ['terminal'] : []),
+    ...(canViewLogs ? ['logs'] : []),
+    'events',
+  ];
+
+  const { deleteAction, deleteModal } = useDeleteAction({
+    onDelete: async () => {
+      await remove(`devices/${deviceId}`);
+      navigate(ROUTE.DEVICES);
+    },
+    resourceName: deviceNameOrAlias,
+    resourceType: ResourceKind.DEVICE,
+    buttonLabel: isEnrolled ? undefined : t('Delete forever'),
+  });
+
+  const { decommissionAction, decommissionModal } = useDecommissionAction({
+    onDecommission: async (target: DeviceDecommissionTargetType) => {
+      await put<DeviceDecommission>(`devices/${deviceId}/decommission`, {
+        target,
+      });
+      refetch();
+      navigate(ROUTE.DEVICES);
+    },
+  });
+
+  const { resumeAction, resumeModal } = useResumeAction({
+    deviceId,
+    alias: deviceAlias,
+    disabledReason: device ? getResumeDisabledReason(device, t) : undefined,
+    onResumeComplete: refetch,
+  });
+
+  const editDisabledReason = device ? getEditDisabledReason(device, t) : undefined;
+  const editActionProps = device ? getDisabledTooltipProps(editDisabledReason) : undefined;
+  const resumeDevice = {
+    actionText: t('Resume device'),
+    title: (
+      <Trans t={t}>
+        You are about to resume <strong>{deviceNameOrAlias}</strong>
+      </Trans>
+    ),
+    requestSelector: {
+      fieldSelector: `metadata.name=${deviceId}`,
+    },
+  };
+
+  const deviceSummaryStatus = device?.status?.summary.status;
+  const deviceSummary = {
+    [DeviceSummaryStatusType.DeviceSummaryStatusConflictPaused]:
+      deviceSummaryStatus === DeviceSummaryStatusType.DeviceSummaryStatusConflictPaused ? 1 : 0,
+    [DeviceSummaryStatusType.DeviceSummaryStatusAwaitingReconnect]:
+      deviceSummaryStatus === DeviceSummaryStatusType.DeviceSummaryStatusAwaitingReconnect ? 1 : 0,
+  };
+
+  const hasEnrolledActions = hasEditPermissions || canResume || canDecommission;
+
+  return (
+    <DetailsPage
+      loading={loading}
+      error={error}
+      id={deviceId}
+      breadcrumbTitle={deviceAlias}
+      titleDataTestId="device-details-title"
+      title={
+        <Flex alignItems={{ default: 'alignItemsBaseline' }} gap={{ default: 'gapSm' }} flexWrap={{ default: 'wrap' }}>
+          <FlexItem>
+            {canEdit ? (
+              /* key={deviceAlias} is needed for the input field to be initialized with the alias as its value */
+              <DeviceAliasEdit
+                key={deviceAlias}
+                deviceId={deviceId}
+                alias={deviceAlias}
+                hasLabels={!!deviceLabels}
+                onAliasEdited={refetch}
+              />
+            ) : (
+              deviceAlias
+            )}
+          </FlexItem>
+          {device && isEnrolled && (
+            <FlexItem>
+              <DeviceLastSeenHeader device={device} />
+            </FlexItem>
+          )}
+        </Flex>
+      }
+      banner={
+        device && (
+          <SystemRestoreBanners
+            mode="device"
+            resumeAction={resumeDevice}
+            summaryStatus={deviceSummary}
+            onResumeComplete={refetch}
+            className="pf-v6-u-pt-0 pf-v6-u-px-lg"
+          />
+        )
+      }
+      resourceLink={ROUTE.DEVICES}
+      resourceType="Devices"
+      resourceTypeLabel={t('Devices')}
+      nav={
+        <TabsNav aria-label="Device details tabs" tabKeys={tabKeys}>
+          <Tab eventKey="details" title={t('Details')} data-testid="device-details-tab-details" />
+          {isEnrolled && <Tab eventKey="catalog" title={t('Catalog')} data-testid="device-details-tab-catalog" />}
+          <Tab eventKey="yaml" title={t('YAML')} data-testid="device-details-tab-yaml" />
+          {canViewTerminal && (
+            <Tab eventKey="terminal" title={t('Terminal')} data-testid="device-details-tab-terminal" />
+          )}
+          {canViewLogs && <Tab eventKey="logs" title={t('Logs')} data-testid="device-details-tab-logs" />}
+          <Tab eventKey="events" title={t('Events')} data-testid="device-details-tab-events" />
+        </TabsNav>
+      }
+      actions={
+        isEnrolled && hasEnrolledActions ? (
+          <DetailsPageActions>
+            <ActionsDropdownList>
+              {hasEditPermissions && (
+                <ActionsDropdownList.Item>
+                  <DropdownItem
+                    data-testid="device-details-menu-edit-configurations"
+                    onClick={() => navigate({ route: ROUTE.DEVICE_EDIT, postfix: deviceId })}
+                    {...editActionProps}
+                  >
+                    {t('Edit device configurations')}
+                  </DropdownItem>
+                </ActionsDropdownList.Item>
+              )}
+              {canResume && <ActionsDropdownList.Item>{resumeAction}</ActionsDropdownList.Item>}
+              {canDecommission && <ActionsDropdownList.Item isDanger>{decommissionAction}</ActionsDropdownList.Item>}
+            </ActionsDropdownList>
+          </DetailsPageActions>
+        ) : (
+          !isEnrolled &&
+          canDelete && (
+            <Button component="a" aria-label={t('Delete device forever')} variant="danger" tabIndex={0}>
+              {deleteAction}
+            </Button>
+          )
+        )
+      }
+    >
+      {device && (
+        <CatalogItemsProvider spec={device.spec}>
+          <Routes>
+            <Route index element={<Navigate to="details" replace />} />
+            <Route
+              path="details"
+              element={
+                <DeviceDetailsTab device={device} refetch={refetch} canEdit={hasEditPermissions}>
+                  {children}
+                </DeviceDetailsTab>
+              }
+            />
+            {isEnrolled && (
+              <Route
+                path="catalog"
+                element={<DeviceDetailsCatalog device={device} refetch={refetch} canEdit={hasEditPermissions} />}
+              />
+            )}
+            <Route
+              path="yaml"
+              element={
+                <YamlEditorLoader
+                  apiObj={device}
+                  refetch={refetch}
+                  disabledEditReason={editDisabledReason}
+                  canEdit={hasEditPermissions}
+                  shouldFetchInitially={hasActiveConsoleSessions(device)}
+                />
+              }
+            />
+            {canViewTerminal && <Route path="terminal" element={<TerminalTab device={device} />} />}
+            {canViewLogs && <Route path="logs" element={<DeviceLogsTab deviceId={deviceId} />} />}
+            <Route path="events" element={<EventsCard kind={ResourceKind.DEVICE} objId={deviceId} />} />
+          </Routes>
+        </CatalogItemsProvider>
+      )}
+
+      {deleteModal || decommissionModal || resumeModal}
+    </DetailsPage>
+  );
+};
+
+const DeviceDetailsPageWithPermissions = ({ children }: React.PropsWithChildren) => {
+  const { checkPermissions, loading } = usePermissionsContext();
+  const [allowed] = checkPermissions([{ kind: RESOURCE.DEVICE, verb: VERB.GET }]);
+  return (
+    <PageWithPermissions allowed={allowed} loading={loading}>
+      <DeviceDetailsPage>{children}</DeviceDetailsPage>
+    </PageWithPermissions>
+  );
+};
+
+export default DeviceDetailsPageWithPermissions;

@@ -1,0 +1,160 @@
+import { type TFunction } from 'react-i18next';
+import {
+  type CveCountsBySeverity,
+  Vulnerability,
+  type VulnerabilityGroup,
+  type VulnerabilityGroupItem,
+  VulnerabilitySource,
+} from '@flightctl/types/alpha';
+
+const SeverityColorCritical = 'var(--pf-t--global--icon--color--severity--critical--default)';
+const SeverityColorImportant = 'var(--pf-t--global--icon--color--severity--important--default)';
+const SeverityColorModerate = 'var(--pf-t--global--icon--color--severity--moderate--default)';
+const SeverityColorMinor = 'var(--pf-t--global--icon--color--severity--minor--default)';
+const SeverityColorNone = 'var(--pf-t--global--icon--color--severity--none--default)';
+
+// Accepts different variations for "Red Hat" issuer detection
+const RED_HAT_ISSUER_PATTERN = /red\s*hat/i;
+
+type Severity = Vulnerability.severity;
+
+export const VULNERABILITY_SEVERITY_ORDER: Severity[] = [
+  Vulnerability.severity.CRITICAL,
+  Vulnerability.severity.HIGH,
+  Vulnerability.severity.MEDIUM,
+  Vulnerability.severity.LOW,
+  Vulnerability.severity.NONE,
+  Vulnerability.severity.UNKNOWN,
+];
+
+export const VULNERABILITY_SEVERITY_COLOR: Record<Severity, string> = {
+  [Vulnerability.severity.CRITICAL]: SeverityColorCritical,
+  [Vulnerability.severity.HIGH]: SeverityColorImportant,
+  [Vulnerability.severity.MEDIUM]: SeverityColorModerate,
+  [Vulnerability.severity.LOW]: SeverityColorMinor, // grey in PF6
+  [Vulnerability.severity.NONE]: SeverityColorNone, // blue in PF6
+  [Vulnerability.severity.UNKNOWN]: SeverityColorMinor, // grey in PF6
+};
+
+export const VULNERABILITY_FILTER_QUERY_PARAM = 'cveId';
+
+export const isVulnerabilityGroup = (
+  vulnerability: Vulnerability | VulnerabilityGroup,
+): vulnerability is VulnerabilityGroup => 'findings' in vulnerability;
+
+export const isRedHatIssuer = (issuer?: string): boolean => !!issuer && RED_HAT_ISSUER_PATTERN.test(issuer);
+
+// Prefer a Red Hat advisory finding when present; otherwise use the first finding.
+export const getPrimaryVulnerabilityGroupFinding = (
+  findings: VulnerabilityGroupItem[],
+): VulnerabilityGroupItem | undefined => {
+  const findingsWithLink = findings.filter((finding) => finding.link);
+  return findingsWithLink.find((finding) => isRedHatIssuer(finding.issuer)) || findingsWithLink[0] || findings[0];
+};
+
+const DEFAULT_VULNERABILITY_SOURCE_US = 'Trustify';
+const DEFAULT_VULNERABILITY_SOURCE_DS = 'Red Hat Trusted Profile Analyzer';
+const QUAY_VULNERABILITY_SOURCE = 'Quay';
+
+export const getVulnerabilitySource = (vulnerability: Vulnerability | VulnerabilityGroupItem, isRHEM: boolean) => {
+  switch (vulnerability.source) {
+    case VulnerabilitySource.Trustify:
+    case undefined:
+      return isRHEM ? DEFAULT_VULNERABILITY_SOURCE_DS : DEFAULT_VULNERABILITY_SOURCE_US;
+    case VulnerabilitySource.Quay:
+      return QUAY_VULNERABILITY_SOURCE;
+    default:
+      // Source is unknown to the UI, return it as is.
+      return vulnerability.source;
+  }
+};
+
+export const getSeverityCountValue = (severity: Severity, counts: CveCountsBySeverity) => {
+  switch (severity) {
+    case Vulnerability.severity.CRITICAL:
+      return counts.critical;
+    case Vulnerability.severity.HIGH:
+      return counts.high;
+    case Vulnerability.severity.MEDIUM:
+      return counts.medium;
+    case Vulnerability.severity.LOW:
+      return counts.low;
+    case Vulnerability.severity.NONE:
+      return counts.none;
+    case Vulnerability.severity.UNKNOWN:
+      return counts.unknown;
+  }
+};
+
+export type SeverityTileColumnSpan = 2 | 3 | 4;
+
+export type SeverityTilesLayout = 'overview' | 'entityDetail';
+
+export type VisibleSeverityTilesConfig = {
+  severities: Severity[];
+  columnSpan: SeverityTileColumnSpan;
+};
+
+export const getVisibleSeverityTilesConfig = (
+  counts: Pick<CveCountsBySeverity, 'none' | 'unknown'>,
+  layout: SeverityTilesLayout = 'overview',
+): VisibleSeverityTilesConfig => {
+  const hasAllSeverities = counts.none > 0 || counts.unknown > 0;
+  const severityThresholdIndex = VULNERABILITY_SEVERITY_ORDER.indexOf(Vulnerability.severity.LOW);
+
+  const severities = VULNERABILITY_SEVERITY_ORDER.filter((severity, index) => {
+    if (!hasAllSeverities && index > severityThresholdIndex) {
+      return false;
+    }
+    return true;
+  });
+
+  let columnSpan: SeverityTileColumnSpan;
+  if (hasAllSeverities) {
+    columnSpan = layout === 'entityDetail' ? 2 : 4;
+  } else {
+    columnSpan = 3;
+  }
+
+  return {
+    severities,
+    columnSpan,
+  };
+};
+
+export const getSeverityLabel = (severity: Severity, t: TFunction): string => {
+  switch (severity) {
+    case Vulnerability.severity.CRITICAL:
+      return t('Critical');
+    case Vulnerability.severity.HIGH:
+      return t('Important');
+    case Vulnerability.severity.MEDIUM:
+      return t('Moderate');
+    case Vulnerability.severity.LOW:
+      return t('Low');
+    case Vulnerability.severity.NONE:
+      return t('None');
+    case Vulnerability.severity.UNKNOWN:
+    default:
+      return t('Undefined');
+  }
+};
+
+export const getSeverityToggleResult = (
+  severity: Severity,
+  selectedSeverities: Severity[],
+): { selectedSeverities: Severity[]; expandTable: boolean } => {
+  const isSelected = selectedSeverities.includes(severity);
+
+  if (isSelected) {
+    return {
+      selectedSeverities: selectedSeverities.filter((selectedSeverity) => selectedSeverity !== severity),
+      expandTable: false,
+    };
+  }
+
+  return {
+    selectedSeverities: selectedSeverities.concat(severity),
+    expandTable: true,
+  };
+};

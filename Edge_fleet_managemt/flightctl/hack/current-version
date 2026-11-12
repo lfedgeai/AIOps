@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+
+# Fix git ownership issue in CI environments (idempotent — do not append duplicates).
+ensure_safe_directory() {
+  local dir="$1"
+  git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$dir" || \
+    git config --global --add safe.directory "$dir" 2>/dev/null || true
+}
+ensure_safe_directory /__w/flightctl/flightctl
+ensure_safe_directory "$(pwd)"
+
+# Prefer proper release tags pointing at this exact commit first, prioritizing the highest version
+# tag. If there is no tag at this commit, then fallback to 'git describe' which will construct a
+# "human-readable" artificial tag.
+tag=$(git -c "versionsort.suffix=-rc" tag --points-at HEAD --sort version:refname -l 'v*' | tail -n 1 2>/dev/null)
+
+# When multiple tags exist on the same commit (e.g. v1.3.0-main and v1.2.0-rc1),
+# git describe may pick the wrong one. Re-resolve using version sorting at the
+# base commit and re-attach the distance and hash suffix.
+if [[ -z "$tag" ]]; then
+  nearest_tag=$(git describe --tags --always --first-parent --match 'v*' --abbrev=0 2>/dev/null)
+  # Shorten only the full describe hash; preserve the tag, distance, and any dirty suffix.
+  full_describe=$(git describe --tags --always --first-parent --match 'v*' --abbrev=40 2>/dev/null |
+    sed -E 's/(-[0-9]+-g[0-9a-f]{9})[0-9a-f]+(-dirty)?$/\1\2/; s/^([0-9a-f]{9})[0-9a-f]+(-dirty)?$/\1\2/')
+  base_commit=$(git rev-parse "$nearest_tag"^{commit})
+  best_tag=$(git -c "versionsort.suffix=-rc" tag --points-at "$base_commit" --sort version:refname -l 'v*' | tail -n 1)
+  if [[ -n "$best_tag" ]]; then
+    tag="${best_tag}${full_describe#"$nearest_tag"}"
+  else
+    tag="$full_describe"
+  fi
+fi
+
+if [[ -z "$tag" ]]; then
+  echo "ERROR: Unable to generate tag from repo" >&2
+  exit 1
+fi
+
+echo -n "$tag"

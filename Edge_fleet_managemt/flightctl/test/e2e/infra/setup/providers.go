@@ -1,0 +1,191 @@
+// Package setup provides provider factory and default-providers for e2e tests.
+// It is the single place that constructs K8s or Quadlet providers; the harness
+// only consumes *infra.Providers via EnsureDefaultProviders/GetDefaultProviders.
+package setup
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/flightctl/flightctl/test/e2e/infra"
+	"github.com/flightctl/flightctl/test/e2e/infra/auxiliary"
+	"github.com/flightctl/flightctl/test/e2e/infra/k8s"
+	"github.com/flightctl/flightctl/test/e2e/infra/quadlet"
+	"github.com/sirupsen/logrus"
+)
+
+func init() {
+	auxiliary.ApplyDeltaWorkerRegistryRemap = applyDeltaWorkerRegistryRemap
+}
+
+func applyDeltaWorkerRegistryRemap(ctx context.Context, registryURL string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("delta worker registry remap: %w", err)
+	}
+	if err := EnsureDefaultProviders(nil); err != nil {
+		return fmt.Errorf("delta worker registry remap: %w", err)
+	}
+	p := GetDefaultProviders()
+	if p == nil || p.Infra == nil {
+		return fmt.Errorf("delta worker registry remap: providers not set")
+	}
+	if p.Lifecycle == nil {
+		return fmt.Errorf("delta worker registry remap: lifecycle not set")
+	}
+	if err := p.Infra.ApplyDeltaWorkerRegistryRemap(ctx, registryURL); err != nil {
+		return err
+	}
+	if err := restartIfRunning(p, infra.ServiceDeltaWorker, "delta-worker"); err != nil {
+		return err
+	}
+	return restartIfRunning(p, infra.ServiceWorker, "worker")
+}
+
+func restartIfRunning(p *infra.Providers, svc infra.ServiceName, name string) error {
+	running, err := p.Lifecycle.IsRunning(svc)
+	if err != nil {
+		return fmt.Errorf("%s registry remap: %w", name, err)
+	}
+	if !running {
+		logrus.Infof("%s is not running; remap applied without restart", name)
+		return nil
+	}
+	if err := p.Lifecycle.Restart(svc); err != nil {
+		return fmt.Errorf("%s registry remap restart: %w", name, err)
+	}
+	return p.Lifecycle.WaitForReady(svc, 5*time.Minute)
+}
+
+var (
+	defaultProviders   *infra.Providers
+	defaultProvidersMu sync.RWMutex
+)
+
+// NewProvidersForEnvironment creates a full set of infra providers for the given config.
+// Deployment type is selected once here; all four provider slots are always populated.
+func NewProvidersForEnvironment(config *infra.EnvironmentConfig) (*infra.Providers, error) {
+	if config == nil {
+		config = infra.GetEnvironmentConfig()
+	}
+	env := config.Type
+	if env == "" {
+		env = infra.DetectEnvironment()
+	}
+	switch env {
+	case infra.EnvironmentKind, infra.EnvironmentOCP:
+		return newK8sProviders(config)
+	case infra.EnvironmentQuadlet:
+		return newQuadletProviders(config)
+	default:
+		return nil, fmt.Errorf("unknown environment type %q", env)
+	}
+}
+
+func newK8sProviders(config *infra.EnvironmentConfig) (*infra.Providers, error) {
+	// Resolve the kubeconfig and context once, and give the same answer to
+	// the client and to the providers that shell out to kubectl and helm.
+	// Resolving them separately lets the client read one file's current
+	// context while the command lines read another - or get an empty
+	// --kubeconfig and fall back to their own resolution - so the two end up
+	// inspecting different clusters.
+	kubeConfigPath, kubeContext, err := k8s.ResolveKubeConfig(config.KubeConfig, config.KubeContext)
+	if err != nil {
+		return nil, fmt.Errorf("k8s kubeconfig: %w", err)
+	}
+	cluster, _, err := k8s.NewClientForKubeConfig(kubeConfigPath, kubeContext)
+	if err != nil {
+		return nil, fmt.Errorf("k8s client: %w", err)
+	}
+	// A copy, so resolution never writes back into the caller's config.
+	resolved := *config
+	resolved.KubeConfig = kubeConfigPath
+	resolved.KubeContext = kubeContext
+
+	// Use config.Namespace only when explicitly set (e.g. E2E_NAMESPACE); otherwise
+	// NewInfraProviderWithConfig detects external/internal from cluster (flightctl-api / flightctl-worker pods).
+	namespace := resolved.Namespace
+	infraP, err := k8s.NewInfraProviderWithConfig(namespace, &resolved, cluster)
+	if err != nil {
+		return nil, fmt.Errorf("k8s infra provider: %w", err)
+	}
+	lifecycleP := k8s.NewServiceLifecycleProviderWithConfig(cluster, infraP)
+	releaseName := infraP.GetExternalNamespace()
+	rbacP, err := k8s.NewRBACProvider(cluster, releaseName)
+	if err != nil {
+		return nil, fmt.Errorf("k8s rbac: %w", err)
+	}
+	secretsP, err := k8s.NewSecretsProvider(cluster, infraP)
+	if err != nil {
+		return nil, fmt.Errorf("k8s secrets: %w", err)
+	}
+	tpmP := k8s.NewTPMProvider(cluster, infraP, lifecycleP)
+	collectorP, err := k8s.NewCollectorDeployer(cluster, infraP, secretsP)
+	if err != nil {
+		return nil, fmt.Errorf("k8s collector deployer: %w", err)
+	}
+	return &infra.Providers{
+		Infra:               infraP,
+		Lifecycle:           lifecycleP,
+		RBAC:                rbacP,
+		Secrets:             secretsP,
+		TPM:                 tpmP,
+		CollectorDeployment: collectorP,
+	}, nil
+}
+
+func newQuadletProviders(config *infra.EnvironmentConfig) (*infra.Providers, error) {
+	configDir := config.GetConfigDir()
+	secretDir := "/etc/flightctl/secrets" //nolint:gosec // G101: path to secret files dir, not a credential
+	useSudo := config.UseSudo
+	infraP := quadlet.NewInfraProvider(configDir, secretDir, useSudo)
+	lifecycleP := quadlet.NewServiceLifecycleProvider(infraP, useSudo)
+	rbacP := quadlet.NewPAMRBACProvider(useSudo)
+	secretsP := quadlet.NewSecretsProvider(infraP)
+	tpmP := quadlet.NewTPMProvider(infraP, lifecycleP)
+	return &infra.Providers{
+		Infra:     infraP,
+		Lifecycle: lifecycleP,
+		RBAC:      rbacP,
+		Secrets:   secretsP,
+		TPM:       tpmP,
+		// Quadlet ships the collector as a Podman unit rather than a chart, so
+		// deploying one is not implemented here. The slot is filled rather than
+		// left nil so a caller asks Available and gets a reason, instead of
+		// having to know which deployment types support what.
+		CollectorDeployment: infra.NewUnsupportedCollectorDeployer(infra.EnvironmentQuadlet),
+	}, nil
+}
+
+// setDefaultProviders stores the providers as the default for this process.
+func setDefaultProviders(p *infra.Providers) {
+	defaultProvidersMu.Lock()
+	defer defaultProvidersMu.Unlock()
+	defaultProviders = p
+}
+
+// GetDefaultProviders returns the providers set at creation, or nil if not yet set.
+func GetDefaultProviders() *infra.Providers {
+	defaultProvidersMu.RLock()
+	defer defaultProvidersMu.RUnlock()
+	return defaultProviders
+}
+
+// EnsureDefaultProviders creates and sets default providers if not already set.
+// Registry is not from infra; get it from auxiliary.Get(ctx).Registry.Host/Registry.Port and pass explicitly where needed.
+// Call once at harness/suite setup; after that use GetDefaultProviders().
+func EnsureDefaultProviders(config *infra.EnvironmentConfig) error {
+	if GetDefaultProviders() != nil {
+		return nil
+	}
+	if config == nil {
+		config = infra.GetEnvironmentConfig()
+	}
+	p, err := NewProvidersForEnvironment(config)
+	if err != nil {
+		return err
+	}
+	setDefaultProviders(p)
+	return nil
+}

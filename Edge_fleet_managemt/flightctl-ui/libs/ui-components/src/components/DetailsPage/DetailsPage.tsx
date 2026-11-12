@@ -1,0 +1,121 @@
+import * as React from 'react';
+import {
+  Alert,
+  Breadcrumb,
+  BreadcrumbItem,
+  Bullseye,
+  PageSection,
+  Spinner,
+  Split,
+  SplitItem,
+  Title,
+} from '@patternfly/react-core';
+
+import { getErrorMessage } from '../../utils/error';
+import DetailsNotFound from './DetailsNotFound';
+import { useTranslation } from '../../hooks/useTranslation';
+import { Link, type Route } from '../../hooks/useNavigate';
+import ErrorBoundary from '../common/ErrorBoundary';
+import ResourceLink from '../common/ResourceLink';
+
+import './DetailsPage.css';
+
+export type DetailsPageProps = {
+  id: string;
+  breadcrumbTitle?: string;
+  title?: React.ReactNode;
+  children: React.ReactNode;
+  error: unknown;
+  loading: boolean;
+  resourceType:
+    | 'Fleets'
+    | 'Devices'
+    | 'Repositories'
+    | 'Enrollment requests'
+    | 'Authentication providers'
+    | 'Image builds';
+  resourceTypeLabel: string;
+  resourceLink: Route;
+  actions?: React.ReactNode;
+  nav?: React.ReactNode;
+  banner?: React.ReactNode;
+  /** Optional data-testid for the title (e.g. "device-details-title") */
+  titleDataTestId?: string;
+};
+
+const DetailsPage = ({
+  id,
+  breadcrumbTitle,
+  title,
+  children,
+  error,
+  loading,
+  resourceLink,
+  resourceType,
+  resourceTypeLabel,
+  actions,
+  nav,
+  banner,
+  titleDataTestId,
+}: DetailsPageProps) => {
+  const { t } = useTranslation();
+  let content = children;
+  if (error) {
+    const msg = getErrorMessage(error);
+    if (msg === 'Error 404: Not Found') {
+      return <DetailsNotFound kind={resourceType} id={id} />;
+    }
+    content = (
+      <Alert isInline variant="danger" title={t('Failed to retrieve resource details')}>
+        {getErrorMessage(error)}
+      </Alert>
+    );
+  } else if (loading) {
+    content = (
+      <Bullseye>
+        <Spinner />
+      </Bullseye>
+    );
+  }
+
+  return (
+    <>
+      <PageSection hasBodyWrapper={false} type="breadcrumb">
+        <Breadcrumb>
+          <BreadcrumbItem>
+            <Link to={resourceLink}>{resourceTypeLabel}</Link>
+          </BreadcrumbItem>
+          <BreadcrumbItem isActive>
+            <ResourceLink id={breadcrumbTitle || id} />
+          </BreadcrumbItem>
+        </Breadcrumb>
+      </PageSection>
+      <PageSection hasBodyWrapper={false}>
+        <Split hasGutter>
+          <SplitItem isFilled>
+            <Title
+              headingLevel="h1"
+              size="3xl"
+              role="heading"
+              {...(titleDataTestId && { 'data-testid': titleDataTestId })}
+            >
+              {title || <ResourceLink id={id} />}
+            </Title>
+          </SplitItem>
+          <SplitItem>{actions}</SplitItem>
+        </Split>
+      </PageSection>
+      {banner}
+      {nav && (
+        <PageSection hasBodyWrapper={false} className="fctl-details-page__nav">
+          {nav}
+        </PageSection>
+      )}
+      <PageSection hasBodyWrapper={false}>
+        <ErrorBoundary>{content}</ErrorBoundary>
+      </PageSection>
+    </>
+  );
+};
+
+export default DetailsPage;

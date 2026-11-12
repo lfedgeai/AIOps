@@ -1,0 +1,81 @@
+{{ if and (.Values.cliArtifacts.enabled) (eq (include "flightctl.getServiceExposeMethod" .) "route") }}
+{{- $routeExternalCertificate := .Values.global.routeExternalCertificate | default "auto" | toString }}
+{{- $certificateMethod := include "flightctl.getCertificateGenerationMethod" . }}
+{{- $useExtCert := eq (include "flightctl.useRouteExternalCertificate" (dict "root" . "routeName" "flightctl-cli-artifacts-route" "secretName" "flightctl-cli-artifacts-server-tls")) "true" }}
+{{- $tlsSecretName := "" }}
+{{- $routeCertSecretName := "" }}
+{{- if .Values.global.baseDomainTlsSecretName }}
+  {{- $tlsSecretName = .Values.global.baseDomainTlsSecretName }}
+  {{- $routeCertSecretName = .Values.global.baseDomainTlsSecretName }}
+{{- else if $useExtCert }}
+  {{- $tlsSecretName = "flightctl-cli-artifacts-server-tls" }}
+  {{- $routeCertSecretName = "flightctl-cli-artifacts-server-tls" }}
+{{- else if and (or (eq $routeExternalCertificate "auto") (eq $routeExternalCertificate "true")) (eq $certificateMethod "cert-manager") }}
+  {{- $routeCertSecretName = "flightctl-cli-artifacts-server-tls" }}
+{{- end }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  labels:
+    {{- with .Values.global.additionalRouteLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.cliArtifacts.additionalRouteLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+    flightctl.service: flightctl-cli-artifacts
+  name: flightctl-cli-artifacts-route
+  namespace: {{ .Release.Namespace }}
+spec:
+  host: cli-artifacts.{{ include "flightctl.getBaseDomain" . }}
+  port:
+    targetPort: 8090
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+    {{- if $tlsSecretName }}
+    externalCertificate:
+      name: {{ $tlsSecretName }}
+    {{- end }}
+  to:
+    kind: Service
+    name: flightctl-cli-artifacts
+    weight: 100
+  wildcardPolicy: None
+
+{{- if $routeCertSecretName }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flightctl-cli-artifacts-route-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+    flightctl.service: flightctl-cli-artifacts
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["{{ $routeCertSecretName }}"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flightctl-cli-artifacts-route-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+    flightctl.service: flightctl-cli-artifacts
+subjects:
+  - kind: ServiceAccount
+    name: router
+    namespace: openshift-ingress
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flightctl-cli-artifacts-route-cert
+{{- end }}
+{{ end }}

@@ -1,0 +1,1794 @@
+package tasks
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	config_latest_types "github.com/coreos/ignition/v2/config/v3_4/types"
+	v1alpha1 "github.com/flightctl/flightctl/api/core/v1alpha1"
+	api "github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/config"
+	deltamodel "github.com/flightctl/flightctl/internal/delta_worker/model"
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/kvstore"
+	"github.com/flightctl/flightctl/internal/oci"
+	catalogservice "github.com/flightctl/flightctl/internal/service/catalog"
+	deviceservice "github.com/flightctl/flightctl/internal/service/device"
+	repositoryservice "github.com/flightctl/flightctl/internal/service/repository"
+	"github.com/flightctl/flightctl/pkg/k8sclient"
+	"github.com/google/uuid"
+	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	gomock "go.uber.org/mock/gomock"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// testKVStore is a controllable in-memory KVStore for unit tests.
+// It records which keys are deleted so tests can assert on cache-invalidation behaviour.
+type testKVStore struct {
+	mu      sync.Mutex
+	store   map[string][]byte
+	deleted []string
+}
+
+func newTestKVStore() *testKVStore {
+	return &testKVStore{store: make(map[string][]byte)}
+}
+
+func (s *testKVStore) seed(key string, value []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.store[key] = value
+}
+
+func (s *testKVStore) has(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.store[key]
+	return ok
+}
+
+func (s *testKVStore) wasDeleted(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, k := range s.deleted {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *testKVStore) Close() {}
+
+func (s *testKVStore) Set(_ context.Context, key string, value []byte, _ time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.store[key] = value
+	return nil
+}
+
+func (s *testKVStore) SetNX(_ context.Context, key string, value []byte) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.store[key]; ok {
+		return false, nil
+	}
+	s.store[key] = value
+	return true, nil
+}
+
+func (s *testKVStore) SetIfGreater(_ context.Context, _ string, _ int64) (bool, error) {
+	return false, nil
+}
+
+func (s *testKVStore) Get(_ context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.store[key]
+	if !ok {
+		return nil, nil
+	}
+	return v, nil
+}
+
+func (s *testKVStore) GetOrSetNX(_ context.Context, key string, value []byte) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v, ok := s.store[key]; ok {
+		return v, nil
+	}
+	s.store[key] = value
+	return value, nil
+}
+
+func (s *testKVStore) DeleteKeysForTemplateVersion(_ context.Context, _ string) error { return nil }
+func (s *testKVStore) DeleteAllKeys(_ context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.store = make(map[string][]byte)
+	return nil
+}
+func (s *testKVStore) PrintAllKeys(_ context.Context) {}
+
+func (s *testKVStore) Delete(_ context.Context, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleted = append(s.deleted, key)
+	delete(s.store, key)
+	return nil
+}
+
+func (s *testKVStore) StreamAdd(_ context.Context, _ string, _ []byte) (string, error) {
+	return "", nil
+}
+func (s *testKVStore) StreamRange(_ context.Context, _, _, _ string) ([]kvstore.StreamEntry, error) {
+	return nil, nil
+}
+func (s *testKVStore) StreamRead(_ context.Context, _ string, _ string, _ time.Duration, _ int64) ([]kvstore.StreamEntry, error) {
+	return nil, nil
+}
+func (s *testKVStore) SetExpire(_ context.Context, _ string, _ time.Duration) error { return nil }
+
+var _ kvstore.KVStore = (*testKVStore)(nil)
+
+type testHelmImageRenderer struct {
+	calls int
+	refs  []string
+}
+
+func (r *testHelmImageRenderer) ImageRefs(context.Context, api.HelmApplication, *domain.Device, []byte, *domain.OciRepoSpec) ([]string, error) {
+	r.calls++
+	return append([]string(nil), r.refs...), nil
+}
+
+func TestRenderHelmImageRefsUsesCache(t *testing.T) {
+	ctx := context.Background()
+	orgID := uuid.New()
+	kv := newTestKVStore()
+	renderer := &testHelmImageRenderer{refs: []string{"quay.io/acme/app:v1"}}
+	logic := NewDeviceRenderLogic(logrus.New(), nil, nil, nil, nil, kv, &config.Config{}).
+		WithHelmImageRenderer(renderer)
+	app := api.HelmApplication{
+		AppType: api.AppTypeHelm,
+		Name:    lo.ToPtr("release"),
+		Values:  lo.ToPtr(map[string]interface{}{"imageTag": "v1"}),
+	}
+	require.NoError(t, app.FromImageApplicationProviderSpec(api.ImageSpec{Image: "oci://registry.example/charts/app:1.2.3"}))
+
+	first, err := logic.RenderHelmImageRefs(ctx, orgID, nil, app, []byte("rendered config"))
+	require.NoError(t, err)
+	second, err := logic.RenderHelmImageRefs(ctx, orgID, nil, app, []byte("rendered config"))
+	require.NoError(t, err)
+	require.Equal(t, renderer.refs, first)
+	require.Equal(t, first, second)
+	require.Equal(t, 1, renderer.calls, "identical render inputs should reuse cached image refs")
+
+	changedValues := app
+	changedValues.Values = lo.ToPtr(map[string]interface{}{"imageTag": "v2"})
+	_, err = logic.RenderHelmImageRefs(ctx, orgID, nil, changedValues, []byte("rendered config"))
+	require.NoError(t, err)
+	require.Equal(t, 2, renderer.calls, "changed chart values should trigger a fresh render")
+
+	_, err = logic.RenderHelmImageRefs(ctx, orgID, nil, app, []byte("changed rendered config"))
+	require.NoError(t, err)
+	require.Equal(t, 3, renderer.calls, "changed rendered config should trigger a fresh render")
+
+	t.Run("When the rendered chart has no workload images it should cache and return an empty list", func(t *testing.T) {
+		kv := newTestKVStore()
+		renderer := &testHelmImageRenderer{}
+		logic := NewDeviceRenderLogic(logrus.New(), nil, nil, nil, nil, kv, &config.Config{}).
+			WithHelmImageRenderer(renderer)
+
+		first, err := logic.RenderHelmImageRefs(ctx, orgID, nil, app, []byte("rendered config"))
+		require.NoError(t, err)
+		second, err := logic.RenderHelmImageRefs(ctx, orgID, nil, app, []byte("rendered config"))
+		require.NoError(t, err)
+
+		require.NotNil(t, first)
+		require.Empty(t, first)
+		require.NotNil(t, second)
+		require.Empty(t, second)
+		require.Equal(t, 1, renderer.calls, "a successful empty render should be cached")
+	})
+}
+
+func TestRenderHelmImageRefsCacheHitSkipsRepositoryLookup(t *testing.T) {
+	ctx := context.Background()
+	orgID := uuid.New()
+	ctrl := gomock.NewController(t)
+	repositorySvc := repositoryservice.NewMockService(ctrl)
+	repositorySvc.EXPECT().ListRepositories(gomock.Any(), orgID, gomock.Any()).
+		Return(&domain.RepositoryList{}, domain.StatusOK()).Times(1)
+	renderer := &testHelmImageRenderer{refs: []string{"quay.io/acme/app:v1"}}
+	logic := NewDeviceRenderLogic(logrus.New(), nil, repositorySvc, nil, nil, newTestKVStore(), &config.Config{}).
+		WithHelmImageRenderer(renderer)
+	app := api.HelmApplication{AppType: api.AppTypeHelm, Name: lo.ToPtr("release")}
+	require.NoError(t, app.FromImageApplicationProviderSpec(api.ImageSpec{Image: "oci://registry.example/charts/app:1.2.3"}))
+
+	first, err := logic.RenderHelmImageRefs(ctx, orgID, nil, app, []byte("rendered config"))
+	require.NoError(t, err)
+	second, err := logic.RenderHelmImageRefs(ctx, orgID, nil, app, []byte("rendered config"))
+	require.NoError(t, err)
+
+	require.Equal(t, renderer.refs, first)
+	require.Equal(t, first, second)
+	require.Equal(t, 1, renderer.calls)
+}
+
+// newDepChangeEvent constructs a DependencyChangeDetected event for testing.
+func newDepChangeEvent(deviceName, resourceKey, fingerprint string) domain.Event {
+	details := domain.DependencyChangeDetectedDetails{
+		DetailType:  domain.DependencyChangeDetected,
+		ResourceKey: resourceKey,
+		Fingerprint: fingerprint,
+	}
+	eventDetails := domain.EventDetails{}
+	_ = eventDetails.FromDependencyChangeDetectedDetails(details)
+	return domain.Event{
+		InvolvedObject: domain.ObjectReference{
+			Kind: string(domain.DeviceKind),
+			Name: deviceName,
+		},
+		Reason:  domain.EventReasonDependencyChangeDetected,
+		Details: &eventDetails,
+	}
+}
+
+// newFleetOwnedLogic builds a DeviceRenderLogic that simulates a fleet-owned device.
+func newFleetOwnedLogic(
+	repositorySvc repositoryservice.Service,
+	k8s k8sclient.K8SClient,
+	kv kvstore.KVStore,
+	orgId uuid.UUID,
+	event domain.Event,
+	fleet, templateVersion string,
+) *deviceRenderState {
+	logic := NewDeviceRenderLogic(logrus.New(), nil, repositorySvc, nil, k8s, kv, &config.Config{})
+	state := logic.newRenderState(orgId, event)
+	state.ownerFleet = &fleet
+	state.templateVersion = &templateVersion
+	return state
+}
+
+// emptyIgnitionConfig returns an empty ignition config suitable as the initial
+// accumulator for renderConfigItem calls.
+func emptyIgnitionConfig() config_latest_types.Config {
+	return config_latest_types.Config{}
+}
+
+// TestGetDepChangeDetails verifies that the getDepChangeDetails helper correctly
+// extracts the fingerprint and resource key from DependencyChangeDetected events
+// and returns empty strings for other event types.
+func TestGetDepChangeDetails(t *testing.T) {
+	orgId := uuid.New()
+
+	tests := []struct {
+		name                string
+		event               domain.Event
+		expectedFingerprint string
+		expectedResourceKey string
+	}{
+		{
+			name:                "When event is DependencyChangeDetected it should return fingerprint and resource key",
+			event:               newDepChangeEvent("device1", "git:my-repo/main", "sha-abc123"),
+			expectedFingerprint: "sha-abc123",
+			expectedResourceKey: "git:my-repo/main",
+		},
+		{
+			name:                "When event reason is ResourceUpdated it should return empty strings",
+			event:               createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, "device1"),
+			expectedFingerprint: "",
+			expectedResourceKey: "",
+		},
+		{
+			name: "When event is DependencyChangeDetected but has no details it should return empty strings",
+			event: func() domain.Event {
+				e := createTestEvent(domain.DeviceKind, domain.EventReasonDependencyChangeDetected, "device1")
+				e.Details = nil
+				return e
+			}(),
+			expectedFingerprint: "",
+			expectedResourceKey: "",
+		},
+		{
+			name:                "When event is DependencyChangeDetected for HTTP it should return etag fingerprint",
+			event:               newDepChangeEvent("device1", "http:my-repo/config.json", `"etag-v2"`),
+			expectedFingerprint: `"etag-v2"`,
+			expectedResourceKey: "http:my-repo/config.json",
+		},
+		{
+			name:                "When event is DependencyChangeDetected for K8s secret it should return resource version",
+			event:               newDepChangeEvent("device1", "secret:default/my-secret", "rv-42"),
+			expectedFingerprint: "rv-42",
+			expectedResourceKey: "secret:default/my-secret",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logic := NewDeviceRenderLogic(logrus.New(), nil, nil, nil, nil, nil, nil)
+			state := logic.newRenderState(orgId, tt.event)
+			fp, rk := state.getDepChangeDetails()
+			assert.Equal(t, tt.expectedFingerprint, fp)
+			assert.Equal(t, tt.expectedResourceKey, rk)
+		})
+	}
+}
+
+// TestCloneCachedGitRepoToIgnition_CacheHit tests that when the git revision cache
+// contains data and the fingerprint matches (or is absent), the function returns
+// the cached ignition config without any Delete calls.
+func TestCloneCachedGitRepoToIgnition_CacheHit(t *testing.T) {
+	const (
+		fleet           = "my-fleet"
+		templateVersion = "tv-1"
+		repoName        = "my-repo"
+		targetRevision  = "main"
+		cachedSHA       = "sha-abc123"
+		configPath      = "/config"
+		repoURL         = "https://example.com/repo.git"
+	)
+
+	orgId := uuid.New()
+	minimalIgnJSON := []byte(`{"ignition":{"version":"3.4.0"}}`)
+
+	repo := makeGitRepository(repoName, repoURL)
+
+	gitRevKey := kvstore.GitRevisionKey{OrgID: orgId, Fleet: fleet, TemplateVersion: templateVersion, Repository: repoName, TargetRevision: targetRevision}
+	gitDataKey := kvstore.GitContentsKey{OrgID: orgId, Fleet: fleet, TemplateVersion: templateVersion, Repository: repoName, TargetRevision: targetRevision, Path: configPath}
+	repoURLKey := kvstore.RepositoryUrlKey{OrgID: orgId, Fleet: fleet, TemplateVersion: templateVersion, Repository: repoName}
+
+	tests := []struct {
+		name           string
+		newFingerprint string
+	}{
+		{
+			name:           "When fingerprint matches cached SHA it should serve from cache without deletion",
+			newFingerprint: cachedSHA,
+		},
+		{
+			name:           "When fingerprint is empty (non-dep-change event) it should serve from cache without deletion",
+			newFingerprint: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kv := newTestKVStore()
+			kv.seed(repoURLKey.ComposeKey(), []byte(repoURL))
+			kv.seed(gitRevKey.ComposeKey(), []byte(cachedSHA))
+			kv.seed(gitDataKey.ComposeKey(), minimalIgnJSON)
+
+			event := createTestEvent(domain.DeviceKind, domain.EventReasonDependencyChangeDetected, "device1")
+			l := newFleetOwnedLogic(nil, nil, kv, orgId, event, fleet, templateVersion)
+
+			ign, hash, err := l.cloneCachedGitRepoToIgnition(context.Background(), repo, targetRevision, configPath, tt.newFingerprint)
+
+			require.NoError(t, err)
+			assert.Equal(t, cachedSHA, hash)
+			assert.NotNil(t, ign)
+			assert.False(t, kv.wasDeleted(gitRevKey.ComposeKey()), "GitRevisionKey must not be deleted for matching/empty fingerprint")
+			assert.False(t, kv.wasDeleted(gitDataKey.ComposeKey()), "GitContentsKey must not be deleted for matching/empty fingerprint")
+		})
+	}
+}
+
+// TestCloneCachedGitRepoToIgnition_StaleFingerprint verifies that when a
+// DependencyChangeDetected event carries a newer commit SHA the stale cache
+// entries are deleted before a re-fetch is attempted.
+func TestCloneCachedGitRepoToIgnition_StaleFingerprint(t *testing.T) {
+	const (
+		fleet           = "my-fleet"
+		templateVersion = "tv-1"
+		repoName        = "my-repo"
+		targetRevision  = "main"
+		oldSHA          = "sha-old"
+		newSHA          = "sha-new"
+		configPath      = "/config"
+	)
+
+	orgId := uuid.New()
+	// Use a loopback address with a refused port so the clone fails instantly
+	// (no DNS lookup, immediate connection refused) rather than waiting for a
+	// DNS timeout on an invalid domain.
+	const unreachableURL = "http://127.0.0.1:1/repo.git"
+	repo := makeGitRepository(repoName, unreachableURL)
+
+	gitRevKey := kvstore.GitRevisionKey{OrgID: orgId, Fleet: fleet, TemplateVersion: templateVersion, Repository: repoName, TargetRevision: targetRevision}
+	gitDataKey := kvstore.GitContentsKey{OrgID: orgId, Fleet: fleet, TemplateVersion: templateVersion, Repository: repoName, TargetRevision: targetRevision, Path: configPath}
+	repoURLKey := kvstore.RepositoryUrlKey{OrgID: orgId, Fleet: fleet, TemplateVersion: templateVersion, Repository: repoName}
+
+	kv := newTestKVStore()
+	kv.seed(repoURLKey.ComposeKey(), []byte(unreachableURL))
+	kv.seed(gitRevKey.ComposeKey(), []byte(oldSHA))
+	kv.seed(gitDataKey.ComposeKey(), []byte(`{"ignition":{"version":"3.4.0"}}`))
+
+	event := newDepChangeEvent("device1", fmt.Sprintf("git:%s/%s", repoName, targetRevision), newSHA)
+	l := newFleetOwnedLogic(nil, nil, kv, orgId, event, fleet, templateVersion)
+
+	// The clone will fail; that is expected. What matters is that the stale
+	// cache entries are deleted BEFORE the clone attempt.
+	_, _, err := l.cloneCachedGitRepoToIgnition(context.Background(), repo, targetRevision, configPath, newSHA)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed cloning git", "error should originate from the clone step, not from cache invalidation")
+
+	assert.True(t, kv.wasDeleted(gitRevKey.ComposeKey()), "GitRevisionKey must be deleted to bust stale cache")
+	assert.True(t, kv.wasDeleted(gitDataKey.ComposeKey()), "GitContentsKey must be deleted to bust stale cache")
+	assert.False(t, kv.has(gitRevKey.ComposeKey()), "GitRevisionKey must be absent after deletion")
+	assert.False(t, kv.has(gitDataKey.ComposeKey()), "GitContentsKey must be absent after deletion")
+}
+
+// TestCloneCachedGitRepoToIgnition_ResourceKeyMismatch verifies that a
+// DependencyChangeDetected event for a different git resource does not trigger
+// cache invalidation for the current config item.
+func TestCloneCachedGitRepoToIgnition_ResourceKeyMismatch(t *testing.T) {
+	const (
+		fleet           = "my-fleet"
+		templateVersion = "tv-1"
+		repoName        = "my-repo"
+		targetRevision  = "main"
+		cachedSHA       = "sha-old"
+		configPath      = "/config"
+		repoURL         = "https://example.com/repo.git"
+	)
+
+	orgId := uuid.New()
+	repo := makeGitRepository(repoName, repoURL)
+
+	gitRevKey := kvstore.GitRevisionKey{OrgID: orgId, Fleet: fleet, TemplateVersion: templateVersion, Repository: repoName, TargetRevision: targetRevision}
+	gitDataKey := kvstore.GitContentsKey{OrgID: orgId, Fleet: fleet, TemplateVersion: templateVersion, Repository: repoName, TargetRevision: targetRevision, Path: configPath}
+	repoURLKey := kvstore.RepositoryUrlKey{OrgID: orgId, Fleet: fleet, TemplateVersion: templateVersion, Repository: repoName}
+
+	kv := newTestKVStore()
+	kv.seed(repoURLKey.ComposeKey(), []byte(repoURL))
+	kv.seed(gitRevKey.ComposeKey(), []byte(cachedSHA))
+	kv.seed(gitDataKey.ComposeKey(), []byte(`{"ignition":{"version":"3.4.0"}}`))
+
+	// Event references a completely different repository.
+	event := newDepChangeEvent("device1", "git:other-repo/other-branch", "sha-new")
+	l := newFleetOwnedLogic(nil, nil, kv, orgId, event, fleet, templateVersion)
+
+	// depResourceKey mismatch → fingerprint cleared → should serve from cache.
+	_, hash, err := l.cloneCachedGitRepoToIgnition(context.Background(), repo, targetRevision, configPath, "")
+	require.NoError(t, err)
+	assert.Equal(t, cachedSHA, hash)
+	assert.False(t, kv.wasDeleted(gitRevKey.ComposeKey()))
+	assert.False(t, kv.wasDeleted(gitDataKey.ComposeKey()))
+}
+
+// TestRenderHttpProviderConfig_CacheInvalidation verifies the HTTP fingerprint-based
+// cache invalidation: stale fingerprints cause both the body and fingerprint keys to
+// be deleted and the endpoint to be re-fetched; matching fingerprints are served
+// from cache without a remote call.
+func TestRenderHttpProviderConfig_CacheInvalidation(t *testing.T) {
+	const (
+		repoName    = "http-repo"
+		suffix      = "/config.json"
+		filePath    = "/etc/config.json"
+		fleet       = "my-fleet"
+		tmplVersion = "tv-1"
+		cachedBody  = `{"key":"old-value"}`
+		freshBody   = `{"key":"new-value"}`
+		oldETag     = `"etag-old"`
+		newETag     = `"etag-new"`
+	)
+
+	orgId := uuid.New()
+
+	tests := []struct {
+		name              string
+		cachedFingerprint string
+		eventFingerprint  string
+		eventResourceKey  string
+		expectDelete      bool
+		expectedBody      string
+	}{
+		{
+			name:              "When cached fingerprint matches event fingerprint it should serve from cache",
+			cachedFingerprint: newETag,
+			eventFingerprint:  newETag,
+			eventResourceKey:  fmt.Sprintf("http:%s%s", repoName, suffix),
+			expectDelete:      false,
+			expectedBody:      cachedBody,
+		},
+		{
+			name:              "When cached fingerprint is stale it should delete both keys and re-fetch",
+			cachedFingerprint: oldETag,
+			eventFingerprint:  newETag,
+			eventResourceKey:  fmt.Sprintf("http:%s%s", repoName, suffix),
+			expectDelete:      true,
+			expectedBody:      freshBody,
+		},
+		{
+			name:              "When fingerprint is empty (non-dep-change event) it should serve from cache",
+			cachedFingerprint: oldETag,
+			eventFingerprint:  "",
+			eventResourceKey:  "",
+			expectDelete:      false,
+			expectedBody:      cachedBody,
+		},
+		{
+			name:              "When resource key does not match it should serve from cache",
+			cachedFingerprint: oldETag,
+			eventFingerprint:  newETag,
+			eventResourceKey:  "http:other-repo/other-path",
+			expectDelete:      false,
+			expectedBody:      cachedBody,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(freshBody))
+			}))
+			defer srv.Close()
+
+			repoURL := srv.URL
+			fullURL := repoURL + suffix
+
+			repo := makeHTTPRepository(repoName, repoURL)
+			mockSvc := repositoryservice.NewMockService(ctrl)
+			mockSvc.EXPECT().GetRepository(gomock.Any(), orgId, repoName).Return(repo, statusOK)
+
+			kv := newTestKVStore()
+			httpKey := kvstore.HttpKey{OrgID: orgId, Fleet: fleet, TemplateVersion: tmplVersion, URL: fullURL}
+			httpFPKey := kvstore.HttpFingerprintKey{OrgID: orgId, Fleet: fleet, TemplateVersion: tmplVersion, URL: fullURL}
+			repoURLKey := kvstore.RepositoryUrlKey{OrgID: orgId, Fleet: fleet, TemplateVersion: tmplVersion, Repository: repoName}
+
+			kv.seed(repoURLKey.ComposeKey(), []byte(repoURL))
+			kv.seed(httpKey.ComposeKey(), []byte(cachedBody))
+			kv.seed(httpFPKey.ComposeKey(), []byte(tt.cachedFingerprint))
+
+			var event domain.Event
+			if tt.eventFingerprint != "" {
+				event = newDepChangeEvent("device1", tt.eventResourceKey, tt.eventFingerprint)
+			} else {
+				event = createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, "device1")
+			}
+
+			l := newFleetOwnedLogic(mockSvc, nil, kv, orgId, event, fleet, tmplVersion)
+
+			configItem := makeHTTPConfigItem("http-config", repoName, suffix, filePath)
+			empty := emptyIgnitionConfig()
+			ignCfg := &empty
+
+			_, _, _, err := l.renderHttpProviderConfig(context.Background(), &configItem, &ignCfg)
+			require.NoError(t, err)
+
+			if tt.expectDelete {
+				assert.True(t, kv.wasDeleted(httpKey.ComposeKey()), "HttpKey should be deleted for stale fingerprint")
+				assert.True(t, kv.wasDeleted(httpFPKey.ComposeKey()), "HttpFingerprintKey should be deleted for stale fingerprint")
+			} else {
+				assert.False(t, kv.wasDeleted(httpKey.ComposeKey()), "HttpKey must not be deleted")
+				assert.False(t, kv.wasDeleted(httpFPKey.ComposeKey()), "HttpFingerprintKey must not be deleted")
+			}
+
+			require.NotNil(t, ignCfg)
+			require.Len(t, ignCfg.Storage.Files, 1)
+			rawSource := lo.FromPtr(ignCfg.Storage.Files[0].Contents.Source)
+			// Ignition stores file content as a data URL (data:text/plain;base64,<b64>).
+			fileContent := decodeIgnitionFileContent(t, rawSource)
+			assert.Equal(t, tt.expectedBody, fileContent)
+		})
+	}
+}
+
+// TestRenderK8sConfig_CacheInvalidation verifies the K8s secret ResourceVersion-based
+// cache invalidation: a differing ResourceVersion causes the cache entry to be deleted
+// and the secret to be re-fetched; a matching one is served directly from cache.
+func TestRenderK8sConfig_CacheInvalidation(t *testing.T) {
+	const (
+		fleet       = "my-fleet"
+		tmplVersion = "tv-1"
+		namespace   = "default"
+		secretName  = "my-secret"
+		mountPath   = "/etc/secret"
+		oldRV       = "rv-1"
+		newRV       = "rv-2"
+	)
+
+	orgId := uuid.New()
+	secretData := map[string][]byte{"token": []byte("supersecret")}
+
+	tests := []struct {
+		name             string
+		cachedRV         string
+		eventFingerprint string
+		eventResourceKey string
+		expectDelete     bool
+		expectK8sFetch   bool
+	}{
+		{
+			name:             "When cached ResourceVersion matches event fingerprint it should serve from cache",
+			cachedRV:         newRV,
+			eventFingerprint: newRV,
+			eventResourceKey: fmt.Sprintf("secret:%s/%s", namespace, secretName),
+			expectDelete:     false,
+			expectK8sFetch:   false,
+		},
+		{
+			name:             "When cached ResourceVersion is stale it should delete cache and re-fetch",
+			cachedRV:         oldRV,
+			eventFingerprint: newRV,
+			eventResourceKey: fmt.Sprintf("secret:%s/%s", namespace, secretName),
+			expectDelete:     true,
+			expectK8sFetch:   true,
+		},
+		{
+			name:             "When fingerprint is empty (non-dep-change event) it should serve from cache",
+			cachedRV:         oldRV,
+			eventFingerprint: "",
+			eventResourceKey: "",
+			expectDelete:     false,
+			expectK8sFetch:   false,
+		},
+		{
+			name:             "When resource key does not match it should serve from cache",
+			cachedRV:         oldRV,
+			eventFingerprint: newRV,
+			eventResourceKey: "secret:other-ns/other-secret",
+			expectDelete:     false,
+			expectK8sFetch:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			kv := newTestKVStore()
+			k8sKey := kvstore.K8sSecretKey{OrgID: orgId, Fleet: fleet, TemplateVersion: tmplVersion, Namespace: namespace, Name: secretName}
+
+			cachedEntry := cachedSecretData{Data: secretData, ResourceVersion: tt.cachedRV}
+			cachedBytes, err := json.Marshal(cachedEntry)
+			require.NoError(t, err)
+			kv.seed(k8sKey.ComposeKey(), cachedBytes)
+
+			mockK8S := k8sclient.NewMockK8SClient(ctrl)
+			if tt.expectK8sFetch {
+				mockK8S.EXPECT().GetSecret(gomock.Any(), namespace, secretName).Return(
+					&corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{ResourceVersion: newRV},
+						Data:       secretData,
+					}, nil,
+				)
+			}
+
+			var event domain.Event
+			if tt.eventFingerprint != "" {
+				event = newDepChangeEvent("device1", tt.eventResourceKey, tt.eventFingerprint)
+			} else {
+				event = createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, "device1")
+			}
+
+			l := newFleetOwnedLogic(nil, mockK8S, kv, orgId, event, fleet, tmplVersion)
+
+			configItem := makeK8sSecretConfigItem("k8s-config", namespace, secretName, mountPath)
+			empty := emptyIgnitionConfig()
+			ignCfg := &empty
+
+			_, _, _, err = l.renderK8sConfig(context.Background(), &configItem, &ignCfg)
+			require.NoError(t, err)
+
+			if tt.expectDelete {
+				assert.True(t, kv.wasDeleted(k8sKey.ComposeKey()), "K8sSecretKey must be deleted for stale ResourceVersion")
+			} else {
+				assert.False(t, kv.wasDeleted(k8sKey.ComposeKey()), "K8sSecretKey must not be deleted")
+			}
+		})
+	}
+}
+
+// decodeIgnitionFileContent decodes the data URL (data:...;base64,<b64>) that ignition
+// uses to embed file contents and returns the raw bytes as a string.
+func decodeIgnitionFileContent(t *testing.T, source string) string {
+	t.Helper()
+	const prefix = "base64,"
+	idx := strings.Index(source, prefix)
+	if idx == -1 {
+		return source
+	}
+	decoded, err := base64.StdEncoding.DecodeString(source[idx+len(prefix):])
+	require.NoError(t, err, "failed to decode ignition file content")
+	return string(decoded)
+}
+
+// --- domain object helpers ---
+
+func makeGitRepository(name, url string) *domain.Repository {
+	spec := api.RepositorySpec{}
+	_ = spec.FromGitRepoSpec(api.GitRepoSpec{
+		Type: api.GitRepoSpecTypeGit,
+		Url:  url,
+	})
+	return &api.Repository{
+		Metadata: api.ObjectMeta{Name: &name},
+		Spec:     spec,
+	}
+}
+
+func makeHTTPRepository(name, url string) *domain.Repository {
+	spec := api.RepositorySpec{}
+	_ = spec.FromHttpRepoSpec(api.HttpRepoSpec{
+		Type: api.HttpRepoSpecTypeHttp,
+		Url:  url,
+	})
+	return &api.Repository{
+		Metadata: api.ObjectMeta{Name: &name},
+		Spec:     spec,
+	}
+}
+
+func makeHTTPConfigItem(configName, repoName, suffix, filePath string) domain.ConfigProviderSpec {
+	item := domain.ConfigProviderSpec{}
+	_ = item.FromHttpConfigProviderSpec(api.HttpConfigProviderSpec{
+		Name: configName,
+		HttpRef: struct {
+			FilePath   string  `json:"filePath"`
+			Repository string  `json:"repository"`
+			Suffix     *string `json:"suffix,omitempty"`
+		}{
+			FilePath:   filePath,
+			Repository: repoName,
+			Suffix:     lo.ToPtr(suffix),
+		},
+	})
+	return item
+}
+
+// ─── renderApplication ─────────────────────────────────────────────────────
+
+// makeContainerApp builds a ContainerApplication with the given desiredState/restartGeneration
+// values set directly. These fields are readOnly in the API: only ever set by the device render
+// task overlaying the device-controller/applicationLifecycle annotation onto the application
+// (see domain.OverlayApplicationLifecycle), which is simulated here.
+func makeContainerApp(t *testing.T, name string, desiredState *domain.ApplicationDesiredState, restartGeneration *int) domain.ApplicationProviderSpec {
+	t.Helper()
+	containerApp := domain.ContainerApplication{
+		AppType:           domain.AppTypeContainer,
+		Name:              lo.ToPtr(name),
+		DesiredState:      desiredState,
+		RestartGeneration: restartGeneration,
+	}
+	require.NoError(t, containerApp.FromImageApplicationProviderSpec(domain.ImageApplicationProviderSpec{Image: "quay.io/test/app:v1"}))
+	var app domain.ApplicationProviderSpec
+	require.NoError(t, app.FromContainerApplication(containerApp))
+	return app
+}
+
+func TestRenderApplication_PreservesLifecycleFields(t *testing.T) {
+	t.Run("When rendering a container application it should preserve lifecycle fields", func(t *testing.T) {
+		app := makeContainerApp(t, "my-app", lo.ToPtr(domain.ApplicationDesiredStateStopped), lo.ToPtr(2))
+
+		name, rendered, err := renderApplication(context.Background(), &app, nil, DefaultVmRenderOptions(), nil, uuid.New(), nil)
+		require.NoError(t, err)
+		require.NotNil(t, name)
+		assert.Equal(t, "my-app", *name)
+		require.NotNil(t, rendered)
+
+		assert.Equal(t, domain.ApplicationDesiredStateStopped, rendered.GetDesiredState())
+		assert.Equal(t, 2, rendered.GetRestartGeneration())
+	})
+}
+
+func TestRenderDevice_PermanentError(t *testing.T) {
+	const (
+		deviceName      = "test-device"
+		fleet           = "my-fleet"
+		templateVersion = "tv-1"
+	)
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	invalidConfig := []domain.ConfigProviderSpec{{}}
+	ownerStr := fmt.Sprintf("Fleet/%s", fleet)
+	device := &domain.Device{
+		Metadata: domain.ObjectMeta{
+			Name:  lo.ToPtr(deviceName),
+			Owner: &ownerStr,
+			Annotations: &map[string]string{
+				domain.DeviceAnnotationTemplateVersion: templateVersion,
+			},
+		},
+		Spec: &domain.DeviceSpec{
+			Config: &invalidConfig,
+		},
+	}
+
+	mockSvc := deviceservice.NewMockService(ctrl)
+
+	mockSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).Return(device, statusOK)
+
+	specHash := hashRenderedWithSpec(device.Spec, config.DefaultVirtLauncherImage)
+	mockSvc.EXPECT().UpdateDeviceAnnotations(
+		gomock.Any(), orgId, deviceName,
+		map[string]string{
+			domain.DeviceAnnotationRenderedSpecHash:        specHash,
+			domain.DeviceAnnotationRenderedTemplateVersion: templateVersion,
+		},
+		gomock.Nil(),
+	).Return(statusOK)
+
+	mockSvc.EXPECT().SetDeviceServiceConditions(gomock.Any(), orgId, deviceName, gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ uuid.UUID, _ string, conditions []domain.Condition) domain.Status {
+			require.Len(t, conditions, 1)
+			assert.Equal(t, domain.ConditionStatusFalse, conditions[0].Status)
+			assert.Equal(t, "Invalid", conditions[0].Reason)
+			return statusOK
+		})
+	mockSvc.EXPECT().UpdateServerSideDeviceStatus(gomock.Any(), orgId, deviceName).Return(nil)
+
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonFleetRolloutDeviceSelected, deviceName)
+	logic := NewDeviceRenderLogic(logrus.New(), mockSvc, nil, nil, nil, newTestKVStore(), &config.Config{})
+
+	err := logic.RenderDevice(context.Background(), orgId, event)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnknownConfigName)
+}
+
+func TestRenderDevice_RetryableError(t *testing.T) {
+	const (
+		deviceName = "test-device"
+		namespace  = "default"
+		secretName = "my-secret"
+		mountPath  = "/etc/secret"
+	)
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	k8sConfigItem := makeK8sSecretConfigItem("k8s-cfg", namespace, secretName, mountPath)
+	configItems := []domain.ConfigProviderSpec{k8sConfigItem}
+	device := &domain.Device{
+		Metadata: domain.ObjectMeta{
+			Name: lo.ToPtr(deviceName),
+		},
+		Spec: &domain.DeviceSpec{
+			Config: &configItems,
+		},
+	}
+
+	mockDeviceSvc := deviceservice.NewMockService(ctrl)
+	mockDeviceSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).Return(device, statusOK)
+
+	mockDeviceSvc.EXPECT().OverwriteDeviceRepositoryRefs(gomock.Any(), orgId, deviceName).Return(statusOK)
+	mockDeviceSvc.EXPECT().SetDeviceServiceConditions(gomock.Any(), orgId, deviceName, gomock.Any()).Return(statusOK)
+	mockDeviceSvc.EXPECT().UpdateServerSideDeviceStatus(gomock.Any(), orgId, deviceName).Return(nil)
+
+	mockK8S := k8sclient.NewMockK8SClient(ctrl)
+	mockK8S.EXPECT().GetSecret(gomock.Any(), namespace, secretName).Return(nil, fmt.Errorf("connection to apiserver: %w", io.EOF))
+
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, deviceName)
+	logic := NewDeviceRenderLogic(logrus.New(), mockDeviceSvc, nil, nil, mockK8S, newTestKVStore(), &config.Config{})
+
+	err := logic.RenderDevice(context.Background(), orgId, event)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "EOF")
+}
+
+func TestRenderDevice_PermanentError_StandaloneDevice(t *testing.T) {
+	const deviceName = "standalone-device"
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	invalidConfig := []domain.ConfigProviderSpec{{}}
+	device := &domain.Device{
+		Metadata: domain.ObjectMeta{
+			Name: lo.ToPtr(deviceName),
+		},
+		Spec: &domain.DeviceSpec{
+			Config: &invalidConfig,
+		},
+	}
+
+	mockSvc := deviceservice.NewMockService(ctrl)
+	mockSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).Return(device, statusOK)
+	mockSvc.EXPECT().OverwriteDeviceRepositoryRefs(gomock.Any(), orgId, deviceName).Return(statusOK)
+
+	specHash := hashRenderedWithSpec(device.Spec, config.DefaultVirtLauncherImage)
+	mockSvc.EXPECT().UpdateDeviceAnnotations(
+		gomock.Any(), orgId, deviceName,
+		map[string]string{
+			domain.DeviceAnnotationRenderedSpecHash: specHash,
+		},
+		gomock.Nil(),
+	).Return(statusOK)
+
+	mockSvc.EXPECT().SetDeviceServiceConditions(gomock.Any(), orgId, deviceName, gomock.Any()).Return(statusOK)
+	mockSvc.EXPECT().UpdateServerSideDeviceStatus(gomock.Any(), orgId, deviceName).Return(nil)
+
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, deviceName)
+	logic := NewDeviceRenderLogic(logrus.New(), mockSvc, nil, nil, nil, newTestKVStore(), &config.Config{})
+
+	err := logic.RenderDevice(context.Background(), orgId, event)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnknownConfigName)
+}
+
+func TestRenderDevice_ExternalError_FleetOwned_NoAnnotations(t *testing.T) {
+	const (
+		deviceName      = "fleet-ext-err-device"
+		fleet           = "my-fleet"
+		templateVersion = "tv-1"
+		namespace       = "default"
+		secretName      = "my-secret"
+		mountPath       = "/etc/secret"
+	)
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	k8sConfigItem := makeK8sSecretConfigItem("k8s-cfg", namespace, secretName, mountPath)
+	configItems := []domain.ConfigProviderSpec{k8sConfigItem}
+	ownerStr := fmt.Sprintf("Fleet/%s", fleet)
+	device := &domain.Device{
+		Metadata: domain.ObjectMeta{
+			Name:  lo.ToPtr(deviceName),
+			Owner: &ownerStr,
+			Annotations: &map[string]string{
+				domain.DeviceAnnotationTemplateVersion: templateVersion,
+			},
+		},
+		Spec: &domain.DeviceSpec{
+			Config: &configItems,
+		},
+	}
+
+	mockSvc := deviceservice.NewMockService(ctrl)
+	mockSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).Return(device, statusOK)
+
+	mockSvc.EXPECT().SetDeviceServiceConditions(gomock.Any(), orgId, deviceName, gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ uuid.UUID, _ string, conditions []domain.Condition) domain.Status {
+			require.Len(t, conditions, 1)
+			assert.Equal(t, domain.ConditionStatusFalse, conditions[0].Status)
+			assert.Contains(t, conditions[0].Message, "kubernetes API is not available")
+			return statusOK
+		})
+	mockSvc.EXPECT().UpdateServerSideDeviceStatus(gomock.Any(), orgId, deviceName).Return(nil)
+
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonFleetRolloutDeviceSelected, deviceName)
+	logic := NewDeviceRenderLogic(logrus.New(), mockSvc, nil, nil, nil, newTestKVStore(), &config.Config{})
+
+	err := logic.RenderDevice(context.Background(), orgId, event)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "kubernetes API is not available")
+}
+
+func TestRenderDevice_PermanentAppError(t *testing.T) {
+	const deviceName = "app-error-device"
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	invalidApp := []domain.ApplicationProviderSpec{{}}
+	device := &domain.Device{
+		Metadata: domain.ObjectMeta{
+			Name: lo.ToPtr(deviceName),
+		},
+		Spec: &domain.DeviceSpec{
+			Applications: &invalidApp,
+		},
+	}
+
+	mockSvc := deviceservice.NewMockService(ctrl)
+	mockSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).Return(device, statusOK)
+	mockSvc.EXPECT().OverwriteDeviceRepositoryRefs(gomock.Any(), orgId, deviceName).Return(statusOK)
+
+	specHash := hashRenderedWithSpec(device.Spec, config.DefaultVirtLauncherImage)
+	mockSvc.EXPECT().UpdateDeviceAnnotations(
+		gomock.Any(), orgId, deviceName,
+		map[string]string{
+			domain.DeviceAnnotationRenderedSpecHash: specHash,
+		},
+		gomock.Nil(),
+	).Return(statusOK)
+
+	mockSvc.EXPECT().SetDeviceServiceConditions(gomock.Any(), orgId, deviceName, gomock.Any()).Return(statusOK)
+	mockSvc.EXPECT().UpdateServerSideDeviceStatus(gomock.Any(), orgId, deviceName).Return(nil)
+
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, deviceName)
+	logic := NewDeviceRenderLogic(logrus.New(), mockSvc, nil, nil, nil, newTestKVStore(), &config.Config{})
+
+	err := logic.RenderDevice(context.Background(), orgId, event)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnknownApplicationType)
+}
+
+func makeK8sSecretConfigItem(configName, namespace, name, mountPath string) domain.ConfigProviderSpec {
+	item := domain.ConfigProviderSpec{}
+	_ = item.FromKubernetesSecretProviderSpec(api.KubernetesSecretProviderSpec{
+		Name: configName,
+		SecretRef: struct {
+			Group     string       `json:"group,omitempty"`
+			MountPath string       `json:"mountPath"`
+			Name      string       `json:"name"`
+			Namespace string       `json:"namespace"`
+			User      api.Username `json:"user,omitempty"`
+		}{
+			Namespace: namespace,
+			Name:      name,
+			MountPath: mountPath,
+		},
+	})
+	return item
+}
+
+// makeCatalogItem builds a CatalogItem with a single container artifact and one version.
+func makeCatalogItem(catalogItemType v1alpha1.CatalogItemType, uri, version, containerRef string) *v1alpha1.CatalogItem {
+	return &v1alpha1.CatalogItem{
+		Spec: v1alpha1.CatalogItemSpec{
+			Type: catalogItemType,
+			Artifacts: []v1alpha1.CatalogItemArtifact{
+				{Type: v1alpha1.CatalogItemArtifactTypeContainer, Uri: uri},
+			},
+			Versions: []v1alpha1.CatalogItemVersion{
+				{
+					Version:    version,
+					References: map[v1alpha1.CatalogItemArtifactType]string{v1alpha1.CatalogItemArtifactTypeContainer: containerRef},
+					Channels:   []string{"stable"},
+				},
+			},
+		},
+	}
+}
+
+func makeCatalogRefApplication(t *testing.T, appType domain.AppType, name, catalog, item, version string) domain.ApplicationProviderSpec {
+	t.Helper()
+	ref := domain.CatalogItemRefApplicationProviderSpec{
+		CatalogItemRef: domain.CatalogItemRefSpec{
+			Catalog: catalog,
+			Item:    item,
+			Version: version,
+		},
+	}
+
+	var app domain.ApplicationProviderSpec
+	switch appType {
+	case domain.AppTypeContainer:
+		container := domain.ContainerApplication{AppType: appType, Name: lo.ToPtr(name)}
+		require.NoError(t, container.FromCatalogItemRefApplicationProviderSpec(ref))
+		require.NoError(t, app.FromContainerApplication(container))
+	case domain.AppTypeHelm:
+		helm := domain.HelmApplication{AppType: appType, Name: lo.ToPtr(name)}
+		require.NoError(t, helm.FromCatalogItemRefApplicationProviderSpec(ref))
+		require.NoError(t, app.FromHelmApplication(helm))
+	case domain.AppTypeCompose:
+		compose := domain.ComposeApplication{AppType: appType, Name: lo.ToPtr(name)}
+		require.NoError(t, compose.FromCatalogItemRefApplicationProviderSpec(ref))
+		require.NoError(t, app.FromComposeApplication(compose))
+	case domain.AppTypeQuadlet:
+		quadlet := domain.QuadletApplication{AppType: appType, Name: lo.ToPtr(name)}
+		require.NoError(t, quadlet.FromCatalogItemRefApplicationProviderSpec(ref))
+		require.NoError(t, app.FromQuadletApplication(quadlet))
+	default:
+		t.Fatalf("unsupported application type %s", appType)
+	}
+	return app
+}
+
+func TestRenderApplication_CatalogItemRef_ResolvesToImageWithoutRetainingRef(t *testing.T) {
+	const (
+		catalogName  = "catalog"
+		itemName     = "application"
+		version      = "1.0.0"
+		artifactUri  = "quay.io/example/application"
+		containerRef = "v1.0.0"
+	)
+
+	for _, tt := range []struct {
+		appType     domain.AppType
+		catalogType v1alpha1.CatalogItemType
+		application string
+	}{
+		{appType: domain.AppTypeContainer, catalogType: v1alpha1.CatalogItemTypeContainer, application: "container-app"},
+		{appType: domain.AppTypeHelm, catalogType: v1alpha1.CatalogItemTypeHelm, application: "helm-app"},
+		{appType: domain.AppTypeCompose, catalogType: v1alpha1.CatalogItemTypeCompose, application: "compose-app"},
+		{appType: domain.AppTypeQuadlet, catalogType: v1alpha1.CatalogItemTypeQuadlet, application: "quadlet-app"},
+	} {
+		t.Run(fmt.Sprintf("When a %s application has a catalog item ref it should resolve to an image without retaining the ref", tt.appType), func(t *testing.T) {
+			orgID := uuid.New()
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			app := makeCatalogRefApplication(t, tt.appType, tt.application, catalogName, itemName, version)
+			catalogItem := makeCatalogItem(tt.catalogType, artifactUri, version, containerRef)
+
+			mockCatalogSvc := catalogservice.NewMockService(ctrl)
+			mockCatalogSvc.EXPECT().GetCatalogItem(gomock.Any(), orgID, catalogName, itemName).Return(catalogItem, statusOK)
+
+			_, rendered, err := renderApplication(context.Background(), &app, nil, DefaultVmRenderOptions(), nil, orgID, mockCatalogSvc)
+			require.NoError(t, err)
+			require.NotNil(t, rendered)
+
+			var renderedJSON map[string]interface{}
+			renderedBytes, err := json.Marshal(rendered)
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(renderedBytes, &renderedJSON))
+			assert.Equal(t, artifactUri+":"+containerRef, renderedJSON["image"])
+			assert.NotContains(t, renderedJSON, "catalogItemRef")
+		})
+	}
+}
+
+// makeDeviceWithCatalogRef builds a standalone device whose OS spec uses a catalog item ref.
+func makeDeviceWithCatalogRef(name, catalog, item, version string) *domain.Device {
+	return &domain.Device{
+		Metadata: domain.ObjectMeta{Name: lo.ToPtr(name)},
+		Spec: &domain.DeviceSpec{
+			Os: &domain.DeviceOsSpec{
+				CatalogItemRef: &api.CatalogItemRefSpec{
+					Catalog: catalog,
+					Item:    item,
+					Version: version,
+				},
+			},
+		},
+	}
+}
+
+// TestRenderDevice_CatalogItemRef_ResolvesOsImage verifies that RenderDevice
+// resolves a catalog item ref into the correct OS image and passes it to
+// UpdateRenderedDevice.
+func TestRenderDevice_CatalogItemRef_ResolvesOsImage(t *testing.T) {
+	const (
+		deviceName   = "device-with-catalog-ref"
+		catalogName  = "my-catalog"
+		itemName     = "rhel-edge"
+		version      = "9.4.0"
+		containerRef = "v9.4.0"
+		artifactUri  = "quay.io/redhat/rhel-edge"
+	)
+
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	device := makeDeviceWithCatalogRef(deviceName, catalogName, itemName, version)
+	catalogItem := makeCatalogItem(v1alpha1.CatalogItemTypeOS, artifactUri, version, containerRef)
+
+	mockDeviceSvc := deviceservice.NewMockService(ctrl)
+	mockCatalogSvc := catalogservice.NewMockService(ctrl)
+	mockDeviceSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).Return(device, statusOK)
+	mockDeviceSvc.EXPECT().OverwriteDeviceRepositoryRefs(gomock.Any(), orgId, deviceName).Return(statusOK)
+	mockCatalogSvc.EXPECT().GetCatalogItem(gomock.Any(), orgId, catalogName, itemName).Return(catalogItem, statusOK)
+
+	expectedOsImage := artifactUri + ":" + containerRef
+	mockDeviceSvc.EXPECT().UpdateRenderedDevice(gomock.Any(), orgId, deviceName, gomock.Any(), gomock.Any(), gomock.Any(), expectedOsImage, gomock.Any(), gomock.Any(), gomock.Any()).Return(statusOK)
+
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, deviceName)
+	logic := NewDeviceRenderLogic(logrus.New(), mockDeviceSvc, nil, mockCatalogSvc, nil, newTestKVStore(), &config.Config{})
+
+	err := logic.RenderDevice(context.Background(), orgId, event)
+	require.NoError(t, err)
+}
+
+// TestRenderDevice_NoCatalogItemRef_PassesPlainOsImage verifies that when the
+// device has a plain OS image (no catalog item ref), the image value is passed
+// through to UpdateRenderedDevice as-is.
+func TestRenderDevice_NoCatalogItemRef_PassesPlainOsImage(t *testing.T) {
+	const (
+		deviceName = "device-plain-os"
+		plainImage = "quay.io/org/image:v1.0"
+	)
+
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	device := &domain.Device{
+		Metadata: domain.ObjectMeta{Name: lo.ToPtr(deviceName)},
+		Spec: &domain.DeviceSpec{
+			Os: &domain.DeviceOsSpec{
+				Image: plainImage,
+			},
+		},
+	}
+
+	mockDeviceSvc := deviceservice.NewMockService(ctrl)
+	mockDeviceSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).Return(device, statusOK)
+	mockDeviceSvc.EXPECT().OverwriteDeviceRepositoryRefs(gomock.Any(), orgId, deviceName).Return(statusOK)
+
+	mockDeviceSvc.EXPECT().UpdateRenderedDevice(gomock.Any(), orgId, deviceName, gomock.Any(), gomock.Any(), gomock.Any(), plainImage, gomock.Any(), gomock.Any(), gomock.Any()).Return(statusOK)
+
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, deviceName)
+	logic := NewDeviceRenderLogic(logrus.New(), mockDeviceSvc, nil, nil, nil, newTestKVStore(), &config.Config{})
+
+	err := logic.RenderDevice(context.Background(), orgId, event)
+	require.NoError(t, err)
+}
+
+// TestRenderDevice_CatalogRefAndPlainImage_ResolveIndependently verifies that
+// a catalog-item-ref OS spec resolves to the catalog artifact image and a
+// plain-image OS spec passes the image through directly. Reusing the renderer
+// verifies request-specific state does not carry between renders.
+func TestRenderDevice_CatalogRefAndPlainImage_ResolveIndependently(t *testing.T) {
+	const (
+		deviceName   = "device-catalog-to-plain"
+		catalogName  = "my-catalog"
+		itemName     = "rhel-edge"
+		version      = "9.4.0"
+		containerRef = "v9.4.0"
+		artifactUri  = "quay.io/redhat/rhel-edge"
+		plainImage   = "quay.io/org/new-os:v2.0"
+	)
+
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	// Catalog-ref spec: resolves to the catalog artifact image.
+	catalogDevice := makeDeviceWithCatalogRef(deviceName, catalogName, itemName, version)
+	catalogItem := makeCatalogItem(v1alpha1.CatalogItemTypeOS, artifactUri, version, containerRef)
+
+	mockDeviceSvc := deviceservice.NewMockService(ctrl)
+	mockCatalogSvc := catalogservice.NewMockService(ctrl)
+
+	expectedCatalogOsImage := artifactUri + ":" + containerRef
+	mockDeviceSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).Return(catalogDevice, statusOK)
+	mockDeviceSvc.EXPECT().OverwriteDeviceRepositoryRefs(gomock.Any(), orgId, deviceName).Return(statusOK)
+	mockCatalogSvc.EXPECT().GetCatalogItem(gomock.Any(), orgId, catalogName, itemName).Return(catalogItem, statusOK)
+	mockDeviceSvc.EXPECT().UpdateRenderedDevice(gomock.Any(), orgId, deviceName, gomock.Any(), gomock.Any(), gomock.Any(), expectedCatalogOsImage, gomock.Any(), gomock.Any(), gomock.Any()).Return(statusOK)
+
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, deviceName)
+	logic := NewDeviceRenderLogic(logrus.New(), mockDeviceSvc, nil, mockCatalogSvc, nil, newTestKVStore(), &config.Config{})
+	require.NoError(t, logic.RenderDevice(context.Background(), orgId, event))
+
+	// Plain-image spec: passes the image through directly.
+	plainDevice := &domain.Device{
+		Metadata: domain.ObjectMeta{Name: lo.ToPtr(deviceName)},
+		Spec: &domain.DeviceSpec{
+			Os: &domain.DeviceOsSpec{
+				Image: plainImage,
+			},
+		},
+	}
+
+	gomock.InOrder(
+		mockDeviceSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).Return(plainDevice, statusOK),
+		mockDeviceSvc.EXPECT().OverwriteDeviceRepositoryRefs(gomock.Any(), orgId, deviceName).Return(statusOK),
+		mockDeviceSvc.EXPECT().UpdateRenderedDevice(gomock.Any(), orgId, deviceName, gomock.Any(), gomock.Any(), gomock.Any(), plainImage, gomock.Any(), gomock.Any(), gomock.Any()).Return(statusOK),
+	)
+
+	event2 := createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, deviceName)
+	require.NoError(t, logic.RenderDevice(context.Background(), orgId, event2))
+}
+
+// TestRenderDevice_CatalogItemRef_WrongType verifies that a catalog item ref
+// pointing to a non-OS catalog item produces an error.
+func TestRenderDevice_CatalogItemRef_WrongType(t *testing.T) {
+	const (
+		deviceName  = "device-wrong-type"
+		catalogName = "my-catalog"
+		itemName    = "my-app"
+		version     = "1.0.0"
+	)
+
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	device := makeDeviceWithCatalogRef(deviceName, catalogName, itemName, version)
+	catalogItem := makeCatalogItem(v1alpha1.CatalogItemTypeContainer, "quay.io/app", version, "v1.0.0")
+
+	mockDeviceSvc := deviceservice.NewMockService(ctrl)
+	mockCatalogSvc := catalogservice.NewMockService(ctrl)
+	mockDeviceSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).Return(device, statusOK)
+	mockDeviceSvc.EXPECT().OverwriteDeviceRepositoryRefs(gomock.Any(), orgId, deviceName).Return(statusOK)
+	mockCatalogSvc.EXPECT().GetCatalogItem(gomock.Any(), orgId, catalogName, itemName).Return(catalogItem, statusOK)
+	mockDeviceSvc.EXPECT().SetDeviceServiceConditions(gomock.Any(), orgId, deviceName, gomock.Any()).Return(statusOK)
+	mockDeviceSvc.EXPECT().UpdateServerSideDeviceStatus(gomock.Any(), orgId, deviceName).Return(nil)
+
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, deviceName)
+	logic := NewDeviceRenderLogic(logrus.New(), mockDeviceSvc, nil, mockCatalogSvc, nil, newTestKVStore(), &config.Config{})
+
+	err := logic.RenderDevice(context.Background(), orgId, event)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot use catalog item of type")
+}
+
+// TestRenderDevice_CatalogItemRef_UnknownVersion verifies that referencing a
+// version that does not exist in the catalog item produces an error.
+func TestRenderDevice_CatalogItemRef_UnknownVersion(t *testing.T) {
+	const (
+		deviceName  = "device-unknown-version"
+		catalogName = "my-catalog"
+		itemName    = "rhel-edge"
+	)
+
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	device := makeDeviceWithCatalogRef(deviceName, catalogName, itemName, "99.0.0")
+	catalogItem := makeCatalogItem(v1alpha1.CatalogItemTypeOS, "quay.io/redhat/rhel-edge", "9.4.0", "v9.4.0")
+
+	mockDeviceSvc := deviceservice.NewMockService(ctrl)
+	mockCatalogSvc := catalogservice.NewMockService(ctrl)
+	mockDeviceSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).Return(device, statusOK)
+	mockDeviceSvc.EXPECT().OverwriteDeviceRepositoryRefs(gomock.Any(), orgId, deviceName).Return(statusOK)
+	mockCatalogSvc.EXPECT().GetCatalogItem(gomock.Any(), orgId, catalogName, itemName).Return(catalogItem, statusOK)
+	mockDeviceSvc.EXPECT().SetDeviceServiceConditions(gomock.Any(), orgId, deviceName, gomock.Any()).Return(statusOK)
+	mockDeviceSvc.EXPECT().UpdateServerSideDeviceStatus(gomock.Any(), orgId, deviceName).Return(nil)
+
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, deviceName)
+	logic := NewDeviceRenderLogic(logrus.New(), mockDeviceSvc, nil, mockCatalogSvc, nil, newTestKVStore(), &config.Config{})
+
+	err := logic.RenderDevice(context.Background(), orgId, event)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown version 99.0.0")
+}
+
+func makeComposeAppWithCatalogRefVolume(t *testing.T, appName, catalog, item, version string) domain.ApplicationProviderSpec {
+	t.Helper()
+	vol := makeCatalogRefImageVolume(t, "data-vol", catalog, item, version)
+	composeApp := domain.ComposeApplication{
+		AppType: domain.AppTypeCompose,
+		Name:    lo.ToPtr(appName),
+		Volumes: &[]domain.ApplicationVolume{vol},
+	}
+	require.NoError(t, composeApp.FromImageApplicationProviderSpec(domain.ImageApplicationProviderSpec{Image: "quay.io/test/compose-app:v1"}))
+	var app domain.ApplicationProviderSpec
+	require.NoError(t, app.FromComposeApplication(composeApp))
+	return app
+}
+
+func makeCatalogRefImageVolume(t *testing.T, name, catalog, item, version string) domain.ApplicationVolume {
+	t.Helper()
+	var vol domain.ApplicationVolume
+	vol.Name = name
+	require.NoError(t, vol.FromImageVolumeProviderSpec(domain.ImageVolumeProviderSpec{
+		Image: domain.ImageVolumeSource{
+			CatalogItemRef: &api.CatalogItemRefSpec{
+				Catalog: catalog,
+				Item:    item,
+				Version: version,
+			},
+			PullPolicy: lo.ToPtr(api.PullIfNotPresent),
+		},
+	}))
+	return vol
+}
+
+func TestRenderApplication_VolumeCatalogRef_ResolvesToImage(t *testing.T) {
+	t.Run("When a compose app volume has a catalog item ref it should resolve to the image reference", func(t *testing.T) {
+		const (
+			catalogName  = "data-catalog"
+			itemName     = "config-data"
+			version      = "2.0.0"
+			artifactUri  = "quay.io/data/config"
+			containerRef = "v2.0.0"
+		)
+
+		orgId := uuid.New()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		app := makeComposeAppWithCatalogRefVolume(t, "my-compose-app", catalogName, itemName, version)
+		catalogItem := makeCatalogItem(v1alpha1.CatalogItemTypeData, artifactUri, version, containerRef)
+
+		mockCatalogSvc := catalogservice.NewMockService(ctrl)
+		mockCatalogSvc.EXPECT().GetCatalogItem(gomock.Any(), orgId, catalogName, itemName).Return(catalogItem, statusOK)
+
+		name, rendered, err := renderApplication(context.Background(), &app, nil, DefaultVmRenderOptions(), nil, orgId, mockCatalogSvc)
+		require.NoError(t, err)
+		require.NotNil(t, name)
+		assert.Equal(t, "my-compose-app", *name)
+		require.NotNil(t, rendered)
+
+		compose, err := rendered.AsComposeApplication()
+		require.NoError(t, err)
+		require.NotNil(t, compose.Volumes)
+		require.Len(t, *compose.Volumes, 1)
+
+		vol := (*compose.Volumes)[0]
+		imgProvider, err := vol.AsImageVolumeProviderSpec()
+		require.NoError(t, err)
+		assert.Equal(t, artifactUri+":"+containerRef, imgProvider.Image.Reference)
+		assert.Nil(t, imgProvider.Image.CatalogItemRef)
+	})
+}
+
+func TestRenderApplication_VolumePlainReference_PassesThrough(t *testing.T) {
+	t.Run("When a compose app volume has a plain reference it should pass through unchanged", func(t *testing.T) {
+		const imageRef = "quay.io/test/data:v1"
+
+		vol := domain.ApplicationVolume{}
+		vol.Name = "data-vol"
+		require.NoError(t, vol.FromImageVolumeProviderSpec(domain.ImageVolumeProviderSpec{
+			Image: domain.ImageVolumeSource{
+				Reference: imageRef,
+			},
+		}))
+
+		composeApp := domain.ComposeApplication{
+			AppType: domain.AppTypeCompose,
+			Name:    lo.ToPtr("my-app"),
+			Volumes: &[]domain.ApplicationVolume{vol},
+		}
+		require.NoError(t, composeApp.FromImageApplicationProviderSpec(domain.ImageApplicationProviderSpec{Image: "quay.io/test/app:v1"}))
+		var app domain.ApplicationProviderSpec
+		require.NoError(t, app.FromComposeApplication(composeApp))
+
+		name, rendered, err := renderApplication(context.Background(), &app, nil, DefaultVmRenderOptions(), nil, uuid.New(), nil)
+		require.NoError(t, err)
+		require.NotNil(t, name)
+		require.NotNil(t, rendered)
+
+		compose, err := rendered.AsComposeApplication()
+		require.NoError(t, err)
+		require.NotNil(t, compose.Volumes)
+		require.Len(t, *compose.Volumes, 1)
+
+		imgProvider, err := (*compose.Volumes)[0].AsImageVolumeProviderSpec()
+		require.NoError(t, err)
+		assert.Equal(t, imageRef, imgProvider.Image.Reference)
+	})
+}
+
+func TestRenderApplication_VolumeCatalogRef_WrongType(t *testing.T) {
+	t.Run("When a volume catalog item ref has wrong type it should return an error", func(t *testing.T) {
+		const (
+			catalogName = "wrong-type-catalog"
+			itemName    = "wrong-item"
+			version     = "1.0.0"
+		)
+
+		orgId := uuid.New()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		app := makeComposeAppWithCatalogRefVolume(t, "my-app", catalogName, itemName, version)
+		catalogItem := makeCatalogItem(v1alpha1.CatalogItemTypeContainer, "quay.io/test/image", version, "v1.0.0")
+
+		mockCatalogSvc := catalogservice.NewMockService(ctrl)
+		mockCatalogSvc.EXPECT().GetCatalogItem(gomock.Any(), orgId, catalogName, itemName).Return(catalogItem, statusOK)
+
+		_, _, err := renderApplication(context.Background(), &app, nil, DefaultVmRenderOptions(), nil, orgId, mockCatalogSvc)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot use catalog item of type")
+	})
+}
+
+func TestRenderApplication_VolumeCatalogRef_UnknownVersion(t *testing.T) {
+	t.Run("When a volume catalog item ref has unknown version it should return an error", func(t *testing.T) {
+		const (
+			catalogName = "version-catalog"
+			itemName    = "my-item"
+		)
+
+		orgId := uuid.New()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		app := makeComposeAppWithCatalogRefVolume(t, "my-app", catalogName, itemName, "99.0.0")
+		catalogItem := makeCatalogItem(v1alpha1.CatalogItemTypeData, "quay.io/data/item", "1.0.0", "v1.0.0")
+
+		mockCatalogSvc := catalogservice.NewMockService(ctrl)
+		mockCatalogSvc.EXPECT().GetCatalogItem(gomock.Any(), orgId, catalogName, itemName).Return(catalogItem, statusOK)
+
+		_, _, err := renderApplication(context.Background(), &app, nil, DefaultVmRenderOptions(), nil, orgId, mockCatalogSvc)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown version 99.0.0")
+	})
+}
+
+func TestRenderApplication_ImageMountVolumeCatalogRef_ResolvesToImage(t *testing.T) {
+	t.Run("When a container app image-mount volume has a catalog item ref it should resolve to the image reference", func(t *testing.T) {
+		const (
+			catalogName  = "data-catalog"
+			itemName     = "mount-data"
+			version      = "3.0.0"
+			artifactUri  = "quay.io/data/mount-config"
+			containerRef = "v3.0.0"
+		)
+
+		orgId := uuid.New()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		var vol domain.ApplicationVolume
+		vol.Name = "mount-vol"
+		require.NoError(t, vol.FromImageMountVolumeProviderSpec(domain.ImageMountVolumeProviderSpec{
+			Image: domain.ImageVolumeSource{
+				CatalogItemRef: &api.CatalogItemRefSpec{
+					Catalog: catalogName,
+					Item:    itemName,
+					Version: version,
+				},
+			},
+			Mount: domain.VolumeMount{Path: "/data"},
+		}))
+
+		containerApp := domain.ContainerApplication{
+			AppType: domain.AppTypeContainer,
+			Name:    lo.ToPtr("my-container-app"),
+			Volumes: &[]domain.ApplicationVolume{vol},
+		}
+		require.NoError(t, containerApp.FromImageApplicationProviderSpec(domain.ImageApplicationProviderSpec{Image: "quay.io/test/app:v1"}))
+		var app domain.ApplicationProviderSpec
+		require.NoError(t, app.FromContainerApplication(containerApp))
+
+		catalogItem := makeCatalogItem(v1alpha1.CatalogItemTypeData, artifactUri, version, containerRef)
+
+		mockCatalogSvc := catalogservice.NewMockService(ctrl)
+		mockCatalogSvc.EXPECT().GetCatalogItem(gomock.Any(), orgId, catalogName, itemName).Return(catalogItem, statusOK)
+
+		name, rendered, err := renderApplication(context.Background(), &app, nil, DefaultVmRenderOptions(), nil, orgId, mockCatalogSvc)
+		require.NoError(t, err)
+		require.NotNil(t, name)
+		assert.Equal(t, "my-container-app", *name)
+		require.NotNil(t, rendered)
+
+		container, err := rendered.AsContainerApplication()
+		require.NoError(t, err)
+		require.NotNil(t, container.Volumes)
+		require.Len(t, *container.Volumes, 1)
+
+		vol = (*container.Volumes)[0]
+		imgMountProvider, err := vol.AsImageMountVolumeProviderSpec()
+		require.NoError(t, err)
+		assert.Equal(t, artifactUri+":"+containerRef, imgMountProvider.Image.Reference)
+		assert.Nil(t, imgMountProvider.Image.CatalogItemRef)
+		assert.Equal(t, "/data", imgMountProvider.Mount.Path)
+	})
+}
+
+func TestRenderSpec_WhenCatalogItemRefItShouldResolveOsImageWithoutPersisting(t *testing.T) {
+	const (
+		catalogName  = "my-catalog"
+		itemName     = "rhel-edge"
+		version      = "9.4.0"
+		containerRef = "v9.4.0"
+		artifactUri  = "quay.io/redhat/rhel-edge"
+	)
+
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	catalogItem := makeCatalogItem(v1alpha1.CatalogItemTypeOS, artifactUri, version, containerRef)
+	mockCatalogSvc := catalogservice.NewMockService(ctrl)
+	mockCatalogSvc.EXPECT().GetCatalogItem(gomock.Any(), orgId, catalogName, itemName).Return(catalogItem, statusOK)
+
+	logic := NewDeviceRenderLogic(logrus.New(), nil, nil, mockCatalogSvc, nil, newTestKVStore(), &config.Config{})
+
+	spec := &domain.DeviceSpec{
+		Os: &domain.DeviceOsSpec{
+			CatalogItemRef: &api.CatalogItemRefSpec{
+				Catalog: catalogName,
+				Item:    itemName,
+				Version: version,
+			},
+		},
+	}
+
+	rendered, err := logic.RenderSpec(context.Background(), orgId, spec)
+	require.NoError(t, err)
+	assert.Equal(t, artifactUri+":"+containerRef, rendered.OsImage)
+}
+
+func TestRenderSpec_WhenHTTPConfigItShouldIncludeFetchedBodyWithoutPersisting(t *testing.T) {
+	const (
+		repoName = "http-repo"
+		suffix   = "/os.json"
+		filePath = "/etc/os.json"
+		body     = `{"image":"quay.io/os/edge:latest"}`
+		fleet    = "my-fleet"
+		tv       = "tv-1"
+	)
+
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	repo := makeHTTPRepository(repoName, srv.URL)
+	mockRepoSvc := repositoryservice.NewMockService(ctrl)
+	mockRepoSvc.EXPECT().GetRepository(gomock.Any(), orgId, repoName).Return(repo, statusOK)
+
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, "device-1")
+	logic := newFleetOwnedLogic(mockRepoSvc, nil, newTestKVStore(), orgId, event, fleet, tv)
+
+	item := makeHTTPConfigItem("http-cfg", repoName, suffix, filePath)
+	spec := &domain.DeviceSpec{
+		Os:     &domain.DeviceOsSpec{Image: "quay.io/os/base:latest"},
+		Config: &[]domain.ConfigProviderSpec{item},
+	}
+
+	rendered, err := logic.renderSpec(context.Background(), spec)
+	require.NoError(t, err)
+	assert.Equal(t, "quay.io/os/base:latest", rendered.OsImage)
+	assert.Contains(t, string(rendered.Config), base64.StdEncoding.EncodeToString([]byte(body)))
+}
+
+func TestRenderDevice_SucceededGenerationSetsDeltaImageAndDeltaSize(t *testing.T) {
+	const deviceName = "device-delta-hint"
+	src := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tgt := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	osImage := "quay.io/acme/os@" + tgt
+	deltaRef := "quay.io/acme/os@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	size := int64(47185920)
+
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	device := &domain.Device{
+		Metadata: domain.ObjectMeta{Name: lo.ToPtr(deviceName)},
+		Spec: &domain.DeviceSpec{
+			Os: &domain.DeviceOsSpec{Image: osImage},
+		},
+		Status: &domain.DeviceStatus{
+			Os: domain.DeviceOsStatus{ImageDigest: src},
+		},
+	}
+
+	mockDeviceSvc := deviceservice.NewMockService(ctrl)
+	mockDeviceSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).Return(device, statusOK)
+	mockDeviceSvc.EXPECT().OverwriteDeviceRepositoryRefs(gomock.Any(), orgId, deviceName).Return(statusOK)
+	mockDeviceSvc.EXPECT().UpdateRenderedDevice(
+		gomock.Any(), orgId, deviceName, gomock.Any(), gomock.Any(), gomock.Any(), osImage, gomock.Any(), gomock.Any(), gomock.Any(),
+	).DoAndReturn(func(_ context.Context, _ uuid.UUID, _ string, _, _, _, _ string, _ []domain.DependencySyncConfigRefStatus, _ bool, hints *deviceservice.RenderedOSHints) domain.Status {
+		require.NotNil(t, hints)
+		require.Equal(t, deltaRef, lo.FromPtr(hints.DeltaImage))
+		require.Equal(t, "45 MiB", lo.FromPtr(hints.DeltaSize))
+		return statusOK
+	})
+
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, deviceName)
+	kv := newTestKVStore()
+	_, err := oci.CachedImageDigestPair(context.Background(), logrus.New(), kv, orgId, osImage, src, nil, 15*time.Minute, nil, func(context.Context, string) (oci.ImageDigestPair, error) {
+		return oci.ImageDigestPair{SourceDigest: src, TargetDigest: tgt}, nil
+	})
+	require.NoError(t, err)
+	logic, err := newDeviceRenderLogicWithDeltaLookup(logrus.New(), mockDeviceSvc, nil, nil, nil, kv, &stubGenerationLookup{
+		gen: &deltamodel.DeltaGeneration{
+			Status:    deltamodel.DeltaGenerationSucceeded,
+			DeltaRef:  &deltaRef,
+			SizeBytes: &size,
+		},
+	}, &config.Config{})
+	require.NoError(t, err)
+
+	require.NoError(t, logic.RenderDevice(context.Background(), orgId, event))
+}
+
+func TestDeviceRender_NonDeviceKind(t *testing.T) {
+	orgId := uuid.New()
+	event := createTestEvent(domain.FleetKind, domain.EventReasonResourceUpdated, "some-fleet")
+
+	err := deviceRender(context.Background(), orgId, event, nil, logrus.New())
+	require.NoError(t, err)
+}
+
+func TestDeviceRender_DetachedContextSurvivesParentDeadline(t *testing.T) {
+	const deviceName = "multi-vm-device"
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	device := &domain.Device{
+		Metadata: domain.ObjectMeta{Name: lo.ToPtr(deviceName)},
+		Spec:     &domain.DeviceSpec{},
+	}
+	mockSvc := deviceservice.NewMockService(ctrl)
+	mockSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).
+		DoAndReturn(func(ctx context.Context, _ uuid.UUID, _ string) (*domain.Device, domain.Status) {
+			assert.NoError(t, ctx.Err())
+			return device, statusOK
+		})
+	mockSvc.EXPECT().OverwriteDeviceRepositoryRefs(gomock.Any(), orgId, deviceName).Return(statusOK)
+	mockSvc.EXPECT().UpdateRenderedDevice(gomock.Any(), orgId, deviceName, gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(statusOK)
+
+	expiredCtx, cancel := context.WithTimeout(context.Background(), 0)
+	defer cancel()
+	<-expiredCtx.Done()
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, deviceName)
+	renderer, err := newDeviceRenderLogicWithDeltaLookup(logrus.New(), mockSvc, nil, nil, nil, newTestKVStore(), &stubGenerationLookup{}, &config.Config{})
+	require.NoError(t, err)
+	err = deviceRender(expiredCtx, orgId, event, renderer, logrus.New())
+	require.NoError(t, err)
+}
+
+func TestDeviceRender_ExplicitCancelPropagates(t *testing.T) {
+	const deviceName = "cancel-device"
+	orgId := uuid.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	device := &domain.Device{Metadata: domain.ObjectMeta{Name: lo.ToPtr(deviceName)}, Spec: &domain.DeviceSpec{}}
+	mockSvc := deviceservice.NewMockService(ctrl)
+	mockSvc.EXPECT().GetDevice(gomock.Any(), orgId, deviceName).
+		DoAndReturn(func(ctx context.Context, _ uuid.UUID, _ string) (*domain.Device, domain.Status) {
+			parentCancel()
+			<-ctx.Done()
+			return device, statusOK
+		})
+	mockSvc.EXPECT().OverwriteDeviceRepositoryRefs(gomock.Any(), orgId, deviceName).Return(statusOK).AnyTimes()
+	mockSvc.EXPECT().UpdateRenderedDevice(gomock.Any(), orgId, deviceName, gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(statusOK).AnyTimes()
+
+	event := createTestEvent(domain.DeviceKind, domain.EventReasonResourceUpdated, deviceName)
+	renderer, err := newDeviceRenderLogicWithDeltaLookup(logrus.New(), mockSvc, nil, nil, nil, newTestKVStore(), &stubGenerationLookup{}, &config.Config{})
+	require.NoError(t, err)
+	done := make(chan struct{})
+	go func() {
+		_ = deviceRender(parentCtx, orgId, event, renderer, logrus.New())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deviceRender did not terminate promptly after explicit parent cancellation")
+	}
+}
+
+func TestRenderDevice_DeltaCompletionGeneration(t *testing.T) {
+	for _, tt := range []struct {
+		name              string
+		currentGeneration *int64
+		eventGeneration   string
+		wantRender        bool
+	}{
+		{name: "When a newer generation is preparing it should drop the old completion", currentGeneration: lo.ToPtr(int64(8)), eventGeneration: "7"},
+		{name: "When the completion matches it should render the current generation", currentGeneration: lo.ToPtr(int64(7)), eventGeneration: "7", wantRender: true},
+		{name: "When the completion has no generation it should not resume rendering", currentGeneration: lo.ToPtr(int64(7))},
+		{name: "When the completion generation is invalid it should not resume rendering", currentGeneration: lo.ToPtr(int64(7)), eventGeneration: "invalid"},
+		{name: "When the device has no generation it should not resume rendering", eventGeneration: "7"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			const name = "delta-device"
+			const image = "quay.io/org/os:v2"
+			orgID := uuid.New()
+			ctrl := gomock.NewController(t)
+			device := &domain.Device{
+				Metadata: domain.ObjectMeta{Name: lo.ToPtr(name), Generation: tt.currentGeneration},
+				Spec:     &domain.DeviceSpec{Os: &domain.DeviceOsSpec{Image: image}},
+				Status:   &domain.DeviceStatus{},
+			}
+			if !tt.wantRender {
+				domain.SetStatusCondition(&device.Status.Conditions, domain.Condition{Type: domain.ConditionTypeDeviceDeltaPreparing, Status: domain.ConditionStatusTrue})
+			}
+			devices := deviceservice.NewMockService(ctrl)
+			devices.EXPECT().GetDevice(gomock.Any(), orgID, name).Return(device, statusOK)
+			if tt.wantRender {
+				devices.EXPECT().OverwriteDeviceRepositoryRefs(gomock.Any(), orgID, name).Return(statusOK)
+				devices.EXPECT().UpdateRenderedDevice(gomock.Any(), orgID, name, gomock.Any(), gomock.Any(), gomock.Any(), image, gomock.Any(), gomock.Any(), gomock.Any()).Return(statusOK)
+			}
+			event := createTestEvent(domain.DeviceKind, domain.EventReasonDeltaGenerationCompleted, name)
+			if tt.eventGeneration != "" {
+				event.Metadata.Annotations = &map[string]string{domain.EventAnnotationDeltaGeneration: tt.eventGeneration}
+			}
+			logic := NewDeviceRenderLogic(logrus.New(), devices, nil, nil, nil, newTestKVStore(), &config.Config{})
+			require.NoError(t, logic.RenderDevice(context.Background(), orgID, event))
+			if !tt.wantRender {
+				require.True(t, domain.IsStatusConditionTrue(device.Status.Conditions, domain.ConditionTypeDeviceDeltaPreparing))
+			}
+		})
+	}
+}

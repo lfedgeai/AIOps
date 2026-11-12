@@ -1,0 +1,616 @@
+package applications
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"sort"
+	"strconv"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/agent/device/applications/lifecycle"
+	"github.com/flightctl/flightctl/internal/agent/device/applications/provider"
+	"github.com/flightctl/flightctl/internal/agent/device/deltastatus"
+	"github.com/flightctl/flightctl/internal/agent/device/dependency"
+	"github.com/flightctl/flightctl/internal/agent/device/status"
+	"github.com/flightctl/flightctl/internal/agent/shutdown"
+)
+
+const (
+	AppTypeLabel            = "appType"
+	DefaultImageManifestDir = "/"
+)
+
+type StatusType string
+
+const (
+	StatusCreate    StatusType = "create"
+	StatusInit      StatusType = "init"
+	StatusRunning   StatusType = "start"
+	StatusStop      StatusType = "stop"
+	StatusDie       StatusType = "die" // docker only
+	StatusDied      StatusType = "died"
+	StatusRemove    StatusType = "remove"
+	StatusExited    StatusType = "exited"
+	StatusUnhealthy StatusType = "unhealthy"
+)
+
+func (c StatusType) String() string {
+	return string(c)
+}
+
+type Monitor interface {
+	Run(ctx context.Context)
+	Status() []v1beta1.DeviceApplicationStatus
+}
+
+// UpdateOpt configures application update behavior.
+type UpdateOpt func(*updateOpts)
+
+type updateOpts struct {
+	osUpdatePending bool
+}
+
+// WithOSUpdatePending indicates an OS update is pending.
+func WithOSUpdatePending(pending bool) UpdateOpt {
+	return func(o *updateOpts) {
+		o.osUpdatePending = pending
+	}
+}
+
+func applyUpdateOpts(opts ...UpdateOpt) updateOpts {
+	var o updateOpts
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+// Manager coordinates the lifecycle of an application by interacting with its Provider
+// and ensuring it is properly handed off to the appropriate runtime Monitor.
+type Manager interface {
+	// Ensure installs and starts the application on the device using the given provider.
+	Ensure(ctx context.Context, provider provider.Provider) error
+	// Remove uninstalls the application from the device using the given provider.
+	Remove(ctx context.Context, provider provider.Provider) error
+	// Update replaces the current application with a new version provided by the given provider.
+	Update(ctx context.Context, provider provider.Provider) error
+	// BeforeUpdate is called prior to installing an application to ensure the
+	// application is valid and dependencies are met.
+	BeforeUpdate(ctx context.Context, desired *v1beta1.DeviceSpec, opts ...UpdateOpt) error
+	// AfterUpdate is called after the application has been validated and is ready to be executed.
+	// It executes queued install/remove/update actions and reconciles stop/start/restart lifecycle.
+	AfterUpdate(ctx context.Context) error
+	// Shutdown closes the manager according to the corresponding shutdown state
+	Shutdown(ctx context.Context, state shutdown.State) error
+
+	dependency.OCICollector
+	status.Exporter
+}
+
+type Application interface {
+	// ID is an internal identifier for tracking the application this may or may
+	// not be the name provided by the user. How this ID is generated is
+	// determined on the application type level.
+	ID() string
+	// Name is the name of the application as defined by the user. If the name
+	// is not populated by the user a name will be generated based on the
+	// application type.
+	Name() string
+	// Type returns the application type.
+	AppType() v1beta1.AppType
+	// User is the username that the app runs as.
+	User() v1beta1.Username
+	// Path returns the path to the application on the device.
+	Path() string
+	// Workload returns a workload by name.
+	Workload(name string) (*Workload, bool)
+	// Workloads returns a copy of all workloads.
+	Workloads() []Workload
+	// AddWorkload adds a workload to the application.
+	AddWorkload(Workload *Workload)
+	// RemoveWorkload removes a workload from the application.
+	RemoveWorkload(name string) bool
+	// ClearWorkloads removes all workloads from the application.
+	ClearWorkloads()
+	// CopyWorkloadsFrom copies workloads from another application.
+	CopyWorkloadsFrom(other Application)
+	// IsEmbedded returns true if the application is embedded.
+	IsEmbedded() bool
+	// Volume is a volume manager.
+	Volume() provider.VolumeManager
+	// Status reports the status of an application using the name as defined by
+	// the user. In the case there is no name provided it will be populated
+	// according to the rules of the application type.
+	Status() (*v1beta1.DeviceApplicationStatus, v1beta1.DeviceApplicationsSummaryStatus, error)
+	// ImageSnapshot returns the complete workload image observation for this installed application.
+	ImageSnapshot() ImageSnapshot
+	// SetDesiredState records the operator-intended lifecycle state for this application.
+	// Called after a successful stop/start/restart to inform Status() of intent.
+	SetDesiredState(state v1beta1.ApplicationDesiredState)
+	// DesiredState returns the operator-intended lifecycle state for this application.
+	DesiredState() v1beta1.ApplicationDesiredState
+	// SetRestartGeneration updates the restart generation counter (called on each spec sync).
+	SetRestartGeneration(gen int)
+	// RestartGeneration returns the restart generation counter from the desired spec.
+	RestartGeneration() int
+	// ActionSpec returns the type-specific action configuration for this application.
+	ActionSpec() lifecycle.ActionSpec
+}
+
+// Workload represents an application workload tracked by a Monitor.
+type Workload struct {
+	ID          string
+	Images      []WorkloadImage // Image references reported for this workload.
+	Name        string
+	ServiceName string // Compose service name associated with this workload.
+	Status      StatusType
+	Restarts    int
+	// RequiresHealth is set when a VM workload has emitted health_status events.
+	// Gated workloads stay Degraded on start/starting until healthy.
+	RequiresHealth bool
+
+	// ImageNotRequired records runtime evidence of an infra container using
+	// a root filesystem without an image. Missing image evidence stays unknown.
+	ImageNotRequired bool
+}
+
+// WorkloadImage describes an image used by a workload and its content digest
+// when the runtime can resolve one.
+type WorkloadImage struct {
+	Image  string
+	Digest string
+}
+
+type ImageSnapshot struct {
+	ID       string
+	Lifetime string
+	Images   []deltastatus.ApplicationImage
+	Volumes  []ImageVolumeSnapshot
+	Complete bool
+}
+
+// ImageVolumeSnapshot is the expected identity of one image-backed volume in
+// the installed application. Runtime collection supplies its observed digest.
+type ImageVolumeSnapshot struct {
+	ID        string
+	Reference string
+	OCIType   string
+	Available bool
+}
+
+type application struct {
+	requiredImages          []string
+	imageCollectionComplete bool
+	id                      string
+	path                    string
+	imageRef                string
+	imageDigest             string
+	imageOCIType            string
+	lifetime                string
+	parentOutcomeRequired   bool
+	workloads               []Workload
+	volume                  provider.VolumeManager
+	status                  *v1beta1.DeviceApplicationStatus
+	actionSpec              lifecycle.ActionSpec
+	desiredState            v1beta1.ApplicationDesiredState
+	restartGeneration       int
+}
+
+// NewApplication creates a new application from an application provider.
+func NewApplication(p provider.Provider) *application {
+	spec := p.Spec()
+	appType := spec.AppType
+	// The server renders VM apps as QuadletApplications and marks them with the
+	// flightctl.io/workload-type=vm annotation. Restore the original AppTypeVm so
+	// that the console resolver can identify VM apps by their true type.
+	if spec.QuadletApp != nil && spec.QuadletApp.Annotations != nil {
+		if (*spec.QuadletApp.Annotations)[v1beta1.AnnotationWorkloadType] == v1beta1.WorkloadTypeVM {
+			appType = v1beta1.AppTypeVm
+		}
+	}
+	return &application{
+		id:                    spec.ID,
+		path:                  spec.Path,
+		imageRef:              spec.Image,
+		imageDigest:           spec.ImageDigest,
+		imageOCIType:          spec.ImageOCIType,
+		lifetime:              spec.Lifetime,
+		parentOutcomeRequired: spec.Image != "" && spec.AppType == v1beta1.AppTypeQuadlet,
+		status: &v1beta1.DeviceApplicationStatus{
+			Name:     spec.Name,
+			Status:   v1beta1.ApplicationStatusUnknown,
+			Embedded: spec.Embedded,
+			AppType:  appType,
+			RunAs:    spec.User,
+		},
+		volume:            spec.Volume,
+		desiredState:      spec.DesiredState,
+		restartGeneration: spec.RestartGeneration,
+	}
+}
+
+// NewHelmApplication creates a new application with Helm-specific configuration.
+func NewHelmApplication(p provider.Provider) *application {
+	spec := p.Spec()
+
+	var namespace string
+	var valuesFiles []string
+	var providerValuesPath string
+
+	if spec.HelmApp != nil {
+		if spec.HelmApp.Namespace != nil {
+			namespace = *spec.HelmApp.Namespace
+		}
+		if spec.HelmApp.ValuesFiles != nil {
+			valuesFiles = slices.Clone(*spec.HelmApp.ValuesFiles)
+		}
+		if spec.HelmApp.Values != nil && len(*spec.HelmApp.Values) > 0 {
+			providerValuesPath = provider.GetHelmProviderValuesPath(spec.Name)
+		}
+	}
+
+	app := NewApplication(p)
+	app.actionSpec = lifecycle.HelmSpec{
+		Namespace:          namespace,
+		ValuesFiles:        valuesFiles,
+		ProviderValuesPath: providerValuesPath,
+	}
+	return app
+}
+
+// ImageSnapshot preserves every workload's identity, including unknown replicas.
+// Callers collect it while holding the owning monitor lock.
+func (a *application) ImageSnapshot() ImageSnapshot {
+	snapshot := ImageSnapshot{
+		ID:       a.id,
+		Lifetime: a.lifetime,
+		Complete: len(a.workloads) > 0 && a.imageCollectionComplete,
+	}
+	observed := make(map[string]bool)
+	ociType := dependency.OCITypePodmanImage
+	if a.AppType() == v1beta1.AppTypeHelm {
+		ociType = dependency.OCITypeCRIImage
+	}
+	for _, workload := range a.workloads {
+		if len(workload.Images) == 0 && !workload.ImageNotRequired {
+			snapshot.Complete = false
+		}
+		for _, image := range workload.Images {
+			if image.Image == "" || image.Digest == "" {
+				snapshot.Complete = false
+			}
+			observed[image.Image] = true
+			snapshot.Images = append(snapshot.Images, deltastatus.ApplicationImage{Image: image.Image, Owner: string(a.User().WithDefault(v1beta1.RootUsername)), OCIType: string(ociType), Digest: image.Digest})
+		}
+	}
+	if a.parentOutcomeRequired {
+		if a.imageDigest == "" || a.imageOCIType == "" {
+			snapshot.Complete = false
+		}
+		snapshot.Images = append(snapshot.Images, deltastatus.ApplicationImage{
+			Image:   a.imageRef,
+			Owner:   string(a.User().WithDefault(v1beta1.RootUsername)),
+			OCIType: a.imageOCIType,
+			Digest:  a.imageDigest,
+		})
+	}
+	if a.volume != nil {
+		for _, volume := range a.volume.List() {
+			snapshot.Volumes = append(snapshot.Volumes, ImageVolumeSnapshot{
+				ID:        volume.ID,
+				Reference: volume.Reference,
+				OCIType:   string(volume.OCIType),
+				Available: volume.Available,
+			})
+			// The manager verifies these volume identities before selecting status.
+			// A volume reference is not required to also run as a workload image.
+			if volume.Available {
+				observed[volume.Reference] = true
+			}
+			if !volume.Available || volume.ID == "" || volume.Reference == "" || volume.OCIType == "" {
+				snapshot.Complete = false
+			}
+		}
+	}
+	for _, image := range a.requiredImages {
+		if !observed[image] {
+			snapshot.Complete = false
+		}
+	}
+
+	return snapshot
+}
+
+func (a *application) ID() string {
+	return a.id
+}
+
+func (a *application) Name() string {
+	return a.status.Name
+}
+
+func (a *application) AppType() v1beta1.AppType {
+	return a.status.AppType
+}
+
+func (a *application) User() v1beta1.Username {
+	return a.status.RunAs
+}
+
+func (a *application) Workload(name string) (*Workload, bool) {
+	for i := range a.workloads {
+		if a.workloads[i].Name == name {
+			return &a.workloads[i], true
+		}
+	}
+	return nil, false
+}
+
+func (a *application) AddWorkload(workload *Workload) {
+	workloadCopy := *workload
+	workloadCopy.Images = slices.Clone(workload.Images)
+	a.workloads = append(a.workloads, workloadCopy)
+}
+
+func (a *application) RemoveWorkload(name string) bool {
+	for i, workload := range a.workloads {
+		if workload.Name == name {
+			a.workloads = append(a.workloads[:i], a.workloads[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+func (a *application) Workloads() []Workload {
+	result := make([]Workload, len(a.workloads))
+	for i := range a.workloads {
+		result[i] = a.workloads[i]
+		result[i].Images = slices.Clone(a.workloads[i].Images)
+	}
+	return result
+}
+
+func (a *application) ClearWorkloads() {
+	a.workloads = nil
+}
+
+func (a *application) CopyWorkloadsFrom(other Application) {
+	a.workloads = other.Workloads()
+}
+
+func (a *application) ActionSpec() lifecycle.ActionSpec {
+	return a.actionSpec
+}
+
+func (a *application) Path() string {
+	return a.path
+}
+
+func (a *application) IsEmbedded() bool {
+	return a.status.Embedded
+}
+
+func (a *application) Volume() provider.VolumeManager {
+	return a.volume
+}
+
+func (a *application) SetDesiredState(state v1beta1.ApplicationDesiredState) {
+	a.desiredState = state
+}
+
+func (a *application) DesiredState() v1beta1.ApplicationDesiredState {
+	return a.desiredState
+}
+
+func (a *application) SetRestartGeneration(gen int) {
+	a.restartGeneration = gen
+}
+
+func (a *application) RestartGeneration() int {
+	return a.restartGeneration
+}
+
+func (a *application) Status() (*v1beta1.DeviceApplicationStatus, v1beta1.DeviceApplicationsSummaryStatus, error) {
+	// TODO: revisit performance of this function
+	healthy := 0
+	initializing := 0
+	restarts := 0
+	exited := 0
+	stopped := 0
+	stopping := 0
+	unhealthy := 0
+	for _, workload := range a.workloads {
+		restarts += workload.Restarts
+		switch workload.Status {
+		case StatusInit, StatusCreate:
+			initializing++
+		case StatusRunning:
+			healthy++
+		case StatusUnhealthy:
+			unhealthy++
+		case StatusExited:
+			exited++
+		case StatusStop:
+			stopping++
+		}
+		// A workload that has reached a terminal container state counts as stopped
+		// regardless of exit code: when we asked the app to stop, a non-zero exit
+		// (e.g. a VM process killed by systemctl stop) is expected, not an error.
+		if isTerminal(workload.Status) {
+			stopped++
+		}
+	}
+
+	total := len(a.workloads)
+	var summary v1beta1.DeviceApplicationsSummaryStatus
+	readyStatus := strconv.Itoa(healthy) + "/" + strconv.Itoa(total)
+
+	var newStatus v1beta1.ApplicationStatusType
+
+	// order is important
+	switch {
+	case a.desiredState == v1beta1.ApplicationDesiredStateStopped && (isUnknown(total, healthy, initializing) || isCompleted(total, stopped)):
+		newStatus = v1beta1.ApplicationStatusStopped
+		summary.Status = v1beta1.ApplicationsSummaryStatusHealthy
+	case a.desiredState == v1beta1.ApplicationDesiredStateStopped:
+		// Workloads are still present — stopping is in progress.
+		newStatus = v1beta1.ApplicationStatusStopping
+		summary.Status = v1beta1.ApplicationsSummaryStatusDegraded
+	case isUnknown(total, healthy, initializing):
+		newStatus = v1beta1.ApplicationStatusUnknown
+		summary.Status = v1beta1.ApplicationsSummaryStatusUnknown
+	case isStarting(total, healthy, initializing):
+		newStatus = v1beta1.ApplicationStatusStarting
+		summary.Status = v1beta1.ApplicationsSummaryStatusDegraded
+	case isPreparing(total, healthy, initializing):
+		newStatus = v1beta1.ApplicationStatusPreparing
+		summary.Status = v1beta1.ApplicationsSummaryStatusUnknown
+	case isCompleted(total, exited):
+		newStatus = v1beta1.ApplicationStatusCompleted
+		summary.Status = v1beta1.ApplicationsSummaryStatusHealthy
+	case isRunningHealthy(total, healthy, initializing, exited):
+		newStatus = v1beta1.ApplicationStatusRunning
+		summary.Status = v1beta1.ApplicationsSummaryStatusHealthy
+	case isRunningUnhealthy(total, healthy, unhealthy, initializing, stopped+stopping):
+		// A health-degraded application is still recovering. Report Starting so
+		// the individual status remains consistent with a Degraded summary.
+		newStatus = v1beta1.ApplicationStatusStarting
+		summary.Status = v1beta1.ApplicationsSummaryStatusDegraded
+	case isRunningDegraded(total, healthy, initializing):
+		// A partially available application is still recovering. Report Starting
+		// so the individual status remains consistent with a Degraded summary.
+		newStatus = v1beta1.ApplicationStatusStarting
+		summary.Status = v1beta1.ApplicationsSummaryStatusDegraded
+	case isErrored(total, healthy, initializing):
+		newStatus = v1beta1.ApplicationStatusError
+		summary.Status = v1beta1.ApplicationsSummaryStatusError
+	default:
+		summary.Status = v1beta1.ApplicationsSummaryStatusUnknown
+		return nil, summary, fmt.Errorf("unknown application status: %d/%d/%d", total, healthy, initializing)
+	}
+
+	if a.status.Status != newStatus {
+		a.status.Status = newStatus
+	}
+	if a.status.Ready != readyStatus {
+		a.status.Ready = readyStatus
+	}
+	if a.status.Restarts != restarts {
+		a.status.Restarts = restarts
+	}
+
+	// update volume status
+	a.volume.Status(a.status)
+
+	// Collect image references and known digests from the installed parent and
+	// workload container images. The manager adds image-backed volume observations.
+	a.collectImageDigests()
+
+	return a.status, summary, nil
+}
+
+// collectImageDigests populates status.ImageDigests from the application's
+// parent image and workload images observed by the runtime monitors. The manager
+// adds image-backed volume observations after collecting monitor status. Entries
+// with an unknown digest are included so the control plane can identify images
+// that require a full pull.
+func (a *application) collectImageDigests() {
+	byImage := make(map[string]map[string]struct{})
+	unknownByImage := make(map[string]bool)
+	add := func(image, digest string) {
+		if image == "" {
+			return
+		}
+		if digest == "" {
+			unknownByImage[image] = true
+			return
+		}
+		if _, ok := byImage[image]; !ok {
+			byImage[image] = make(map[string]struct{})
+		}
+		byImage[image][digest] = struct{}{}
+	}
+
+	// Workload container images from the runtime.
+	for _, w := range a.workloads {
+		for _, image := range w.Images {
+			add(image.Image, image.Digest)
+		}
+	}
+
+	// Parent artifacts are independent reported inputs even when a workload
+	// happens to use the same reference in the executable image store. Helm charts
+	// and Compose bundles stay visible in status without joining the delta snapshot.
+	if a.parentOutcomeRequired || a.AppType() == v1beta1.AppTypeCompose || (a.AppType() == v1beta1.AppTypeHelm && a.imageRef != "") {
+		add(a.imageRef, a.imageDigest)
+	}
+
+	var digests []v1beta1.ApplicationImageDigest
+	for image, knownDigests := range byImage {
+		for digest := range knownDigests {
+			digests = append(digests, v1beta1.ApplicationImageDigest{Image: image, Digest: digest})
+		}
+	}
+	for image, unknown := range unknownByImage {
+		if unknown {
+			digests = append(digests, v1beta1.ApplicationImageDigest{Image: image})
+		}
+	}
+	sort.Slice(digests, func(i, j int) bool {
+		if digests[i].Image != digests[j].Image {
+			return digests[i].Image < digests[j].Image
+		}
+		return digests[i].Digest < digests[j].Digest
+	})
+
+	if len(digests) > 0 {
+		a.status.ImageDigests = &digests
+	} else {
+		a.status.ImageDigests = nil
+	}
+}
+
+// isTerminal reports whether a workload has reached a terminal container state,
+// i.e. it is no longer running, regardless of its exit code.
+func isTerminal(status StatusType) bool {
+	switch status {
+	case StatusExited, StatusDie, StatusDied, StatusRemove:
+		return true
+	default:
+		return false
+	}
+}
+
+func isStarting(total, healthy, initializing int) bool {
+	return total > 0 && initializing > 0 && healthy > 0
+}
+
+func isUnknown(total, healthy, initializing int) bool {
+	return total == 0 && healthy == 0 && initializing == 0
+}
+
+func isCompleted(total, completed int) bool {
+	return total > 0 && completed == total
+}
+
+func isPreparing(total, healthy, initializing int) bool {
+	return total > 0 && healthy == 0 && initializing > 0
+}
+
+func isRunningDegraded(total, healthy, initializing int) bool {
+	return total != healthy && healthy > 0 && initializing == 0
+}
+
+func isRunningHealthy(total, healthy, initializing, exited int) bool {
+	return total > 0 && (healthy == total || healthy+exited == total) && initializing == 0
+}
+
+func isRunningUnhealthy(total, healthy, unhealthy, initializing, terminal int) bool {
+	return total > 0 && unhealthy > 0 && initializing == 0 && healthy+unhealthy+terminal == total
+}
+
+func isErrored(total, healthy, initializing int) bool {
+	return total > 0 && healthy == 0 && initializing == 0
+}

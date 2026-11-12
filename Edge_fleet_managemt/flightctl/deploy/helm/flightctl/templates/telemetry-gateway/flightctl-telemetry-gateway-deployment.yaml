@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+    flightctl.service: flightctl-telemetry-gateway
+  name: flightctl-telemetry-gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      flightctl.service: flightctl-telemetry-gateway
+  template:
+    metadata:
+      labels:
+        flightctl.service: flightctl-telemetry-gateway
+    spec:
+      {{- if .Values.global.imagePullSecretName }}
+      imagePullSecrets:
+        - name: {{ .Values.global.imagePullSecretName }}
+      {{- end }}
+      containers:
+      - env:
+        - name: HOME
+          value: "/root"
+        - name: KV_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ default "flightctl-kv-secret" .Values.kv.passwordSecretName }}
+              key: password
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "flightctl.dbAppUserSecret" . }}
+              key: userPassword
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "flightctl.dbAppUserSecret" . }}
+              key: user
+        {{- with .Values.telemetryGateway.extraEnvs }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        image: "{{ include "flightctl.ensureOsQualifiedImage" (dict "root" . "imageName" .Values.telemetryGateway.image.image) }}:{{ default .Chart.AppVersion .Values.telemetryGateway.image.tag }}"
+        imagePullPolicy: {{ default .Values.global.imagePullPolicy .Values.telemetryGateway.image.pullPolicy }}
+        name: telemetry-gateway
+        ports:
+        - containerPort: 4317
+          name: otlp
+          protocol: TCP
+        - containerPort: 9464
+          name: prometheus
+          protocol: TCP
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        volumeMounts:
+        - mountPath: /root/.flightctl/config.yaml
+          name: flightctl-telemetry-gateway-config
+          readOnly: true
+          subPath: config.yaml
+        - mountPath: /etc/telemetry-gateway/certs/ca.crt
+          name: flightctl-ca-bundle
+          readOnly: true
+          subPath: ca-bundle.crt
+        - mountPath: /etc/telemetry-gateway/certs/server.crt
+          name: telemetry-gateway-tls
+          readOnly: true
+          subPath: tls.crt
+        - mountPath: /etc/telemetry-gateway/certs/server.key
+          name: telemetry-gateway-tls
+          readOnly: true
+          subPath: tls.key
+        {{- with .Values.telemetryGateway.extraVolumeMounts }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      volumes:
+      - configMap:
+          name: flightctl-telemetry-gateway-config
+        name: flightctl-telemetry-gateway-config
+      - name: telemetry-gateway-tls
+        secret:
+          secretName: flightctl-telemetry-gateway-server-tls
+      - name: flightctl-ca-bundle
+        secret:
+          secretName: flightctl-ca-bundle
+      {{- with .Values.telemetryGateway.extraVolumes }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}

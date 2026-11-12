@@ -1,0 +1,149 @@
+import * as React from 'react';
+import { FieldArray, useField } from 'formik';
+import { type TFunction } from 'react-i18next';
+import { Button, FormGroup, FormSection, Grid, Split, SplitItem } from '@patternfly/react-core';
+import { MinusCircleIcon } from '@patternfly/react-icons/dist/js/icons/minus-circle-icon';
+import { PlusCircleIcon } from '@patternfly/react-icons/dist/js/icons/plus-circle-icon';
+
+import { ImagePullPolicy } from '@flightctl/types';
+import type { ApplicationVolumeForm as VolumeFormType } from '../../../../utils/volumes';
+import { useTranslation } from '../../../../hooks/useTranslation';
+import TextField from '../../../form/TextField';
+import FormSelect from '../../../form/FormSelect';
+import ErrorHelperText from '../../../form/FieldHelperText';
+import ManualAppVolumeImageField from '../../../form/ManualAppVolumeImageField';
+import ExpandableFormSection from '../../../form/ExpandableFormSection';
+import { FormGroupWithHelperText } from '../../../common/WithHelperText';
+
+type ApplicationVolumeFormProps = {
+  appFieldName: string;
+  isReadOnly?: boolean;
+  isSingleContainerApp?: boolean;
+};
+
+const getPullPolicyOptions = (t: TFunction) => ({
+  [ImagePullPolicy.PullIfNotPresent]: t('If not present'),
+  [ImagePullPolicy.PullAlways]: t('Always'),
+  [ImagePullPolicy.PullNever]: t('Never'),
+});
+
+const hasVolumeImageSource = (volume: VolumeFormType) =>
+  Boolean(volume.imageSpec?.image || volume.imageSpec?.catalogItemRef);
+
+const ApplicationVolumeForm = ({
+  appFieldName,
+  isReadOnly,
+  isSingleContainerApp = false,
+}: ApplicationVolumeFormProps) => {
+  const { t } = useTranslation();
+  const pullPolicyOptions = React.useMemo(() => getPullPolicyOptions(t), [t]);
+
+  const [{ value: volumes = [] }, { error }] = useField<VolumeFormType[]>(`${appFieldName}.volumes`);
+  const volumesError = typeof error === 'string' ? error : undefined;
+
+  return (
+    <FormGroup label={t('Volumes')}>
+      <FieldArray name={`${appFieldName}.volumes`}>
+        {(arrayHelpers) => (
+          <>
+            {volumes.map((volume, volumeIndex) => {
+              const volumeFieldName = `${appFieldName}.volumes[${volumeIndex}]`;
+
+              return (
+                <FormSection key={volumeIndex}>
+                  <Split hasGutter>
+                    <SplitItem isFilled>
+                      <ExpandableFormSection
+                        title={volume.name || t('Volume {{ number }}', { number: volumeIndex + 1 })}
+                        fieldName={volumeFieldName}
+                      >
+                        <Grid hasGutter>
+                          <FormGroup label={t('Name')} isRequired>
+                            <TextField
+                              name={`${volumeFieldName}.name`}
+                              aria-label={t('Volume name')}
+                              isDisabled={isReadOnly}
+                            />
+                          </FormGroup>
+
+                          {isSingleContainerApp && (
+                            <FormGroup label={t('Mount path')} isRequired>
+                              <TextField
+                                name={`${volumeFieldName}.mountPath`}
+                                aria-label={t('Mount path')}
+                                isDisabled={isReadOnly}
+                                helperText={t('Absolute path where the volume will be mounted on the container.')}
+                              />
+                            </FormGroup>
+                          )}
+
+                          <FormGroup label={t('Image reference')} isRequired={!isSingleContainerApp}>
+                            <ManualAppVolumeImageField
+                              label={t('Image reference')}
+                              name={`${volumeFieldName}.imageSpec`}
+                              isDisabled={isReadOnly}
+                              helperText={
+                                isSingleContainerApp
+                                  ? t('Optional: Provide a valid container image reference for the volume.')
+                                  : t('Provide a valid container image reference for the volume.')
+                              }
+                            />
+                          </FormGroup>
+
+                          {hasVolumeImageSource(volume) && (
+                            <FormGroupWithHelperText label={t('Pull policy')} content={t('Pull policy for the image')}>
+                              <FormSelect
+                                name={`${volumeFieldName}.imagePullPolicy`}
+                                items={pullPolicyOptions}
+                                placeholderText={t('Select pull policy')}
+                                isDisabled={isReadOnly}
+                              />
+                            </FormGroupWithHelperText>
+                          )}
+                        </Grid>
+                      </ExpandableFormSection>
+                    </SplitItem>
+                    {!isReadOnly && (
+                      <SplitItem>
+                        <Button
+                          aria-label={t('Delete volume')}
+                          variant="link"
+                          isDanger
+                          icon={<MinusCircleIcon />}
+                          iconPosition="start"
+                          onClick={() => arrayHelpers.remove(volumeIndex)}
+                        />
+                      </SplitItem>
+                    )}
+                  </Split>
+                </FormSection>
+              );
+            })}
+            <ErrorHelperText error={volumesError} />
+            {!isReadOnly && (
+              <FormGroup>
+                <Button
+                  variant="link"
+                  icon={<PlusCircleIcon />}
+                  iconPosition="start"
+                  onClick={() => {
+                    arrayHelpers.push({
+                      name: '',
+                      imageSpec: { image: '' },
+                      imagePullPolicy: ImagePullPolicy.PullIfNotPresent,
+                      mountPath: '',
+                    });
+                  }}
+                >
+                  {t('Add volume')}
+                </Button>
+              </FormGroup>
+            )}
+          </>
+        )}
+      </FieldArray>
+    </FormGroup>
+  );
+};
+
+export default ApplicationVolumeForm;

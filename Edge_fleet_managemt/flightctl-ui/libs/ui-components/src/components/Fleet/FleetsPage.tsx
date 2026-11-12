@@ -1,0 +1,241 @@
+import * as React from 'react';
+import {
+  Button,
+  EmptyStateActions,
+  EmptyStateBody,
+  EmptyStateFooter,
+  Split,
+  SplitItem,
+  Stack,
+  StackItem,
+  Toolbar,
+  ToolbarContent,
+  ToolbarGroup,
+  ToolbarItem,
+} from '@patternfly/react-core';
+import { Tbody } from '@patternfly/react-table';
+import { TopologyIcon } from '@patternfly/react-icons/dist/js/icons/topology-icon';
+import { type TFunction } from 'i18next';
+
+import ListPage from '../ListPage/ListPage';
+import ListPageBody from '../ListPage/ListPageBody';
+import TablePagination from '../Table/TablePagination';
+import TableTextSearch from '../Table/TableTextSearch';
+import Table from '../Table/Table';
+import { useTableSelect } from '../../hooks/useTableSelect';
+import { getResourceId } from '../../utils/resource';
+import MassDeleteFleetModal from '../modals/massModals/MassDeleteFleetModal/MassDeleteFleetModal';
+import FleetRow from './FleetRow';
+import ResourceListEmptyState from '../common/ResourceListEmptyState';
+import { useTranslation } from '../../hooks/useTranslation';
+import { ROUTE, useNavigate } from '../../hooks/useNavigate';
+import DeleteFleetModal from './DeleteFleetModal/DeleteFleetModal';
+import { useFleetBackendFilters, useFleets } from './useFleets';
+import { usePermissionsContext } from '../common/PermissionsContext';
+import { RESOURCE, VERB } from '../../types/rbac';
+import PageWithPermissions from '../common/PageWithPermissions';
+import { GlobalSystemRestoreBanners } from '../SystemRestore/SystemRestoreBanners';
+import ResourceSyncImportStatus from '../ResourceSync/ResourceSyncImportStatus';
+
+const fleetPageActionsPermissions = [
+  { kind: RESOURCE.FLEET, verb: VERB.CREATE },
+  { kind: RESOURCE.RESOURCE_SYNC, verb: VERB.CREATE },
+  { kind: RESOURCE.REPOSITORY, verb: VERB.LIST },
+];
+
+const FleetPageActions = ({ createText }: { createText?: string }) => {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { checkPermissions } = usePermissionsContext();
+  const [canCreateFleet, canCreateRs, canReadRepo] = checkPermissions(fleetPageActionsPermissions);
+  const canImportFleet = canCreateRs && canReadRepo;
+
+  return (
+    <Split hasGutter>
+      {canCreateFleet && (
+        <SplitItem>
+          <Button variant="primary" onClick={() => navigate(ROUTE.FLEET_CREATE)} data-testid="toolbar-create-fleet">
+            {createText || t('Create a fleet')}
+          </Button>
+        </SplitItem>
+      )}
+      {canImportFleet && (
+        <SplitItem>
+          <Button variant="secondary" onClick={() => navigate(ROUTE.FLEET_IMPORT)} data-testid="toolbar-import-fleets">
+            {t('Import fleets')}
+          </Button>
+        </SplitItem>
+      )}
+    </Split>
+  );
+};
+
+const FleetEmptyState = () => {
+  const { t } = useTranslation();
+  return (
+    <ResourceListEmptyState icon={TopologyIcon} titleText={t('No fleets yet')}>
+      <EmptyStateBody>
+        <Stack>
+          <StackItem>{t('Fleets make it easier to manage multiple devices with shared configurations.')}</StackItem>
+          <StackItem>{t('Fleets allow you to edit and update your devices at once.')}</StackItem>
+          <StackItem>{t('To get started, create a new fleet or import an existing configuration.')}</StackItem>
+        </Stack>
+      </EmptyStateBody>
+      <EmptyStateFooter>
+        <EmptyStateActions>
+          <FleetPageActions />
+        </EmptyStateActions>
+      </EmptyStateFooter>
+    </ResourceListEmptyState>
+  );
+};
+
+export const getFleetTableColumns = (t: TFunction) => [
+  {
+    name: t('Name'),
+  },
+  {
+    name: t('System image'),
+  },
+  {
+    name: t('Up-to-date/devices'),
+  },
+  {
+    name: t('Status'),
+  },
+];
+
+const fleetTablePermissions = [
+  { kind: RESOURCE.FLEET, verb: VERB.DELETE },
+  { kind: RESOURCE.FLEET, verb: VERB.CREATE },
+  { kind: RESOURCE.FLEET, verb: VERB.PATCH },
+];
+
+const FleetTable = () => {
+  const { t } = useTranslation();
+
+  const fleetColumns = React.useMemo(() => getFleetTableColumns(t), [t]);
+  const { name, setName, hasFiltersEnabled } = useFleetBackendFilters();
+
+  const { fleets, isLoading, error, isUpdating, refetch, pagination } = useFleets({ name, addDevicesSummary: true });
+
+  const [isMassDeleteModalOpen, setIsMassDeleteModalOpen] = React.useState(false);
+  const [fleetToDeleteId, setFleetToDeleteId] = React.useState<string>();
+
+  const { onRowSelect, isAllSelected, hasSelectedRows, isRowSelected, setAllSelected } = useTableSelect();
+
+  const { checkPermissions } = usePermissionsContext();
+  const [canDelete, canCreate, canEdit] = checkPermissions(fleetTablePermissions);
+
+  return (
+    <ListPageBody error={error} loading={isLoading}>
+      <GlobalSystemRestoreBanners onResumeComplete={refetch} />
+      <Toolbar inset={{ default: 'insetNone' }}>
+        <ToolbarContent>
+          <ToolbarGroup>
+            <ToolbarItem>
+              <TableTextSearch value={name} setValue={setName} placeholder={t('Search by name')} />
+            </ToolbarItem>
+          </ToolbarGroup>
+          {canCreate && (
+            <ToolbarItem>
+              <FleetPageActions createText={t('Create fleet')} />
+            </ToolbarItem>
+          )}
+          {canDelete && (
+            <ToolbarItem>
+              <Button
+                isDisabled={!hasSelectedRows}
+                onClick={() => setIsMassDeleteModalOpen(true)}
+                variant="secondary"
+                data-testid="toolbar-delete-fleets"
+              >
+                {t('Delete fleets')}
+              </Button>
+            </ToolbarItem>
+          )}
+        </ToolbarContent>
+      </Toolbar>
+      <Table
+        aria-label={t('Fleets table')}
+        loading={isUpdating}
+        columns={fleetColumns}
+        hasFilters={hasFiltersEnabled}
+        emptyData={fleets.length === 0}
+        clearFilters={() => setName('')}
+        isAllSelected={isAllSelected}
+        onSelectAll={setAllSelected}
+      >
+        <Tbody>
+          {fleets.map((fleet, rowIndex) => (
+            <FleetRow
+              key={getResourceId(fleet)}
+              fleet={fleet}
+              rowIndex={rowIndex}
+              canDelete={canDelete}
+              onDeleteClick={() => {
+                setFleetToDeleteId(fleet.metadata.name || '');
+              }}
+              isRowSelected={isRowSelected}
+              onRowSelect={onRowSelect}
+              canEdit={canEdit}
+            />
+          ))}
+        </Tbody>
+      </Table>
+      <TablePagination pagination={pagination} isUpdating={isUpdating} />
+      {!isUpdating && fleets.length === 0 && !name && <FleetEmptyState />}
+      {fleetToDeleteId && (
+        <DeleteFleetModal
+          fleetId={fleetToDeleteId}
+          onClose={(hasDeleted?: boolean) => {
+            if (hasDeleted) {
+              refetch();
+            }
+            setFleetToDeleteId(undefined);
+          }}
+        />
+      )}
+      {isMassDeleteModalOpen && (
+        <MassDeleteFleetModal
+          onClose={() => setIsMassDeleteModalOpen(false)}
+          fleets={fleets.filter(isRowSelected)}
+          onDeleteSuccess={() => {
+            setIsMassDeleteModalOpen(false);
+            setAllSelected(false);
+            refetch();
+          }}
+        />
+      )}
+    </ListPageBody>
+  );
+};
+
+const FleetsPage = () => {
+  const { t } = useTranslation();
+
+  return (
+    <>
+      <ResourceSyncImportStatus type="fleet" />
+
+      <ListPage
+        title={t('Fleets')}
+        description={t('Organize devices into fleets to manage configurations, updates, and system images at scale.')}
+      >
+        <FleetTable />
+      </ListPage>
+    </>
+  );
+};
+
+const FleetsPageWithPermissions = () => {
+  const { checkPermissions, loading } = usePermissionsContext();
+  const [allowed] = checkPermissions([{ kind: RESOURCE.FLEET, verb: VERB.LIST }]);
+  return (
+    <PageWithPermissions allowed={allowed} loading={loading}>
+      <FleetsPage />
+    </PageWithPermissions>
+  );
+};
+
+export default FleetsPageWithPermissions;

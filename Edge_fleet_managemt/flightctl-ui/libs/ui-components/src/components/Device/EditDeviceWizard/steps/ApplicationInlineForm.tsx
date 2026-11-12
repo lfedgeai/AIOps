@@ -1,0 +1,131 @@
+import * as React from 'react';
+import { FieldArray } from 'formik';
+import { Button, FormGroup, Grid, Split, SplitItem } from '@patternfly/react-core';
+import MinusCircleIcon from '@patternfly/react-icons/dist/js/icons/minus-circle-icon';
+import PlusCircleIcon from '@patternfly/react-icons/dist/js/icons/plus-circle-icon';
+
+import { useTranslation } from '../../../../hooks/useTranslation';
+import CheckboxField from '../../../form/CheckboxField';
+import UploadField from '../../../form/UploadField';
+import TextField from '../../../form/TextField';
+import ExpandableFormSection from '../../../form/ExpandableFormSection';
+import { type InlineFileForm } from '../../../../types/deviceSpec';
+
+const MAX_INLINE_FILE_SIZE_BYTES = 1024 * 1024;
+
+type InlineApplicationFileFormProps = {
+  file: InlineFileForm;
+  fileFieldName: string;
+  fileIndex: number;
+  isReadOnly?: boolean;
+};
+
+const InlineApplicationFileForm = ({ file, fileIndex, fileFieldName, isReadOnly }: InlineApplicationFileFormProps) => {
+  const { t } = useTranslation();
+  return (
+    <ExpandableFormSection
+      title={t('File {{ fileNum }}', { fileNum: fileIndex + 1 })}
+      fieldName={fileFieldName}
+      description={file.path}
+    >
+      <Grid hasGutter>
+        <FormGroup label={t('File path on the device (relative)')} isRequired>
+          <TextField name={`${fileFieldName}.path`} isDisabled={isReadOnly} />
+        </FormGroup>
+
+        <FormGroup label={t('Content')}>
+          <UploadField
+            ariaLabel={t('Content')}
+            name={`${fileFieldName}.content`}
+            maxFileBytes={MAX_INLINE_FILE_SIZE_BYTES}
+            isDisabled={isReadOnly}
+          />
+        </FormGroup>
+
+        <FormGroup>
+          <CheckboxField
+            name={`${fileFieldName}.base64`}
+            label={t('Content is base64 encoded')}
+            isDisabled={isReadOnly}
+          />
+        </FormGroup>
+      </Grid>
+    </ExpandableFormSection>
+  );
+};
+
+const ApplicationInlineForm = ({
+  files,
+  index,
+  isReadOnly,
+}: {
+  files: InlineFileForm[];
+  index: number;
+  isReadOnly?: boolean;
+}) => {
+  const { t } = useTranslation();
+
+  const fileList = files || [];
+  if (isReadOnly && fileList.length === 0) {
+    return null;
+  }
+
+  return (
+    <Grid hasGutter>
+      <FieldArray name={`applications[${index}].app.files`}>
+        {(arrayHelpers) => (
+          <>
+            {fileList.map((file, fileIndex) => {
+              const fieldName = `applications[${index}].app.files[${fileIndex}]`;
+              return (
+                <Split key={fileIndex} hasGutter>
+                  <SplitItem isFilled>
+                    <InlineApplicationFileForm
+                      file={file}
+                      fileIndex={fileIndex}
+                      fileFieldName={fieldName}
+                      isReadOnly={isReadOnly}
+                    />
+                  </SplitItem>
+                  {!isReadOnly && fileList.length > 1 && (
+                    <SplitItem>
+                      <Button
+                        aria-label={t('Delete file')}
+                        variant="link"
+                        isDanger
+                        icon={<MinusCircleIcon />}
+                        iconPosition="start"
+                        onClick={() => arrayHelpers.remove(fileIndex)}
+                      />
+                    </SplitItem>
+                  )}
+                </Split>
+              );
+            })}
+
+            {!isReadOnly && (
+              <FormGroup>
+                <Button
+                  variant="link"
+                  icon={<PlusCircleIcon />}
+                  iconPosition="start"
+                  onClick={() => {
+                    arrayHelpers.push({
+                      path: '',
+                      content: '',
+                      base64: false,
+                    });
+                  }}
+                >
+                  {t('Add file')}
+                </Button>
+              </FormGroup>
+            )}
+          </>
+        )}
+      </FieldArray>
+    </Grid>
+  );
+};
+
+export default ApplicationInlineForm;

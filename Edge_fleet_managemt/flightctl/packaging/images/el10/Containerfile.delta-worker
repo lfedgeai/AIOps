@@ -1,0 +1,92 @@
+# ── vm-to-quadlet build stage ─────────────────────────────────────────────────
+# Isolated from the main build to avoid module-cache contamination — the tool
+# pins k8s.io at a different version than flightctl.
+FROM registry.access.redhat.com/ubi10/go-toolset:1.26.10-1793622842 as vm-to-quadlet-build
+USER 0
+ARG VM_TO_QUADLET_COMMIT=2d2a64d59c10bbe33943e1c74835e5063177c3fb
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/root/go/pkg/mod \
+    git clone https://github.com/flightctl/vm-to-quadlet /src && \
+    cd /src && git checkout ${VM_TO_QUADLET_COMMIT} && \
+    CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/vm-to-quadlet ./cmd/vm-to-quadlet
+
+# ── Helm CLI stage ───────────────────────────────────────────────────────────
+FROM registry.access.redhat.com/ubi10/go-toolset:1.26.10-1793622842 as helm-build
+USER 0
+RUN set -eu; \
+    case "$(uname -m)" in \
+      x86_64) HELM_ARCH=amd64; HELM_SHA256=5d4c7623283e6dfb1971957f4b755468ab64917066a8567dd50464af298f4031 ;; \
+      aarch64) HELM_ARCH=arm64; HELM_SHA256=02a5fb7742469d2d132e24cb7c3f52885894043576588c6788b6813297629edd ;; \
+      *) echo "unsupported Helm build architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://get.helm.sh/helm-v4.1.1-linux-${HELM_ARCH}.tar.gz" -o /tmp/helm.tar.gz; \
+    printf '%s  %s\n' "$HELM_SHA256" /tmp/helm.tar.gz | sha256sum -c -; \
+    tar -xzf /tmp/helm.tar.gz -C /tmp "linux-${HELM_ARCH}/helm"; \
+    mkdir -p /out; \
+    install -m 0755 "/tmp/linux-${HELM_ARCH}/helm" /out/helm
+
+# ── flightctl delta worker build stage ────────────────────────────────────────
+FROM registry.access.redhat.com/ubi10/go-toolset:1.26.10-1793622842 as build
+WORKDIR /app
+
+# Switch to root for build operations
+USER 0
+
+RUN ARCH=$(uname -m) && \
+    mkdir -p /runtime-root/etc/yum.repos.d && \
+    echo -e "[centos-baseos]\nname=CentOS Stream 10 - BaseOS\nbaseurl=https://mirror.stream.centos.org/10-stream/BaseOS/${ARCH}/os/\nenabled=1\ngpgcheck=0" > /runtime-root/etc/yum.repos.d/centos.repo && \
+    echo -e "[centos-appstream]\nname=CentOS Stream 10 - AppStream\nbaseurl=https://mirror.stream.centos.org/10-stream/AppStream/${ARCH}/os/\nenabled=1\ngpgcheck=0" >> /runtime-root/etc/yum.repos.d/centos.repo && \
+    dnf install -y --installroot=/runtime-root --releasever=10 --setopt=install_weak_deps=False --nodocs \
+        oci-delta openssl-libs tzdata && \
+    dnf --installroot=/runtime-root clean all && \
+    rm -rf /runtime-root/var/cache/dnf
+
+# Copy dependencies first (most stable)
+COPY go.mod go.sum ./
+
+# Download dependencies (cached layer)
+RUN --mount=type=cache,target=/opt/app-root/src/go/pkg/mod \
+    go mod download
+
+# Copy build tools and configs
+COPY Makefile .
+
+# Copy source code directories
+COPY ./api ./api
+COPY ./cmd ./cmd
+COPY ./deploy ./deploy
+COPY ./hack ./hack
+COPY ./internal ./internal
+COPY ./pkg ./pkg
+
+# Define version info ARGs right before build
+ARG SOURCE_GIT_TAG
+ARG SOURCE_GIT_TREE_STATE
+ARG SOURCE_GIT_COMMIT
+
+# Convert ARGs to ENV so make can use them
+ENV SOURCE_GIT_TAG=${SOURCE_GIT_TAG}
+ENV SOURCE_GIT_TREE_STATE=${SOURCE_GIT_TREE_STATE}
+ENV SOURCE_GIT_COMMIT=${SOURCE_GIT_COMMIT}
+
+# Use BuildKit cache mounts for Go caching
+RUN --mount=type=cache,target=/opt/app-root/src/.cache/go-build \
+    --mount=type=cache,target=/opt/app-root/src/go/pkg/mod \
+    make build-delta-worker
+
+FROM registry.access.redhat.com/ubi10/ubi-micro:10.2-1792455530
+USER 0
+COPY --from=build /runtime-root/ /
+WORKDIR /app
+LABEL \
+  com.redhat.component="flightctl-delta-worker-container" \
+  description="Flight Control Edge management service, OS delta generation worker" \
+  io.k8s.description="Flight Control Edge management service, OS delta generation worker" \
+  io.k8s.display-name="Flight Control Delta Worker" \
+  name="flightctl-delta-worker" \
+  summary="Flight Control Edge management service, OS delta generation worker"
+
+COPY --from=build /app/bin/flightctl-delta-worker .
+COPY --from=vm-to-quadlet-build /out/vm-to-quadlet /usr/local/bin/vm-to-quadlet
+COPY --from=helm-build /out/helm /usr/local/bin/helm
+CMD ["./flightctl-delta-worker"]

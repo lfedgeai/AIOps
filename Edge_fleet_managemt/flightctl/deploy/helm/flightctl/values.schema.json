@@ -1,0 +1,1317 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Helm Chart Values Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "global": {
+      "type": "object",
+      "description": "Global parameters common to all components and subcharts",
+      "additionalProperties": true,
+      "properties": {
+        "enableOpenShiftExtensions": {
+          "type": "string",
+          "description": "Enable OpenShift extensions - one of 'auto', 'true', 'false'.",
+          "enum": ["auto", "true", "false"]
+        },
+        "enableMulticlusterExtensions": {
+          "type": "string",
+          "description": "Enable MultiCluster Engine extensions - one of 'auto', 'true', 'false'.",
+          "enum": ["auto", "true", "false"]
+        },
+        "multiclusterEngineNamespace": {
+          "type": "string",
+          "description": "Namespace where MultiCluster Engine is installed. Used for creating discovery ConfigMap and RBAC bindings."
+        },
+        "generateCertificates": {
+          "type": "string",
+          "description": "Certificate generation method - one of 'auto', 'builtin', 'cert-manager', 'none'.",
+          "enum": ["auto", "builtin", "cert-manager", "none"]
+        },
+        "internalNamespace": {
+          "type": "string",
+          "description": "A separate Namespace to which non-user-facing components should be deployed for increased security isolation."
+        },
+        "baseDomain": {
+          "type": "string",
+          "description": "Base domain to construct the FQDN for the service endpoints."
+        },
+        "baseDomainTlsSecretName": {
+          "type": "string",
+          "description": "Secret containing TLS ca/cert/key. It should be valid for *.${baseDomain}. This certificate is only used for non-mTLS endpoints, mTLS endpoints like agent-api, etc will use different certificates.",
+          "default": "flightctl-api-server-tls"
+        },
+        "routeExternalCertificate": {
+          "type": "string",
+          "description": "Whether to use generated TLS certificates on edge-terminated routes via externalCertificate. 'auto' uses for synchronous builtin certificates, or configures it after the generated Secret exists for asynchronous certificates. 'true' uses externalCertificate and configures it after the generated Secret exists when cert-manager is used. 'false' never uses (rely on default router cert).",
+          "enum": ["auto", "true", "false"]
+        },
+        "storageClassName": {
+          "type": "string",
+          "description": "Storage class name for PVCs. Empty to use default. Note: for a component that also sets volumeName or selector.matchLabels for static PV binding, leaving this empty makes the chart render storageClassName: \"\" for that PVC instead of omitting the field."
+        },
+        "imagePullSecretName": {
+          "type": "string",
+          "description": "Name of the secret that holds image pull secret for private registries."
+        },
+        "imagePullPolicy": {
+          "type": "string",
+          "description": "Image pull policy for all containers.",
+          "enum": ["IfNotPresent", "Always", "Never"]
+        },
+        "auth": {
+          "type": "object",
+          "description": "Authentication configuration",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Authentication type. Empty for auto-detect (openshift on OpenShift, k8s otherwise).",
+              "enum": ["", "k8s", "oidc", "aap", "openshift", "oauth2", "none"]
+            },
+            "caCert": {
+              "type": "string",
+              "description": "Custom CA certificate (PEM)."
+            },
+            "insecureSkipTlsVerify": {
+              "type": "boolean",
+              "description": "Skip verification of authority TLS cert."
+            },
+            "k8s": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "apiUrl": {
+                  "type": "string",
+                  "description": "API URL of k8s cluster to use as authentication authority"
+                },
+                "externalApiTokenSecretName": {
+                  "type": "string",
+                  "description": "Name of a secret that holds the API token when flightctl is not running in-cluster"
+                },
+                "rbacNs": {
+                  "type": "string",
+                  "description": "Namespace to use for RBAC checks"
+                },
+                "createAdminUser": {
+                  "type": "boolean",
+                  "description": "Create default flightctl-admin ServiceAccount with admin access"
+                },
+                "organizationNamePrefix": {
+                  "type": "string",
+                  "description": "Optional prefix for organization names from this provider."
+                }
+              }
+            },
+            "oidc": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "prompt": {
+                  "type": ["string", "null"],
+                  "default": "select_account",
+                  "pattern": "^(| *[!-~]+( +[!-~]+)* *)$",
+                  "if": {
+                    "type": "string",
+                    "pattern": "(^| )none( |$)"
+                  },
+                  "then": {
+                    "pattern": "^ *none( +none)* *$"
+                  },
+                  "description": "Authorization prompt exposed to login clients. Empty string omits the prompt parameter; omitted or null defaults to select_account."
+                },
+                "clientId": { "type": "string", "description": "OIDC Client ID" },
+                "clientSecret": {
+                  "type": "string",
+                  "description": "OIDC client secret (optional; prefer mounting from a secret)"
+                },
+                "scopes": {
+                  "type": "array",
+                  "description": "List of OIDC scopes to request (e.g. openid, profile, email)",
+                  "items": { "type": "string" }
+                },
+                "issuer": {
+                  "type": "string",
+                  "description": "OIDC provider base URL reachable by services"
+                },
+                "externalOidcAuthority": {
+                  "type": "string",
+                  "description": "OIDC provider base URL reachable by clients"
+                },
+                "organizationAssignment": {
+                  "description": "Organization assignment configuration",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": { "type": "string", "enum": ["static", "dynamic"] },
+                    "organizationName": { "type": "string" },
+                    "claimPath": {
+                      "type": "array",
+                      "description": "JSON path to the claim for dynamic assignment",
+                      "items": { "type": "string" }
+                    },
+                    "organizationNamePrefix": { "type": "string", "description": "Prefix for organization name (dynamic)" },
+                    "organizationNameSuffix": { "type": "string", "description": "Suffix for organization name (dynamic)" }
+                  }
+                },
+                "usernameClaim": {
+                  "description": "Username claim to extract from OIDC token (default: \"preferred_username\")",
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "roleAssignment": {
+                  "description": "Role assignment configuration",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": { "type": "string", "enum": ["dynamic", "static"] },
+                    "claimPath": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "separator": {
+                      "type": "string",
+                      "description": "Separator for org:role format in dynamic assignment (default ':')"
+                    },
+                    "roles": {
+                      "type": "array",
+                      "description": "Static list of role names (for type: static)",
+                      "items": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            },
+            "aap": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "apiUrl": { "type": "string", "description": "The URL of the AAP Gateway API endpoint" },
+                "externalApiUrl": { "type": "string", "description": "The URL of the AAP Gateway API endpoint that is reachable by clients" },
+                "authorizationUrl": { "type": "string", "description": "OAuth2 authorization endpoint URL" },
+                "tokenUrl": { "type": "string", "description": "OAuth2 token endpoint URL" },
+                "clientId": { "type": "string", "description": "OAuth2 client ID" },
+                "clientSecret": { "type": "string", "description": "OAuth2 client secret (prefer mounting from a secret)" },
+                "enabled": { "type": "boolean", "description": "Whether the AAP provider is enabled" },
+                "organizationNamePrefix": { "type": "string", "description": "Optional prefix for organization names from this provider." },
+                "scopes": {
+                  "type": "array",
+                  "description": "List of OAuth2 scopes to request",
+                  "items": { "type": "string" }
+                },
+                "identityCacheTTL": { "type": "string", "description": "TTL for AAP identity cache (Go duration string, e.g. 45s, 2m)" }
+              }
+            },
+            "openshift": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "createAdminUser": { "type": "boolean", "description": "Create default flightctl-admin ServiceAccount with admin access" },
+                "clusterControlPlaneUrl": { "type": "string", "description": "OpenShift cluster control plane API URL for RBAC checks (leave empty for auto-detection)" },
+                "externalApiTokenSecretName": {
+                  "type": "string",
+                  "description": "Name of a secret that holds the API token when flightctl is not running in-cluster"
+                },
+                "clientId": { "type": "string", "description": "OAuth client ID (will be set to flightctl-{releaseName})" },
+                "clientSecret": { "type": "string", "description": "OAuth client secret (leave empty for auto-generation)" },
+                "authorizationUrl": { "type": "string", "description": "OAuth authorization URL (leave empty to auto-detect from OpenShift cluster)" },
+                "tokenUrl": { "type": "string", "description": "OAuth token URL (leave empty to auto-detect from OpenShift cluster)" },
+                "issuer": { "type": "string", "description": "OAuth issuer URL (defaults to authorizationUrl if not specified)" },
+                "projectLabelFilter": { "type": "string", "description": "Project label filter for OpenShift projects (leave empty to use default: io.flightctl/instance=<releaseName>)" },
+                "organizationNamePrefix": { "type": "string", "description": "Optional prefix for organization names from this provider." }
+              }
+            }
+          }
+        },
+        "exposeServicesMethod": {
+          "type": "string",
+          "description": "How services are exposed: 'auto', 'route', 'gateway' or 'none'.",
+          "enum": ["auto", "route", "gateway", "none"]
+        },
+        "gateway": {
+          "type": "object",
+          "description": "Gateway API exposure configuration",
+          "additionalProperties": false,
+          "properties": {
+            "gatewayClassName": { "type": "string", "description": "Gateway API class name for gateway exposure method" },
+            "ports": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "tls": { "type": "integer", "description": "TLS port for Gateway API configuration" },
+                "http": { "type": "integer", "description": "HTTP port for Gateway API configuration" }
+              }
+            }
+          }
+        },
+        "sshKnownHosts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "type": "string",
+              "description": "SSH known_hosts file content for Git host key verification."
+            }
+          }
+        },
+        "additionalRouteLabels": {
+          "type": ["object", "null"],
+          "description": "Additional labels for routes.",
+          "additionalProperties": { "type": "string" }
+        },
+        "additionalPVCLabels": {
+          "type": ["object", "null"],
+          "description": "Additional labels for PVCs.",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "db": {
+      "type": "object",
+      "description": "Database configuration",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["builtin", "external"], "description": "Type of database to use. Can be 'builtin' or 'external'. Only PostgreSQL DB is supported." },
+        "name": { "type": "string", "description": "Database name for Flight Control" },
+        "builtin": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "masterUserSecretName": { "type": "string", "description": "Database master/admin secret name containing username/password. If not provided, the secret will be generated" },
+            "applicationUserSecretName": { "type": "string", "description": "Database application user secret name containing username/password. If not provided, the secret will be generated" },
+            "migrationUserSecretName": { "type": "string", "description": "Database migration user secret name containing username/password. If not provided, the secret will be generated" },
+            "image": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": { "type": "string", "description": "PostgreSQL container image" },
+                "tag": { "type": "string", "description": "PostgreSQL image tag" },
+                "pullPolicy": { "type": "string", "description": "Image pull policy for database container" }
+              }
+            },
+            "maxConnections": { "type": "integer", "description": "Maximum number of database connections" },
+            "storage": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "size": { "type": "string", "description": "Persistent volume size for database storage" }
+              }
+            },
+            "resources": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requests": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "cpu": { "type": "string", "description": "CPU resource requests for database pod" },
+                    "memory": { "type": "string", "description": "Memory resource requests for database pod" }
+                  }
+                }
+              }
+            },
+            "fsGroup": { "type": "string", "description": "File system group ID for database pod security context" },
+            "additionalPVCLabels": {
+              "type": ["object", "null"],
+              "description": "Additional labels for DB PVCs.",
+              "additionalProperties": { "type": "string" }
+            },
+            "volumeName": { "type": "string", "description": "Name of a specific pre-provisioned PersistentVolume to bind this PVC to. Only takes effect when the PVC is first created — changing this on an already-bound PVC will make `helm upgrade` fail, because Kubernetes forbids mutating volumeName after creation. Leave empty for normal (dynamic or best-fit static) binding. Note: the target PV's capacity must be >= `storage.size` above, or binding will fail. Setting this (or selector.matchLabels below) also makes the chart render storageClassName: \"\" on this PVC when global.storageClassName is left empty, so a cluster-default StorageClass can't get injected and mismatch the target PV." },
+            "selector": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "matchLabels": {
+                  "type": "object",
+                  "additionalProperties": { "type": "string" },
+                  "description": "Label selector for binding this PVC to a pre-provisioned PersistentVolume by matching labels on the PV. Same immutability caveat as volumeName applies. Leave empty to disable label-based selection."
+                }
+              }
+            }
+          }
+        },
+        "external": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "hostname": { "type": "string", "description": "External database hostname" },
+            "port": { "type": "integer", "description": "Database port number" },
+            "masterUserSecretName": { "type": "string" },
+            "applicationUserSecretName": { "type": "string", "description": "Database application user secret name containing username/password." },
+            "migrationUserSecretName": { "type": "string", "description": "Database migration user secret name containing username/password." },
+            "sslmode": {
+              "type": "string",
+              "description": "SSL mode for database connections (disable, allow, prefer, require, verify-ca, verify-full)",
+              "enum": ["", "disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
+            },
+            "tlsConfigMapName": { "type": "string", "description": "ConfigMap containing CA certificate (automatically mounted at /etc/ssl/postgres/)" },
+            "tlsSecretName": { "type": "string", "description": "Secret containing client certificates (automatically mounted at /etc/ssl/postgres/)" }
+          }
+        }
+      }
+    },
+    "kv": {
+      "type": "object",
+      "description": "Key-Value store (Redis) configuration",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "Redis container image" },
+            "tag": { "type": "string", "description": "Redis image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for Redis container" }
+          }
+        },
+        "passwordSecretName": { "type": "string", "description": "Secret containing password for Redis password (leave empty for auto-generation)" },
+        "loglevel": { "type": "string", "enum": ["debug", "verbose", "notice", "warning"], "description": "Redis log level (debug, verbose, notice, warning)" },
+        "fsGroup": { "type": "string", "description": "File system group ID for Redis pod security context" },
+        "maxmemory": { "type": "string", "description": "Maximum memory usage for Redis" },
+        "maxmemoryPolicy": {
+          "type": "string",
+          "description": "Redis memory eviction policy",
+          "enum": ["allkeys-lru", "volatile-lru", "allkeys-lfu", "volatile-lfu", "volatile-ttl", "noeviction"]
+        }
+      }
+    },
+    "alertmanager": {
+      "type": "object",
+      "description": "Alertmanager configuration",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Enable Alertmanager for alert handling" },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "Alertmanager container image" },
+            "tag": { "type": "string", "description": "Alertmanager image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for Alertmanager container" }
+          }
+        },
+        "additionalRouteLabels": {
+          "type": ["object", "null"],
+          "description": "Additional labels for Alert Manager routes.",
+          "additionalProperties": { "type": "string" }
+        },
+        "additionalPVCLabels": {
+          "type": ["object", "null"],
+          "description": "Additional labels for Alert Manager PVCs.",
+          "additionalProperties": { "type": "string" }
+        },
+        "volumeName": { "type": "string", "description": "Name of a specific pre-provisioned PersistentVolume to bind this PVC to. Only takes effect when the PVC is first created — changing this on an already-bound PVC will make `helm upgrade` fail, because Kubernetes forbids mutating volumeName after creation. Leave empty for normal (dynamic or best-fit static) binding. Note: the target PV's capacity must be >= the fixed `2Gi` this PVC requests, or binding will fail. Setting this (or selector.matchLabels below) also makes the chart render storageClassName: \"\" on this PVC when global.storageClassName is left empty, so a cluster-default StorageClass can't get injected and mismatch the target PV." },
+        "selector": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "matchLabels": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "Label selector for binding this PVC to a pre-provisioned PersistentVolume by matching labels on the PV. Same immutability caveat as volumeName applies. Leave empty to disable label-based selection."
+            }
+          }
+        }
+      }
+    },
+    "organizations": {
+      "type": "object",
+      "description": "Initial LabelSyncMapping provisioning configuration",
+      "additionalProperties": false,
+      "properties": {
+        "initialLabelSyncMappings": {
+          "type": "array",
+          "description": "YAML sequence of LabelSyncMapping resources attempted for each new or existing organization. Replaces the defaults; an empty sequence disables automatic mapping creation.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["apiVersion", "kind", "metadata", "spec"],
+            "properties": {
+              "apiVersion": { "type": "string", "enum": ["flightctl.io/v1beta1"] },
+              "kind": { "type": "string", "enum": ["LabelSyncMapping"] },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string", "maxLength": 253 },
+                  "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+                  "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+                }
+              },
+              "spec": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["resourceType", "expression"],
+                "properties": {
+                  "resourceType": { "type": "string", "enum": ["Device"] },
+                  "key": { "type": ["string", "null"] },
+                  "expression": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "api": {
+      "type": "object",
+      "description": "API server configuration",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "API server container image" },
+            "tag": { "type": "string", "description": "API server image tag (leave empty to use chart appVersion)" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for API server container" }
+          }
+        },
+        "rateLimit": {
+          "type": ["object", "null"],
+          "description": "Rate limiting configuration - enabled by default for production",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "description": "Enable or disable rate limiting" },
+            "requests": { "type": "integer", "description": "Maximum requests per window for general API endpoints" },
+            "window": { "type": "string", "description": "Time window for rate limiting (e.g., \"1m\", \"1h\")" },
+            "authRequests": { "type": "integer", "description": "Maximum authentication requests per auth window" },
+            "authWindow": { "type": "string", "description": "Time window for authentication rate limiting" },
+            "trustedProxies": {
+              "type": "array",
+              "description": "List of trusted proxy IP ranges that can set X-Forwarded-For headers",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "additionalRouteLabels": {
+          "type": ["object", "null"],
+          "description": "Additional labels for API routes.",
+          "additionalProperties": { "type": "string" }
+        },
+        "additionalPVCLabels": {
+          "type": ["object", "null"],
+          "description": "Additional labels for API PVCs.",
+          "additionalProperties": { "type": "string" }
+        },
+        "renderedSpecPollTimeout": {
+          "type": "string",
+          "description": "Timeout for the rendered device spec long-poll (e.g., 2m, 30s)"
+        }
+      }
+    },
+    "cliArtifacts": {
+      "type": "object",
+      "description": "CLI artifacts service configuration",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Enable CLI artifacts service" },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "CLI artifacts container image" },
+            "tag": { "type": "string", "description": "CLI artifacts image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for CLI artifacts container" }
+          }
+        },
+        "additionalRouteLabels": {
+          "type": ["object", "null"],
+          "description": "Additional labels for CLI Artifacts routes.",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "description": "Worker configuration",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "Worker container image" },
+            "tag": { "type": "string", "description": "Worker image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for worker container" }
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "clusterLevelSecretAccess": {
+          "type": "boolean",
+          "description": "Allow worker to access cluster-level secrets for embedding in device configs"
+        },
+        "renderTimeout": {
+          "type": "string",
+          "description": "Time budget for a single device render operation including VM conversion and DB writes (default 60s)"
+        },
+        "imageDigestCacheTTL": {
+          "type": "string",
+          "description": "Maximum age of cached OCI image digest resolutions used during delta preparation (default 15m)"
+        },
+        "helmImageRefsCacheTTL": {
+          "type": "string",
+          "description": "Maximum age of cached Helm workload image references before the chart is rendered again (default 15m)"
+        },
+        "vmRender": {
+          "type": "object",
+          "description": "VM application render options passed to vm-to-quadlet by both worker services",
+          "additionalProperties": false,
+          "properties": {
+            "launcherImage": {
+              "type": "string",
+              "description": "virt-launcher image used when converting VmApplications to Quadlet units (leave empty to use the worker default)"
+            },
+            "launcherImages": {
+              "type": "object",
+              "description": "virt-launcher images keyed by os-release ID and major from status.systemInfo (e.g. \"rhel-9\", \"rhel-10\")",
+              "additionalProperties": { "type": "string" }
+            },
+            "passtWorkarounds": {
+              "type": "boolean",
+              "description": "Enable passt networking workarounds for older virt-launcher images"
+            }
+          }
+        }
+      }
+    },
+    "deltaWorker": {
+      "type": "object",
+      "description": "Delta-worker configuration",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "Delta-worker container image" },
+            "tag": { "type": "string", "description": "Delta-worker image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for delta-worker container" }
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "resources": {
+          "type": "object",
+          "description": "Resource requests and limits for the delta-worker container",
+          "additionalProperties": true
+        }
+      }
+    },
+    "periodic": {
+      "type": "object",
+      "description": "Periodic job configuration",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "Periodic container image" },
+            "tag": { "type": "string", "description": "Periodic image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for periodic container" }
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "consumers": { "type": "integer", "description": "Number of periodic consumers" },
+        "clusterLevelSecretAccess": {
+          "type": "boolean",
+          "description": "Allow flightctl-periodic to list/watch secrets at the cluster level for change detection"
+        },
+        "metrics": {
+          "type": "object",
+          "description": "Prometheus metrics endpoint configuration",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "description": "Enable Prometheus metrics endpoint" },
+            "address": { "type": "string", "description": "Address for the metrics HTTP server" }
+          }
+        },
+        "tasks": {
+          "type": "object",
+          "description": "Periodic tasks configuration",
+          "additionalProperties": false,
+          "properties": {
+            "resourceSync": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "schedule": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "interval": { "type": "string", "description": "Interval for the resource sync task" }
+                  }
+                }
+              }
+            },
+            "dependencySync": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "schedule": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "interval": { "type": "string", "description": "Interval for the dependency-sync-git and dependency-sync-http tasks" }
+                  }
+                }
+              }
+            },
+            "repositoryTester": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "schedule": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "interval": { "type": "string", "description": "Interval for the repository-tester task, which probes Repository resources and sets their Accessible condition" }
+                  }
+                }
+              }
+            },
+            "deltaPrepareDeadline": {
+              "type": "object",
+              "description": "Deadline sweep schedule for delta prepares",
+              "additionalProperties": false,
+              "properties": {
+                "schedule": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "interval": { "type": "string", "description": "Interval for the delta prepare deadline sweep" }
+                  }
+                }
+              }
+            },
+            "labelMappingScan": {
+              "type": "object",
+              "description": "Periodic label mapping scan configuration",
+              "additionalProperties": false,
+              "properties": {
+                "schedule": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "interval": { "type": "string", "default": "2m", "description": "Interval for the label mapping scan task" }
+                  }
+                },
+                "pageSize": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 1000, "description": "Maximum number of devices in each label mapping scan page" },
+                "timeBudget": { "type": "string", "default": "30s", "description": "Maximum work time per label mapping scan invocation" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "remoteAccess": {
+      "type": "object",
+      "description": "Remote access service configuration",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Enable remote access service" },
+        "logLevel": { "type": "string", "description": "Log level for the remote access service" },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "Remote access container image" },
+            "tag": { "type": "string", "description": "Remote access image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for remote access container" }
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "resources": {
+          "type": "object",
+          "description": "Resource requests and limits for the remote access container",
+          "additionalProperties": false,
+          "properties": {
+            "requests": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "cpu": { "type": "string" },
+                "memory": { "type": "string" }
+              }
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "cpu": { "type": "string" },
+                "memory": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "alertExporter": {
+      "type": "object",
+      "description": "Alert exporter configuration",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Enable alert exporter service" },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "Alert exporter container image" },
+            "tag": { "type": "string", "description": "Alert exporter image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for alert exporter container" }
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "alertmanagerProxy": {
+      "type": "object",
+      "description": "Alertmanager proxy configuration",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Enable Alertmanager proxy service" },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "Alertmanager proxy container image" },
+            "tag": { "type": "string", "description": "Alertmanager proxy image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for Alertmanager proxy container" }
+          }
+        }
+      }
+    },
+    "ubiMinimal": {
+      "type": "object",
+      "description": "UBI minimal image used by init containers (e.g. alertmanager-proxy, test pods)",
+      "additionalProperties": false,
+      "properties": {
+        "image": { "type": "string", "description": "UBI minimal container image" },
+        "tag": { "type": "string", "description": "UBI minimal image tag" }
+      }
+    },
+    "imageBuilderApi": {
+      "type": "object",
+      "description": "ImageBuilder API configuration",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Enable ImageBuilder API service" },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "ImageBuilder API container image" },
+            "tag": { "type": "string", "description": "ImageBuilder API image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for ImageBuilder API container" }
+          }
+        }
+      }
+    },
+    "imageBuilderWorker": {
+      "type": "object",
+      "description": "ImageBuilder Worker configuration",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Enable ImageBuilder Worker service" },
+        "replicas": { "type": "integer", "description": "Number of replicas for ImageBuilder Worker" },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "ImageBuilder Worker container image" },
+            "tag": { "type": "string", "description": "ImageBuilder Worker image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for ImageBuilder Worker container" }
+          }
+        },
+        "logLevel": { "type": "string", "description": "Log level for ImageBuilder Worker" },
+        "maxConcurrentBuilds": { "type": "integer", "description": "Maximum concurrent builds" },
+        "defaultTTL": { "type": "string", "description": "Default TTL for build resources" },
+        "imageBuilderTimeout": { "type": "string", "description": "Inactivity timeout for image builds and exports" },
+        "timeoutCheckTaskInterval": { "type": "string", "description": "Interval between image build and export timeout checks" },
+        "rpmRepoUrl": { "type": "string", "description": "RPM repository URL to add via dnf config-manager --add-repo for flightctl-agent package" },
+        "rpmRepoAdd": { "type": "boolean", "description": "Whether to add the RPM repository via dnf config-manager --add-repo (defaults to true)" },
+        "rpmRepoEnable": { "type": "string", "description": "RPM repository name to enable via --enablerepo for flightctl-agent package installation" },
+        "dnfTimeout": { "type": "integer", "description": "DNF timeout in seconds for flightctl-agent installation (default: 5)" },
+        "dnfRetries": { "type": "integer", "description": "DNF retry count for flightctl-agent installation (default: 0)" },
+        "dnfSkipUnavailable": { "type": "boolean", "description": "Skip unavailable packages during flightctl-agent installation (default: true)" },
+        "entitlementCertsSecretName": { "type": "string", "description": "Secret name containing RHEL entitlement certificates. On OpenShift, copy 'etc-pki-entitlement' from 'openshift-config-managed' namespace" },
+        "yumReposSecretName": { "type": "string", "description": "Secret name containing yum repository configuration files, mounted at /etc/yum.repos.d" },
+        "rhsmSecretName": { "type": "string", "description": "Secret name containing RHEL subscription manager configuration, mounted at /etc/rhsm" },
+        "rhsmCaSecretName": { "type": "string", "description": "Secret name containing RHSM CA certificates, mounted at /etc/rhsm/ca" },
+        "privileged": { "type": "boolean", "description": "Enable privileged mode for container-in-container builds" },
+        "serviceImages": {
+          "type": "object",
+          "description": "Builder images (podman, bootc-image-builder, syft) and skip-TLS options",
+          "properties": {
+            "pullSecretName": {
+              "type": "string",
+              "description": "Secret name containing registry credentials (auth.json) for pulling builder service images. The secret must have a key named auth.json in podman/Docker auth format."
+            },
+            "podman": {
+              "type": "object",
+              "properties": {
+                "image": { "type": "string", "description": "Podman builder image (leave empty to use default)" },
+                "skipTlsVerify": { "type": "boolean", "description": "Set to true to skip TLS verification when pulling the Podman builder image" }
+              }
+            },
+            "bootcImageBuilder": {
+              "type": "object",
+              "properties": {
+                "image": { "type": "string", "description": "bootc-image-builder image (leave empty to use default)" },
+                "skipTlsVerify": { "type": "boolean", "description": "Set to true to skip TLS verification when pulling the bootc-image-builder image" }
+              }
+            },
+            "syft": {
+              "type": "object",
+              "properties": {
+                "image": { "type": "string", "description": "Syft image for SBOM generation; empty uses docker.io/anchore/syft:v1.44.0" },
+                "skipTlsVerify": { "type": "boolean", "description": "Set to true to skip TLS verification when pulling the Syft image" }
+              }
+            }
+          }
+        },
+        "sbom": {
+          "type": "object",
+          "description": "SBOM generation and distribution after image push",
+          "properties": {
+            "enabled": { "type": "boolean", "description": "Enable SBOM generation" },
+            "pushToRegistry": { "type": "boolean", "description": "Push SBOM as OCI referrer artifact" },
+            "uploadToTrustify": { "type": "boolean", "description": "Upload SBOM to Trustify when vulnerability reporting is enabled" },
+            "purlTransform": {
+              "type": "object",
+              "description": "PURL normalization for advisory matching; rules are per package type under byType (e.g. rpm)",
+              "properties": {
+                "enabled": { "type": "boolean", "description": "Enable PURL normalization" },
+                "byType": {
+                  "type": "object",
+                  "description": "Map package type ID (rpm, npm, ...) to qualifier and namespace rules for that type only",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "namespaceMapping": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" },
+                        "description": "Map PURL namespace to advisory namespace for this type"
+                      },
+                      "distroMapping": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" },
+                        "description": "Map distro qualifier values for this type"
+                      },
+                      "allowedQualifiers": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Qualifier keys to retain; omit or empty to keep qualifiers unchanged"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "resources": { "type": "object", "description": "Resource requests and limits" }
+      }
+    },
+    "telemetryGateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "Telemetry gateway container image" },
+            "tag": { "type": "string", "description": "Telemetry gateway image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for Telemetry gateway container" }
+          }
+        },
+        "additionalRouteLabels": {
+          "type": ["object", "null"],
+          "description": "Additional labels for Telemetry gateway routes.",
+          "additionalProperties": { "type": "string" }
+        },
+        "extraEnvs": {
+          "type": "array",
+          "description": "Extra environment variables for the telemetry gateway container. Use to inject secrets for forward header values via ${VAR} expansion.",
+          "items": { "type": "object" }
+        },
+        "extraVolumeMounts": {
+          "type": "array",
+          "description": "Extra volume mounts for the telemetry gateway container. Use to mount TLS certificates for mTLS forward connections.",
+          "items": { "type": "object" }
+        },
+        "extraVolumes": {
+          "type": "array",
+          "description": "Extra volumes for the telemetry gateway pod.",
+          "items": { "type": "object" }
+        },
+        "forward": {
+          "type": "object",
+          "description": "Forward telemetry to an upstream OTLP collector.",
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": {
+              "type": "string",
+              "description": "Upstream OTLP endpoint. Use host:port for gRPC, http(s):// URL for OTLP/HTTP."
+            },
+            "headers": {
+              "type": "object",
+              "description": "Custom HTTP headers for authentication (OTLP/HTTP only).",
+              "additionalProperties": { "type": "string" }
+            },
+            "tls": {
+              "type": "object",
+              "description": "TLS configuration for the forward connection.",
+              "additionalProperties": false,
+              "properties": {
+                "insecureSkipTlsVerify": { "type": "boolean", "description": "Skip TLS certificate verification." },
+                "caFile": { "type": "string", "description": "Path to CA certificate file." },
+                "certFile": { "type": "string", "description": "Path to client certificate file (mTLS)." },
+                "keyFile": { "type": "string", "description": "Path to client key file (mTLS)." }
+              }
+            }
+          }
+        }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "description": "Web UI configuration",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Enable web UI deployment" },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "UI container image" },
+            "pluginImage": { "type": "string", "description": "UI Plugin container image" },
+            "tag": { "type": "string", "description": "UI container image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for UI container" }
+          }
+        },
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "insecureSkipTlsVerify": { "type": "boolean", "description": "Set to true if auth TLS certificate validation should be skipped." },
+            "caCert": { "type": "string", "description": "A custom CA cert for Auth TLS." }
+          }
+        },
+        "trustXForwardedHeaders": {
+          "type": "boolean",
+          "description": "When true, the UI trusts X-Forwarded-* headers for redirect/cookie scheme resolution."
+        },
+        "trustedProxyCidrs": {
+          "type": "string",
+          "description": "Optional comma-separated CIDR list of trusted proxy source addresses for forwarded headers."
+        },
+        "additionalRouteLabels": {
+          "type": ["object", "null"],
+          "description": "Additional labels for UI routes.",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "clusterCli": {
+      "type": "object",
+      "description": "Cluster CLI configuration",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "Cluster CLI container image" },
+            "tag": { "type": "string", "description": "Cluster CLI image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for cluster CLI container" }
+          }
+        }
+      }
+    },
+    "dbSetup": {
+      "type": "object",
+      "description": "Database setup/migration configuration",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "description": "Database setup container image" },
+            "tag": { "type": "string", "description": "Database setup image tag" },
+            "pullPolicy": { "type": "string", "description": "Image pull policy for database setup container" }
+          }
+        },
+        "wait": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "timeout": { "type": "integer", "description": "Seconds to wait for database readiness before failing" },
+            "sleep": { "type": "integer", "description": "Seconds to sleep between database connection attempts" }
+          }
+        },
+        "migration": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "backoffLimit": { "type": "integer", "description": "Number of retries for the migration Job on failure" },
+            "activeDeadlineSeconds": { "type": "integer", "description": "Maximum runtime in seconds for the migration Job (0 = no deadline)" }
+          }
+        }
+      }
+    },
+    "encryption": {
+      "type": "object",
+      "description": "Encryption-at-rest key configuration for key rotation support",
+      "additionalProperties": false,
+      "properties": {
+        "activeKeyID": {
+          "type": "string",
+          "description": "Key ID used for new encryptions. Must match one of the IDs in the keys list."
+        },
+        "keys": {
+          "type": "array",
+          "description": "List of available encryption keys. Old keys remain available for decryption during rotation.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "file"],
+            "properties": {
+              "id": { "type": "string", "description": "Logical key identifier" },
+              "file": { "type": "string", "description": "Filename within the flightctl-encryption-key Secret" }
+            }
+          }
+        }
+      }
+    },
+    "upgradeHooks": {
+      "type": "object",
+      "description": "Upgrade hooks configuration",
+      "additionalProperties": false,
+      "properties": {
+        "scaleDown": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "condition": {
+              "type": "string",
+              "description": "When to run pre-upgrade scale down job: \"always\", \"never\", or \"chart\" (default). \"chart\" runs only if helm.sh/chart changed.",
+              "enum": ["always", "never", "chart"]
+            },
+            "deployments": {
+              "type": "array",
+              "description": "List of Deployments to scale down in order",
+              "items": { "type": "string" }
+            },
+            "timeoutSeconds": { "type": "integer", "description": "Timeout in seconds to wait for rollout per Deployment" }
+          }
+        },
+        "databaseMigrationDryRun": {
+          "type": "boolean",
+          "description": "Enable pre-upgrade database migration dry-run hook"
+        }
+      }
+    },
+    "vulnerabilityReporting": {
+      "type": "object",
+      "description": "Vulnerability integration configuration",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Enable vulnerability integration (sync task + API endpoints)" },
+        "syncInterval": { "type": "string", "description": "Sync interval for periodic Trustify fetch (e.g. \"15m\", \"1h\")" },
+        "backend": {
+          "type": "string",
+          "description": "Vulnerability scanning backend ('trustify' or 'quay'); leave empty to default to Trustify when a trustify config with a non-empty endpoint is present.",
+          "enum": ["", "trustify", "quay"]
+        },
+        "trustify": {
+          "type": "object",
+          "description": "Trustify API connection details",
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": { "type": "string", "description": "Trustify API base URL (do not include /api/v1 or /api/v2 paths)" },
+            "auth": {
+              "type": "object",
+              "description": "Trustify authentication configuration",
+              "additionalProperties": false,
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "description": "Authentication mode. Allowed values: 'client-credentials', 'none'.",
+                  "enum": ["client-credentials", "none"]
+                },
+                "oidcIssuerUrl": { "type": "string", "description": "OIDC issuer URL for client-credentials mode" },
+                "secretName": { "type": "string", "description": "Name of the Kubernetes Secret containing 'client_id' and 'client_secret' keys" }
+              }
+            },
+            "caFile": { "type": "string", "description": "Path to a CA bundle for verifying the Trustify server certificate. If unset, system roots are used." },
+            "caCertConfigMapName": { "type": "string", "description": "Name of a ConfigMap containing key 'ca-cert.pem' with the CA bundle for the Trustify server. When set, it is mounted and used instead of caFile." },
+            "skipTlsVerify": { "type": "boolean", "description": "Skip TLS certificate verification (insecure, for lab/air-gap only). Defaults to false." }
+          }
+        },
+        "quay": {
+          "type": "object",
+          "description": "Quay Security API connection details",
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": { "type": "string", "description": "Quay API base URL (e.g. \"https://quay.io\")" },
+            "secretName": { "type": "string", "description": "Name of the Kubernetes Secret containing the 'token' key for Quay Security API bearer authentication" },
+            "maxConcurrentRequests": { "type": "integer", "description": "Maximum number of concurrent Quay API requests. Defaults to 5 when unset.", "minimum": 0 },
+            "caFile": { "type": "string", "description": "Path to a CA bundle for verifying the Quay server certificate. If unset, system roots are used." },
+            "caCertConfigMapName": { "type": "string", "description": "Name of a ConfigMap containing key 'ca-cert.pem' with the CA bundle for the Quay server. When set, it is mounted and used instead of caFile." },
+            "skipTlsVerify": { "type": "boolean", "description": "Skip TLS certificate verification (insecure, for lab/air-gap only). Defaults to false." }
+          }
+        }
+      }
+    },
+    "deltaGeneration": {
+      "type": "object",
+      "description": "Default OCI write target for generated deltas when an organization has no deltaStorageTarget Repository",
+      "additionalProperties": false,
+      "properties": {
+        "defaultRepository": {
+          "type": "object",
+          "description": "Default repository used when the org has no deltaStorageTarget",
+          "additionalProperties": false,
+          "properties": {
+            "registry": { "type": "string", "description": "Registry hostname used as the login/CA host and as the prefix of the push path" },
+            "repository": { "type": "string", "description": "Optional repository path under registry (e.g. my-org/diffs). Mutually exclusive with namespace" },
+            "namespace": { "type": "string", "description": "Optional namespace under registry (e.g. my-org). Mutually exclusive with repository" },
+            "scheme": {
+              "type": "string",
+              "description": "URL scheme for connecting to the registry",
+              "enum": ["", "http", "https"]
+            },
+            "skipServerVerification": { "type": "boolean", "description": "Skip TLS verification when connecting to the registry" },
+            "caCrt": { "type": "string", "description": "Base64-encoded PEM of a custom registry CA (same encoding as Repository spec ca.crt)" },
+            "secretName": { "type": "string", "description": "Name of the Kubernetes Secret containing 'username' and 'password' keys" }
+          },
+          "allOf": [
+            {
+              "not": {
+                "allOf": [
+                  {
+                    "required": ["repository"],
+                    "properties": {
+                      "repository": { "type": "string", "minLength": 1 }
+                    }
+                  },
+                  {
+                    "required": ["namespace"],
+                    "properties": {
+                      "namespace": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "maxConcurrentDeltaGenerations": {
+          "type": "integer",
+          "description": "Maximum number of concurrent delta generation jobs. Defaults to 2 when omitted or <= 0"
+        },
+        "timeout": {
+          "type": "string",
+          "description": "Per-job timeout for generating a delta (Go duration, e.g. 30m). Defaults to 30m when omitted or <= 0"
+        },
+        "completionTimeout": {
+          "type": "string",
+          "description": "Timeout for terminal-generation completion fan-out (Go duration, e.g. 10m). Defaults to 10m when omitted or <= 0"
+        },
+        "maxWaitForDelta": {
+          "type": "string",
+          "description": "Optional prepare wait cap (Go duration, e.g. 10m). Omitted means no deadline. 0s generates then resumes immediately"
+        }
+      }
+    },
+    "dev": {
+      "type": "object",
+      "description": "Development overrides",
+      "additionalProperties": true,
+      "properties": {
+        "exposeServicesMethod": {
+          "type": "string",
+          "enum": ["nodePort"]
+        },
+        "nodePorts": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "api": { "type": "integer" },
+            "agent": { "type": "integer" },
+            "ui": { "type": "integer" },
+            "cliArtifacts": { "type": "integer" },
+            "db": { "type": "integer" },
+            "kv": { "type": "integer" },
+            "alertmanager": { "type": "integer" },
+            "alertmanagerProxy": { "type": "integer" },
+            "telemetryGatewayOtlp": { "type": "integer" },
+            "telemetryGatewayProm": { "type": "integer" },
+            "gitserver": { "type": "integer" },
+            "registry": { "type": "integer" }
+          }
+        },
+        "tracing": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "endpoint": { "type": "string" },
+            "insecure": { "type": "boolean" }
+          }
+        },
+        "profiling": {
+          "type": "object",
+          "description": "Optional pprof and/or Pyroscope profiling for long-running services",
+          "additionalProperties": false,
+          "properties": {
+            "pprof": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "port": { "type": "integer", "description": "Optional loopback pprof port override for a single process" }
+              }
+            },
+            "pyroscope": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "serverAddress": { "type": "string" },
+                "applicationName": { "type": "string" },
+                "basicAuthUser": { "type": "string" },
+                "basicAuthPassword": { "type": "string" },
+                "tenantID": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

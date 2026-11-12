@@ -1,0 +1,38 @@
+import type { Device, Fleet } from '@flightctl/types';
+import type { CatalogItemArtifactType, DeviceFeatures } from '@flightctl/types/alpha';
+
+export const specificationsStepId = 'specifications';
+export const selectTargetStepId = 'select-target';
+export const appConfigStepId = 'app-config';
+export const reviewStepId = 'review';
+
+export type InstallSpecFormik = {
+  version: string;
+  channel: string;
+  featureRequirements?: DeviceFeatures;
+};
+
+export type TargetPickerFormik = {
+  target: 'fleet' | 'device' | 'new-device' | undefined;
+  fleet: Fleet | undefined;
+  device: Device | undefined;
+};
+
+export type InstallOsFormik = InstallSpecFormik &
+  TargetPickerFormik & {
+    deploymentTarget: CatalogItemArtifactType | undefined;
+    // Set after selecting the target, when the selection matches the current target spec
+    isSpecUnchanged: boolean;
+  };
+
+export type DynamicFormConfigFormik = {
+  appName: string;
+  configureVia: 'editor' | 'form';
+  editorContent: string;
+  formValues: Record<string, unknown> | undefined;
+  configSchema: Record<string, unknown> | undefined;
+  /** Set by AppConfigStep when form view is used; used by wizard footer validation */
+  dynamicFormValid: boolean;
+};
+
+export type InstallAppFormik = DynamicFormConfigFormik & InstallSpecFormik & TargetPickerFormik;

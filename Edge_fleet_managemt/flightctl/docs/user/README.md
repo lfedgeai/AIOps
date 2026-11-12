@@ -1,0 +1,141 @@
+# User Documentation
+
+Welcome to the Flight Control user documentation.
+
+**[Introduction](introduction.md)** - An introduction to the project, basic concepts, and Flight Control's high-level architecture.
+
+**Installing Flight Control** - How to install the Flight Control service, agent, CLI, and optional add-ons.
+
+* **Deploying the Flight Control Service**
+
+  * **[Installing the Flight Control Service on Kubernetes](installing/installing-service-on-kubernetes.md)**
+    * [Installing on Kubernetes](installing/installing-service-on-kubernetes.md#installing-on-kubernetes)
+    * [Installing on OpenShift](installing/installing-service-on-kubernetes.md#installing-on-openshift)
+    * [Installing on MicroShift](installing/installing-service-on-kubernetes.md#installing-on-microshift)
+    * [Installing on Disconnected OpenShift](installing/installing-service-on-openshift-disconnected.md)
+    * [Installing with Advanced Cluster Management](installing/installing-service-on-kubernetes.md#installing-with-advanced-cluster-management)
+    * [Installing with Ansible Automation Platform](installing/installing-service-on-kubernetes.md#installing-with-ansible-automation-platform)
+
+  * **[Installing the Flight Control Service on Linux](installing/installing-service-on-linux.md)**
+    * [Installing offline on Linux (air-gapped)](installing/installing-service-on-linux-offline.md)
+
+  * Configuring the Flight Control Service
+    * [Configuring Authentication and Authorization](installing/configuring-auth/overview.md)
+    * [Configuring an External PostgreSQL Database](installing/configuring-external-database.md)
+    * [Configuring the ImageBuilder Worker](installing/configuring-imagebuilder.md)
+    * [Configuring VM application rendering](installing/configuring-vm-render.md)
+    * [Configuring Device Attestation](installing/configuring-device-attestation.md)
+    * [Configuring Rate Limits on API Requests](installing/configuring-rate-limiting.md)
+    * [Configuring Vulnerability Integration](installing/configuring-vulnerability-integration.md)
+    * [Configuring Encryption at Rest](installing/configuring-encryption.md)
+
+  * Monitoring the Flight Control Service
+    * [Deploying the Observability Stack on Kubernetes](installing/deploying-observability-kubernetes.md)
+    * [Deploying the Observability Stack on Linux](installing/deploying-observability-linux.md)
+    * [Configuring Service Tracing](installing/configuring-service-tracing.md) (advanced)
+
+  * Backing up and Restoring the Flight Control Service
+    * [Backup and Restore](installing/backup-restore.md)
+
+  * Offline and Air-Gapped Installation
+    * [Air-gapped Installation Guide](installing/air-gapped-installation.md)
+    * [Setting up a local RPM repository](installing/offline-rpm-repository.md)
+    * [Packaging artifacts for portable media](installing/offline-portable-media.md)
+    * [Installing the Flight Control service offline on Linux](installing/installing-service-on-linux-offline.md)
+    * [Installing the Flight Control agent offline on RHEL](installing/installing-agent-offline.md)
+    * [Air-gapped fleet operations and OS image updates](installing/air-gapped-operations.md)
+
+* **[Installing the Flight Control CLI](installing/installing-cli.md)**
+
+* **[Installing and configuring the Flight Control Agent](installing/installing-agent.md)**
+  * [Installing the agent RPM](installing/installing-agent.md#installing-the-agent-rpm)
+  * [Package-mode installation](installing/installing-agent.md#package-mode-installation)
+  * [Image-mode installation](installing/installing-agent.md#image-mode-installation)
+  * [Integrating with Greenboot](installing/configuring-device-greenboot.md)
+  * [Installing the Flight Control agent offline on RHEL](installing/installing-agent-offline.md)
+
+* **[Installing the Catalog Collector](installing/installing-catalog-collector.md)**
+
+**Using Flight Control** - How to manage individual and fleets of devices with Flight Control.
+
+* **[Using the CLI](using/cli/overview.md)** - How to use the Flight Control CLI
+
+* **[Provisioning Devices](using/provisioning-devices.md)** - How to provision a device with an OS image.
+  * [Provisioning Physical Devices](using/provisioning-devices.md#provisioning-physical-devices)
+  * [Provisioning on Red Hat OpenShift Virtualization](using/provisioning-devices.md#provisioning-on-red-hat-openshift-virtualization)
+  * [Provisioning on VMware vSphere](using/provisioning-devices.md#provisioning-on-vmware-vsphere)
+* **[Managing Devices](using/managing-devices.md)** - How to manage individual devices.
+  * [Enrolling Devices](using/managing-devices.md#enrolling-devices)
+  * [Using enrollment hooks](using/enrollment-hooks.md)
+  * [Overriding a failed enrollment hook](using/managing-devices.md#overriding-a-failed-enrollment-hook)
+  * [Viewing the Device Inventory and Device Details](using/managing-devices.md#viewing-the-device-inventory-and-device-details)
+  * [OS mode](using/managing-devices.md#os-mode)
+  * [Organizing Devices](using/managing-devices.md#organizing-devices)
+  * [Updating the OS](using/managing-devices.md#updating-the-os)
+  * [Managing OS Configuration](using/managing-devices.md#managing-os-configuration)
+  * [Managing Applications](using/managing-devices.md#managing-applications)
+  * [Using Device Lifecycle Hooks](using/managing-devices.md#using-device-lifecycle-hooks)
+  * [Monitoring Device Resources](using/managing-devices.md#monitoring-device-resources)
+  * [Accessing Devices Remotely](using/managing-devices.md#accessing-devices-remotely)
+  * [Scheduling Updates and Downloads](using/managing-devices.md#scheduling-updates-and-downloads)
+  * [Running applications as non-root](using/running-applications-as-non-root.md)
+  * [Troubleshooting](using/troubleshooting.md)
+* **[Managing Device Fleets](using/managing-fleets.md)** - How to manage fleets of devices.
+  * [Understanding Fleets](using/managing-fleets.md#understanding-fleets)
+  * [Selecting Devices into a Fleet](using/managing-fleets.md#selecting-devices-into-a-fleet)
+  * [Defining Device Templates](using/managing-fleets.md#defining-device-templates)
+  * [Mixed image-mode and package-mode fleets](using/managing-fleets.md#mixed-image-mode-and-package-mode-fleets)
+  * [Defining Rollout Policies](using/managing-fleets.md#defining-rollout-policies)
+* **[Managing dynamic label mappings](using/managing-dynamic-mappings.md)** - How to promote reported device values into labels and configure initial mappings for deployments.
+* **[Auto-syncing External Dependencies](using/auto-syncing-dependencies.md)** - How Flight Control automatically detects and applies upstream changes to device configurations.
+* **[Viewing Vulnerabilities](using/viewing-vulnerabilities.md)** - How to view vulnerability data for devices and fleets.
+  * [Viewing the Vulnerability Summary](using/viewing-vulnerabilities.md#viewing-the-vulnerability-summary)
+  * [Viewing Device Vulnerabilities](using/viewing-vulnerabilities.md#viewing-device-vulnerabilities)
+  * [Viewing Fleet Vulnerabilities](using/viewing-vulnerabilities.md#viewing-fleet-vulnerabilities)
+  * [Viewing CVE Impact](using/viewing-vulnerabilities.md#viewing-cve-impact)
+  * [Finding Devices Affected by a CVE](using/viewing-vulnerabilities.md#finding-devices-affected-by-a-cve)
+* **[Software Catalog](using/managing-catalogs.md)** - How to organize and distribute versioned software components using catalogs.
+  * [Catalogs](using/managing-catalogs.md#catalogs)
+  * [Catalog items](using/managing-catalogs.md#catalog-items)
+  * [Importing catalogs from external sources](using/managing-catalogs.md#importing-catalogs-from-external-sources)
+  * [Importing catalogs using ResourceSync](using/managing-catalogs.md#importing-catalogs-using-resourcesync)
+  * [Referencing catalog items in device specifications](using/managing-catalogs.md#referencing-catalog-items-in-device-specifications)
+  * [Catalog collector overview](using/catalog-collector/overview.md)
+    * [Quickstart](using/catalog-collector/overview.md)
+    * [Importing a Kubeflow Model Registry](using/catalog-collector/kubeflow-model-registry.md)
+    * [Installing the catalog collector](installing/installing-catalog-collector.md)
+* **[Managing Image Builds and Exports](using/managing-image-builds.md)** - How to build and export OS images using the Flight Control API.
+  * [ImageBuild resource](using/managing-image-builds.md#imagebuild-resource)
+  * [ImageExport resource](using/managing-image-builds.md#imageexport-resource)
+  * [ImagePromotion resource](using/managing-image-builds.md#imagepromotion-resource)
+* **Solving Specific Use Cases** - How to solve specific use cases in Flight Control.
+  * [Auto-Registering Devices with MicroShift into ACM](using/registering-microshift-devices-acm.md)
+  * [Diagnosing Agent Issues](using/diagnosing-agent-issues.md)
+
+**Building for Flight Control** - How to build OS images and application packages compatible with Flight Control.
+
+* **[Building Images](building/building-images.md)** - How to build your own OS images and publish them to a container registry.
+  * [Understanding OS Images and the Image Build Process](building/building-images.md#understanding-os-images-and-the-image-build-process)
+  * [Building and Publishing OS Images and Disk Images](building/building-images.md#building-and-publishing-os-images-and-disk-images)
+    * [Adding OpenTelemetry Collector to Devices](building/building-images.md#optional-adding-opentelemetry-collector-to-devices)
+  * [Considerations for Specific Target Platforms](building/building-images.md#considerations-for-specific-target-platforms)
+    * [Red Hat OpenShift Virtualization](building/building-images.md#red-hat-openshift-virtualization)
+    * [VMware vSphere](building/building-images.md#vmware-vsphere)
+  * [Testing an OS image on a developer machine](using/provisioning-devices.md#testing-an-os-image-on-a-developer-machine)
+  * [Best Practices](building/building-images.md#best-practices-when-building-images)
+* **[Building Application Packages](building/building-images.md)** - What to know when packaging containerized applications for Flight Control.
+
+**References** - Useful references.
+
+* [Component Reference](references/components.md)
+* [CLI Commands](references/cli-commands.md)
+* [API Resources](references/api-resources.md)
+* [Authentication Resources](references/auth-resources.md)
+* [Device Status Definitions](references/device-api-statuses.md)
+* [Certificate Architecture](references/certificate-architecture.md)
+* [Upgrade Compatibility Matrix](references/upgrade-compatibility.md)
+* [Events](references/events.md)
+* [Alerts and Monitoring](references/alerts.md)
+* [Metrics Configuration](references/metrics.md)
+* [Catalog Collector Configuration](references/catalog-collector.md)
+* [Security Guidelines](references/security-guidelines.md)

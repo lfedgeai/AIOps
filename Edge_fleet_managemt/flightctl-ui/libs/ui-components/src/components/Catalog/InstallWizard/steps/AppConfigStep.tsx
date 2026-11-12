@@ -1,0 +1,154 @@
+import * as React from 'react';
+import { Alert, FormGroup, List, ListItem, Split, SplitItem, Stack, StackItem, Title } from '@patternfly/react-core';
+import { type RJSFValidationError } from '@rjsf/utils';
+import { type FormikErrors, useFormikContext } from 'formik';
+import type * as monacoEditor from 'monaco-editor/esm/vs/editor/editor.api';
+
+import { useTranslation } from '../../../../hooks/useTranslation';
+import DynamicForm from '../../../DynamicForm/DynamicForm';
+import YamlEditorBase from '../../../common/CodeEditor/YamlEditorBase';
+import TextField from '../../../form/TextField';
+import { FormGroupWithHelperText } from '../../../common/WithHelperText';
+import RadioField from '../../../form/RadioField';
+import FlightCtlForm from '../../../form/FlightCtlForm';
+import { type DynamicFormConfigFormik, type InstallAppFormik } from '../types';
+
+import './AppConfigStep.css';
+
+type DynamicAppFormProps = {
+  schemaErrors?: RJSFValidationError[];
+  isEdit: boolean;
+};
+
+export const DynamicAppForm = ({ schemaErrors, isEdit }: DynamicAppFormProps) => {
+  const editorRef = React.useRef<monacoEditor.editor.IStandaloneCodeEditor | null>(null);
+  const { t } = useTranslation();
+  const { values, setFieldValue, setFieldTouched } = useFormikContext<InstallAppFormik>();
+
+  return (
+    <Stack hasGutter>
+      <StackItem>
+        <FormGroupWithHelperText
+          label={t('Application name')}
+          content={t('Application name must be unique.')}
+          isRequired
+        >
+          <TextField aria-label={t('Application name')} name="appName" isDisabled={isEdit} />
+        </FormGroupWithHelperText>
+      </StackItem>
+      <StackItem>
+        <FormGroup label={t('Application configuration')} />
+        <Split hasGutter>
+          <SplitItem>{t('Configure via:')}</SplitItem>
+          <SplitItem>
+            <RadioField
+              name="configureVia"
+              checkedValue="form"
+              id="form"
+              label={t('Form view')}
+              isDisabled={!values.configSchema}
+            />
+          </SplitItem>
+          <SplitItem>
+            <RadioField name="configureVia" checkedValue="editor" id="editor" label={t('YAML view')} />
+          </SplitItem>
+        </Split>
+      </StackItem>
+      {!values.configSchema && (
+        <StackItem>
+          <Alert
+            variant="info"
+            isInline
+            title={t('Form view is disabled for this application because the schema is not available')}
+          />
+        </StackItem>
+      )}
+      <StackItem>
+        {values.configSchema && values.configureVia === 'form' ? (
+          <Stack hasGutter>
+            <StackItem>
+              <Alert
+                variant="info"
+                isInline
+                title={t(
+                  'Note: Some fields may not be represented in this form view. Please select "YAML view" for full control.',
+                )}
+              />
+            </StackItem>
+            <StackItem>
+              <DynamicForm
+                valuesSchema={values.configSchema}
+                formData={values.formValues}
+                onChange={async (val) => {
+                  await setFieldValue('formValues', val);
+                  await setFieldTouched('formValues', true);
+                }}
+                onValidate={(valid) => {
+                  setFieldValue('dynamicFormValid', valid);
+                }}
+              />
+            </StackItem>
+          </Stack>
+        ) : (
+          <Stack hasGutter>
+            <StackItem>
+              <div className="fctl-yaml-editor">
+                <YamlEditorBase
+                  showActions={false}
+                  isSaving={false}
+                  onCancel={() => {}}
+                  code={values.editorContent}
+                  editorRef={editorRef}
+                  onChange={async (val) => {
+                    await setFieldValue('editorContent', val);
+                    await setFieldTouched('editorContent', true);
+                  }}
+                />
+              </div>
+            </StackItem>
+          </Stack>
+        )}
+      </StackItem>
+      {schemaErrors?.length ? (
+        <StackItem>
+          <Alert variant="danger" title={t('Configuration is not valid')} isInline>
+            <List>
+              {schemaErrors.map((e, index) => (
+                <ListItem key={index}>
+                  {e.property}: {e.message}
+                </ListItem>
+              ))}
+            </List>
+          </Alert>
+        </StackItem>
+      ) : null}
+    </Stack>
+  );
+};
+
+export const isAppConfigStepValid = (values: DynamicFormConfigFormik, errors: FormikErrors<DynamicFormConfigFormik>) =>
+  !errors.appName && (values.configureVia === 'form' ? values.dynamicFormValid : !errors.editorContent);
+
+type AppConfigStepProps = {
+  schemaErrors?: RJSFValidationError[];
+  isEdit?: boolean;
+};
+
+const AppConfigStep = ({ schemaErrors, isEdit }: AppConfigStepProps) => {
+  const { t } = useTranslation();
+
+  return (
+    <FlightCtlForm>
+      <Stack hasGutter>
+        <StackItem>
+          <Title headingLevel="h3">{t('Application configuration')}</Title>
+        </StackItem>
+        <StackItem>
+          <DynamicAppForm schemaErrors={schemaErrors} isEdit={!!isEdit} />
+        </StackItem>
+      </Stack>
+    </FlightCtlForm>
+  );
+};
+
+export default AppConfigStep;

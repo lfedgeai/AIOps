@@ -1,0 +1,70 @@
+package ca
+
+import (
+	"github.com/flightctl/flightctl/internal/domain"
+)
+
+type CAIdType int
+
+const (
+	InternalCA CAIdType = iota + 1
+	AsyncInternalCA
+)
+
+// DefaultDeviceEnrollmentSignerName is the default signer used for device enrollment CSRs.
+const DefaultDeviceEnrollmentSignerName = "flightctl.io/enrollment"
+
+type InternalCfg struct {
+	CertFile         string `json:"certFile,omitempty"`
+	KeyFile          string `json:"keyFile,omitempty"`
+	CABundleFile     string `json:"caBundleFile,omitempty"`
+	SignerCertName   string `json:"signerCertName,omitempty"`
+	SerialFile       string `json:"serialFile,omitempty"`
+	CertValidityDays int    `json:"certValidityDays,omitempty"`
+	CertStore        string `json:"certStore,omitempty"`
+}
+
+type Config struct {
+	CAType                            CAIdType     `json:"type,omitempty"`
+	AdminCommonName                   string       `json:"adminCommonName,omitempty"`
+	ClientBootstrapCommonName         string       `json:"clientBootstrapCommonName,omitempty"`
+	ClientBootstrapCertName           string       `json:"clientBootstrapCertName,omitempty"`
+	DeviceEnrollmentSignerName        string       `json:"deviceEnrollmentSignerName,omitempty"`
+	ClientBootstrapCommonNamePrefix   string       `json:"clientBootstrapCommonNamePrefix,omitempty"`
+	DeviceManagementSignerName        string       `json:"deviceManagementSignerName,omitempty"`
+	DeviceManagementRenewalSignerName string       `json:"deviceManagementRenewalSignerName,omitempty"`
+	DeviceSvcClientSignerName         string       `json:"deviceSvcClientSignerName,omitempty"`
+	ServerSvcSignerName               string       `json:"serverSvcSignerName,omitempty"`
+	ClientBootstrapValidityDays       int          `json:"clientBootstrapValidityDays,omitempty"`
+	DeviceCommonNamePrefix            string       `json:"deviceCommonNamePrefix,omitempty"`
+	InternalConfig                    *InternalCfg `json:"internalConfig,omitempty"`
+	ServerCertValidityDays            int          `json:"serverCertValidityDays,omitempty"`
+	ExtraAllowedPrefixes              []string     `json:"extraAllowedPrefixes,omitempty"`
+}
+
+func NewDefault(tempDir string) *Config {
+	c := &Config{
+		CAType:                            InternalCA,
+		AdminCommonName:                   domain.ExternalRoleAdmin,
+		ClientBootstrapCertName:           "client-enrollment",
+		ClientBootstrapCommonName:         "client-enrollment",
+		DeviceEnrollmentSignerName:        DefaultDeviceEnrollmentSignerName,
+		ClientBootstrapCommonNamePrefix:   "client-enrollment-",
+		DeviceManagementSignerName:        "flightctl.io/device-enrollment",
+		DeviceManagementRenewalSignerName: "flightctl.io/device-management-renewal",
+		DeviceSvcClientSignerName:         "flightctl.io/device-svc-client",
+		ServerSvcSignerName:               "flightctl.io/server-svc",
+		ClientBootstrapValidityDays:       365,
+		ServerCertValidityDays:            365,
+		DeviceCommonNamePrefix:            "device:",
+		InternalConfig: &InternalCfg{
+			CertFile:         "client-signer.crt",
+			KeyFile:          "client-signer.key",
+			CABundleFile:     "ca-bundle.crt",
+			CertValidityDays: 3650,
+			SignerCertName:   "client-signer",
+			CertStore:        tempDir,
+		},
+	}
+	return c
+}

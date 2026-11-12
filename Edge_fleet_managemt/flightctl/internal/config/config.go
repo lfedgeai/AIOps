@@ -1,0 +1,1973 @@
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	api "github.com/flightctl/flightctl/api/core/v1beta1"
+	authprovider "github.com/flightctl/flightctl/internal/auth/provider"
+	"github.com/flightctl/flightctl/internal/config/ca"
+	deltaconfig "github.com/flightctl/flightctl/internal/delta_worker/config"
+	"github.com/flightctl/flightctl/internal/org"
+	"github.com/flightctl/flightctl/internal/util"
+	"sigs.k8s.io/yaml"
+)
+
+const (
+	appName = "flightctl"
+	// DefaultInitialLabelSyncMappingsFile is the deployment-provided source for
+	// initial organization-scoped label-sync mappings.
+	DefaultInitialLabelSyncMappingsFile = "/etc/flightctl/label-sync/mappings.yaml"
+)
+
+type Config struct {
+	Database               *dbConfig                          `json:"database,omitempty"`
+	Service                *svcConfig                         `json:"service,omitempty"`
+	RemoteAccessService    *RemoteAccessServiceConfig         `json:"remoteAccessService,omitempty"`
+	ImageBuilderService    *ImageBuilderServiceConfig         `json:"imageBuilderService,omitempty"`
+	ImageBuilderWorker     *imageBuilderWorkerConfig          `json:"imageBuilderWorker,omitempty"`
+	Worker                 *workerConfig                      `json:"worker,omitempty"`
+	KV                     *kvConfig                          `json:"kv,omitempty"`
+	Alertmanager           *alertmanagerConfig                `json:"alertmanager,omitempty"`
+	Auth                   *authConfig                        `json:"auth,omitempty"`
+	Metrics                *metricsConfig                     `json:"metrics,omitempty"`
+	CA                     *ca.Config                         `json:"ca,omitempty"`
+	Tracing                *TracingConfig                     `json:"tracing,omitempty"`
+	Profiling              *ProfilingConfig                   `json:"profiling,omitempty"`
+	GitOps                 *gitOpsConfig                      `json:"gitOps,omitempty"`
+	CryptoPolicy           *CryptoPolicyConfig                `json:"cryptoPolicy,omitempty"`
+	Periodic               *periodicConfig                    `json:"periodic,omitempty"`
+	Organizations          *organizationsConfig               `json:"organizations,omitempty"`
+	TelemetryGateway       *telemetryGatewayConfig            `json:"telemetrygateway,omitempty"`
+	VulnerabilityReporting *VulnerabilityConfig               `json:"vulnerabilityReporting,omitempty"`
+	DeltaGeneration        *deltaconfig.DeltaGenerationConfig `json:"deltaGeneration,omitempty"`
+	DependenciesSync       *DependenciesSyncConfig            `json:"dependenciesSync,omitempty"`
+	Encryption             *EncryptionConfig                  `json:"encryption,omitempty"`
+}
+
+// CryptoPolicyConfig contains cryptographic policy configuration for all protocols.
+type CryptoPolicyConfig struct {
+	// ForceFIPSMode explicitly enables or disables FIPS-compliant algorithms globally.
+	// If nil, FIPS mode is auto-detected at runtime from system configuration.
+	// If true, FIPS-compliant algorithms are used regardless of system FIPS mode.
+	// If false, library defaults are used even if system is in FIPS mode.
+	ForceFIPSMode *bool `json:"forceFipsMode,omitempty"`
+
+	SSH *SSHCryptoConfig `json:"ssh,omitempty"`
+}
+
+// SSHCryptoConfig contains configuration for SSH crypto algorithms used when
+// accessing Git repositories over SSH or other SSH connections.
+type SSHCryptoConfig struct {
+	// KeyExchangeAlgorithms specifies allowed key exchange algorithms for SSH connections.
+	// If empty, defaults are selected based on FIPS mode detection.
+	// Example FIPS-compliant values: ["ecdh-sha2-nistp256", "ecdh-sha2-nistp384", "diffie-hellman-group14-sha256"]
+	KeyExchangeAlgorithms []string `json:"keyExchangeAlgorithms,omitempty"`
+
+	// Ciphers specifies allowed ciphers (encryption algorithms) for SSH connections.
+	// If empty, defaults are selected based on FIPS mode detection.
+	// Note: In SSH, "ciphers" refer to encryption algorithms only, unlike TLS cipher suites
+	// which bundle key exchange, encryption, and MAC together.
+	// Example FIPS-compliant values: ["aes128-gcm@openssh.com", "aes256-gcm@openssh.com"]
+	Ciphers []string `json:"ciphers,omitempty"`
+
+	// MACs specifies allowed MAC (Message Authentication Code) algorithms for SSH connections.
+	// If empty, defaults are selected based on FIPS mode detection.
+	// Example FIPS-compliant values: ["hmac-sha2-256-etm@openssh.com", "hmac-sha2-512-etm@openssh.com"]
+	MACs []string `json:"macs,omitempty"`
+
+	// HostKeyAlgorithms specifies allowed host key algorithms.
+	// If empty, defaults are selected based on FIPS mode detection.
+	// Example FIPS-compliant values: ["ecdsa-sha2-nistp256", "rsa-sha2-256", "rsa-sha2-512"]
+	HostKeyAlgorithms []string `json:"hostKeyAlgorithms,omitempty"`
+
+	// ForceFIPSMode explicitly enables or disables FIPS-compliant algorithms for SSH only.
+	// If nil, inherits from CryptoPolicyConfig.ForceFIPSMode.
+	// This allows SSH-specific override of the global FIPS setting.
+	ForceFIPSMode *bool `json:"forceFipsMode,omitempty"`
+}
+
+type RateLimitConfig struct {
+	Enabled      bool          `json:"enabled,omitempty"`      // Enable/disable rate limiting
+	Requests     int           `json:"requests,omitempty"`     // max requests per window
+	Window       util.Duration `json:"window,omitempty"`       // e.g. "1m" for one minute
+	AuthRequests int           `json:"authRequests,omitempty"` // max auth requests per window
+	AuthWindow   util.Duration `json:"authWindow,omitempty"`   // e.g. "1h" for one hour
+	// TrustedProxies specifies IP addresses/networks that are allowed to set proxy headers
+	// If empty, proxy headers are ignored for security (only direct connection IPs are used)
+	TrustedProxies []string `json:"trustedProxies,omitempty"`
+}
+
+type dbConfig struct {
+	Type     string           `json:"type,omitempty"`
+	Hostname string           `json:"hostname,omitempty"`
+	Port     uint             `json:"port,omitempty"`
+	Name     string           `json:"name,omitempty"`
+	User     string           `json:"user,omitempty"`
+	Password api.SecureString `json:"password,omitempty"`
+	// Migration user configuration for schema changes
+	MigrationUser     string           `json:"migrationUser,omitempty"`
+	MigrationPassword api.SecureString `json:"migrationPassword,omitempty"`
+	// SSL configuration
+	SSLMode     string `json:"sslmode,omitempty"`
+	SSLCert     string `json:"sslcert,omitempty"`
+	SSLKey      string `json:"sslkey,omitempty"`
+	SSLRootCert string `json:"sslrootcert,omitempty"`
+}
+
+type svcConfig struct {
+	Address                string           `json:"address,omitempty"`
+	AgentEndpointAddress   string           `json:"agentEndpointAddress,omitempty"`
+	CertStore              string           `json:"cert,omitempty"`
+	BaseUrl                string           `json:"baseUrl,omitempty"`
+	BaseAgentEndpointUrl   string           `json:"baseAgentEndpointUrl,omitempty"`
+	BaseUIUrl              string           `json:"baseUIUrl,omitempty"`
+	DisableTLS             bool             `json:"disableTLS,omitempty"`
+	SrvCertFile            string           `json:"srvCertificateFile,omitempty"`
+	SrvKeyFile             string           `json:"srvKeyFile,omitempty"`
+	ServerCertName         string           `json:"serverCertName,omitempty"`
+	ServerCertValidityDays int              `json:"serverCertValidityDays,omitempty"`
+	AltNames               []string         `json:"altNames,omitempty"`
+	LogLevel               string           `json:"logLevel,omitempty"`
+	HttpReadTimeout        util.Duration    `json:"httpReadTimeout,omitempty"`
+	HttpReadHeaderTimeout  util.Duration    `json:"httpReadHeaderTimeout,omitempty"`
+	HttpWriteTimeout       util.Duration    `json:"httpWriteTimeout,omitempty"`
+	HttpIdleTimeout        util.Duration    `json:"httpIdleTimeout,omitempty"`
+	HttpMaxNumHeaders      int              `json:"httpMaxNumHeaders,omitempty"`
+	HttpMaxHeaderBytes     int              `json:"httpMaxHeaderBytes,omitempty"`
+	HttpMaxUrlLength       int              `json:"httpMaxUrlLength,omitempty"`
+	HttpMaxRequestSize     int              `json:"httpMaxRequestSize,omitempty"`
+	EventRetentionPeriod   util.Duration    `json:"eventRetentionPeriod,omitempty"`
+	AlertPollingInterval   util.Duration    `json:"alertPollingInterval,omitempty"`
+	RenderedWaitTimeout    util.Duration    `json:"renderedWaitTimeout,omitempty"`
+	RateLimit              *RateLimitConfig `json:"rateLimit,omitempty"`
+	TPMCAPaths             []string         `json:"tpmCAPaths,omitempty"`
+	HealthChecks           *HealthChecks    `json:"healthChecks,omitempty"`
+}
+
+// HealthChecks holds health check endpoint configuration.
+type HealthChecks struct {
+	Enabled          bool          `json:"enabled,omitempty"`
+	ReadinessPath    string        `json:"readinessPath,omitempty"`
+	LivenessPath     string        `json:"livenessPath,omitempty"`
+	ReadinessTimeout util.Duration `json:"readinessTimeout,omitempty"`
+}
+
+type ImageBuilderServiceConfig struct {
+	Address               string           `json:"address,omitempty"`
+	LogLevel              string           `json:"logLevel,omitempty"`
+	TLSCertFile           string           `json:"tlsCertFile,omitempty"`
+	TLSKeyFile            string           `json:"tlsKeyFile,omitempty"`
+	HttpReadTimeout       util.Duration    `json:"httpReadTimeout,omitempty"`
+	HttpReadHeaderTimeout util.Duration    `json:"httpReadHeaderTimeout,omitempty"`
+	HttpWriteTimeout      util.Duration    `json:"httpWriteTimeout,omitempty"`
+	HttpIdleTimeout       util.Duration    `json:"httpIdleTimeout,omitempty"`
+	HttpMaxNumHeaders     int              `json:"httpMaxNumHeaders,omitempty"`
+	HttpMaxUrlLength      int              `json:"httpMaxUrlLength,omitempty"`
+	HttpMaxRequestSize    int              `json:"httpMaxRequestSize,omitempty"`
+	RateLimit             *RateLimitConfig `json:"rateLimit,omitempty"`
+	HealthChecks          *HealthChecks    `json:"healthChecks,omitempty"`
+	DeleteCancelTimeout   util.Duration    `json:"deleteCancelTimeout,omitempty"`
+}
+
+// RemoteAccessServiceConfig holds configuration specific to the flightctl-remote-access service.
+type RemoteAccessServiceConfig struct {
+	Address               string        `json:"address,omitempty"`
+	AgentEndpointAddress  string        `json:"agentEndpointAddress,omitempty"`
+	LogLevel              string        `json:"logLevel,omitempty"`
+	DisableTLS            bool          `json:"disableTLS,omitempty"`
+	HttpReadTimeout       util.Duration `json:"httpReadTimeout,omitempty"`
+	HttpReadHeaderTimeout util.Duration `json:"httpReadHeaderTimeout,omitempty"`
+	HttpWriteTimeout      util.Duration `json:"httpWriteTimeout,omitempty"`
+	HttpIdleTimeout       util.Duration `json:"httpIdleTimeout,omitempty"`
+	HttpMaxHeaderBytes    int           `json:"httpMaxHeaderBytes,omitempty"`
+	// RateLimit configures rate limiting for the WebSocket console endpoint.
+	// Defaults to 100 requests/minute; set to nil or Enabled=false to disable.
+	RateLimit    *RateLimitConfig `json:"rateLimit,omitempty"`
+	HealthChecks *HealthChecks    `json:"healthChecks,omitempty"`
+}
+
+// NewDefaultRemoteAccessServiceConfig returns a default remote-access service configuration.
+func NewDefaultRemoteAccessServiceConfig() *RemoteAccessServiceConfig {
+	return &RemoteAccessServiceConfig{
+		Address:               ":3444",
+		AgentEndpointAddress:  ":7444",
+		LogLevel:              "info",
+		DisableTLS:            false,
+		HttpReadTimeout:       util.Duration(5 * time.Minute),
+		HttpReadHeaderTimeout: util.Duration(5 * time.Minute),
+		HttpWriteTimeout:      util.Duration(5 * time.Minute),
+		HttpIdleTimeout:       util.Duration(5 * time.Minute),
+		HttpMaxHeaderBytes:    32 * 1024, // 32KB
+		RateLimit: &RateLimitConfig{
+			Enabled:  true,
+			Requests: 100,
+			Window:   util.Duration(time.Minute),
+		},
+		HealthChecks: &HealthChecks{
+			Enabled:          true,
+			ReadinessPath:    "/readyz",
+			LivenessPath:     "/healthz",
+			ReadinessTimeout: util.Duration(2 * time.Second),
+		},
+	}
+}
+
+// serviceImageConfig holds image and skip-TLS settings for a single builder image (podman or bootc-image-builder).
+type serviceImageConfig struct {
+	Image         string `json:"image,omitempty"`
+	SkipTLSVerify bool   `json:"skipTlsVerify,omitempty"`
+}
+
+// serviceImagesConfig holds per-service builder image overrides.
+type serviceImagesConfig struct {
+	Podman            *serviceImageConfig `json:"podman,omitempty"`
+	BootcImageBuilder *serviceImageConfig `json:"bootcImageBuilder,omitempty"`
+	Syft              *serviceImageConfig `json:"syft,omitempty"`
+}
+
+const (
+	defaultPodmanImage            = "quay.io/podman/stable:v5.7.1"
+	defaultBootcImageBuilderImage = "ghcr.io/osbuild/bootc-image-builder@sha256:e7aadce6b3f5639cd47d83354791931ea219891a0d113c2fe74a0f0d352b165c"
+	defaultSyftImage              = "docker.io/anchore/syft:v1.44.0"
+)
+
+type imageBuilderWorkerConfig struct {
+	LogLevel                 string               `json:"logLevel,omitempty"`
+	MaxConcurrentBuilds      int                  `json:"maxConcurrentBuilds,omitempty"`
+	DefaultTTL               util.Duration        `json:"defaultTTL,omitempty"`
+	ServiceImages            *serviceImagesConfig `json:"serviceImages,omitempty"`
+	LastSeenUpdateInterval   util.Duration        `json:"lastSeenUpdateInterval,omitempty"`
+	ImageBuilderTimeout      util.Duration        `json:"imageBuilderTimeout,omitempty"`
+	TimeoutCheckTaskInterval util.Duration        `json:"timeoutCheckTaskInterval,omitempty"`
+	RPMRepoURL               string               `json:"rpmRepoUrl,omitempty"`
+	RPMRepoAdd               *bool                `json:"rpmRepoAdd,omitempty"`
+	RPMRepoEnable            string               `json:"rpmRepoEnable,omitempty"`
+	DNFTimeout               *int                 `json:"dnfTimeout,omitempty"`
+	DNFRetries               *int                 `json:"dnfRetries,omitempty"`
+	DNFSkipUnavailable       *bool                `json:"dnfSkipUnavailable,omitempty"`
+	SBOM                     *SBOMConfig          `json:"sbom,omitempty"`
+}
+
+// SBOMConfig holds configuration for SBOM generation during image builds.
+type SBOMConfig struct {
+	Enabled          bool                 `json:"enabled,omitempty"`
+	PushToRegistry   bool                 `json:"pushToRegistry,omitempty"`
+	UploadToTrustify bool                 `json:"uploadToTrustify,omitempty"`
+	PurlTransform    *PurlTransformConfig `json:"purlTransform,omitempty"`
+}
+
+// PurlTransformTypeRules defines namespace, distro, and qualifier rules for one PURL package type
+// (map key and segment after "pkg:" in pkg:type/..., e.g. "rpm").
+type PurlTransformTypeRules struct {
+	NamespaceMapping  map[string]string `json:"namespaceMapping,omitempty"`
+	DistroMapping     map[string]string `json:"distroMapping,omitempty"`
+	AllowedQualifiers []string          `json:"allowedQualifiers,omitempty"`
+}
+
+// PurlTransformConfig holds configuration for PURL normalization.
+type PurlTransformConfig struct {
+	// Enabled, when nil, means enabled (default). Set to false to disable PURL normalization.
+	Enabled *bool `json:"enabled,omitempty"`
+	// ByType maps package type ID (e.g. "rpm") to rules for that type only.
+	ByType map[string]PurlTransformTypeRules `json:"byType,omitempty"`
+}
+
+// EffectivePurlTransformEnabled returns whether PURL normalization is enabled.
+func (p *PurlTransformConfig) EffectivePurlTransformEnabled() bool {
+	if p == nil {
+		return true
+	}
+	if p.Enabled == nil {
+		return true
+	}
+	return *p.Enabled
+}
+
+func normalizePURLPackageTypeID(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	return strings.TrimPrefix(s, "pkg:")
+}
+
+// NormalizedPURLPackageTypeID returns the package type key for lookups (after "pkg:", lowercased).
+func NormalizedPURLPackageTypeID(s string) string {
+	return normalizePURLPackageTypeID(s)
+}
+
+// NewDefaultSBOMConfig returns the default SBOM configuration.
+func NewDefaultSBOMConfig() *SBOMConfig {
+	return &SBOMConfig{
+		Enabled:          true,
+		PushToRegistry:   true,
+		UploadToTrustify: true,
+		PurlTransform:    NewDefaultPurlTransformConfig(),
+	}
+}
+
+// NewDefaultPurlTransformConfig returns default PURL transformation config for RHEL-based distros.
+func NewDefaultPurlTransformConfig() *PurlTransformConfig {
+	enabled := true
+	return &PurlTransformConfig{
+		Enabled: &enabled,
+		ByType: map[string]PurlTransformTypeRules{
+			"rpm": {
+				NamespaceMapping: map[string]string{
+					"centos":     "redhat",
+					"rocky":      "redhat",
+					"rockylinux": "redhat",
+					"alma":       "redhat",
+					"almalinux":  "redhat",
+					"oracle":     "redhat",
+				},
+				DistroMapping: map[string]string{
+					"centos-7":        "rhel-7",
+					"centos-8":        "rhel-8",
+					"centos-9":        "rhel-9",
+					"centos-stream-8": "rhel-8",
+					"centos-stream-9": "rhel-9",
+					"rocky-8":         "rhel-8",
+					"rocky-9":         "rhel-9",
+					"alma-8":          "rhel-8",
+					"alma-9":          "rhel-9",
+					"almalinux-8":     "rhel-8",
+					"almalinux-9":     "rhel-9",
+					"oracle-8":        "rhel-8",
+					"oracle-9":        "rhel-9",
+				},
+				AllowedQualifiers: []string{"arch", "distro"},
+			},
+		},
+	}
+}
+
+// NewDefaultImageBuilderWorkerConfig returns a default ImageBuilder worker configuration
+func NewDefaultImageBuilderWorkerConfig() *imageBuilderWorkerConfig {
+	dnfTimeout := 5
+	dnfRetries := 0
+	dnfSkipUnavailable := true
+	return &imageBuilderWorkerConfig{
+		LogLevel:            "info",
+		MaxConcurrentBuilds: 2,
+		DefaultTTL:          util.Duration(7 * 24 * time.Hour),
+		ServiceImages: &serviceImagesConfig{
+			Podman:            &serviceImageConfig{Image: defaultPodmanImage},
+			BootcImageBuilder: &serviceImageConfig{Image: defaultBootcImageBuilderImage},
+			Syft:              &serviceImageConfig{Image: defaultSyftImage},
+		},
+		LastSeenUpdateInterval:   util.Duration(30 * time.Second),
+		ImageBuilderTimeout:      util.Duration(3 * time.Minute),
+		TimeoutCheckTaskInterval: util.Duration(1 * time.Minute),
+		SBOM:                     NewDefaultSBOMConfig(),
+		RPMRepoURL:               "https://rpm.flightctl.io/flightctl-epel.repo",
+		DNFTimeout:               &dnfTimeout,
+		DNFRetries:               &dnfRetries,
+		DNFSkipUnavailable:       &dnfSkipUnavailable,
+	}
+}
+
+// EffectivePodmanImage returns the podman builder image to use (config override or default).
+func (c *imageBuilderWorkerConfig) EffectivePodmanImage() string {
+	if c != nil && c.ServiceImages != nil && c.ServiceImages.Podman != nil && c.ServiceImages.Podman.Image != "" {
+		return c.ServiceImages.Podman.Image
+	}
+	return defaultPodmanImage
+}
+
+// EffectivePodmanSkipTLSVerify returns whether to skip TLS verification when pulling the podman image.
+func (c *imageBuilderWorkerConfig) EffectivePodmanSkipTLSVerify() bool {
+	return c != nil && c.ServiceImages != nil && c.ServiceImages.Podman != nil && c.ServiceImages.Podman.SkipTLSVerify
+}
+
+// EffectiveBootcImageBuilderImage returns the bootc-image-builder image to use (config override or default).
+func (c *imageBuilderWorkerConfig) EffectiveBootcImageBuilderImage() string {
+	if c != nil && c.ServiceImages != nil && c.ServiceImages.BootcImageBuilder != nil && c.ServiceImages.BootcImageBuilder.Image != "" {
+		return c.ServiceImages.BootcImageBuilder.Image
+	}
+	return defaultBootcImageBuilderImage
+}
+
+// EffectiveBootcImageBuilderSkipTLSVerify returns whether to skip TLS verification when pulling the bootc-image-builder image.
+func (c *imageBuilderWorkerConfig) EffectiveBootcImageBuilderSkipTLSVerify() bool {
+	return c != nil && c.ServiceImages != nil && c.ServiceImages.BootcImageBuilder != nil && c.ServiceImages.BootcImageBuilder.SkipTLSVerify
+}
+
+// EffectiveSyftImage returns the Syft image to use (config override or default).
+func (c *imageBuilderWorkerConfig) EffectiveSyftImage() string {
+	if c != nil && c.ServiceImages != nil && c.ServiceImages.Syft != nil && c.ServiceImages.Syft.Image != "" {
+		return c.ServiceImages.Syft.Image
+	}
+	return defaultSyftImage
+}
+
+// EffectiveSyftSkipTLSVerify returns whether to skip TLS verification when pulling the Syft image.
+func (c *imageBuilderWorkerConfig) EffectiveSyftSkipTLSVerify() bool {
+	return c != nil && c.ServiceImages != nil && c.ServiceImages.Syft != nil && c.ServiceImages.Syft.SkipTLSVerify
+}
+
+const DefaultVirtLauncherImage = "quay.io/kubevirt/virt-launcher:v1.9.0"
+
+const (
+	// DefaultRenderTimeout is the default time budget for a single device render
+	// operation (config + application rendering + DB writes). It replaces the
+	// shared EventProcessingTimeout for render tasks so devices with multiple VM
+	// applications have enough time for sequential vm-to-quadlet subprocesses.
+	DefaultRenderTimeout = 60 * time.Second
+	// DefaultImageDigestCacheTTL is the default maximum age for cached OCI image
+	// digest resolutions used during delta preparation.
+	DefaultImageDigestCacheTTL = 15 * time.Minute
+	// DefaultHelmImageRefsCacheTTL is the default maximum age for cached Helm
+	// workload image references before the target chart is rendered again.
+	DefaultHelmImageRefsCacheTTL = 15 * time.Minute
+)
+
+// workerConfig holds runtime options shared by flightctl-worker and flightctl-delta-worker.
+type workerConfig struct {
+	RenderTimeout         util.Duration   `json:"renderTimeout,omitempty"`
+	ImageDigestCacheTTL   util.Duration   `json:"imageDigestCacheTTL,omitempty"`
+	HelmImageRefsCacheTTL util.Duration   `json:"helmImageRefsCacheTTL,omitempty"`
+	VmRender              *vmRenderConfig `json:"vmRender,omitempty"`
+}
+
+// vmRenderConfig holds shared options for converting VmApplications to Quadlet
+// units via vm-to-quadlet in both worker services.
+type vmRenderConfig struct {
+	LauncherImage    string            `json:"launcherImage,omitempty"`
+	LauncherImages   map[string]string `json:"launcherImages,omitempty"`
+	PasstWorkarounds *bool             `json:"passtWorkarounds,omitempty"`
+}
+
+// NewDefaultWorkerConfig returns the default flightctl-worker configuration.
+func NewDefaultWorkerConfig() *workerConfig {
+	passt := false
+	return &workerConfig{
+		ImageDigestCacheTTL:   util.Duration(DefaultImageDigestCacheTTL),
+		HelmImageRefsCacheTTL: util.Duration(DefaultHelmImageRefsCacheTTL),
+		VmRender: &vmRenderConfig{
+			LauncherImage:    DefaultVirtLauncherImage,
+			PasstWorkarounds: &passt,
+		},
+	}
+}
+
+// EffectiveVmLauncherImage returns the virt-launcher image used for VM render.
+// osKey is "{os-release ID}-{major}" from status.systemInfo (e.g. "rhel-9").
+// An empty osKey skips per-OS lookup.
+func (c *Config) EffectiveVmLauncherImage(osKey string) string {
+	if c == nil || c.Worker == nil {
+		return DefaultVirtLauncherImage
+	}
+	return c.Worker.EffectiveLauncherImage(osKey)
+}
+
+// EffectiveVmPasstWorkarounds returns whether passt workarounds are enabled for VM render.
+func (c *Config) EffectiveVmPasstWorkarounds() bool {
+	if c == nil || c.Worker == nil {
+		return false
+	}
+	return c.Worker.EffectivePasstWorkarounds()
+}
+
+// EffectiveRenderTimeout returns the time budget for a single device render operation.
+func (c *Config) EffectiveRenderTimeout() time.Duration {
+	if c == nil || c.Worker == nil {
+		return DefaultRenderTimeout
+	}
+	return c.Worker.EffectiveRenderTimeout()
+}
+
+// EffectiveImageDigestCacheTTL returns the maximum age for cached resolved image digests.
+func (c *Config) EffectiveImageDigestCacheTTL() time.Duration {
+	if c == nil || c.Worker == nil {
+		return DefaultImageDigestCacheTTL
+	}
+	return c.Worker.EffectiveImageDigestCacheTTL()
+}
+
+// EffectiveHelmImageRefsCacheTTL returns the maximum age for cached Helm workload image references.
+func (c *Config) EffectiveHelmImageRefsCacheTTL() time.Duration {
+	if c == nil || c.Worker == nil {
+		return DefaultHelmImageRefsCacheTTL
+	}
+	return c.Worker.EffectiveHelmImageRefsCacheTTL()
+}
+
+// EffectiveLauncherImage returns the virt-launcher image for osKey.
+func (c *workerConfig) EffectiveLauncherImage(osKey string) string {
+	if c == nil || c.VmRender == nil {
+		return DefaultVirtLauncherImage
+	}
+	if osKey != "" && c.VmRender.LauncherImages != nil {
+		if img := c.VmRender.LauncherImages[osKey]; img != "" {
+			return img
+		}
+	}
+	if c.VmRender.LauncherImage != "" {
+		return c.VmRender.LauncherImage
+	}
+	return DefaultVirtLauncherImage
+}
+
+// EffectivePasstWorkarounds returns whether passt workarounds are enabled (default false).
+func (c *workerConfig) EffectivePasstWorkarounds() bool {
+	if c != nil && c.VmRender != nil && c.VmRender.PasstWorkarounds != nil {
+		return *c.VmRender.PasstWorkarounds
+	}
+	return false
+}
+
+// EffectiveRenderTimeout returns the configured render timeout for the worker.
+func (c *workerConfig) EffectiveRenderTimeout() time.Duration {
+	if c != nil && c.RenderTimeout > 0 {
+		return time.Duration(c.RenderTimeout)
+	}
+	return DefaultRenderTimeout
+}
+
+// EffectiveImageDigestCacheTTL returns the configured image digest cache TTL.
+func (c *workerConfig) EffectiveImageDigestCacheTTL() time.Duration {
+	if c != nil && c.ImageDigestCacheTTL > 0 {
+		return time.Duration(c.ImageDigestCacheTTL)
+	}
+	return DefaultImageDigestCacheTTL
+}
+
+// EffectiveHelmImageRefsCacheTTL returns the configured Helm image refs cache TTL.
+func (c *workerConfig) EffectiveHelmImageRefsCacheTTL() time.Duration {
+	if c != nil && c.HelmImageRefsCacheTTL > 0 {
+		return time.Duration(c.HelmImageRefsCacheTTL)
+	}
+	return DefaultHelmImageRefsCacheTTL
+}
+
+// IsSBOMEnabled returns whether SBOM generation is enabled.
+func (c *imageBuilderWorkerConfig) IsSBOMEnabled() bool {
+	if c == nil || c.SBOM == nil {
+		return true // Enabled by default
+	}
+	return c.SBOM.Enabled
+}
+
+// SBOMPushToRegistry returns whether to push SBOM to OCI registry as referrer.
+func (c *imageBuilderWorkerConfig) SBOMPushToRegistry() bool {
+	if c == nil || c.SBOM == nil {
+		return true // Enabled by default
+	}
+	return c.SBOM.PushToRegistry
+}
+
+// SBOMUploadToTrustify returns whether to upload SBOM to Trustify.
+func (c *imageBuilderWorkerConfig) SBOMUploadToTrustify() bool {
+	if c == nil || c.SBOM == nil {
+		return true // Enabled by default
+	}
+	return c.SBOM.UploadToTrustify
+}
+
+// NewDefaultImageBuilderServiceConfig returns a default ImageBuilder service configuration
+func NewDefaultImageBuilderServiceConfig() *ImageBuilderServiceConfig {
+	return &ImageBuilderServiceConfig{
+		Address:               ":8445",
+		LogLevel:              "info",
+		HttpReadTimeout:       util.Duration(5 * time.Minute),
+		HttpReadHeaderTimeout: util.Duration(5 * time.Minute),
+		HttpWriteTimeout:      util.Duration(5 * time.Minute),
+		HttpIdleTimeout:       util.Duration(5 * time.Minute),
+		HttpMaxNumHeaders:     32,
+		HttpMaxUrlLength:      2000,
+		HttpMaxRequestSize:    50 * 1024 * 1024, // 50MB
+		DeleteCancelTimeout:   util.Duration(30 * time.Second),
+		HealthChecks: &HealthChecks{
+			Enabled:          true,
+			ReadinessPath:    "/readyz",
+			LivenessPath:     "/healthz",
+			ReadinessTimeout: util.Duration(2 * time.Second),
+		},
+	}
+}
+
+type kvConfig struct {
+	Hostname string           `json:"hostname,omitempty"`
+	Port     uint             `json:"port,omitempty"`
+	Password api.SecureString `json:"password,omitempty"`
+}
+
+type alertmanagerConfig struct {
+	Hostname           string `json:"hostname,omitempty"`
+	Port               uint   `json:"port,omitempty"`
+	MaxRetries         int    `json:"maxRetries,omitempty"`
+	BaseDelay          string `json:"baseDelay,omitempty"`
+	MaxDelay           string `json:"maxDelay,omitempty"`
+	ProxyListenAddress string `json:"proxyListenAddress,omitempty"`
+}
+
+type authConfig struct {
+	K8s                     *api.K8sProviderSpec       `json:"k8s,omitempty"`
+	OpenShift               *api.OpenShiftProviderSpec `json:"openshift,omitempty"`
+	OIDC                    *api.OIDCProviderSpec      `json:"oidc,omitempty"`
+	OAuth2                  *api.OAuth2ProviderSpec    `json:"oauth2,omitempty"`
+	AAP                     *api.AapProviderSpec       `json:"aap,omitempty"`
+	CACert                  string                     `json:"caCert,omitempty"`
+	InsecureSkipTlsVerify   bool                       `json:"insecureSkipTlsVerify,omitempty"`
+	PAMOIDCIssuer           *PAMOIDCIssuer             `json:"pamOidcIssuer,omitempty"`           // this is the issuer implementation configuration
+	DynamicProviderCacheTTL util.Duration              `json:"dynamicProviderCacheTTL,omitempty"` // TTL for dynamic auth provider cache (default: 5s)
+	AAPIdentityCacheTTL     util.Duration              `json:"aapIdentityCacheTTL,omitempty"`     // TTL for AAP identity cache (default: 45s)
+}
+
+// PAMOIDCIssuer represents an OIDC issuer that uses Linux PAM for authentication
+type PAMOIDCIssuer struct {
+	// Address is the listen address for the PAM issuer service (e.g., ":8444")
+	Address string `json:"address,omitempty"`
+	// If true, the PAM issuer service will listen on a plaintext socket instead of TLS.
+	DisableTLS bool `json:"disableTLS,omitempty"`
+	// Issuer is the base URL for the OIDC issuer (e.g., "https://flightctl.example.com")
+	Issuer string `json:"issuer,omitempty"`
+	// ClientID is the OAuth2 client ID for this issuer
+	ClientID string `json:"clientId,omitempty"`
+	// ClientSecret is the OAuth2 client secret for this issuer
+	ClientSecret string `json:"clientSecret,omitempty"`
+	// Scopes are the supported OAuth2 scopes
+	Scopes []string `json:"scopes,omitempty"`
+	// RedirectURIs are the allowed redirect URIs for OAuth2 flows
+	RedirectURIs []string `json:"redirectUris,omitempty"`
+	// PAMService is the PAM service name to use for authentication (default: "flightctl")
+	PAMService string `json:"pamService" validate:"required"`
+	// AllowPublicClientWithoutPKCE allows public clients (no client secret) to skip PKCE
+	// SECURITY WARNING: This should only be enabled for testing or backward compatibility
+	// Default: false (PKCE required for public clients per OAuth 2.0 Security BCP)
+	AllowPublicClientWithoutPKCE bool `json:"allowPublicClientWithoutPKCE,omitempty"`
+	// AccessTokenExpiration is the expiration duration for access tokens and ID tokens
+	// Default: 1 hour
+	AccessTokenExpiration util.Duration `json:"accessTokenExpiration,omitempty"`
+	// RefreshTokenExpiration is the expiration duration for refresh tokens
+	// Default: 7 days
+	RefreshTokenExpiration util.Duration `json:"refreshTokenExpiration,omitempty"`
+	// PendingSessionCookieMaxAge is the MaxAge duration for pending session cookies
+	// Default: 10 minutes
+	PendingSessionCookieMaxAge util.Duration `json:"pendingSessionCookieMaxAge,omitempty"`
+	// AuthenticatedSessionCookieMaxAge is the MaxAge duration for authenticated session cookies
+	// Default: 30 minutes
+	AuthenticatedSessionCookieMaxAge util.Duration `json:"authenticatedSessionCookieMaxAge,omitempty"`
+	// Branding configures the login UI appearance (logo, display name, colors)
+	// If nil, the default Flight Control branding is used
+	Branding *LoginBranding `json:"branding,omitempty"`
+}
+
+// LoginBranding configures the visual branding of the PAM issuer login UI
+type LoginBranding struct {
+	// DisplayName is used in the page title ("<DisplayName> Login") and card heading
+	// Default: "Flight Control"
+	DisplayName string `json:"displayName,omitempty"`
+	// FaviconDataUri is a data URI for a custom favicon (e.g. "data:image/png;base64,...").
+	// If not set, the default embedded Flight Control favicon is used.
+	FaviconDataUri string `json:"faviconDataUri,omitempty"`
+	// DarkTheme overrides PatternFly CSS variables and logo for dark mode
+	DarkTheme *ThemeColors `json:"darkTheme,omitempty"`
+	// LightTheme overrides PatternFly CSS variables and logo for light mode
+	LightTheme *ThemeColors `json:"lightTheme,omitempty"`
+}
+
+// ThemeColors defines PatternFly v6 semantic token overrides for a specific theme (light or dark).
+// Each color field maps to a PF6 semantic CSS custom property.
+// See https://www.patternfly.org/tokens/all-patternfly-tokens for the full token list.
+type ThemeColors struct {
+	// LogoDataUri is a data URI for a custom logo (e.g. "data:image/svg+xml;base64,...").
+	// Use different logos per theme (e.g. dark text on light backgrounds, white text on dark backgrounds).
+	// If not set, the default embedded Flight Control logo is used.
+	LogoDataUri string `json:"logoDataUri,omitempty"`
+	// BrandDefault overrides --pf-t--global--color--brand--default (primary brand color for buttons, links)
+	BrandDefault string `json:"brandDefault,omitempty"`
+	// BrandHover overrides --pf-t--global--color--brand--hover (brand color on hover/focus)
+	BrandHover string `json:"brandHover,omitempty"`
+	// BrandClicked overrides --pf-t--global--color--brand--clicked (brand color on click/active)
+	BrandClicked string `json:"brandClicked,omitempty"`
+	// BackgroundPrimary overrides --pf-t--global--background--color--primary--default (card/surface background)
+	BackgroundPrimary string `json:"backgroundPrimary,omitempty"`
+	// BackgroundSecondary overrides --pf-t--global--background--color--secondary--default (page background)
+	BackgroundSecondary string `json:"backgroundSecondary,omitempty"`
+	// TextColorRegular overrides --pf-t--global--text--color--regular (primary text color)
+	TextColorRegular string `json:"textColorRegular,omitempty"`
+}
+
+type metricsConfig struct {
+	Enabled               bool                         `json:"enabled,omitempty"`
+	Address               string                       `json:"address,omitempty"`
+	SystemCollector       *systemCollectorConfig       `json:"systemCollector,omitempty"`
+	HttpCollector         *httpCollectorConfig         `json:"httpCollector,omitempty"`
+	DeviceCollector       *deviceCollectorConfig       `json:"deviceCollector,omitempty"`
+	FleetCollector        *fleetCollectorConfig        `json:"fleetCollector,omitempty"`
+	RepositoryCollector   *repositoryCollectorConfig   `json:"repositoryCollector,omitempty"`
+	ResourceSyncCollector *resourceSyncCollectorConfig `json:"resourceSyncCollector,omitempty"`
+	WorkerCollector       *workerCollectorConfig       `json:"workerCollector,omitempty"`
+}
+type collectorConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+type periodicCollectorConfig struct {
+	Enabled        bool          `json:"enabled,omitempty"`
+	TickerInterval util.Duration `json:"tickerInterval,omitempty"`
+}
+
+type systemCollectorConfig struct {
+	periodicCollectorConfig
+}
+
+type httpCollectorConfig struct {
+	collectorConfig
+}
+
+type deviceCollectorConfig struct {
+	periodicCollectorConfig
+	GroupByFleet bool `json:"groupByFleet,omitempty"`
+}
+
+type fleetCollectorConfig struct {
+	periodicCollectorConfig
+}
+
+type repositoryCollectorConfig struct {
+	periodicCollectorConfig
+}
+
+type resourceSyncCollectorConfig struct {
+	periodicCollectorConfig
+}
+
+type workerCollectorConfig struct {
+	collectorConfig
+}
+
+type TracingConfig struct {
+	Enabled  bool   `json:"enabled,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+	Insecure bool   `json:"insecure,omitempty"`
+}
+
+// ProfilingConfig selects how continuous/on-demand profiling is started.
+// pprof and pyroscope are independent; either, both, or neither may be enabled.
+type ProfilingConfig struct {
+	Pprof     *PprofProfilingConfig     `json:"pprof,omitempty"`
+	Pyroscope *PyroscopeProfilingConfig `json:"pyroscope,omitempty"`
+}
+
+// PprofProfilingConfig starts the loopback-only Go net/http/pprof server.
+type PprofProfilingConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// Port is the loopback TCP port for /debug/pprof (127.0.0.1 only).
+	// If unset or zero, each process uses its own default (see docs). Do not set
+	// a shared port when multiple services run on one host — they would conflict.
+	Port int `json:"port,omitempty"`
+}
+
+// PyroscopeProfilingConfig pushes profiles to a Grafana Pyroscope server.
+type PyroscopeProfilingConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// ServerAddress is required when enabled (e.g. "http://pyroscope:4040").
+	ServerAddress string `json:"serverAddress,omitempty"`
+	// ApplicationName overrides the process name sent to Pyroscope. When empty,
+	// each binary uses its own default (e.g. "flightctl-worker").
+	ApplicationName string `json:"applicationName,omitempty"`
+	// BasicAuthUser / BasicAuthPassword are optional (e.g. Grafana Cloud).
+	BasicAuthUser     string           `json:"basicAuthUser,omitempty"`
+	BasicAuthPassword api.SecureString `json:"basicAuthPassword,omitempty"`
+	// TenantID is optional multi-tenant Pyroscope header.
+	TenantID string `json:"tenantID,omitempty"`
+}
+
+// PprofProfilingEnabled reports whether the loopback pprof server should start.
+func (c *Config) PprofProfilingEnabled() bool {
+	return c != nil && c.Profiling != nil && c.Profiling.Pprof != nil && c.Profiling.Pprof.Enabled
+}
+
+// PprofProfilingPort returns the configured pprof port, or defaultPort when unset.
+func (c *Config) PprofProfilingPort(defaultPort int) int {
+	if c != nil && c.Profiling != nil && c.Profiling.Pprof != nil && c.Profiling.Pprof.Port > 0 {
+		return c.Profiling.Pprof.Port
+	}
+	return defaultPort
+}
+
+// PyroscopeProfilingConfig returns the pyroscope block when enabled, otherwise nil.
+func (c *Config) PyroscopeProfilingConfig() *PyroscopeProfilingConfig {
+	if c == nil || c.Profiling == nil || c.Profiling.Pyroscope == nil || !c.Profiling.Pyroscope.Enabled {
+		return nil
+	}
+	return c.Profiling.Pyroscope
+}
+
+type gitOpsConfig struct {
+	// IgnoreResourceUpdates lists JSON pointer paths that should be ignored
+	// when comparing desired vs. live resources during GitOps sync.
+	IgnoreResourceUpdates []string `json:"ignoreResourceUpdates,omitempty"`
+}
+
+type periodicTaskScheduleConfig struct {
+	Interval util.Duration `json:"interval,omitempty"`
+}
+
+type periodicTaskConfig struct {
+	Schedule periodicTaskScheduleConfig `json:"schedule,omitempty"`
+}
+
+type periodicLabelMappingScanTaskConfig struct {
+	Schedule   periodicTaskScheduleConfig `json:"schedule,omitempty"`
+	PageSize   *int                       `json:"pageSize,omitempty"`
+	TimeBudget *util.Duration             `json:"timeBudget,omitempty"`
+}
+
+type periodicTasksConfig struct {
+	ResourceSync periodicTaskConfig `json:"resourceSync,omitempty"`
+	// DependencySync overrides the interval for both the dependency-sync-git and
+	// dependency-sync-http periodic tasks (see DefaultDependencySyncTaskInterval).
+	DependencySync periodicTaskConfig `json:"dependencySync,omitempty"`
+	// RepositoryTester overrides the interval for the repository-tester periodic task,
+	// which probes Repository resources and sets their Accessible condition.
+	RepositoryTester periodicTaskConfig `json:"repositoryTester,omitempty"`
+	// DeltaPrepareDeadline overrides the interval for the delta prepare deadline sweep.
+	DeltaPrepareDeadline periodicTaskConfig                 `json:"deltaPrepareDeadline,omitempty"`
+	LabelMappingScan     periodicLabelMappingScanTaskConfig `json:"labelMappingScan,omitempty"`
+}
+
+type periodicConfig struct {
+	Consumers                int                 `json:"consumers,omitempty"`
+	Tasks                    periodicTasksConfig `json:"tasks,omitempty"`
+	ClusterLevelSecretAccess bool                `json:"clusterLevelSecretAccess,omitempty"`
+	ReleaseNamespace         string              `json:"releaseNamespace,omitempty"`
+}
+
+type organizationsConfig struct {
+	Enabled                      bool   `json:"enabled,omitempty"`
+	InitialLabelSyncMappingsFile string `json:"initialLabelSyncMappingsFile,omitempty"`
+}
+
+// DependenciesSyncConfig holds global settings for automated dependency synchronization.
+type DependenciesSyncConfig struct {
+	// PollInterval is the polling interval for git/HTTP dependency probes (e.g. "15m", "1h").
+	// Default: 15m.
+	PollInterval util.Duration `json:"pollInterval,omitempty"`
+}
+
+// DefaultDependenciesSyncPollInterval is the default polling interval for dependency probes.
+const DefaultDependenciesSyncPollInterval = 15 * time.Minute
+
+// DefaultDependencySyncTaskInterval is how often the dependency-sync periodic
+// task executes. This is intentionally shorter than the poll interval so that
+// newly added refs are discovered quickly and partial failures are retried
+// within minutes rather than waiting for the full poll interval.
+const DefaultDependencySyncTaskInterval = 3 * time.Minute
+
+// DefaultLabelMappingScanTaskInterval controls how often mapping scans run.
+const DefaultLabelMappingScanTaskInterval = 2 * time.Minute
+
+const (
+	// DefaultLabelMappingScanPageSize is the device page size used when unset.
+	DefaultLabelMappingScanPageSize = 1000
+	// DefaultLabelMappingScanTimeBudget is the per-invocation work budget when unset.
+	DefaultLabelMappingScanTimeBudget = 30 * time.Second
+	// MaxLabelMappingScanPageSize matches the device-list API maximum.
+	MaxLabelMappingScanPageSize = 1000
+)
+
+// GetDependenciesSyncPollInterval returns the configured poll interval, or the default if unset.
+func (c *Config) GetDependenciesSyncPollInterval() time.Duration {
+	if c.DependenciesSync != nil && c.DependenciesSync.PollInterval > 0 {
+		return time.Duration(c.DependenciesSync.PollInterval)
+	}
+	return DefaultDependenciesSyncPollInterval
+}
+
+// VulnerabilityBackend selects which vulnerability scanning backend is active.
+type VulnerabilityBackend string
+
+const (
+	// VulnerabilityBackendTrustify selects the Trustify (TPA) backend.
+	VulnerabilityBackendTrustify VulnerabilityBackend = "trustify"
+	// VulnerabilityBackendQuay selects the Quay Security API backend.
+	VulnerabilityBackendQuay VulnerabilityBackend = "quay"
+)
+
+// ParseVulnerabilityBackend validates and returns the backend enum value for the
+// given string. Empty string is allowed (maps to empty VulnerabilityBackend).
+// Returns an error for unknown non-empty values.
+func ParseVulnerabilityBackend(s string) (VulnerabilityBackend, error) {
+	if s == "" {
+		return "", nil
+	}
+	switch VulnerabilityBackend(s) {
+	case VulnerabilityBackendTrustify, VulnerabilityBackendQuay:
+		return VulnerabilityBackend(s), nil
+	default:
+		return "", fmt.Errorf("unknown vulnerability backend %q (known: trustify, quay)", s)
+	}
+}
+
+// UnmarshalJSON validates the backend value during JSON deserialization.
+func (v *VulnerabilityBackend) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	parsed, err := ParseVulnerabilityBackend(s)
+	if err != nil {
+		return err
+	}
+	*v = parsed
+	return nil
+}
+
+// DefaultQuayMaxConcurrentRequests bounds concurrent Quay Security API requests
+// when the Quay config does not specify a value.
+const DefaultQuayMaxConcurrentRequests = 5
+
+// VulnerabilityConfig holds configuration for the vulnerability integration feature.
+type VulnerabilityConfig struct {
+	// Enabled enables vulnerability integration (sync task + API endpoints).
+	Enabled bool `json:"enabled,omitempty"`
+	// SyncInterval is the interval between backend sync runs (e.g. "15m", "1h").
+	SyncInterval util.Duration `json:"syncInterval,omitempty"`
+	// Backend selects the vulnerability scanning backend. When empty, the sync
+	// task defaults to Trustify if a Trustify config with a non-empty endpoint
+	// is present.
+	Backend VulnerabilityBackend `json:"backend,omitempty"`
+	// Trustify holds the Trustify connection details (periodic service only).
+	Trustify *TrustifyConfig `json:"trustify,omitempty"`
+	// Quay holds the Quay Security API connection details (periodic service only).
+	Quay *QuayConfig `json:"quay,omitempty"`
+}
+
+// EffectiveBackend resolves the configured backend, applying the empty-backend
+// default so all callers share one rule: an explicit Backend is returned as-is;
+// an empty Backend falls back to Trustify when a Trustify config with a
+// non-empty endpoint is present; otherwise it returns an empty backend. It does
+// not log or mutate the config.
+func (v *VulnerabilityConfig) EffectiveBackend() VulnerabilityBackend {
+	if v == nil {
+		return ""
+	}
+	if v.Backend != "" {
+		return v.Backend
+	}
+	if v.Trustify != nil && strings.TrimSpace(v.Trustify.Endpoint) != "" {
+		return VulnerabilityBackendTrustify
+	}
+	return ""
+}
+
+// Validate checks the VulnerabilityConfig for invalid values and returns an
+// error if any are found.
+func (v *VulnerabilityConfig) Validate() error {
+	if v == nil {
+		return nil
+	}
+	if v.Quay != nil && v.Quay.MaxConcurrentRequests < 0 {
+		return fmt.Errorf("vulnerability.quay.maxConcurrentRequests must be non-negative, got %d", v.Quay.MaxConcurrentRequests)
+	}
+	return nil
+}
+
+// QuayConfig holds Quay Security API connection and authentication details.
+// Quay authenticates with a bearer token rather than OIDC client credentials.
+type QuayConfig struct {
+	// Endpoint is the Quay API base URL (e.g. "https://quay.io").
+	Endpoint string `json:"endpoint,omitempty"`
+	// Token is the bearer token used to authenticate to the Quay Security API.
+	Token api.SecureString `json:"token,omitempty"`
+	// MaxConcurrentRequests bounds concurrent Quay API requests.
+	// Defaults to DefaultQuayMaxConcurrentRequests when unset.
+	MaxConcurrentRequests int `json:"maxConcurrentRequests,omitempty"`
+	// CAFile is the path to a CA bundle for verifying the Quay server certificate.
+	// Optional. If unset, system roots are used.
+	CAFile string `json:"caFile,omitempty"`
+	// SkipTLSVerify disables TLS certificate verification (insecure, for lab/air-gap only).
+	// Defaults to false.
+	SkipTLSVerify bool `json:"skipTlsVerify,omitempty"`
+}
+
+// TrustifyConfig holds Trustify API connection and authentication details.
+type TrustifyConfig struct {
+	// Endpoint is the Trustify API base URL (e.g. "https://trustify.example.com").
+	// Do not include the /api/v1 or /api/v2 paths; the client appends them automatically.
+	Endpoint string `json:"endpoint,omitempty"`
+	// Auth configures how the periodic service authenticates to Trustify.
+	Auth *TrustifyAuthConfig `json:"auth,omitempty"`
+	// CAFile is the path to a CA bundle for verifying the Trustify server certificate.
+	// Optional. If unset, system roots are used.
+	CAFile string `json:"caFile,omitempty"`
+	// SkipTLSVerify disables TLS certificate verification (insecure, for lab/air-gap only).
+	// Defaults to false.
+	SkipTLSVerify bool `json:"skipTlsVerify,omitempty"`
+}
+
+// TrustifyAuthConfig configures authentication against the Trustify API.
+type TrustifyAuthConfig struct {
+	// Mode selects the authentication mode. Allowed values: "client-credentials", "none".
+	Mode string `json:"mode,omitempty"`
+	// OIDCIssuerURL is the OIDC issuer URL used in client-credentials mode.
+	OIDCIssuerURL string `json:"oidcIssuerUrl,omitempty"`
+	// ClientID is the OAuth2 client ID used in client-credentials mode.
+	ClientID string `json:"clientId,omitempty"`
+	// ClientSecret is the OAuth2 client secret used in client-credentials mode.
+	ClientSecret api.SecureString `json:"clientSecret,omitempty"`
+}
+
+type telemetryGatewayConfig struct {
+	LogLevel string                    `json:"logLevel,omitempty"`
+	TLS      telemetryGatewayTLSConfig `json:"tls,omitempty"`
+	Listen   telemetryGatewayListen    `json:"listen,omitempty"`
+	Export   *telemetryGatewayExport   `json:"export,omitempty"`
+	Forward  *telemetryGatewayForward  `json:"forward,omitempty"`
+}
+
+type telemetryGatewayTLSConfig struct {
+	CertFile string `json:"certFile,omitempty"`
+	KeyFile  string `json:"keyFile,omitempty"`
+	CACert   string `json:"caCert,omitempty"`
+}
+
+type telemetryGatewayListen struct {
+	Device string `json:"device,omitempty"`
+}
+
+type telemetryGatewayExport struct {
+	Prometheus string `json:"prometheus,omitempty"`
+}
+
+type telemetryGatewayForward struct {
+	Endpoint string                      `json:"endpoint,omitempty"`
+	Headers  map[string]api.SecureString `json:"headers,omitempty"`
+	TLS      *telemetryGatewayForwardTLS `json:"tls,omitempty"`
+}
+
+type telemetryGatewayForwardTLS struct {
+	InsecureSkipTlsVerify bool   `json:"insecureSkipTlsVerify,omitempty"`
+	CAFile                string `json:"caFile,omitempty"`
+	CertFile              string `json:"certFile,omitempty"`
+	KeyFile               string `json:"keyFile,omitempty"`
+}
+
+// EncryptionKeyConfig defines a single encryption key with its identifier and file path.
+type EncryptionKeyConfig struct {
+	ID   string `json:"id"`
+	Path string `json:"path"`
+}
+
+// EncryptionConfig holds encryption-at-rest key configuration.
+// Keys lists all available keys (for rotation support); ActiveKeyID selects which
+// key is used for new encryptions. Old keys remain available for decryption.
+type EncryptionConfig struct {
+	Keys        []EncryptionKeyConfig `json:"keys"`
+	ActiveKeyID string                `json:"activeKeyID"`
+}
+
+type ConfigOption func(*Config)
+
+func WithTracingEnabled() ConfigOption {
+	return func(c *Config) {
+		c.Tracing = &TracingConfig{
+			Enabled: true,
+		}
+	}
+}
+
+func WithOIDCAuth(issuer, clientId string, enabled bool) ConfigOption {
+	return func(c *Config) {
+		if c.Auth == nil {
+			c.Auth = &authConfig{
+				DynamicProviderCacheTTL: util.Duration(5 * time.Second),
+				AAPIdentityCacheTTL:     util.Duration(45 * time.Second),
+			}
+		}
+		c.Auth.OIDC = &api.OIDCProviderSpec{
+			Issuer:       issuer,
+			ClientId:     clientId,
+			Enabled:      &enabled,
+			ProviderType: api.Oidc,
+		}
+	}
+}
+
+func WithOAuth2Auth(authorizationUrl, tokenUrl, userinfoUrl, issuer, clientId string, enabled bool) ConfigOption {
+
+	return func(c *Config) {
+		if c.Auth == nil {
+			c.Auth = &authConfig{
+				DynamicProviderCacheTTL: util.Duration(5 * time.Second),
+				AAPIdentityCacheTTL:     util.Duration(45 * time.Second),
+			}
+		}
+		c.Auth.OAuth2 = &api.OAuth2ProviderSpec{
+			AuthorizationUrl: authorizationUrl,
+			TokenUrl:         tokenUrl,
+			UserinfoUrl:      userinfoUrl,
+			Issuer:           &issuer,
+			ClientId:         clientId,
+			Enabled:          &enabled,
+			ProviderType:     api.Oauth2,
+		}
+	}
+}
+
+func WithK8sAuth(apiUrl, rbacNs string) ConfigOption {
+	return func(c *Config) {
+		if c.Auth == nil {
+			c.Auth = &authConfig{
+				DynamicProviderCacheTTL: util.Duration(5 * time.Second),
+				AAPIdentityCacheTTL:     util.Duration(45 * time.Second),
+			}
+		}
+		enabled := true
+		c.Auth.K8s = &api.K8sProviderSpec{
+			ApiUrl:       apiUrl,
+			RbacNs:       &rbacNs,
+			ProviderType: api.K8s,
+			Enabled:      &enabled,
+		}
+	}
+}
+
+func WithAAPAuth(apiUrl, externalApiUrl string) ConfigOption {
+	return func(c *Config) {
+		if c.Auth == nil {
+			c.Auth = &authConfig{
+				DynamicProviderCacheTTL: util.Duration(5 * time.Second),
+				AAPIdentityCacheTTL:     util.Duration(45 * time.Second),
+			}
+		}
+		enabled := true
+		c.Auth.AAP = &api.AapProviderSpec{
+			ApiUrl:       apiUrl,
+			ProviderType: api.Aap,
+			Enabled:      &enabled,
+		}
+	}
+}
+
+func ConfigDir() string {
+	return filepath.Join(util.MustString(os.UserHomeDir), "."+appName)
+}
+
+func ConfigFile() string {
+	return filepath.Join(ConfigDir(), "config.yaml")
+}
+
+func ClientConfigFile() string {
+	return filepath.Join(ConfigDir(), "client.yaml")
+}
+
+func CertificateDir() string {
+	return filepath.Join(ConfigDir(), "certs")
+}
+
+func EncryptionDir() string {
+	return filepath.Join(ConfigDir(), "encryption")
+}
+
+func NewDefault(opts ...ConfigOption) *Config {
+	c := &Config{
+		Database: &dbConfig{
+			Type:              "pgsql",
+			Hostname:          "localhost",
+			Port:              5432,
+			Name:              "flightctl",
+			User:              "flightctl_app",
+			Password:          "adminpass",
+			MigrationUser:     "flightctl_migrator",
+			MigrationPassword: "adminpass",
+		},
+		Service: &svcConfig{
+			Address:                ":3443",
+			AgentEndpointAddress:   ":7443",
+			CertStore:              CertificateDir(),
+			BaseUrl:                "https://localhost:3443",
+			BaseAgentEndpointUrl:   "https://localhost:7443",
+			DisableTLS:             false,
+			ServerCertName:         "server",
+			ServerCertValidityDays: 730,
+			LogLevel:               "info",
+			HttpReadTimeout:        util.Duration(5 * time.Minute),
+			HttpReadHeaderTimeout:  util.Duration(5 * time.Minute),
+			HttpWriteTimeout:       util.Duration(5 * time.Minute),
+			HttpIdleTimeout:        util.Duration(5 * time.Minute),
+			HttpMaxNumHeaders:      32,
+			HttpMaxHeaderBytes:     32 * 1024, // 32KB
+			HttpMaxUrlLength:       2000,
+			HttpMaxRequestSize:     50 * 1024 * 1024,                  // 50MB
+			EventRetentionPeriod:   util.Duration(7 * 24 * time.Hour), // 1 week
+			AlertPollingInterval:   util.Duration(1 * time.Minute),
+			RenderedWaitTimeout:    util.Duration(2 * time.Minute),
+			HealthChecks: &HealthChecks{
+				Enabled:          true,
+				ReadinessPath:    "/readyz",
+				LivenessPath:     "/healthz",
+				ReadinessTimeout: util.Duration(2 * time.Second),
+			},
+			// Rate limiting is disabled by default - set RateLimit to enable
+		},
+		RemoteAccessService: NewDefaultRemoteAccessServiceConfig(),
+		ImageBuilderService: NewDefaultImageBuilderServiceConfig(),
+		ImageBuilderWorker:  NewDefaultImageBuilderWorkerConfig(),
+		Worker:              NewDefaultWorkerConfig(),
+		KV: &kvConfig{
+			Hostname: "localhost",
+			Port:     6379,
+			Password: "adminpass",
+		},
+		Alertmanager: &alertmanagerConfig{
+			Hostname:           "localhost",
+			Port:               9093,
+			MaxRetries:         3,
+			BaseDelay:          "500ms",
+			MaxDelay:           "10s",
+			ProxyListenAddress: ":8443",
+		},
+		TelemetryGateway: &telemetryGatewayConfig{
+			LogLevel: "info",
+			TLS: telemetryGatewayTLSConfig{
+				CertFile: "/etc/telemetry-gateway/certs/server.crt",
+				KeyFile:  "/etc/telemetry-gateway/certs/server.key",
+				CACert:   "/etc/telemetry-gateway/certs/ca.crt",
+			},
+			Listen: telemetryGatewayListen{Device: "0.0.0.0:4317"},
+			// Export: nil  (no Prom until explicitly set)
+			// Forward: nil (no upstream until explicitly set)
+		},
+		Metrics: &metricsConfig{
+			Enabled: true,
+			Address: ":15690",
+			SystemCollector: &systemCollectorConfig{
+				periodicCollectorConfig: periodicCollectorConfig{
+					Enabled:        true,
+					TickerInterval: util.Duration(5 * time.Second),
+				},
+			},
+			HttpCollector: &httpCollectorConfig{
+				collectorConfig: collectorConfig{
+					Enabled: true,
+				},
+			},
+			DeviceCollector: &deviceCollectorConfig{
+				periodicCollectorConfig: periodicCollectorConfig{
+					Enabled:        true,
+					TickerInterval: util.Duration(30 * time.Second),
+				},
+				GroupByFleet: true,
+			},
+			FleetCollector: &fleetCollectorConfig{
+				periodicCollectorConfig: periodicCollectorConfig{
+					Enabled:        true,
+					TickerInterval: util.Duration(30 * time.Second),
+				},
+			},
+			RepositoryCollector: &repositoryCollectorConfig{
+				periodicCollectorConfig: periodicCollectorConfig{
+					Enabled:        true,
+					TickerInterval: util.Duration(30 * time.Second),
+				},
+			},
+			ResourceSyncCollector: &resourceSyncCollectorConfig{
+				periodicCollectorConfig: periodicCollectorConfig{
+					Enabled:        true,
+					TickerInterval: util.Duration(30 * time.Second),
+				},
+			},
+		},
+		GitOps: &gitOpsConfig{
+			IgnoreResourceUpdates: []string{
+				"/metadata/resourceVersion",
+			},
+		},
+		Organizations: &organizationsConfig{
+			InitialLabelSyncMappingsFile: DefaultInitialLabelSyncMappingsFile,
+		},
+		Auth: &authConfig{
+			DynamicProviderCacheTTL: util.Duration(5 * time.Second),
+			AAPIdentityCacheTTL:     util.Duration(45 * time.Second),
+		},
+		Encryption: &EncryptionConfig{
+			Keys: []EncryptionKeyConfig{
+				{
+					ID:   "default",
+					Path: filepath.Join(EncryptionDir(), "key"),
+				},
+			},
+			ActiveKeyID: "default",
+		},
+	}
+	c.CA = ca.NewDefault(CertificateDir())
+	// CA certs are stored in the same location as Server Certs by default
+
+	for _, opt := range opts {
+		opt(c)
+	}
+
+	return c
+}
+
+func NewFromFile(cfgFile string) (*Config, error) {
+	cfg, err := Load(cfgFile)
+	if err != nil {
+		return nil, err
+	}
+	if err := Validate(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func LoadOrGenerate(cfgFile string) (*Config, error) {
+	if _, err := os.Stat(cfgFile); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(cfgFile), os.FileMode(0755)); err != nil {
+			return nil, fmt.Errorf("creating directory for config file: %v", err)
+		}
+		if err := Save(NewDefault(), cfgFile); err != nil {
+			return nil, err
+		}
+	}
+	return NewFromFile(cfgFile)
+}
+
+func Load(cfgFile string) (*Config, error) {
+	contents, err := os.ReadFile(cfgFile)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file: %v", err)
+	}
+	c := NewDefault()
+	if err := yaml.Unmarshal(contents, c); err != nil {
+		return nil, fmt.Errorf("decoding config: %v", err)
+	}
+
+	applyEnvVarOverrides(c)
+	applyVulnerabilityReportingDefaults(c)
+	if err := applyAuthDefaults(c); err != nil {
+		return nil, fmt.Errorf("applying auth defaults: %w", err)
+	}
+
+	if c.VulnerabilityReporting != nil {
+		if err := c.VulnerabilityReporting.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid vulnerability configuration: %w", err)
+		}
+	}
+
+	return c, nil
+}
+
+func applyEnvVarOverrides(c *Config) {
+	if kvPass := os.Getenv("KV_PASSWORD"); kvPass != "" {
+		c.KV.Password = api.SecureString(kvPass)
+	}
+	if dbHost := os.Getenv("DB_HOST"); dbHost != "" {
+		c.Database.Hostname = dbHost
+	}
+	if dbPort := os.Getenv("DB_PORT"); dbPort != "" {
+		p, err := strconv.ParseUint(dbPort, 10, 32)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: invalid DB_PORT value %q (%v); leaving database.port at default %d\n", dbPort, err, c.Database.Port)
+		} else {
+			c.Database.Port = uint(p)
+		}
+	}
+	if dbName := os.Getenv("DB_NAME"); dbName != "" {
+		c.Database.Name = dbName
+	}
+	if dbUser := os.Getenv("DB_USER"); dbUser != "" {
+		c.Database.User = dbUser
+	}
+	if dbPass := os.Getenv("DB_PASSWORD"); dbPass != "" {
+		c.Database.Password = api.SecureString(dbPass)
+	}
+	if dbMigrationUser := os.Getenv("DB_MIGRATION_USER"); dbMigrationUser != "" {
+		c.Database.MigrationUser = dbMigrationUser
+	}
+	if dbMigrationPass := os.Getenv("DB_MIGRATION_PASSWORD"); dbMigrationPass != "" {
+		c.Database.MigrationPassword = api.SecureString(dbMigrationPass)
+	}
+	applyVulnerabilityReportingEnvVarOverrides(c)
+	applyDeltaGenerationEnvVarOverrides(c)
+	// CRYPTO_FORCE_FIPS environment variable sets the global crypto policy FIPS mode.
+	// This overrides auto-detection and applies to all cryptographic protocols.
+	// Valid values: "true", "1" (enable), "false", "0" (disable)
+	// Invalid values are ignored with a warning, allowing auto-detection to proceed.
+	if cryptoForceFIPS := os.Getenv("CRYPTO_FORCE_FIPS"); cryptoForceFIPS != "" {
+		var forceFIPS *bool
+		switch cryptoForceFIPS {
+		case "true", "1":
+			t := true
+			forceFIPS = &t
+		case "false", "0":
+			f := false
+			forceFIPS = &f
+		default:
+			fmt.Fprintf(os.Stderr, "Warning: Invalid CRYPTO_FORCE_FIPS value %q (expected: true/1/false/0), ignoring and using auto-detection\n", cryptoForceFIPS)
+		}
+		if forceFIPS != nil {
+			if c.CryptoPolicy == nil {
+				c.CryptoPolicy = &CryptoPolicyConfig{}
+			}
+			c.CryptoPolicy.ForceFIPSMode = forceFIPS
+		}
+	}
+}
+
+func applyVulnerabilityReportingEnvVarOverrides(c *Config) {
+	enabled := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_ENABLED")
+	syncInterval := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_SYNC_INTERVAL")
+	backend := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_BACKEND")
+	trustifyEndpoint := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_TRUSTIFY_ENDPOINT")
+	trustifyAuthMode := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_TRUSTIFY_AUTH_MODE")
+	trustifyOIDCIssuerURL := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_TRUSTIFY_OIDC_ISSUER_URL")
+	trustifyClientID := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_TRUSTIFY_CLIENT_ID")
+	trustifyClientSecret := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_TRUSTIFY_CLIENT_SECRET")
+	trustifyCAFile := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_TRUSTIFY_CA_FILE")
+	trustifySkipTLSVerify := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_TRUSTIFY_SKIP_TLS_VERIFY")
+	quayEndpoint := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_QUAY_ENDPOINT")
+	quayToken := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_QUAY_TOKEN")
+	quayMaxConcurrent := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_QUAY_MAX_CONCURRENT_REQUESTS")
+	quayCAFile := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_QUAY_CA_FILE")
+	quaySkipTLSVerify := os.Getenv("FLIGHTCTL_VULNERABILITY_REPORTING_QUAY_SKIP_TLS_VERIFY")
+
+	if enabled == "" && syncInterval == "" && backend == "" && trustifyEndpoint == "" && trustifyAuthMode == "" &&
+		trustifyOIDCIssuerURL == "" && trustifyClientID == "" && trustifyClientSecret == "" &&
+		trustifyCAFile == "" && trustifySkipTLSVerify == "" &&
+		quayEndpoint == "" && quayToken == "" && quayMaxConcurrent == "" &&
+		quayCAFile == "" && quaySkipTLSVerify == "" {
+		return
+	}
+
+	if c.VulnerabilityReporting == nil {
+		c.VulnerabilityReporting = &VulnerabilityConfig{}
+	}
+
+	if backend != "" {
+		parsed, err := ParseVulnerabilityBackend(backend)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Invalid FLIGHTCTL_VULNERABILITY_REPORTING_BACKEND value %q: %v, ignoring\n", backend, err)
+		} else {
+			c.VulnerabilityReporting.Backend = parsed
+		}
+	}
+
+	switch enabled {
+	case "true", "1":
+		c.VulnerabilityReporting.Enabled = true
+	case "false", "0":
+		c.VulnerabilityReporting.Enabled = false
+	case "":
+	default:
+		fmt.Fprintf(os.Stderr, "Warning: Invalid FLIGHTCTL_VULNERABILITY_REPORTING_ENABLED value %q (expected: true/1/false/0), ignoring\n", enabled)
+	}
+
+	if syncInterval != "" {
+		d, err := time.ParseDuration(syncInterval)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Invalid FLIGHTCTL_VULNERABILITY_REPORTING_SYNC_INTERVAL value %q: %v, ignoring\n", syncInterval, err)
+		} else {
+			c.VulnerabilityReporting.SyncInterval = util.Duration(d)
+		}
+	}
+
+	applyVulnerabilityReportingTrustifyEnvVarOverrides(c.VulnerabilityReporting, trustifyEndpoint, trustifyAuthMode, trustifyOIDCIssuerURL, trustifyClientID, trustifyClientSecret, trustifyCAFile, trustifySkipTLSVerify)
+	applyVulnerabilityReportingQuayEnvVarOverrides(c.VulnerabilityReporting, quayEndpoint, quayToken, quayMaxConcurrent, quayCAFile, quaySkipTLSVerify)
+}
+
+func applyVulnerabilityReportingQuayEnvVarOverrides(v *VulnerabilityConfig, endpoint, token, maxConcurrent, caFile, skipTLSVerify string) {
+	if endpoint == "" && token == "" && maxConcurrent == "" && caFile == "" && skipTLSVerify == "" {
+		return
+	}
+	if v.Quay == nil {
+		v.Quay = &QuayConfig{}
+	}
+	if endpoint != "" {
+		v.Quay.Endpoint = endpoint
+	}
+	if token != "" {
+		v.Quay.Token = api.SecureString(token)
+	}
+	if maxConcurrent != "" {
+		n, err := strconv.Atoi(maxConcurrent)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Invalid FLIGHTCTL_VULNERABILITY_REPORTING_QUAY_MAX_CONCURRENT_REQUESTS value %q: %v, ignoring\n", maxConcurrent, err)
+		} else if n < 0 {
+			fmt.Fprintf(os.Stderr, "Warning: FLIGHTCTL_VULNERABILITY_REPORTING_QUAY_MAX_CONCURRENT_REQUESTS must be non-negative, got %d, ignoring\n", n)
+		} else {
+			v.Quay.MaxConcurrentRequests = n
+		}
+	}
+	if caFile != "" {
+		v.Quay.CAFile = caFile
+	}
+	if skipTLSVerify != "" {
+		switch skipTLSVerify {
+		case "true", "1":
+			v.Quay.SkipTLSVerify = true
+		case "false", "0":
+			v.Quay.SkipTLSVerify = false
+		default:
+			fmt.Fprintf(os.Stderr, "Warning: Invalid FLIGHTCTL_VULNERABILITY_REPORTING_QUAY_SKIP_TLS_VERIFY value %q (expected: true/1/false/0), ignoring\n", skipTLSVerify)
+		}
+	}
+}
+
+// applyVulnerabilityReportingDefaults fills in defaults for vulnerability
+// reporting sub-configs that are present but under-specified.
+func applyVulnerabilityReportingDefaults(c *Config) {
+	v := c.VulnerabilityReporting
+	if v == nil || v.Quay == nil {
+		return
+	}
+	if v.Quay.MaxConcurrentRequests == 0 {
+		v.Quay.MaxConcurrentRequests = DefaultQuayMaxConcurrentRequests
+	}
+}
+
+func applyDeltaGenerationEnvVarOverrides(c *Config) {
+	username := os.Getenv("DELTA_GENERATION_DEFAULT_REPOSITORY_USERNAME")
+	password := os.Getenv("DELTA_GENERATION_DEFAULT_REPOSITORY_PASSWORD")
+	if username == "" && password == "" {
+		return
+	}
+	if c.DeltaGeneration == nil || c.DeltaGeneration.DefaultRepository == nil {
+		return
+	}
+	if username != "" {
+		c.DeltaGeneration.DefaultRepository.Username = username
+	}
+	if password != "" {
+		c.DeltaGeneration.DefaultRepository.Password = api.SecureString(password)
+	}
+}
+
+func applyVulnerabilityReportingTrustifyEnvVarOverrides(v *VulnerabilityConfig, endpoint, authMode, oidcIssuerURL, clientID, clientSecret, caFile, skipTLSVerify string) {
+	if endpoint == "" && authMode == "" && oidcIssuerURL == "" && clientID == "" && clientSecret == "" && caFile == "" && skipTLSVerify == "" {
+		return
+	}
+	if v.Trustify == nil {
+		v.Trustify = &TrustifyConfig{}
+	}
+	if endpoint != "" {
+		v.Trustify.Endpoint = endpoint
+	}
+	if caFile != "" {
+		v.Trustify.CAFile = caFile
+	}
+	if skipTLSVerify != "" {
+		switch skipTLSVerify {
+		case "true", "1":
+			v.Trustify.SkipTLSVerify = true
+		case "false", "0":
+			v.Trustify.SkipTLSVerify = false
+		default:
+			fmt.Fprintf(os.Stderr, "Warning: Invalid FLIGHTCTL_VULNERABILITY_REPORTING_TRUSTIFY_SKIP_TLS_VERIFY value %q (expected: true/1/false/0), ignoring\n", skipTLSVerify)
+		}
+	}
+	if authMode == "" && oidcIssuerURL == "" && clientID == "" && clientSecret == "" {
+		return
+	}
+	if v.Trustify.Auth == nil {
+		v.Trustify.Auth = &TrustifyAuthConfig{}
+	}
+	if authMode != "" {
+		v.Trustify.Auth.Mode = authMode
+	}
+	if oidcIssuerURL != "" {
+		v.Trustify.Auth.OIDCIssuerURL = oidcIssuerURL
+	}
+	if clientID != "" {
+		v.Trustify.Auth.ClientID = clientID
+	}
+	if clientSecret != "" {
+		v.Trustify.Auth.ClientSecret = api.SecureString(clientSecret)
+	}
+}
+
+func applyAuthDefaults(c *Config) error {
+	if c.Auth == nil {
+		return nil
+	}
+
+	applyAuthProviderEnabledDefaults(c.Auth)
+	if c.Auth.OIDC != nil && c.Auth.OIDC.Prompt == nil {
+		prompt := api.DefaultAuthProviderPrompt
+		c.Auth.OIDC.Prompt = &prompt
+	}
+	if c.Auth.OAuth2 != nil && c.Auth.OAuth2.Prompt == nil {
+		prompt := api.DefaultAuthProviderPrompt
+		c.Auth.OAuth2.Prompt = &prompt
+	}
+	applyPAMOIDCIssuerDefaults(c)
+	applyOIDCClientDefaults(c)
+	applyOpenShiftDefaults(c)
+	if err := applyOAuth2Defaults(c); err != nil {
+		return err
+	}
+	return nil
+}
+
+func applyAuthProviderEnabledDefaults(auth *authConfig) {
+	if auth.OIDC != nil && auth.OIDC.Enabled == nil {
+		enabled := true
+		auth.OIDC.Enabled = &enabled
+	}
+	if auth.OpenShift != nil && auth.OpenShift.Enabled == nil {
+		enabled := true
+		auth.OpenShift.Enabled = &enabled
+	}
+	if auth.K8s != nil && auth.K8s.Enabled == nil {
+		enabled := true
+		auth.K8s.Enabled = &enabled
+	}
+	if auth.OAuth2 != nil && auth.OAuth2.Enabled == nil {
+		enabled := true
+		auth.OAuth2.Enabled = &enabled
+	}
+	if auth.AAP != nil && auth.AAP.Enabled == nil {
+		enabled := true
+		auth.AAP.Enabled = &enabled
+	}
+}
+
+func applyPAMOIDCIssuerDefaults(c *Config) {
+	if c.Auth.PAMOIDCIssuer == nil {
+		return
+	}
+
+	if c.Auth.PAMOIDCIssuer.Address == "" {
+		c.Auth.PAMOIDCIssuer.Address = ":8444"
+	}
+	if c.Auth.PAMOIDCIssuer.PAMService == "" {
+		c.Auth.PAMOIDCIssuer.PAMService = "flightctl"
+	}
+	if c.Auth.PAMOIDCIssuer.Issuer == "" {
+		c.Auth.PAMOIDCIssuer.Issuer = c.Service.BaseUrl
+	}
+	if c.Auth.PAMOIDCIssuer.ClientID == "" {
+		c.Auth.PAMOIDCIssuer.ClientID = "flightctl-client"
+	}
+	if len(c.Auth.PAMOIDCIssuer.Scopes) == 0 {
+		c.Auth.PAMOIDCIssuer.Scopes = []string{"openid", "profile", "email", "roles"}
+	}
+	if len(c.Auth.PAMOIDCIssuer.RedirectURIs) == 0 {
+		applyPAMOIDCIssuerRedirectURIDefaults(c)
+	}
+	if c.Auth.PAMOIDCIssuer.AccessTokenExpiration == 0 {
+		c.Auth.PAMOIDCIssuer.AccessTokenExpiration = util.Duration(1 * time.Hour)
+	}
+	if c.Auth.PAMOIDCIssuer.RefreshTokenExpiration == 0 {
+		c.Auth.PAMOIDCIssuer.RefreshTokenExpiration = util.Duration(7 * 24 * time.Hour)
+	}
+	if c.Auth.PAMOIDCIssuer.PendingSessionCookieMaxAge == 0 {
+		c.Auth.PAMOIDCIssuer.PendingSessionCookieMaxAge = util.Duration(10 * time.Minute)
+	}
+	if c.Auth.PAMOIDCIssuer.AuthenticatedSessionCookieMaxAge == 0 {
+		c.Auth.PAMOIDCIssuer.AuthenticatedSessionCookieMaxAge = util.Duration(30 * time.Minute)
+	}
+}
+
+func applyPAMOIDCIssuerRedirectURIDefaults(c *Config) {
+	base := c.Service.BaseUIUrl
+	if base == "" {
+		base = c.Service.BaseUrl
+	}
+	if base != "" {
+		c.Auth.PAMOIDCIssuer.RedirectURIs = []string{strings.TrimSuffix(base, "/") + "/callback"}
+	}
+}
+
+func applyOIDCClientDefaults(c *Config) {
+	if c.Auth.OIDC == nil {
+		return
+	}
+
+	if c.Auth.OIDC.ClientId == "" {
+		c.Auth.OIDC.ClientId = "flightctl-client"
+	}
+	if c.Auth.OIDC.Issuer == "" {
+		c.Auth.OIDC.Issuer = c.Service.BaseUrl
+	}
+	if c.Auth.OIDC.UsernameClaim == nil {
+		c.Auth.OIDC.UsernameClaim = &[]string{"preferred_username"}
+	}
+
+	applyOIDCRoleAssignmentDefaults(c.Auth.OIDC)
+	applyOIDCOrganizationAssignmentDefaults(c.Auth.OIDC)
+}
+
+func applyOIDCRoleAssignmentDefaults(oidc *api.OIDCProviderSpec) {
+	if _, err := oidc.RoleAssignment.Discriminator(); err != nil {
+		dynamicRoleAssignment := api.AuthDynamicRoleAssignment{
+			Type:      api.AuthDynamicRoleAssignmentTypeDynamic,
+			ClaimPath: []string{"groups"},
+		}
+		_ = oidc.RoleAssignment.FromAuthDynamicRoleAssignment(dynamicRoleAssignment)
+	}
+}
+
+func applyOIDCOrganizationAssignmentDefaults(oidc *api.OIDCProviderSpec) {
+	if _, err := oidc.OrganizationAssignment.Discriminator(); err != nil {
+		staticAssignment := api.AuthStaticOrganizationAssignment{
+			OrganizationName: org.DefaultExternalID,
+			Type:             api.AuthStaticOrganizationAssignmentTypeStatic,
+		}
+		_ = oidc.OrganizationAssignment.FromAuthStaticOrganizationAssignment(staticAssignment)
+	}
+}
+
+func applyOpenShiftDefaults(c *Config) {
+	if c.Auth.OpenShift == nil {
+		return
+	}
+
+	// Use authorizationUrl as issuer if issuer is not provided
+	if c.Auth.OpenShift.Issuer == nil || *c.Auth.OpenShift.Issuer == "" {
+		if c.Auth.OpenShift.AuthorizationUrl != nil {
+			c.Auth.OpenShift.Issuer = c.Auth.OpenShift.AuthorizationUrl
+		}
+	}
+}
+
+func applyOAuth2Defaults(c *Config) error {
+	if c.Auth.OAuth2 == nil {
+		return nil
+	}
+
+	// Infer introspection configuration if not provided
+	if c.Auth.OAuth2.Introspection == nil {
+		introspection, err := authprovider.InferOAuth2IntrospectionConfig(*c.Auth.OAuth2)
+		if err != nil {
+			return fmt.Errorf("failed to infer OAuth2 introspection configuration: %w", err)
+		}
+		c.Auth.OAuth2.Introspection = introspection
+	}
+	return nil
+}
+
+func Save(cfg *Config, cfgFile string) error {
+	contents, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("encoding config: %v", err)
+	}
+	if err := os.WriteFile(cfgFile, contents, 0600); err != nil {
+		return fmt.Errorf("writing config file: %v", err)
+	}
+	return nil
+}
+
+func Validate(cfg *Config) error {
+	allowedGitOpsIgnoreResourceUpdates := map[string]struct{}{
+		"/metadata/resourceVersion": {},
+	}
+
+	if cfg.GitOps != nil {
+		for _, path := range cfg.GitOps.IgnoreResourceUpdates {
+			if _, ok := allowedGitOpsIgnoreResourceUpdates[path]; !ok {
+				return fmt.Errorf("invalid ignoreResourceUpdates value: %s", path)
+			}
+		}
+	}
+
+	if cfg.Service != nil && cfg.Service.HealthChecks != nil && cfg.Service.HealthChecks.Enabled {
+		hc := cfg.Service.HealthChecks
+		if strings.TrimSpace(hc.ReadinessPath) == "" {
+			return fmt.Errorf("readinessPath must be non-empty")
+		}
+		if !strings.HasPrefix(hc.ReadinessPath, "/") {
+			return fmt.Errorf("readinessPath must start with '/'")
+		}
+		if strings.TrimSpace(hc.LivenessPath) == "" {
+			return fmt.Errorf("livenessPath must be non-empty")
+		}
+		if !strings.HasPrefix(hc.LivenessPath, "/") {
+			return fmt.Errorf("livenessPath must start with '/'")
+		}
+		if hc.ReadinessTimeout <= 0 {
+			return fmt.Errorf("readinessTimeout must be greater than 0")
+		}
+		if hc.ReadinessPath == hc.LivenessPath {
+			return fmt.Errorf("readinessPath and livenessPath must not be identical")
+		}
+	}
+
+	if cfg.ImageBuilderService != nil && cfg.ImageBuilderService.HealthChecks != nil && cfg.ImageBuilderService.HealthChecks.Enabled {
+		hc := cfg.ImageBuilderService.HealthChecks
+		if strings.TrimSpace(hc.ReadinessPath) == "" {
+			return fmt.Errorf("imageBuilderService.healthChecks.readinessPath must be non-empty")
+		}
+		if !strings.HasPrefix(hc.ReadinessPath, "/") {
+			return fmt.Errorf("imageBuilderService.healthChecks.readinessPath must start with '/'")
+		}
+		if strings.TrimSpace(hc.LivenessPath) == "" {
+			return fmt.Errorf("imageBuilderService.healthChecks.livenessPath must be non-empty")
+		}
+		if !strings.HasPrefix(hc.LivenessPath, "/") {
+			return fmt.Errorf("imageBuilderService.healthChecks.livenessPath must start with '/'")
+		}
+		if hc.ReadinessTimeout <= 0 {
+			return fmt.Errorf("imageBuilderService.healthChecks.readinessTimeout must be greater than 0")
+		}
+		if hc.ReadinessPath == hc.LivenessPath {
+			return fmt.Errorf("imageBuilderService.healthChecks.readinessPath and livenessPath must not be identical")
+		}
+	}
+
+	if err := validateImageBuilderWorker(cfg.ImageBuilderWorker); err != nil {
+		return err
+	}
+	if err := validatePeriodicLabelMappingScanTask(cfg); err != nil {
+		return err
+	}
+
+	if err := validateDeltaGeneration(cfg); err != nil {
+		return err
+	}
+
+	return validateAuthProviders(cfg.Auth)
+}
+
+func validateAuthProviders(auth *authConfig) error {
+	if auth == nil {
+		return nil
+	}
+	if auth.OIDC != nil {
+		if err := api.ValidateAuthProviderPrompt(auth.OIDC.Prompt); err != nil {
+			return fmt.Errorf("auth.oidc.prompt: %w", err)
+		}
+		if err := validateAuthProviderRoleAssignment(auth.OIDC.RoleAssignment, string(api.Oidc)); err != nil {
+			return err
+		}
+	}
+	if auth.OAuth2 != nil {
+		if err := api.ValidateAuthProviderPrompt(auth.OAuth2.Prompt); err != nil {
+			return fmt.Errorf("auth.oauth2.prompt: %w", err)
+		}
+		if err := validateAuthProviderRoleAssignment(auth.OAuth2.RoleAssignment, string(api.Oauth2)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validatePeriodicLabelMappingScanTask(cfg *Config) error {
+	if cfg.Periodic == nil {
+		return nil
+	}
+	settings := cfg.Periodic.Tasks.LabelMappingScan
+	if settings.PageSize != nil && (*settings.PageSize < 1 || *settings.PageSize > MaxLabelMappingScanPageSize) {
+		return fmt.Errorf("periodic.tasks.labelMappingScan.pageSize must be between 1 and %d", MaxLabelMappingScanPageSize)
+	}
+	if settings.TimeBudget != nil && time.Duration(*settings.TimeBudget) <= 0 {
+		return fmt.Errorf("periodic.tasks.labelMappingScan.timeBudget must be greater than 0")
+	}
+	return nil
+}
+
+func validateImageBuilderWorker(cfg *imageBuilderWorkerConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if time.Duration(cfg.ImageBuilderTimeout) <= 0 {
+		return fmt.Errorf("imageBuilderWorker.imageBuilderTimeout must be greater than 0")
+	}
+	if time.Duration(cfg.TimeoutCheckTaskInterval) <= 0 {
+		return fmt.Errorf("imageBuilderWorker.timeoutCheckTaskInterval must be greater than 0")
+	}
+	return nil
+}
+
+func validateDeltaGeneration(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.DeltaGeneration.Validate()
+}
+
+func validateAuthProviderRoleAssignment(roleAssignment api.AuthRoleAssignment, providerType string) error {
+	discriminator, err := roleAssignment.Discriminator()
+	if err != nil {
+		// No role assignment configured, which is valid
+		return nil
+	}
+
+	if discriminator != string(api.AuthStaticRoleAssignmentTypeStatic) {
+		// Only validate static role assignments
+		return nil
+	}
+
+	staticAssignment, err := roleAssignment.AsAuthStaticRoleAssignment()
+	if err != nil {
+		return fmt.Errorf("%s provider: invalid static role assignment: %w", providerType, err)
+	}
+
+	// Validate that all roles are in KnownExternalRoles
+	for i, role := range staticAssignment.Roles {
+		if role == "" {
+			return fmt.Errorf("%s provider: role at index %d cannot be empty", providerType, i)
+		}
+		if !slices.Contains(api.KnownExternalRoles, role) {
+			return fmt.Errorf("%s provider: role at index %d is not a valid role: %s (must be one of: %v)", providerType, i, role, api.KnownExternalRoles)
+		}
+	}
+
+	return nil
+}
+
+func (cfg *Config) String() string {
+	// Create a sanitized copy to avoid mutating the original config
+	sanitized := cfg.sanitizeForLogging()
+	contents, err := json.Marshal(sanitized)
+	if err != nil {
+		return "<error>"
+	}
+	return string(contents)
+}
+
+// sanitizeForLogging creates a copy of the config with sensitive fields redacted
+func (cfg *Config) sanitizeForLogging() *Config {
+	if cfg == nil {
+		return nil
+	}
+
+	// Create a deep copy by marshaling and unmarshaling
+	// This is safe because SecureString already handles redaction in MarshalJSON
+	cfgJSON, err := json.Marshal(cfg)
+	if err != nil {
+		return cfg
+	}
+
+	var sanitized Config
+	if err := json.Unmarshal(cfgJSON, &sanitized); err != nil {
+		return cfg
+	}
+
+	// Redact client secrets in all auth providers
+	if sanitized.Auth != nil {
+		if sanitized.Auth.OIDC != nil && sanitized.Auth.OIDC.ClientSecret != "" {
+			sanitized.Auth.OIDC.ClientSecret = "[REDACTED]"
+		}
+		if sanitized.Auth.OAuth2 != nil && sanitized.Auth.OAuth2.ClientSecret != "" {
+			sanitized.Auth.OAuth2.ClientSecret = "[REDACTED]"
+		}
+		if sanitized.Auth.OpenShift != nil && sanitized.Auth.OpenShift.ClientSecret != nil {
+			redacted := "[REDACTED]"
+			sanitized.Auth.OpenShift.ClientSecret = &redacted
+		}
+		if sanitized.Auth.AAP != nil && sanitized.Auth.AAP.ClientSecret != "" {
+			sanitized.Auth.AAP.ClientSecret = "[REDACTED]"
+		}
+		if sanitized.Auth.PAMOIDCIssuer != nil && sanitized.Auth.PAMOIDCIssuer.ClientSecret != "" {
+			sanitized.Auth.PAMOIDCIssuer.ClientSecret = "[REDACTED]"
+		}
+	}
+
+	if sanitized.DeltaGeneration != nil && sanitized.DeltaGeneration.DefaultRepository != nil && sanitized.DeltaGeneration.DefaultRepository.CaCrt != nil {
+		redacted := "[REDACTED]"
+		sanitized.DeltaGeneration.DefaultRepository.CaCrt = &redacted
+	}
+
+	return &sanitized
+}

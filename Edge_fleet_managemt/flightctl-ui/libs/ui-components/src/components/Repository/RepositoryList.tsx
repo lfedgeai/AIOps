@@ -1,0 +1,282 @@
+import React from 'react';
+import {
+  Button,
+  EmptyStateActions,
+  EmptyStateBody,
+  EmptyStateFooter,
+  Label,
+  Toolbar,
+  ToolbarContent,
+  ToolbarGroup,
+  ToolbarItem,
+  Tooltip,
+} from '@patternfly/react-core';
+import { ActionsColumn, type IAction, type OnSelect, Tbody, Td, Tr } from '@patternfly/react-table';
+import { RepositoryIcon } from '@patternfly/react-icons/dist/js/icons/repository-icon';
+import { type TFunction } from 'i18next';
+
+import { type Repository } from '@flightctl/types';
+import ListPageBody from '../ListPage/ListPageBody';
+import ListPage from '../ListPage/ListPage';
+import { getLastTransitionTimeText } from '../../utils/status/repository';
+import DeleteRepositoryModal from './RepositoryDetails/DeleteRepositoryModal';
+import TableTextSearch from '../Table/TableTextSearch';
+import Table from '../Table/Table';
+import { useTableSelect } from '../../hooks/useTableSelect';
+import MassDeleteRepositoryModal from '../modals/massModals/MassDeleteRepositoryModal/MassDeleteRepositoryModal';
+import ResourceListEmptyState from '../common/ResourceListEmptyState';
+import { useTranslation } from '../../hooks/useTranslation';
+import { ROUTE, useNavigate } from '../../hooks/useNavigate';
+import ResourceLink from '../common/ResourceLink';
+import { buildAllDropdownActions } from '../common/ActionsDropdownList';
+import RepositoryStatus from '../Status/RepositoryStatus';
+import PageWithPermissions from '../common/PageWithPermissions';
+import { RESOURCE, VERB } from '../../types/rbac';
+import { usePermissionsContext } from '../common/PermissionsContext';
+import { useRepositories } from './useRepositories';
+import TablePagination from '../Table/TablePagination';
+import { getRepoTypeLabel, getRepoUrlOrRegistry, isDeltaStorageTargetRepo } from './CreateRepository/utils';
+
+const CreateRepositoryButton = ({ buttonText }: { buttonText?: string }) => {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { checkPermissions } = usePermissionsContext();
+  const [canCreate] = checkPermissions([{ kind: RESOURCE.REPOSITORY, verb: VERB.CREATE }]);
+
+  return (
+    canCreate && (
+      <Button variant="primary" data-testid="toolbar-create-repository" onClick={() => navigate(ROUTE.REPO_CREATE)}>
+        {buttonText || t('Create a repository')}
+      </Button>
+    )
+  );
+};
+
+const RepositoryEmptyState = () => {
+  const { t } = useTranslation();
+  return (
+    <ResourceListEmptyState icon={RepositoryIcon} titleText={t('No repositories here!')}>
+      <EmptyStateBody>
+        {t(
+          'Repositories make it easier to keep your fleet configurations updated and automatically synced to your devices.',
+        )}
+      </EmptyStateBody>
+      <EmptyStateFooter>
+        <EmptyStateActions>
+          <CreateRepositoryButton />
+        </EmptyStateActions>
+      </EmptyStateFooter>
+    </ResourceListEmptyState>
+  );
+};
+
+const getColumns = (t: TFunction) => [
+  {
+    name: t('Name'),
+  },
+  {
+    name: t('Type'),
+  },
+  {
+    name: t('URL'),
+  },
+  {
+    name: t('Sync status'),
+  },
+  {
+    name: t('Last transition'),
+  },
+];
+
+const RepositoryTableRow = ({
+  repository,
+  canDelete,
+  canEdit,
+  rowIndex,
+  setDeleteModalRepoId,
+  onRowSelect,
+  isRowSelected,
+}: {
+  repository: Repository;
+  canDelete: boolean;
+  canEdit: boolean;
+  rowIndex: number;
+  setDeleteModalRepoId: (repoId?: string) => void;
+  onRowSelect: (repository: Repository) => OnSelect;
+  isRowSelected: (repository: Repository) => boolean;
+}) => {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+
+  const regularActions: IAction[] = [];
+  const repoName = repository.metadata.name as string;
+  if (canEdit) {
+    regularActions.push({
+      title: t('Edit repository'),
+      onClick: () => navigate({ route: ROUTE.REPO_EDIT, postfix: repository.metadata.name }),
+      'data-testid': 'repository-row-menu-edit-repository',
+    } as IAction);
+  }
+  const dangerActions: IAction[] = canDelete
+    ? [
+        {
+          title: t('Delete repository'),
+          onClick: () => setDeleteModalRepoId(repository.metadata.name),
+          'data-testid': 'repository-row-menu-delete-repository',
+        } as IAction,
+      ]
+    : [];
+  const actions = buildAllDropdownActions(regularActions, dangerActions);
+  return (
+    <Tr data-testid={`repository-row-${rowIndex}`}>
+      <Td
+        select={{
+          rowIndex,
+          onSelect: onRowSelect(repository),
+          isSelected: isRowSelected(repository),
+        }}
+      />
+      <Td dataLabel={t('Name')}>
+        <ResourceLink id={repoName} routeLink={ROUTE.REPO_DETAILS} data-testid={`repository-name-link-${repoName}`} />
+        {isDeltaStorageTargetRepo(repository.spec) && (
+          <Tooltip content={t("This is the organization's repository for delta update artifacts.")}>
+            <Label color="blue" variant="outline" isCompact className="pf-v6-u-ml-sm">
+              {t('Delta storage')}
+            </Label>
+          </Tooltip>
+        )}
+      </Td>
+      <Td dataLabel={t('Type')}>{getRepoTypeLabel(t, repository.spec.type)}</Td>
+      <Td dataLabel={t('URL')}>{getRepoUrlOrRegistry(repository.spec) || '-'}</Td>
+      <Td dataLabel={t('Sync status')}>
+        <RepositoryStatus repository={repository} />
+      </Td>
+      <Td dataLabel={t('Last transition')}>{getLastTransitionTimeText(repository, t).text}</Td>
+      {!!actions.length && (
+        <Td isActionCell data-testid={`repository-row-actions-${repoName}`}>
+          <ActionsColumn items={actions} />
+        </Td>
+      )}
+    </Tr>
+  );
+};
+
+const repositoryTablePermissions = [
+  { kind: RESOURCE.REPOSITORY, verb: VERB.DELETE },
+  { kind: RESOURCE.REPOSITORY, verb: VERB.PATCH },
+];
+const RepositoryTable = () => {
+  const { t } = useTranslation();
+  const [nameSearch, setNameSearch] = React.useState('');
+  const [repositories, loading, error, isUpdating, refetch, pagination] = useRepositories(nameSearch);
+  const [deleteModalRepoId, setDeleteModalRepoId] = React.useState<string>();
+  const [isMassDeleteModalOpen, setIsMassDeleteModalOpen] = React.useState(false);
+
+  const onDeleteSuccess = () => {
+    setDeleteModalRepoId(undefined);
+    refetch();
+  };
+
+  const columns = React.useMemo(() => getColumns(t), [t]);
+
+  const { hasSelectedRows, isAllSelected, isRowSelected, setAllSelected, onRowSelect } = useTableSelect<Repository>();
+
+  const { checkPermissions } = usePermissionsContext();
+  const [canDelete, canEdit] = checkPermissions(repositoryTablePermissions);
+
+  return (
+    <ListPageBody error={error} loading={loading}>
+      <Toolbar inset={{ default: 'insetNone' }}>
+        <ToolbarContent>
+          <ToolbarGroup>
+            <ToolbarItem>
+              <TableTextSearch value={nameSearch} setValue={setNameSearch} placeholder={t('Search by name')} />
+            </ToolbarItem>
+          </ToolbarGroup>
+          <ToolbarItem>
+            <CreateRepositoryButton buttonText={t('Create repository')} />
+          </ToolbarItem>
+          {canDelete && (
+            <ToolbarItem>
+              <Button
+                isDisabled={!hasSelectedRows}
+                onClick={() => setIsMassDeleteModalOpen(true)}
+                variant="secondary"
+                data-testid="toolbar-delete-repositories"
+              >
+                {t('Delete repositories')}
+              </Button>
+            </ToolbarItem>
+          )}
+        </ToolbarContent>
+      </Toolbar>
+      <Table
+        data-testid="repositories-table"
+        aria-label={t('Repositories table')}
+        loading={isUpdating}
+        hasFilters={!!nameSearch}
+        emptyData={repositories.length === 0}
+        clearFilters={() => setNameSearch('')}
+        isAllSelected={isAllSelected}
+        onSelectAll={setAllSelected}
+        columns={columns}
+      >
+        <Tbody>
+          {repositories.map((repository, rowIndex) => (
+            <RepositoryTableRow
+              key={repository.metadata.name}
+              repository={repository}
+              rowIndex={rowIndex}
+              canDelete={canDelete}
+              canEdit={canEdit}
+              setDeleteModalRepoId={setDeleteModalRepoId}
+              isRowSelected={isRowSelected}
+              onRowSelect={onRowSelect}
+            />
+          ))}
+        </Tbody>
+      </Table>
+      <TablePagination isUpdating={isUpdating} pagination={pagination} />
+
+      {!isUpdating && repositories.length === 0 && !nameSearch && <RepositoryEmptyState />}
+      {!!deleteModalRepoId && (
+        <DeleteRepositoryModal
+          onClose={() => setDeleteModalRepoId(undefined)}
+          onDeleteSuccess={onDeleteSuccess}
+          repositoryId={deleteModalRepoId}
+        />
+      )}
+      {isMassDeleteModalOpen && (
+        <MassDeleteRepositoryModal
+          onClose={() => setIsMassDeleteModalOpen(false)}
+          onDeleteSuccess={() => {
+            setIsMassDeleteModalOpen(false);
+            setAllSelected(false);
+            refetch();
+          }}
+          repositories={repositories.filter(isRowSelected)}
+        />
+      )}
+    </ListPageBody>
+  );
+};
+
+const RepositoryList = () => {
+  const { t } = useTranslation();
+  const { checkPermissions, loading } = usePermissionsContext();
+  const [allowed] = checkPermissions([{ kind: RESOURCE.REPOSITORY, verb: VERB.LIST }]);
+  return (
+    <PageWithPermissions allowed={allowed} loading={loading}>
+      <ListPage
+        title={t('Repositories')}
+        description={t(
+          'Manage the source and target repositories used across your image builds and device configurations.',
+        )}
+      >
+        <RepositoryTable />
+      </ListPage>
+    </PageWithPermissions>
+  );
+};
+
+export default RepositoryList;

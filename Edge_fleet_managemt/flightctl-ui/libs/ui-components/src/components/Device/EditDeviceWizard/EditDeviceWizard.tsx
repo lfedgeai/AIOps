@@ -1,0 +1,221 @@
+import * as React from 'react';
+import { Formik, type FormikErrors } from 'formik';
+import {
+  Alert,
+  Breadcrumb,
+  BreadcrumbItem,
+  Bullseye,
+  PageSection,
+  Spinner,
+  Title,
+  Wizard,
+  WizardStep,
+} from '@patternfly/react-core';
+
+import { type Device } from '@flightctl/types';
+import { getUpdatePolicyValues } from '../../Fleet/CreateFleet/fleetSpecUtils';
+import { type EditDeviceFormValues, UpdateMode } from './../../../types/deviceSpec';
+import { getErrorMessage } from '../../../utils/error';
+import { fromAPILabel } from '../../../utils/labels';
+import { getEditDisabledReason } from '../../../utils/devices';
+import { hasPackageModeCapability } from '../../../utils/capabilities';
+import { useTranslation } from '../../../hooks/useTranslation';
+import { Link, ROUTE, useNavigate } from '../../../hooks/useNavigate';
+import LeaveFormConfirmation from '../../common/LeaveFormConfirmation';
+import ErrorBoundary from '../../common/ErrorBoundary';
+import { CatalogItemsProvider } from '../../Catalog/CatalogItemsContext';
+import GeneralInfoStep, { generalInfoStepId, isGeneralInfoStepValid } from './steps/GeneralInfoStep';
+import DeviceTemplateStep, { deviceTemplateStepId, isDeviceTemplateStepValid } from './steps/DeviceTemplateStep';
+import DeviceUpdateStep, { deviceUpdatePolicyStepId, isUpdatePolicyStepValid } from './steps/DeviceUpdateStep';
+import ReviewDeviceStep, { reviewDeviceStepId } from './steps/ReviewDeviceStep';
+import { getDevicePatches, getValidationSchema } from './utils';
+import {
+  getApplicationValues,
+  getConfigTemplatesValues,
+  getSystemdUnitsValues,
+  hasMicroshiftRegistrationConfig,
+} from './deviceSpecUtils';
+import { useFetch } from '../../../hooks/useFetch';
+import { useEditDevice } from './useEditDevice';
+import EditDeviceWizardNav from './EditDeviceWizardNav';
+import EditDeviceWizardFooter from './EditDeviceWizardFooter';
+import PageWithPermissions from '../../common/PageWithPermissions';
+import { usePermissionsContext } from '../../common/PermissionsContext';
+import { RESOURCE, VERB } from '../../../types/rbac';
+import { isWizardStepDisabled } from '../../../utils/wizards';
+
+const orderedIds = [generalInfoStepId, deviceTemplateStepId, deviceUpdatePolicyStepId, reviewDeviceStepId];
+
+const getValidStepIds = (formikErrors: FormikErrors<EditDeviceFormValues>): string[] => {
+  const validStepIds: string[] = [];
+  if (isGeneralInfoStepValid(formikErrors)) {
+    validStepIds.push(generalInfoStepId);
+  }
+  if (isDeviceTemplateStepValid(formikErrors)) {
+    validStepIds.push(deviceTemplateStepId);
+  }
+  if (isUpdatePolicyStepValid(formikErrors)) {
+    validStepIds.push(deviceUpdatePolicyStepId);
+  }
+  if (validStepIds.length === orderedIds.length - 1) {
+    validStepIds.push(reviewDeviceStepId);
+  }
+  return validStepIds;
+};
+
+const EditDeviceWizard = () => {
+  const { t } = useTranslation();
+  const [submitError, setSubmitError] = React.useState<string | undefined>();
+  const navigate = useNavigate();
+
+  const { patch } = useFetch();
+
+  const [deviceId, device, isLoading, loadError] = useEditDevice();
+  const deviceAlias = device?.metadata.labels?.alias || '';
+  const displayText = device ? deviceAlias || t('Untitled') : deviceId;
+
+  const editDisabledReason = device ? getEditDisabledReason(device, t) : undefined;
+
+  let body: React.ReactNode;
+  if (isLoading) {
+    body = (
+      <Bullseye>
+        <Spinner />
+      </Bullseye>
+    );
+  } else if (loadError) {
+    body = (
+      <Alert isInline variant="danger" title={t('An error occurred')}>
+        {getErrorMessage(loadError)}
+      </Alert>
+    );
+  } else if (editDisabledReason) {
+    body = (
+      <Alert isInline variant="info" title={t('Device is non-editable')}>
+        {editDisabledReason}
+      </Alert>
+    );
+  } else if (device) {
+    const registerMicroShift = hasMicroshiftRegistrationConfig(device.spec);
+    const updatePolicyValues = getUpdatePolicyValues(device.spec?.updatePolicy);
+    const isOsPackageMode = hasPackageModeCapability(device);
+    body = (
+      <CatalogItemsProvider spec={device.spec}>
+        <Formik<EditDeviceFormValues>
+          initialValues={{
+            deviceAlias,
+            osSpec: device.spec?.os || { image: '' },
+            labels: fromAPILabel(device.metadata.labels || {}).filter((label) => label.key !== 'alias'),
+            configTemplates: getConfigTemplatesValues(device.spec, registerMicroShift),
+            fleetMatch: '', // Initially this is always a fleetless device
+            applications: getApplicationValues(device.spec),
+            systemdUnits: getSystemdUnitsValues(device.spec),
+            registerMicroShift,
+            updatePolicy: updatePolicyValues,
+            updateMode: updatePolicyValues.isCustomized ? UpdateMode.Customized : UpdateMode.Default,
+          }}
+          validationSchema={getValidationSchema(t)}
+          validateOnMount
+          onSubmit={async (values) => {
+            setSubmitError(undefined);
+            try {
+              const patches = getDevicePatches(device, values);
+              if (patches.length > 0) {
+                await patch<Device>(`devices/${deviceId}`, patches);
+              }
+              navigate({ route: ROUTE.DEVICE_DETAILS, postfix: deviceId });
+            } catch (e) {
+              setSubmitError(getErrorMessage(e));
+            }
+          }}
+        >
+          {({ values, errors: formikErrors }) => {
+            const validStepIds = getValidStepIds(formikErrors);
+
+            const isFleetless = !values.fleetMatch;
+
+            return (
+              <>
+                <LeaveFormConfirmation />
+                <Wizard
+                  footer={<EditDeviceWizardFooter />}
+                  nav={<EditDeviceWizardNav isFleetless={isFleetless} />}
+                  onStepChange={() => {
+                    if (submitError) {
+                      setSubmitError(undefined);
+                    }
+                  }}
+                >
+                  <WizardStep name={t('General info')} id={generalInfoStepId}>
+                    <GeneralInfoStep />
+                  </WizardStep>
+                  <WizardStep
+                    name={t('Device template')}
+                    id={deviceTemplateStepId}
+                    isDisabled={isWizardStepDisabled(deviceTemplateStepId, orderedIds, validStepIds) || !isFleetless}
+                  >
+                    <DeviceTemplateStep isFleet={false} isOsPackageMode={isOsPackageMode} isEdit />
+                  </WizardStep>
+                  <WizardStep
+                    name={t('Updates')}
+                    id={deviceUpdatePolicyStepId}
+                    isDisabled={
+                      isWizardStepDisabled(deviceUpdatePolicyStepId, orderedIds, validStepIds) || !isFleetless
+                    }
+                  >
+                    <DeviceUpdateStep />
+                  </WizardStep>
+                  <WizardStep
+                    name={t('Review and save')}
+                    id={reviewDeviceStepId}
+                    isDisabled={isWizardStepDisabled(reviewDeviceStepId, orderedIds, validStepIds)}
+                  >
+                    <ReviewDeviceStep error={submitError} showUpdateStatus />
+                  </WizardStep>
+                </Wizard>
+              </>
+            );
+          }}
+        </Formik>
+      </CatalogItemsProvider>
+    );
+  }
+
+  return (
+    <>
+      <PageSection hasBodyWrapper={false} type="breadcrumb">
+        <Breadcrumb>
+          <BreadcrumbItem>
+            <Link to={ROUTE.DEVICES}>{t('Devices')}</Link>
+          </BreadcrumbItem>
+          {deviceId && (
+            <BreadcrumbItem>
+              <Link to={{ route: ROUTE.DEVICE_DETAILS, postfix: deviceId }}>{displayText}</Link>
+            </BreadcrumbItem>
+          )}
+          <BreadcrumbItem isActive>{t('Edit device')}</BreadcrumbItem>
+        </Breadcrumb>
+      </PageSection>
+      <PageSection hasBodyWrapper={false}>
+        <Title headingLevel="h1" size="3xl">
+          {t('Edit device')}
+        </Title>
+      </PageSection>
+      <PageSection hasBodyWrapper={false} type="wizard">
+        <ErrorBoundary>{body}</ErrorBoundary>
+      </PageSection>
+    </>
+  );
+};
+
+const EditDeviceWizardWithPermissions = () => {
+  const { checkPermissions, loading } = usePermissionsContext();
+  const [allowed] = checkPermissions([{ kind: RESOURCE.DEVICE, verb: VERB.PATCH }]);
+  return (
+    <PageWithPermissions allowed={allowed} loading={loading}>
+      <EditDeviceWizard />
+    </PageWithPermissions>
+  );
+};
+
+export default EditDeviceWizardWithPermissions;

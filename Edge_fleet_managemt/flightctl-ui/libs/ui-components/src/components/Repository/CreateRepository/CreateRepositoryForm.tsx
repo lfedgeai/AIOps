@@ -1,0 +1,597 @@
+import * as React from 'react';
+import {
+  ActionGroup,
+  Alert,
+  Button,
+  ButtonVariant,
+  Checkbox,
+  FormGroup,
+  FormSection,
+  Grid,
+  ModalBody,
+  ModalFooter,
+  ModalHeader,
+  Popover,
+  Split,
+  SplitItem,
+  Stack,
+  StackItem,
+} from '@patternfly/react-core';
+import FlightCtlModal from '@flightctl/ui-components/src/components/common/FlightCtlModal';
+
+import { Formik, useFormikContext } from 'formik';
+import * as Yup from 'yup';
+import { Trans } from 'react-i18next';
+import { OutlinedQuestionCircleIcon } from '@patternfly/react-icons/dist/js/icons';
+
+import { useTranslation } from '../../../hooks/useTranslation';
+import { useFetch } from '../../../hooks/useFetch';
+import { type RepositoryFormValues } from './types';
+import CreateResourceSyncsForm from './CreateResourceSyncsForm';
+import OciRegistryForm from './OciRegistryForm';
+
+import {
+  getInitValues,
+  getRepoTypeLabel,
+  getRepository,
+  getRepositoryPatches,
+  getResourceSync,
+  getResourceSyncEditPatch,
+  handlePromises,
+  isDuplicateDeltaTargetError,
+  repositorySchema,
+} from './utils';
+import { OciRepoSpec, RepoSpecType, type Repository, type ResourceSync } from '@flightctl/types';
+import { getErrorMessage } from '../../../utils/error';
+import LeaveFormConfirmation from '../../common/LeaveFormConfirmation';
+import LabelWithHelperText, { FormGroupWithHelperText } from '../../common/WithHelperText';
+import NameField from '../../form/NameField';
+import TextAreaField from '../../form/TextAreaField';
+import CheckboxField from '../../form/CheckboxField';
+import RadioField from '../../form/RadioField';
+import TextField from '../../form/TextField';
+import FlightCtlForm, { FlightCtlFormSection } from '../../form/FlightCtlForm';
+import { getDnsSubdomainValidations } from '../../form/validations';
+import { DEMO_REPOSITORY_URL } from '../../../hooks/useAppLinks';
+import { usePermissionsContext } from '../../common/PermissionsContext';
+import { RESOURCE, VERB } from '../../../types/rbac';
+
+import './CreateRepositoryForm.css';
+
+const AdvancedSection = () => {
+  const { t } = useTranslation();
+  const { values } = useFormikContext<RepositoryFormValues>();
+  const showConfigTypeRadios = values.repoType === RepoSpecType.RepoSpecTypeGit;
+  const isOciRepo = values.repoType === RepoSpecType.RepoSpecTypeOci;
+
+  if (isOciRepo) {
+    return (
+      <FormSection>
+        <CheckboxField
+          name="ociConfig.ociAuth.use"
+          label={t('Basic authentication')}
+          body={
+            <>
+              <FormGroup label={t('Username')} isRequired>
+                <TextField name="ociConfig.ociAuth.username" aria-label={t('Username')} />
+              </FormGroup>
+              <FormGroup label={t('Password')} isRequired>
+                <TextField name="ociConfig.ociAuth.password" aria-label={t('Password')} type="password" />
+              </FormGroup>
+            </>
+          }
+        />
+        <FormGroup>
+          <CheckboxField name="ociConfig.skipServerVerification" label={t('Skip server verification')} />
+        </FormGroup>
+        <FormGroup label={t('CA certificate')}>
+          <TextAreaField
+            name="ociConfig.caCrt"
+            aria-label={t('CA certificate')}
+            isDisabled={values.ociConfig?.skipServerVerification}
+          />
+        </FormGroup>
+      </FormSection>
+    );
+  }
+
+  return (
+    <FormSection>
+      {showConfigTypeRadios && (
+        <Split hasGutter>
+          <SplitItem>
+            <RadioField id="http-config-radio" name="configType" label={t('HTTP')} checkedValue="http" />
+          </SplitItem>
+          <SplitItem>
+            <RadioField id="ssh-config-radio" name="configType" label={t('SSH')} checkedValue="ssh" />
+          </SplitItem>
+        </Split>
+      )}
+      {values.configType === 'http' && (
+        <FlightCtlFormSection>
+          {values.repoType === RepoSpecType.RepoSpecTypeHttp && (
+            <FormSection>
+              <FormGroupWithHelperText
+                label={t('Validation suffix')}
+                content={t("Suffix to the repository's base URL used to validate if the HTTP service is available.")}
+              >
+                <TextField
+                  aria-label={t('Validation suffix')}
+                  name="validationSuffix"
+                  helperText={
+                    values.validationSuffix &&
+                    values.url && (
+                      <Trans t={t}>
+                        Full validation URL: <strong>{`${values.url}${values.validationSuffix || ''}`}</strong>
+                      </Trans>
+                    )
+                  }
+                />
+              </FormGroupWithHelperText>
+            </FormSection>
+          )}
+
+          <CheckboxField name="httpConfig.basicAuth.use" label={t('Basic authentication')}>
+            <FormGroup label={t('Username')} isRequired>
+              <TextField name="httpConfig.basicAuth.username" aria-label={t('Username')} />
+            </FormGroup>
+            <FormGroup label={t('Password')} isRequired>
+              <TextField name="httpConfig.basicAuth.password" aria-label={t('Password')} type="password" />
+            </FormGroup>
+          </CheckboxField>
+          <CheckboxField name="httpConfig.mTlsAuth.use" label={t('mTLS authentication')}>
+            <FormGroup label={t('Client TLS certificate')} isRequired>
+              <TextAreaField name="httpConfig.mTlsAuth.tlsCrt" aria-label={t('Client TLS certificate')} />
+            </FormGroup>
+            <FormGroup label={t('Client TLS key')} isRequired>
+              <TextAreaField name="httpConfig.mTlsAuth.tlsKey" aria-label={t('Client TLS key')} />
+            </FormGroup>
+          </CheckboxField>
+          <FormGroup>
+            <CheckboxField name="httpConfig.skipServerVerification" label={t('Skip server verification')} />
+          </FormGroup>
+          <FormGroup label={t('CA certificate')}>
+            <TextAreaField
+              name="httpConfig.caCrt"
+              aria-label={t('Username')}
+              isDisabled={values.httpConfig?.skipServerVerification}
+            />
+          </FormGroup>
+          {values.repoType === RepoSpecType.RepoSpecTypeHttp && (
+            <FormGroupWithHelperText content={t('JWT authentication token for the HTTP service')} label={t('Token')}>
+              <TextField name="httpConfig.token" aria-label={t('Token')} />
+            </FormGroupWithHelperText>
+          )}
+        </FlightCtlFormSection>
+      )}
+      {values.configType === 'ssh' && (
+        <FlightCtlFormSection>
+          <FormGroup label={t('SSH private key')}>
+            <TextAreaField name="sshConfig.sshPrivateKey" aria-label={t('SSH private key')} />
+          </FormGroup>
+          <FormGroup label={t('Private key passphrase')}>
+            <TextField name="sshConfig.privateKeyPassphrase" aria-label={t('Private key passphrase')} type="password" />
+          </FormGroup>
+          <FormGroup>
+            <CheckboxField name="sshConfig.skipServerVerification" label={t('Skip server verification')} />
+          </FormGroup>
+        </FlightCtlFormSection>
+      )}
+    </FormSection>
+  );
+};
+
+const RepositoryType = ({
+  isEdit,
+  enforcedRepoTypeMessage,
+}: {
+  isEdit?: boolean;
+  enforcedRepoTypeMessage?: string;
+}) => {
+  const { t } = useTranslation();
+  const { values, setFieldValue, validateForm } = useFormikContext<RepositoryFormValues>();
+  const [showConfirmChangeType, setShowConfirmChangeType] = React.useState<RepoSpecType | undefined>();
+
+  if (!values.showRepoTypes) {
+    return null;
+  }
+
+  // When we don't want to hide the repository type, but a single repoType can be chosen, we show a clarifying message.
+  const enforcedRepoType = values.allowedRepoTypes?.length === 1 ? values.allowedRepoTypes[0] : undefined;
+  if (enforcedRepoType) {
+    const repoTypeLabel = getRepoTypeLabel(t, enforcedRepoType);
+    return (
+      <FormGroup label={t('Repository type')}>
+        {repoTypeLabel}
+        {enforcedRepoTypeMessage && (
+          <Popover bodyContent={enforcedRepoTypeMessage}>
+            <Button
+              variant="plain"
+              isInline
+              icon={<OutlinedQuestionCircleIcon />}
+              aria-label={t('Why is this repository type enforced?')}
+            />
+          </Popover>
+        )}
+      </FormGroup>
+    );
+  }
+
+  const doChangeRepoType = (toType: RepoSpecType) => {
+    if (toType === RepoSpecType.RepoSpecTypeGit) {
+      void setFieldValue('repoType', RepoSpecType.RepoSpecTypeGit);
+      void setFieldValue('httpConfig.token', undefined);
+      void setFieldValue('canUseResourceSyncs', true);
+    }
+
+    if (toType === RepoSpecType.RepoSpecTypeHttp) {
+      void setFieldValue('repoType', RepoSpecType.RepoSpecTypeHttp);
+      void setFieldValue('configType', 'http');
+      void setFieldValue('useResourceSyncs', false);
+      void setFieldValue('canUseResourceSyncs', false);
+    }
+
+    if (toType === RepoSpecType.RepoSpecTypeOci) {
+      void setFieldValue('repoType', RepoSpecType.RepoSpecTypeOci);
+      void setFieldValue('useResourceSyncs', false);
+      void setFieldValue('canUseResourceSyncs', false);
+      if (!values.ociConfig) {
+        void setFieldValue('ociConfig', {
+          registry: '',
+          scheme: OciRepoSpec.scheme.HTTPS,
+          accessMode: OciRepoSpec.accessMode.READ,
+          baseImages: [],
+          deltaStorageTarget: false,
+          placementMode: 'registry',
+          repository: '',
+          namespace: '',
+        });
+      }
+    }
+    void validateForm();
+  };
+
+  const onRepoTypeChange = (type: unknown) => {
+    const repoType = type as RepoSpecType;
+    if (isEdit) {
+      setShowConfirmChangeType(repoType);
+    } else {
+      doChangeRepoType(repoType);
+    }
+  };
+
+  return (
+    <>
+      <Split hasGutter>
+        <SplitItem>
+          <RadioField
+            id="git-repo-radio"
+            name="repoType"
+            label={t('Use Git repository')}
+            checkedValue={RepoSpecType.RepoSpecTypeGit}
+            onChangeCustom={onRepoTypeChange}
+            noDefaultOnChange
+          />
+        </SplitItem>
+        <SplitItem>
+          <RadioField
+            id="http-repo-radio"
+            name="repoType"
+            label={t('Use HTTP service')}
+            checkedValue={RepoSpecType.RepoSpecTypeHttp}
+            onChangeCustom={onRepoTypeChange}
+            noDefaultOnChange
+          />
+        </SplitItem>
+        <SplitItem>
+          <RadioField
+            id="oci-repo-radio"
+            name="repoType"
+            label={t('Use OCI registry')}
+            checkedValue={RepoSpecType.RepoSpecTypeOci}
+            onChangeCustom={onRepoTypeChange}
+            noDefaultOnChange
+          />
+        </SplitItem>
+      </Split>
+      {showConfirmChangeType && (
+        <FlightCtlModal variant="small" isOpen>
+          <ModalHeader title={t('Change repository type?')} titleIconVariant="warning" />
+          <ModalBody>
+            {t('Switching the repository type will cause some data to be lost.')}{' '}
+            {t('Are you sure you want to change the repository type?')}
+          </ModalBody>
+          <ModalFooter>
+            <Button
+              key="change"
+              variant={ButtonVariant.primary}
+              onClick={() => {
+                setShowConfirmChangeType(undefined);
+                doChangeRepoType(showConfirmChangeType);
+              }}
+            >
+              {t('Change')}
+            </Button>
+            <Button
+              key="cancel"
+              variant="link"
+              onClick={() => {
+                setShowConfirmChangeType(undefined);
+              }}
+            >
+              {t('Cancel')}
+            </Button>
+          </ModalFooter>
+        </FlightCtlModal>
+      )}
+    </>
+  );
+};
+
+export const RepositoryForm = ({
+  isEdit,
+  accessModeDisabledReason,
+  enforcedRepoTypeMessage,
+  currentRepoName,
+}: {
+  isEdit?: boolean;
+  accessModeDisabledReason?: string;
+  enforcedRepoTypeMessage?: string;
+  currentRepoName?: string;
+}) => {
+  const { t } = useTranslation();
+  const { values } = useFormikContext<RepositoryFormValues>();
+  const isOciRepo = values.repoType === RepoSpecType.RepoSpecTypeOci;
+  const isAccessModeDisabled = Boolean(accessModeDisabledReason);
+
+  return (
+    <>
+      <Stack hasGutter>
+        <StackItem>
+          <NameField
+            name="name"
+            aria-label={t('Repository name')}
+            isRequired
+            isDisabled={isEdit}
+            resourceType="repositories"
+            validations={getDnsSubdomainValidations(t)}
+          />
+        </StackItem>
+        <StackItem>
+          <RepositoryType isEdit={isEdit} enforcedRepoTypeMessage={enforcedRepoTypeMessage} />
+        </StackItem>
+      </Stack>
+
+      {isOciRepo ? (
+        <OciRegistryForm
+          isAccessModeDisabled={isAccessModeDisabled}
+          accessModeDisabledReason={accessModeDisabledReason}
+          currentRepoName={currentRepoName}
+          isEdit={isEdit}
+        />
+      ) : (
+        <FormGroup label={t('Repository URL')} isRequired>
+          <TextField
+            name="url"
+            aria-label={t('Repository URL')}
+            helperText={t('For example: {{ demoRepositoryUrl }}', { demoRepositoryUrl: DEMO_REPOSITORY_URL })}
+          />
+        </FormGroup>
+      )}
+      <CheckboxField name="useAdvancedConfig" label={t('Use advanced configurations')} body={<AdvancedSection />} />
+    </>
+  );
+};
+
+type CreateRepositoryFormContentProps = React.PropsWithChildren &
+  Pick<CreateRepositoryFormProps, 'onClose' | 'options' | 'repository' | 'resourceSyncs'> & {
+    isEdit: boolean;
+  };
+
+const CreateRepositoryFormContent = ({
+  isEdit,
+  onClose,
+  options,
+  children,
+  currentRepoName,
+}: CreateRepositoryFormContentProps & { currentRepoName?: string }) => {
+  const { t } = useTranslation();
+  const { values, setFieldValue, isValid, dirty, submitForm, isSubmitting } = useFormikContext<RepositoryFormValues>();
+  const isSubmitDisabled = isSubmitting || !dirty || !isValid;
+
+  const { checkPermissions } = usePermissionsContext();
+  const [canCreateRS] = checkPermissions([{ kind: RESOURCE.RESOURCE_SYNC, verb: VERB.CREATE }]);
+
+  const showResourceSyncs = values.canUseResourceSyncs && values.repoType === RepoSpecType.RepoSpecTypeGit;
+  return (
+    <FlightCtlForm className="fctl-create-repo">
+      <fieldset disabled={options?.isReadOnly ?? false}>
+        <Grid hasGutter>
+          <RepositoryForm
+            isEdit={isEdit}
+            currentRepoName={currentRepoName}
+            enforcedRepoTypeMessage={options?.enforcedRepoTypeMessage}
+            accessModeDisabledReason={
+              options?.writeAccessOnly
+                ? t('Registry usage must be set to read and write for this repository type')
+                : undefined
+            }
+          />
+          {showResourceSyncs && canCreateRS && (
+            <Checkbox
+              id="use-resource-syncs"
+              data-testid="repository-form-use-resource-syncs"
+              className="fctl-create-repo__rs-checkbox"
+              label={
+                <LabelWithHelperText
+                  label={t('Use resource syncs')}
+                  content={t(
+                    "A resource sync is an automated Gitops method that helps manage your imported fleets or catalogs by monitoring source repository changes and updating resource's configuration accordingly.",
+                  )}
+                />
+              }
+              isChecked={values.useResourceSyncs}
+              onChange={(_, checked) => {
+                // Trigger validation of the resource syncs items
+                return setFieldValue('useResourceSyncs', checked, true);
+              }}
+              body={values.useResourceSyncs && <CreateResourceSyncsForm />}
+            />
+          )}
+        </Grid>
+      </fieldset>
+      {children}
+      <ActionGroup>
+        <Button
+          variant="primary"
+          onClick={submitForm}
+          isLoading={isSubmitting}
+          isDisabled={isSubmitDisabled}
+          data-testid="repository-form-submit"
+        >
+          {isEdit ? t('Save') : t('Create repository')}
+        </Button>
+        <Button variant="link" isDisabled={isSubmitting} onClick={onClose} data-testid="repository-form-cancel">
+          {t('Cancel')}
+        </Button>
+      </ActionGroup>
+    </FlightCtlForm>
+  );
+};
+
+export type CreateRepositoryFormProps = {
+  onClose: VoidFunction;
+  onSuccess: (repository: Repository) => void;
+  repository?: Repository;
+  resourceSyncs?: ResourceSync[];
+  options?: {
+    isReadOnly?: boolean;
+    canUseResourceSyncs?: boolean;
+    showRepoTypes?: boolean;
+    allowedRepoTypes?: RepoSpecType[];
+    // Message to display when a single repository type is enforced
+    enforcedRepoTypeMessage?: string;
+    writeAccessOnly?: boolean;
+    allowDeltaStorage?: boolean;
+  };
+};
+
+const CreateRepositoryForm = ({
+  repository,
+  resourceSyncs,
+  options,
+  onClose,
+  onSuccess,
+}: CreateRepositoryFormProps) => {
+  const [errors, setErrors] = React.useState<string[]>();
+  const { patch, remove, post } = useFetch();
+  const { t } = useTranslation();
+
+  const storeSubmitError = (error: unknown) => {
+    const errorMessage = getErrorMessage(error);
+    setErrors(
+      isDuplicateDeltaTargetError(errorMessage)
+        ? [
+            t(
+              'This organization already has an OCI registry used for delta storage. Edit or remove the existing one first.',
+            ),
+          ]
+        : [errorMessage],
+    );
+  };
+
+  return (
+    <Formik<RepositoryFormValues>
+      initialValues={getInitValues({
+        repository,
+        resourceSyncs,
+        options,
+      })}
+      validationSchema={Yup.lazy(repositorySchema(t, repository))}
+      onSubmit={async (values) => {
+        setErrors(undefined);
+        if (repository) {
+          const specPatches = getRepositoryPatches(values, repository);
+          try {
+            if (specPatches.length) {
+              await patch<Repository>(`repositories/${repository.metadata.name}`, specPatches);
+            }
+            if (values.useResourceSyncs) {
+              const storedRSs = resourceSyncs || [];
+              const rsToRemovePromises = storedRSs
+                .filter((storedRs) => !values.resourceSyncs.some((formRs) => formRs.name === storedRs.metadata.name))
+                .map((rs) => remove(`resourcesyncs/${rs.metadata.name}`));
+
+              const rsToAddPromises = values.resourceSyncs
+                .filter((formRs) => !storedRSs.some((r) => r.metadata.name === formRs.name))
+                .map((rs) => post<ResourceSync>('resourcesyncs', getResourceSync(values.name, rs)));
+
+              const rsToUpdatePromises = values.resourceSyncs
+                .filter((formRs) => {
+                  const resourceSync = storedRSs.find((storedRs) => storedRs.metadata.name === formRs.name);
+                  return (
+                    resourceSync &&
+                    (resourceSync.spec.path !== formRs.path ||
+                      resourceSync.spec.targetRevision !== formRs.targetRevision)
+                  );
+                })
+                .map((rs) => patch<ResourceSync>(`resourcesyncs/${rs.name}`, getResourceSyncEditPatch(rs)));
+
+              const errors = await handlePromises([...rsToRemovePromises, ...rsToAddPromises, ...rsToUpdatePromises]);
+              if (errors.length) {
+                setErrors(errors);
+                return;
+              }
+            } else if (resourceSyncs?.length) {
+              const resourceSyncPromises = resourceSyncs.map((rs) => remove(`resourcesyncs/${rs.metadata.name}`));
+
+              const errors = await handlePromises(resourceSyncPromises);
+              if (errors.length) {
+                setErrors(errors);
+                return;
+              }
+            }
+            onSuccess(repository);
+          } catch (e) {
+            storeSubmitError(e);
+          }
+        } else {
+          const repoToCreate = getRepository(values);
+          try {
+            const repo = await post<Repository>('repositories', repoToCreate);
+            if (values.useResourceSyncs) {
+              const resourceSyncPromises = values.resourceSyncs.map((rs) =>
+                post<ResourceSync>('resourcesyncs', getResourceSync(values.name, rs)),
+              );
+              const errors = await handlePromises(resourceSyncPromises);
+              if (errors.length) {
+                setErrors(errors);
+                return;
+              }
+            }
+            onSuccess(repo);
+          } catch (e) {
+            storeSubmitError(e);
+          }
+        }
+      }}
+    >
+      <CreateRepositoryFormContent
+        isEdit={!!repository}
+        currentRepoName={repository?.metadata.name}
+        onClose={onClose}
+        options={options}
+      >
+        {errors?.length && (
+          <Alert isInline variant="danger" title={t('Repository could not be saved')}>
+            {errors.map((e, index) => (
+              <div key={index}>{e}</div>
+            ))}
+          </Alert>
+        )}
+        <LeaveFormConfirmation />
+      </CreateRepositoryFormContent>
+    </Formik>
+  );
+};
+export default CreateRepositoryForm;

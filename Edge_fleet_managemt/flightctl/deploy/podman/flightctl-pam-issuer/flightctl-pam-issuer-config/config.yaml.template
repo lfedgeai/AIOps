@@ -1,0 +1,145 @@
+service:
+  baseUrl: https://{{.global.baseDomain}}/_/flightctl/
+  baseAgentEndpointUrl: https://{{.global.baseDomain}}:7443/
+  baseUIUrl: https://{{.global.baseDomain}}
+  rateLimit:
+    enabled: {{.service.rateLimit.enabled}}
+    requests: {{if .service.rateLimit.requests}}{{.service.rateLimit.requests}}{{else}}300{{end}}
+    window: {{if .service.rateLimit.window}}{{.service.rateLimit.window}}{{else}}1m{{end}}
+    {{if .service.rateLimit.trustedProxies}}
+    trustedProxies:
+{{- range .service.rateLimit.trustedProxies}}
+      - {{.}}
+{{- end}}
+    {{end}}
+auth:
+  pamOidcIssuer:
+    address: ":8444"
+    disableTLS: true
+    issuer: {{if .global.auth.pamOidcIssuer.issuer}}{{.global.auth.pamOidcIssuer.issuer}}{{else}}https://{{.global.baseDomain}}/_/pam-issuer/api/v1/auth{{end}}
+    clientId: {{if .global.auth.pamOidcIssuer.clientId}}{{.global.auth.pamOidcIssuer.clientId}}{{else}}flightctl-client{{end}}
+{{- if .global.auth.pamOidcIssuer.clientSecret}}
+    clientSecret: {{.global.auth.pamOidcIssuer.clientSecret}}
+{{- end}}
+    scopes:
+{{- if .global.auth.pamOidcIssuer.scopes}}
+{{- range .global.auth.pamOidcIssuer.scopes}}
+      - {{.}}
+{{- end}}
+{{- else}}
+      - openid
+      - profile
+      - email
+      - roles
+      - offline_access
+{{- end}}
+    redirectUris:
+{{- if .global.auth.pamOidcIssuer.redirectUris}}
+{{- range .global.auth.pamOidcIssuer.redirectUris}}
+      - {{.}}
+{{- end}}
+{{- else}}
+      - https://{{.global.baseDomain}}:443/callback
+      - https://{{.global.baseDomain}}/callback
+      - http://localhost:8080/callback
+{{- end}}
+    pamService: {{if .global.auth.pamOidcIssuer.pamService}}{{.global.auth.pamOidcIssuer.pamService}}{{else}}flightctl{{end}}
+    allowPublicClientWithoutPKCE: {{if .global.auth.pamOidcIssuer.allowPublicClientWithoutPKCE}}{{.global.auth.pamOidcIssuer.allowPublicClientWithoutPKCE}}{{else}}false{{end}}
+    accessTokenExpiration: {{if .global.auth.pamOidcIssuer.accessTokenExpiration}}{{.global.auth.pamOidcIssuer.accessTokenExpiration}}{{else}}1h{{end}}
+    refreshTokenExpiration: {{if .global.auth.pamOidcIssuer.refreshTokenExpiration}}{{.global.auth.pamOidcIssuer.refreshTokenExpiration}}{{else}}168h{{end}}
+    pendingSessionCookieMaxAge: {{if .global.auth.pamOidcIssuer.pendingSessionCookieMaxAge}}{{.global.auth.pamOidcIssuer.pendingSessionCookieMaxAge}}{{else}}10m{{end}}
+    authenticatedSessionCookieMaxAge: {{if .global.auth.pamOidcIssuer.authenticatedSessionCookieMaxAge}}{{.global.auth.pamOidcIssuer.authenticatedSessionCookieMaxAge}}{{else}}30m{{end}}
+    cookieHttpOnly: {{if .global.auth.pamOidcIssuer.cookieHttpOnly}}{{.global.auth.pamOidcIssuer.cookieHttpOnly}}{{else}}true{{end}}
+{{- if .global.auth.pamOidcIssuer.branding}}
+    branding:
+{{- if .global.auth.pamOidcIssuer.branding.displayName}}
+      displayName: {{.global.auth.pamOidcIssuer.branding.displayName}}
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.faviconDataUri}}
+      faviconDataUri: {{.global.auth.pamOidcIssuer.branding.faviconDataUri}}
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.lightTheme}}
+      lightTheme:
+{{- if .global.auth.pamOidcIssuer.branding.lightTheme.logoDataUri}}
+        logoDataUri: {{.global.auth.pamOidcIssuer.branding.lightTheme.logoDataUri}}
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.lightTheme.brandDefault}}
+        brandDefault: "{{.global.auth.pamOidcIssuer.branding.lightTheme.brandDefault}}"
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.lightTheme.brandHover}}
+        brandHover: "{{.global.auth.pamOidcIssuer.branding.lightTheme.brandHover}}"
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.lightTheme.brandClicked}}
+        brandClicked: "{{.global.auth.pamOidcIssuer.branding.lightTheme.brandClicked}}"
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.lightTheme.backgroundPrimary}}
+        backgroundPrimary: "{{.global.auth.pamOidcIssuer.branding.lightTheme.backgroundPrimary}}"
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.lightTheme.backgroundSecondary}}
+        backgroundSecondary: "{{.global.auth.pamOidcIssuer.branding.lightTheme.backgroundSecondary}}"
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.lightTheme.textColorRegular}}
+        textColorRegular: "{{.global.auth.pamOidcIssuer.branding.lightTheme.textColorRegular}}"
+{{- end}}
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.darkTheme}}
+      darkTheme:
+{{- if .global.auth.pamOidcIssuer.branding.darkTheme.logoDataUri}}
+        logoDataUri: {{.global.auth.pamOidcIssuer.branding.darkTheme.logoDataUri}}
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.darkTheme.brandDefault}}
+        brandDefault: "{{.global.auth.pamOidcIssuer.branding.darkTheme.brandDefault}}"
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.darkTheme.brandHover}}
+        brandHover: "{{.global.auth.pamOidcIssuer.branding.darkTheme.brandHover}}"
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.darkTheme.brandClicked}}
+        brandClicked: "{{.global.auth.pamOidcIssuer.branding.darkTheme.brandClicked}}"
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.darkTheme.backgroundPrimary}}
+        backgroundPrimary: "{{.global.auth.pamOidcIssuer.branding.darkTheme.backgroundPrimary}}"
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.darkTheme.backgroundSecondary}}
+        backgroundSecondary: "{{.global.auth.pamOidcIssuer.branding.darkTheme.backgroundSecondary}}"
+{{- end}}
+{{- if .global.auth.pamOidcIssuer.branding.darkTheme.textColorRegular}}
+        textColorRegular: "{{.global.auth.pamOidcIssuer.branding.darkTheme.textColorRegular}}"
+{{- end}}
+{{- end}}
+{{- end}}
+
+{{- with .profiling }}
+{{- $pprof := .pprof }}
+{{- $pyroscope := .pyroscope }}
+{{- $pprofOn := false }}
+{{- $pyroscopeOn := false }}
+{{- if $pprof }}{{ if $pprof.enabled }}{{ $pprofOn = true }}{{ end }}{{ end }}
+{{- if $pyroscope }}{{ if $pyroscope.enabled }}{{ $pyroscopeOn = true }}{{ end }}{{ end }}
+{{- if or $pprofOn $pyroscopeOn }}
+profiling:
+{{- if $pprofOn }}
+  pprof:
+    enabled: true
+{{- if $pprof.port }}
+    port: {{ $pprof.port }}
+{{- end }}
+{{- end }}
+{{- if $pyroscopeOn }}
+  pyroscope:
+    enabled: true
+    serverAddress: {{ $pyroscope.serverAddress }}
+{{- if $pyroscope.applicationName }}
+    applicationName: {{ $pyroscope.applicationName }}
+{{- end }}
+{{- if $pyroscope.basicAuthUser }}
+    basicAuthUser: {{ $pyroscope.basicAuthUser }}
+{{- end }}
+{{- if $pyroscope.basicAuthPassword }}
+    basicAuthPassword: {{ $pyroscope.basicAuthPassword }}
+{{- end }}
+{{- if $pyroscope.tenantID }}
+    tenantID: {{ $pyroscope.tenantID }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,2740 @@
+package service_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	v1alpha1 "github.com/flightctl/flightctl/api/core/v1alpha1"
+	api "github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/consts"
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/flterrors"
+	"github.com/flightctl/flightctl/internal/healthchecker"
+	"github.com/flightctl/flightctl/internal/kvstore"
+	"github.com/flightctl/flightctl/internal/rendered"
+	deviceservice "github.com/flightctl/flightctl/internal/service/device"
+	"github.com/flightctl/flightctl/internal/store"
+	devicestore "github.com/flightctl/flightctl/internal/store/device"
+	labelsyncmappingstore "github.com/flightctl/flightctl/internal/store/labelsyncmapping"
+	"github.com/flightctl/flightctl/internal/util"
+	"github.com/flightctl/flightctl/pkg/queues"
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/samber/lo"
+)
+
+var _ = Describe("Device Application Status Events Integration Tests", func() {
+	var (
+		suite *ServiceTestSuite
+	)
+
+	BeforeEach(func() {
+		suite = NewServiceTestSuite()
+		suite.Setup()
+	})
+
+	AfterEach(func() {
+		suite.Teardown()
+	})
+
+	// Helper function to get events for a specific device
+	getEventsForDevice := func(deviceName string) []api.Event {
+		listParams := store.ListParams{
+			Limit:       100,
+			SortColumns: []store.SortColumn{store.SortByCreatedAt, store.SortByName},
+			SortOrder:   lo.ToPtr(store.SortDesc),
+		}
+		eventList, err := suite.EventStore.List(suite.Ctx, suite.OrgID, listParams)
+		Expect(err).ToNot(HaveOccurred())
+
+		var matchingEvents []api.Event
+		for _, event := range eventList.Items {
+			if event.InvolvedObject.Kind == api.DeviceKind && event.InvolvedObject.Name == deviceName {
+				matchingEvents = append(matchingEvents, event)
+			}
+		}
+		return matchingEvents
+	}
+
+	// Helper function to check for specific event reason
+	findEventByReason := func(events []api.Event, reason api.EventReason) *api.Event {
+		for _, event := range events {
+			if event.Reason == reason {
+				return &event
+			}
+		}
+		return nil
+	}
+
+	Context("Agent status liveness", func() {
+		It("should persist lastSeen before connectivity reconciliation can mark the device disconnected", func() {
+			deviceName := "agent-status-last-seen-refresh"
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{},
+			})
+			Expect(status.Code).To(Equal(int32(201)))
+
+			before, err := suite.DeviceStore.GetLastSeen(suite.Ctx, suite.OrgID, deviceName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(before).To(BeNil())
+
+			_, status = suite.Device.ReplaceDeviceStatus(suite.Ctx, suite.OrgID, deviceName, api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Status: &api.DeviceStatus{
+					Summary: api.DeviceSummaryStatus{Status: api.DeviceSummaryStatusOnline},
+				},
+			}, true)
+			Expect(status.Code).To(Equal(int32(200)))
+
+			after, err := suite.DeviceStore.GetLastSeen(suite.Ctx, suite.OrgID, deviceName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(after).NotTo(BeNil())
+			Expect(after.After(time.Now().UTC().Add(-time.Minute))).To(BeTrue())
+
+			devices, status := suite.Device.ListConnectivityChangedDevices(
+				suite.Ctx,
+				suite.OrgID,
+				domain.ListDevicesParams{Limit: lo.ToPtr(int32(100))},
+				time.Now().UTC().Add(-domain.DeviceDisconnectedTimeout),
+			)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(devices.Items).To(BeEmpty())
+		})
+	})
+
+	Context("Device label mapping write protection", func() {
+		var (
+			mappingStore labelsyncmappingstore.Store
+			deviceStore  *devicestore.DeviceStore
+		)
+
+		BeforeEach(func() {
+			mappingStore = labelsyncmappingstore.NewStore(suite.DB, suite.Log)
+			deviceStore = devicestore.NewDeviceStore(suite.DB, suite.Log)
+		})
+
+		createMapping := func(name string, key *string) uuid.UUID {
+			mapping := domain.LabelSyncMapping{
+				ApiVersion: "flightctl.io/v1beta1",
+				Kind:       api.LabelSyncMappingKindLabelSyncMapping,
+				Metadata:   domain.ObjectMeta{Name: lo.ToPtr(name)},
+				Spec: domain.LabelSyncMappingSpec{
+					ResourceType: domain.LabelSyncMappingDevice,
+					Key:          key,
+					Expression:   "device.status.systemInfo.architecture",
+				},
+			}
+			_, err := mappingStore.Create(suite.Ctx, suite.OrgID, &mapping)
+			Expect(err).NotTo(HaveOccurred())
+			var mappingIDText string
+			result := suite.DB.Table("label_sync_mappings").Select("id").
+				Where("org_id = ? AND name = ?", suite.OrgID, name).Scan(&mappingIDText)
+			Expect(result.Error).NotTo(HaveOccurred())
+			mappingID, err := uuid.Parse(mappingIDText)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mappingID).NotTo(Equal(uuid.Nil))
+			return mappingID
+		}
+
+		createDevice := func(name string, labels map[string]string) {
+			device := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(name)},
+				Spec:     &api.DeviceSpec{},
+			}
+			if labels != nil {
+				device.Metadata.Labels = &labels
+			}
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+		}
+
+		applyOwnedLabels := func(deviceName string, desired map[string]domain.DesiredDeviceLabel) {
+			snapshot, err := deviceStore.GetLabelSnapshot(suite.Ctx, suite.OrgID, deviceName)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = deviceStore.ApplyLabels(suite.Ctx, suite.OrgID, deviceName, snapshot, desired, nil)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		It("allows writes to scalar keys before a mapping owns output on the device", func() {
+			key := "example.com/team"
+			firstName := "scalar-write-before-output"
+			createDevice(firstName, map[string]string{key: "operator-value", "example.com/team-extra": "prefix-value"})
+			secondName := "same-scalar-key-other-device"
+			createDevice(secondName, map[string]string{key: "other-device-value"})
+			createMapping("scalar-reservation", &key)
+
+			current, status := suite.Device.GetDevice(suite.Ctx, suite.OrgID, firstName)
+			Expect(status.Code).To(Equal(int32(200)))
+			labels := lo.FromPtr(current.Metadata.Labels)
+			labels[key] = "operator-update"
+			labels["example.com/team-suffix"] = "still-writable"
+			current.Metadata.Labels = &labels
+			_, status = suite.Device.ReplaceDevice(suite.Ctx, suite.OrgID, firstName, *current, nil, true, true)
+			Expect(status.Code).To(Equal(int32(200)))
+		})
+
+		It("rejects only changed owned keys and keeps the managed-label annotation server-controlled", func() {
+			key := "example.com/managed"
+			mappingID := createMapping("owned-scalar", &key)
+			deviceName := "managed-write-protection"
+			createDevice(deviceName, map[string]string{key: "mapped-value", "manual": "preserved"})
+			applyOwnedLabels(deviceName, map[string]domain.DesiredDeviceLabel{
+				key:      {Value: "mapped-value", MappingID: &mappingID},
+				"manual": {Value: "preserved"},
+			})
+
+			current, status := suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(lo.FromPtr(current.Metadata.Annotations)[domain.DeviceAnnotationManagedLabels]).To(Equal("[\"example.com/managed\"]"))
+			changed := lo.FromPtr(current.Metadata.Labels)
+			changed[key] = "forged"
+			current.Metadata.Labels = &changed
+			_, status = suite.Device.ReplaceDevice(suite.Ctx, suite.OrgID, deviceName, *current, nil, true, true)
+			Expect(status.Code).To(Equal(int32(409)))
+			Expect(status.Message).To(Equal(flterrors.ErrManagedLabelConflict.Error()))
+
+			current, status = suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(200)))
+			current.Metadata.Labels = &map[string]string{"manual": "preserved"}
+			_, status = suite.Device.ReplaceDevice(suite.Ctx, suite.OrgID, deviceName, *current, nil, true, true)
+			Expect(status.Code).To(Equal(int32(409)))
+			Expect(status.Message).To(Equal(flterrors.ErrManagedLabelConflict.Error()))
+
+			current, status = suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(200)))
+			labels := lo.FromPtr(current.Metadata.Labels)
+			labels["example.com/managed-extra"] = "writable"
+			annotations := lo.FromPtr(current.Metadata.Annotations)
+			annotations[domain.DeviceAnnotationManagedLabels] = "[\"forged\"]"
+			current.Metadata.Labels = &labels
+			current.Metadata.Annotations = &annotations
+			_, status = deviceservice.ReplaceDeviceFromUntrusted(suite.Ctx, suite.Device, suite.OrgID, deviceName, *current, nil, true, true)
+			Expect(status.Code).To(Equal(int32(200)))
+
+			current, status = suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(lo.FromPtr(current.Metadata.Annotations)[domain.DeviceAnnotationManagedLabels]).To(Equal("[\"example.com/managed\"]"))
+			spoofedStatusLabels := map[string]string{key: "status-spoof"}
+			statusDevice := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName), Labels: &spoofedStatusLabels},
+				Status:   &api.DeviceStatus{LastSeen: lo.ToPtr(time.Now())},
+			}
+			_, status = suite.Device.ReplaceDeviceStatus(suite.Ctx, suite.OrgID, deviceName, statusDevice, true)
+			Expect(status.Code).To(Equal(int32(200)))
+			current, status = suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(lo.FromPtr(current.Metadata.Labels)).To(Equal(map[string]string{
+				key:                         "mapped-value",
+				"manual":                    "preserved",
+				"example.com/managed-extra": "writable",
+			}))
+		})
+
+		It("allows decommission to clear mapping-owned labels", func() {
+			key := "example.com/managed"
+			mappingID := createMapping("decommission-managed-label", &key)
+			deviceName := "decommission-managed-label-device"
+			createDevice(deviceName, map[string]string{key: "mapped-value", "manual": "preserved"})
+			applyOwnedLabels(deviceName, map[string]domain.DesiredDeviceLabel{
+				key:      {Value: "mapped-value", MappingID: &mappingID},
+				"manual": {Value: "preserved"},
+			})
+
+			result, status := suite.Device.DecommissionDevice(suite.Ctx, suite.OrgID, deviceName, api.DeviceDecommission{
+				Target: api.DeviceDecommissionTargetTypeUnenroll,
+			})
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(lo.FromPtr(result.Metadata.Labels)).To(BeEmpty())
+			Expect(lo.FromPtr(result.Metadata.Annotations)).NotTo(HaveKey(domain.DeviceAnnotationManagedLabels))
+
+			snapshot, err := deviceStore.GetLabelSnapshot(suite.Ctx, suite.OrgID, deviceName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(snapshot.Labels).To(BeEmpty())
+		})
+
+		It("allows mapping output to take over user labels and removes them without restoring prior values", func() {
+			mappingID := createMapping("map-output", nil)
+			cases := []struct {
+				deviceName string
+				userValue  string
+				mapValue   string
+			}{
+				{deviceName: "different-value-takeover", userValue: "user-value", mapValue: "mapped-value"},
+				{deviceName: "same-value-takeover", userValue: "same-value", mapValue: "same-value"},
+			}
+			for _, testCase := range cases {
+				createDevice(testCase.deviceName, map[string]string{"custominfo.flightctl.io/site": testCase.userValue, "manual": "preserved"})
+				applyOwnedLabels(testCase.deviceName, map[string]domain.DesiredDeviceLabel{
+					"custominfo.flightctl.io/site": {Value: testCase.mapValue, MappingID: &mappingID},
+					"manual":                       {Value: "preserved"},
+				})
+				device, status := suite.Device.GetDevice(suite.Ctx, suite.OrgID, testCase.deviceName)
+				Expect(status.Code).To(Equal(int32(200)))
+				Expect(lo.FromPtr(device.Metadata.Labels)).To(Equal(map[string]string{
+					"custominfo.flightctl.io/site": testCase.mapValue,
+					"manual":                       "preserved",
+				}))
+			}
+
+			deleted, err := mappingStore.Delete(suite.Ctx, suite.OrgID, "map-output")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+			for _, deviceName := range []string{"different-value-takeover", "same-value-takeover"} {
+				applyOwnedLabels(deviceName, map[string]domain.DesiredDeviceLabel{
+					"manual": {Value: "preserved"},
+				})
+				device, status := suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+				Expect(status.Code).To(Equal(int32(200)))
+				Expect(lo.FromPtr(device.Metadata.Labels)).To(Equal(map[string]string{"manual": "preserved"}))
+			}
+			finalized, err := mappingStore.FinalizeDelete(suite.Ctx, suite.OrgID, "map-output")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(finalized).To(BeTrue())
+
+			device, status := suite.Device.GetDevice(suite.Ctx, suite.OrgID, "different-value-takeover")
+			Expect(status.Code).To(Equal(int32(200)))
+			labels := lo.FromPtr(device.Metadata.Labels)
+			labels["custominfo.flightctl.io/site"] = "operator-after-cleanup"
+			device.Metadata.Labels = &labels
+			_, status = suite.Device.ReplaceDevice(suite.Ctx, suite.OrgID, "different-value-takeover", *device, nil, true, true)
+			Expect(status.Code).To(Equal(int32(200)))
+			device, status = suite.Device.GetDevice(suite.Ctx, suite.OrgID, "different-value-takeover")
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(lo.FromPtr(device.Metadata.Labels)["custominfo.flightctl.io/site"]).To(Equal("operator-after-cleanup"))
+		})
+	})
+
+	Context("New device application status transitions", func() {
+		It("should generate DeviceApplicationError event when new device reports error applications", func() {
+			deviceName := "new-device-with-error-apps"
+
+			// Step 1: Create a new device (simulating enrollment)
+			composeApp := api.ComposeApplication{
+				Name:    lo.ToPtr("test-app"),
+				AppType: api.AppTypeCompose,
+			}
+			err := composeApp.FromImageApplicationProviderSpec(api.ImageApplicationProviderSpec{
+				Image: "quay.io/test/app:v1",
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			var app api.ApplicationProviderSpec
+			err = app.FromComposeApplication(composeApp)
+			Expect(err).ToNot(HaveOccurred())
+
+			device := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Spec: &api.DeviceSpec{
+					Applications: &[]api.ApplicationProviderSpec{app},
+				},
+			}
+
+			// Create the device through the service (this simulates device enrollment)
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			if status.Code != 201 {
+				GinkgoWriter.Printf("CreateDevice failed with status: %+v\n", status)
+			}
+			Expect(status.Code).To(Equal(int32(201)))
+
+			// Verify no application events exist yet
+			initialEvents := getEventsForDevice(deviceName)
+			appErrorEvent := findEventByReason(initialEvents, api.EventReasonDeviceApplicationError)
+			Expect(appErrorEvent).To(BeNil())
+
+			// Step 2: Agent reports back with applications in Error state (simulating invalid application)
+			updatedDevice := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Status: &api.DeviceStatus{
+					LastSeen: lo.ToPtr(time.Now()),
+					Applications: []api.DeviceApplicationStatus{
+						{
+							Name:     "test-app",
+							Status:   api.ApplicationStatusError,
+							Ready:    "0/1",
+							Restarts: 0,
+						},
+					},
+					ApplicationsSummary: api.DeviceApplicationsSummaryStatus{
+						Status: api.ApplicationsSummaryStatusError,
+						Info:   lo.ToPtr("test-app is in status Error"),
+					},
+					Summary: api.DeviceSummaryStatus{
+						Status: api.DeviceSummaryStatusOnline,
+					},
+					Updated: api.DeviceUpdatedStatus{
+						Status: api.DeviceUpdatedStatusUpToDate,
+					},
+					Lifecycle: api.DeviceLifecycleStatus{
+						Status: api.DeviceLifecycleStatusUnknown,
+					},
+					Resources: api.DeviceResourceStatus{
+						Cpu:    api.DeviceResourceStatusUnknown,
+						Memory: api.DeviceResourceStatusUnknown,
+						Disk:   api.DeviceResourceStatusUnknown,
+					},
+					Integrity: api.DeviceIntegrityStatus{
+						Status: api.DeviceIntegrityStatusUnknown,
+					},
+					Os: api.DeviceOsStatus{
+						Image:       "test-image",
+						ImageDigest: "sha256:1234",
+					},
+					Config: api.DeviceConfigStatus{
+						RenderedVersion: "1",
+					},
+					SystemInfo: api.DeviceSystemInfo{
+						OperatingSystem: "linux",
+						Architecture:    "amd64",
+						BootID:          "boot-123",
+						AgentVersion:    "v1.0.0",
+					},
+				},
+			}
+
+			// Update device status to reflect the error state
+			resultDevice, status := suite.Device.ReplaceDeviceStatus(suite.Ctx, suite.OrgID, deviceName, updatedDevice, true)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(resultDevice.Status.ApplicationsSummary.Status).To(Equal(api.ApplicationsSummaryStatusError))
+
+			// Step 3: Verify that DeviceApplicationError event was generated
+			finalEvents := getEventsForDevice(deviceName)
+			GinkgoWriter.Printf("All events for device %s: %d events\n", deviceName, len(finalEvents))
+			for i, event := range finalEvents {
+				GinkgoWriter.Printf("Event %d: Type=%s, Reason=%s, Message=%s\n", i, event.Type, event.Reason, event.Message)
+			}
+
+			appErrorEvent = findEventByReason(finalEvents, api.EventReasonDeviceApplicationError)
+			Expect(appErrorEvent).ToNot(BeNil(), "DeviceApplicationError event should be generated when transitioning from Unknown to Error")
+			Expect(appErrorEvent.Type).To(Equal(api.Warning))
+			Expect(appErrorEvent.Message).To(ContainSubstring("test-app is in status Error"))
+		})
+
+		It("should generate DeviceApplicationHealthy event when new device reports healthy applications", func() {
+			deviceName := "new-device-with-healthy-apps"
+
+			// Step 1: Create a new device
+			composeApp := api.ComposeApplication{
+				Name:    lo.ToPtr("test-app"),
+				AppType: api.AppTypeCompose,
+			}
+			err := composeApp.FromImageApplicationProviderSpec(api.ImageApplicationProviderSpec{
+				Image: "quay.io/test/app:v1",
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			var app api.ApplicationProviderSpec
+			err = app.FromComposeApplication(composeApp)
+			Expect(err).ToNot(HaveOccurred())
+
+			device := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Spec: &api.DeviceSpec{
+					Applications: &[]api.ApplicationProviderSpec{app},
+				},
+			}
+
+			// Create the device through the service
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			// Step 2: Agent reports back with applications in Healthy state
+			updatedDevice := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Status: &api.DeviceStatus{
+					LastSeen: lo.ToPtr(time.Now()),
+					Applications: []api.DeviceApplicationStatus{
+						{
+							Name:     "test-app",
+							Status:   api.ApplicationStatusRunning,
+							Ready:    "1/1",
+							Restarts: 0,
+						},
+					},
+					ApplicationsSummary: api.DeviceApplicationsSummaryStatus{
+						Status: api.ApplicationsSummaryStatusHealthy,
+						Info:   lo.ToPtr("Device's application workloads are healthy."),
+					},
+					Summary: api.DeviceSummaryStatus{
+						Status: api.DeviceSummaryStatusOnline,
+					},
+					Updated: api.DeviceUpdatedStatus{
+						Status: api.DeviceUpdatedStatusUpToDate,
+					},
+					Lifecycle: api.DeviceLifecycleStatus{
+						Status: api.DeviceLifecycleStatusUnknown,
+					},
+					Resources: api.DeviceResourceStatus{
+						Cpu:    api.DeviceResourceStatusUnknown,
+						Memory: api.DeviceResourceStatusUnknown,
+						Disk:   api.DeviceResourceStatusUnknown,
+					},
+					Integrity: api.DeviceIntegrityStatus{
+						Status: api.DeviceIntegrityStatusUnknown,
+					},
+					Os: api.DeviceOsStatus{
+						Image:       "test-image",
+						ImageDigest: "sha256:1234",
+					},
+					Config: api.DeviceConfigStatus{
+						RenderedVersion: "1",
+					},
+					SystemInfo: api.DeviceSystemInfo{
+						OperatingSystem: "linux",
+						Architecture:    "amd64",
+						BootID:          "boot-123",
+						AgentVersion:    "v1.0.0",
+					},
+				},
+			}
+
+			// Update device status through the service
+			resultDevice, status := suite.Device.ReplaceDeviceStatus(suite.Ctx, suite.OrgID, deviceName, updatedDevice, true)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(resultDevice).ToNot(BeNil())
+			Expect(resultDevice.Status.ApplicationsSummary.Status).To(Equal(api.ApplicationsSummaryStatusHealthy))
+
+			// Step 3: Verify that DeviceApplicationHealthy event was generated
+			finalEvents := getEventsForDevice(deviceName)
+			appHealthyEvent := findEventByReason(finalEvents, api.EventReasonDeviceApplicationHealthy)
+			Expect(appHealthyEvent).ToNot(BeNil(), "DeviceApplicationHealthy event should be generated when transitioning from Unknown to Healthy")
+			Expect(appHealthyEvent.Type).To(Equal(api.Normal))
+			Expect(appHealthyEvent.Message).To(ContainSubstring("Device's application workloads are healthy"))
+		})
+	})
+
+	Context("Device resource monitor status transitions", func() {
+		It("should generate resource monitor events for problematic transitions but not for healthy startup", func() {
+			deviceName := "new-device-with-resource-issues"
+
+			// Step 1: Create a device (without status)
+			device := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Spec: &api.DeviceSpec{},
+			}
+
+			// Create the device
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			// Step 2: Set the device status with critical resource status
+			deviceWithCriticalResources := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Status: &api.DeviceStatus{
+					LastSeen: lo.ToPtr(time.Now()),
+					Resources: api.DeviceResourceStatus{
+						Cpu:    api.DeviceResourceStatusCritical,
+						Memory: api.DeviceResourceStatusWarning,
+						Disk:   api.DeviceResourceStatusHealthy, // This should NOT generate an event (Unknown -> Healthy)
+					},
+					ApplicationsSummary: api.DeviceApplicationsSummaryStatus{
+						Status: api.ApplicationsSummaryStatusNoApplications,
+					},
+					Conditions: []api.Condition{},
+				},
+			}
+
+			// Update the device status
+			_, status = suite.Device.ReplaceDeviceStatus(suite.Ctx, suite.OrgID, deviceName, deviceWithCriticalResources, true)
+			Expect(status.Code).To(Equal(int32(200)))
+
+			// Verify events were generated for CPU and Memory issues but NOT for Disk.
+			// The status change also emits a DeviceLabelReconciliationRequested event.
+			events := getEventsForDevice(deviceName)
+			Expect(len(events)).To(Equal(5))
+
+			// Check that we have the right events
+			eventReasons := make([]string, len(events))
+			for i, event := range events {
+				eventReasons[i] = string(event.Reason)
+			}
+			Expect(eventReasons).To(ContainElements(
+				"ResourceCreated",
+				"DeviceLabelReconciliationRequested",
+				"DeviceCPUCritical",
+				"DeviceMemoryWarning",
+				"DeviceApplicationHealthy",
+			))
+			// Should NOT contain DeviceDiskNormal since that's Unknown -> Healthy
+			Expect(eventReasons).ToNot(ContainElement("DeviceDiskNormal"))
+
+			// Step 3: Update the device to have all resources healthy
+			deviceWithHealthyResources := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Status: &api.DeviceStatus{
+					LastSeen: lo.ToPtr(time.Now()),
+					Resources: api.DeviceResourceStatus{
+						Cpu:    api.DeviceResourceStatusHealthy,
+						Memory: api.DeviceResourceStatusHealthy,
+						Disk:   api.DeviceResourceStatusHealthy,
+					},
+					ApplicationsSummary: api.DeviceApplicationsSummaryStatus{
+						Status: api.ApplicationsSummaryStatusNoApplications,
+					},
+					Conditions: []api.Condition{},
+				},
+			}
+
+			// Update the device
+			_, status = suite.Device.ReplaceDeviceStatus(suite.Ctx, suite.OrgID, deviceName, deviceWithHealthyResources, true)
+			Expect(status.Code).To(Equal(int32(200)))
+
+			// Verify events were generated for CPU and Memory recovery.
+			// Each status update contributes a DeviceLabelReconciliationRequested event.
+			events = getEventsForDevice(deviceName)
+			Expect(len(events)).To(Equal(9))
+
+			// Check that we have the recovery events
+			eventReasons = make([]string, len(events))
+			for i, event := range events {
+				eventReasons[i] = string(event.Reason)
+			}
+			Expect(eventReasons).To(ContainElements(
+				"ResourceCreated",
+				"DeviceLabelReconciliationRequested",
+				"DeviceLabelReconciliationRequested",
+				"DeviceCPUCritical",
+				"DeviceMemoryWarning",
+				"DeviceApplicationHealthy",
+				"DeviceConnected",
+				"DeviceCPUNormal",
+				"DeviceMemoryNormal",
+			))
+			// Still should NOT contain DeviceDiskNormal since disk was already healthy
+			Expect(eventReasons).ToNot(ContainElement("DeviceDiskNormal"))
+		})
+
+		It("should generate resource monitor warning events when device reports warning resource status", func() {
+			deviceName := "device-with-warning-resources"
+
+			// Step 1: Create a new device
+			device := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Spec: &api.DeviceSpec{},
+			}
+
+			// Create the device through the service
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			// Step 2: Agent reports back with warning resource status
+			updatedDevice := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Status: &api.DeviceStatus{
+					LastSeen:     lo.ToPtr(time.Now()),
+					Applications: []api.DeviceApplicationStatus{},
+					ApplicationsSummary: api.DeviceApplicationsSummaryStatus{
+						Status: api.ApplicationsSummaryStatusNoApplications,
+						Info:   lo.ToPtr("Device has not reported any application workloads yet."),
+					},
+					Summary: api.DeviceSummaryStatus{
+						Status: api.DeviceSummaryStatusDegraded, // This should be set by the service for warnings
+					},
+					Updated: api.DeviceUpdatedStatus{
+						Status: api.DeviceUpdatedStatusUpToDate,
+					},
+					Lifecycle: api.DeviceLifecycleStatus{
+						Status: api.DeviceLifecycleStatusUnknown,
+					},
+					Resources: api.DeviceResourceStatus{
+						Cpu:    api.DeviceResourceStatusWarning,
+						Memory: api.DeviceResourceStatusHealthy,
+						Disk:   api.DeviceResourceStatusHealthy,
+					},
+					Integrity: api.DeviceIntegrityStatus{
+						Status: api.DeviceIntegrityStatusUnknown,
+					},
+					Os: api.DeviceOsStatus{
+						Image:       "test-image",
+						ImageDigest: "sha256:1234",
+					},
+					Config: api.DeviceConfigStatus{
+						RenderedVersion: "1",
+					},
+					SystemInfo: api.DeviceSystemInfo{
+						OperatingSystem: "linux",
+						Architecture:    "amd64",
+						BootID:          "boot-123",
+						AgentVersion:    "v1.0.0",
+					},
+				},
+			}
+
+			// Update device status through the service
+			resultDevice, status := suite.Device.ReplaceDeviceStatus(suite.Ctx, suite.OrgID, deviceName, updatedDevice, true)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(resultDevice).ToNot(BeNil())
+
+			// Verify that the service sets the summary status to Degraded due to warning resource status
+			Expect(resultDevice.Status.Summary.Status).To(Equal(api.DeviceSummaryStatusDegraded))
+
+			// Step 3: Verify that CPU warning event was generated
+			finalEvents := getEventsForDevice(deviceName)
+			cpuWarningEvent := findEventByReason(finalEvents, api.EventReasonDeviceCPUWarning)
+			Expect(cpuWarningEvent).ToNot(BeNil(), "DeviceCPUWarning event should be generated when transitioning from Unknown to Warning")
+			Expect(cpuWarningEvent.Type).To(Equal(api.Warning))
+			Expect(cpuWarningEvent.Message).To(ContainSubstring("CPU utilization has reached a warning level"))
+		})
+
+		It("should generate DeviceConnected event when device summary status transitions from unknown to online", func() {
+			deviceName := "device-connection-test"
+
+			// Step 1: Create a device (without status - this will have unknown summary status)
+			device := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Spec: &api.DeviceSpec{},
+			}
+
+			// Create the device
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			// Step 2: First set device status to unknown explicitly
+			deviceWithUnknownStatus := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Status: &api.DeviceStatus{
+					LastSeen: lo.ToPtr(time.Now().Add(-10 * time.Minute)), // More than 5 minutes ago to trigger disconnected state
+					Summary: api.DeviceSummaryStatus{
+						Status: api.DeviceSummaryStatusUnknown,
+						Info:   lo.ToPtr("Device is disconnected (last seen more than 5m0s)."),
+					},
+					ApplicationsSummary: api.DeviceApplicationsSummaryStatus{
+						Status: api.ApplicationsSummaryStatusUnknown,
+						Info:   lo.ToPtr("Device is disconnected (last seen more than 5m0s)."),
+					},
+					Updated: api.DeviceUpdatedStatus{
+						Status: api.DeviceUpdatedStatusUnknown,
+						Info:   lo.ToPtr("Device is disconnected (last seen more than 5m0s)."),
+					},
+					Lifecycle: api.DeviceLifecycleStatus{
+						Status: api.DeviceLifecycleStatusUnknown,
+					},
+					Resources: api.DeviceResourceStatus{
+						Cpu:    api.DeviceResourceStatusUnknown,
+						Memory: api.DeviceResourceStatusUnknown,
+						Disk:   api.DeviceResourceStatusUnknown,
+					},
+					Integrity: api.DeviceIntegrityStatus{
+						Status: api.DeviceIntegrityStatusUnknown,
+					},
+					Os: api.DeviceOsStatus{
+						Image:       "test-image",
+						ImageDigest: "sha256:1234",
+					},
+					Config: api.DeviceConfigStatus{
+						RenderedVersion: "1",
+					},
+					SystemInfo: api.DeviceSystemInfo{
+						OperatingSystem: "linux",
+						Architecture:    "amd64",
+						BootID:          "boot-123",
+						AgentVersion:    "v1.0.0",
+					},
+				},
+			}
+
+			// Set the device status to unknown
+			resultDevice, err := suite.Device.UpdateDevice(suite.Ctx, suite.OrgID, deviceName, deviceWithUnknownStatus, nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(resultDevice).ToNot(BeNil())
+			Expect(resultDevice.Status.Summary.Status).To(Equal(api.DeviceSummaryStatusUnknown))
+
+			// Verify no connection events exist yet
+			initialEvents := getEventsForDevice(deviceName)
+			connectedEvent := findEventByReason(initialEvents, api.EventReasonDeviceConnected)
+			Expect(connectedEvent).To(BeNil())
+
+			// Step 3: Update device status to online (simulating device coming online)
+			deviceWithOnlineStatus := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Status: &api.DeviceStatus{
+					LastSeen: lo.ToPtr(time.Now()),
+					Summary: api.DeviceSummaryStatus{
+						Status: api.DeviceSummaryStatusOnline,
+						Info:   lo.ToPtr("Device's application workloads are healthy."),
+					},
+					ApplicationsSummary: api.DeviceApplicationsSummaryStatus{
+						Status: api.ApplicationsSummaryStatusNoApplications,
+						Info:   lo.ToPtr("Device has not reported any application workloads yet."),
+					},
+					Updated: api.DeviceUpdatedStatus{
+						Status: api.DeviceUpdatedStatusUpToDate,
+					},
+					Lifecycle: api.DeviceLifecycleStatus{
+						Status: api.DeviceLifecycleStatusUnknown,
+					},
+					Resources: api.DeviceResourceStatus{
+						Cpu:    api.DeviceResourceStatusHealthy,
+						Memory: api.DeviceResourceStatusHealthy,
+						Disk:   api.DeviceResourceStatusHealthy,
+					},
+					Integrity: api.DeviceIntegrityStatus{
+						Status: api.DeviceIntegrityStatusUnknown,
+					},
+					Os: api.DeviceOsStatus{
+						Image:       "test-image",
+						ImageDigest: "sha256:1234",
+					},
+					Config: api.DeviceConfigStatus{
+						RenderedVersion: "1",
+					},
+					SystemInfo: api.DeviceSystemInfo{
+						OperatingSystem: "linux",
+						Architecture:    "amd64",
+						BootID:          "boot-123",
+						AgentVersion:    "v1.0.0",
+					},
+				},
+			}
+
+			// Update the device status to online
+			resultDevice, status = suite.Device.ReplaceDeviceStatus(suite.Ctx, suite.OrgID, deviceName, deviceWithOnlineStatus, true)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(resultDevice).ToNot(BeNil())
+			Expect(resultDevice.Status.Summary.Status).To(Equal(api.DeviceSummaryStatusOnline))
+
+			// Step 4: Verify that DeviceConnected event was generated
+			finalEvents := getEventsForDevice(deviceName)
+			GinkgoWriter.Printf("Events for device %s: %d events\n", deviceName, len(finalEvents))
+			for i, event := range finalEvents {
+				GinkgoWriter.Printf("Event %d: Type=%s, Reason=%s, Message=%s\n", i, event.Type, event.Reason, event.Message)
+			}
+
+			connectedEvent = findEventByReason(finalEvents, api.EventReasonDeviceConnected)
+			Expect(connectedEvent).ToNot(BeNil(), "DeviceConnected event should be generated when transitioning from Unknown to Online")
+			Expect(connectedEvent.Type).To(Equal(api.Normal))
+			Expect(connectedEvent.Message).To(ContainSubstring("Device's system resources are healthy"))
+		})
+
+		It("should generate DeviceConflictPaused event when device summary status transitions to conflict paused", func() {
+			deviceName := "device-paused-test"
+
+			// Step 1: Create a device (without status - this will have unknown summary status)
+			device := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Spec: &api.DeviceSpec{},
+			}
+
+			// Create the device
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			// Step 2: First set device status to online
+			deviceWithOnlineStatus := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Status: &api.DeviceStatus{
+					LastSeen: lo.ToPtr(time.Now()),
+					Summary: api.DeviceSummaryStatus{
+						Status: api.DeviceSummaryStatusOnline,
+						Info:   lo.ToPtr("Device's system resources are healthy."),
+					},
+					ApplicationsSummary: api.DeviceApplicationsSummaryStatus{
+						Status: api.ApplicationsSummaryStatusNoApplications,
+						Info:   lo.ToPtr("Device has not reported any application workloads yet."),
+					},
+					Updated: api.DeviceUpdatedStatus{
+						Status: api.DeviceUpdatedStatusUpToDate,
+					},
+					Lifecycle: api.DeviceLifecycleStatus{
+						Status: api.DeviceLifecycleStatusUnknown,
+					},
+					Resources: api.DeviceResourceStatus{
+						Cpu:    api.DeviceResourceStatusHealthy,
+						Memory: api.DeviceResourceStatusHealthy,
+						Disk:   api.DeviceResourceStatusHealthy,
+					},
+					Integrity: api.DeviceIntegrityStatus{
+						Status: api.DeviceIntegrityStatusUnknown,
+					},
+					Os: api.DeviceOsStatus{
+						Image:       "test-image",
+						ImageDigest: "sha256:1234",
+					},
+					Config: api.DeviceConfigStatus{
+						RenderedVersion: "1",
+					},
+					SystemInfo: api.DeviceSystemInfo{
+						OperatingSystem: "linux",
+						Architecture:    "amd64",
+						BootID:          "boot-123",
+						AgentVersion:    "v1.0.0",
+					},
+				},
+			}
+
+			// Update the device status to online first
+			_, status = suite.Device.ReplaceDeviceStatus(suite.Ctx, suite.OrgID, deviceName, deviceWithOnlineStatus, true)
+			Expect(status.Code).To(Equal(int32(200)))
+
+			// Step 3: Set the paused annotation first
+			pausedAnnotations := map[string]string{
+				api.DeviceAnnotationConflictPaused: "true",
+			}
+			err := suite.DeviceStore.UpdateAnnotations(suite.Ctx, suite.OrgID, deviceName, pausedAnnotations, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Step 4: Update device status (the service should automatically set it to paused due to the annotation)
+			deviceWithUpdatedStatus := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Status: &api.DeviceStatus{
+					LastSeen: lo.ToPtr(time.Now()),
+					Summary: api.DeviceSummaryStatus{
+						Status: api.DeviceSummaryStatusOnline, // This will be overridden to ConflictPaused by the service
+						Info:   lo.ToPtr("Device's system resources are healthy."),
+					},
+					ApplicationsSummary: api.DeviceApplicationsSummaryStatus{
+						Status: api.ApplicationsSummaryStatusNoApplications,
+						Info:   lo.ToPtr("Device has not reported any application workloads yet."),
+					},
+					Updated: api.DeviceUpdatedStatus{
+						Status: api.DeviceUpdatedStatusUpToDate,
+					},
+					Lifecycle: api.DeviceLifecycleStatus{
+						Status: api.DeviceLifecycleStatusUnknown,
+					},
+					Resources: api.DeviceResourceStatus{
+						Cpu:    api.DeviceResourceStatusHealthy,
+						Memory: api.DeviceResourceStatusHealthy,
+						Disk:   api.DeviceResourceStatusHealthy,
+					},
+					Integrity: api.DeviceIntegrityStatus{
+						Status: api.DeviceIntegrityStatusUnknown,
+					},
+					Os: api.DeviceOsStatus{
+						Image:       "test-image",
+						ImageDigest: "sha256:1234",
+					},
+					Config: api.DeviceConfigStatus{
+						RenderedVersion: "1",
+					},
+					SystemInfo: api.DeviceSystemInfo{
+						OperatingSystem: "linux",
+						Architecture:    "amd64",
+						BootID:          "boot-123",
+						AgentVersion:    "v1.0.0",
+					},
+				},
+			}
+
+			// Update the device status - service should automatically set it to paused
+			resultDevice, status := suite.Device.ReplaceDeviceStatus(suite.Ctx, suite.OrgID, deviceName, deviceWithUpdatedStatus, true)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(resultDevice).ToNot(BeNil())
+			Expect(resultDevice.Status.Summary.Status).To(Equal(api.DeviceSummaryStatusConflictPaused))
+
+			// Step 5: Verify that DeviceConflictPaused event was generated
+			finalEvents := getEventsForDevice(deviceName)
+			GinkgoWriter.Printf("Events for device %s: %d events\n", deviceName, len(finalEvents))
+			for i, event := range finalEvents {
+				GinkgoWriter.Printf("Event %d: Type=%s, Reason=%s, Message=%s\n", i, event.Type, event.Reason, event.Message)
+			}
+
+			pausedEvent := findEventByReason(finalEvents, api.EventReasonDeviceConflictPaused)
+			Expect(pausedEvent).ToNot(BeNil(), "DeviceConflictPaused event should be generated when transitioning from Online to ConflictPaused")
+			Expect(pausedEvent.Type).To(Equal(api.Warning))
+			Expect(pausedEvent.Message).To(ContainSubstring("Device reconciliation is paused due to a state conflict between the service and the device's agent; manual intervention is required."))
+		})
+	})
+
+	// PrepareDevicesAfterRestore tests have been moved to test/integration/restore/device_test.go
+
+	Context("Device ownership enforcement", func() {
+		seedOwnedDevice := func(deviceName string) {
+			GinkgoHelper()
+			device := api.Device{
+				Metadata: api.ObjectMeta{
+					Name:  lo.ToPtr(deviceName),
+					Owner: lo.ToPtr("Fleet/f1"),
+				},
+				Spec: &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "img"}},
+			}
+			// Trusted caller (CreateDevice) preserves Owner as given, unlike
+			// CreateDeviceFromUntrusted, which would sanitize it away.
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+		}
+
+		It("denies a spec change on an owned device when enforceOwnership is true", func() {
+			deviceName := "owned-device-deny"
+			seedOwnedDevice(deviceName)
+
+			updated := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "img-updated"}},
+			}
+			_, status := suite.Device.ReplaceDevice(suite.Ctx, suite.OrgID, deviceName, updated, nil, true, true)
+			Expect(status.Code).To(Equal(int32(409)))
+			Expect(status.Message).To(Equal(flterrors.ErrUpdatingResourceWithOwnerNotAllowed.Error()))
+
+			stored, err := suite.DeviceStore.Get(suite.Ctx, suite.OrgID, deviceName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stored.Spec.Os.Image).To(Equal("img"))
+		})
+
+		It("denies a spec patch on an owned device when enforceOwnership is true", func() {
+			deviceName := "owned-device-patch-deny"
+			seedOwnedDevice(deviceName)
+
+			var value interface{} = "img-updated"
+			patch := api.PatchRequest{{Op: "replace", Path: "/spec/os/image", Value: &value}}
+			_, status := suite.Device.PatchDevice(suite.Ctx, suite.OrgID, deviceName, patch, true, true)
+			Expect(status.Code).To(Equal(int32(409)))
+			Expect(status.Message).To(Equal(flterrors.ErrUpdatingResourceWithOwnerNotAllowed.Error()))
+
+			stored, err := suite.DeviceStore.Get(suite.Ctx, suite.OrgID, deviceName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stored.Spec.Os.Image).To(Equal("img"))
+		})
+
+		It("allows a spec change on an owned device when enforceOwnership is false", func() {
+			deviceName := "owned-device-allow"
+			seedOwnedDevice(deviceName)
+
+			updated := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "img-updated"}},
+			}
+			_, status := suite.Device.ReplaceDevice(suite.Ctx, suite.OrgID, deviceName, updated, nil, false, false)
+			Expect(status.Code).To(Equal(int32(200)))
+
+			stored, err := suite.DeviceStore.Get(suite.Ctx, suite.OrgID, deviceName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stored.Spec.Os.Image).To(Equal("img-updated"))
+		})
+	})
+
+	Context("Device decommission", func() {
+		It("decommissions a device and clears owner and labels", func() {
+			deviceName := "decom-device-success"
+			labels := map[string]string{"fleet": "f1"}
+			device := api.Device{
+				Metadata: api.ObjectMeta{
+					Name:   lo.ToPtr(deviceName),
+					Owner:  lo.ToPtr("Fleet/f1"),
+					Labels: &labels,
+				},
+				Spec: &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "img"}},
+			}
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			before, status := suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(200)))
+			generationBefore := lo.FromPtr(before.Metadata.Generation)
+
+			result, status := suite.Device.DecommissionDevice(suite.Ctx, suite.OrgID, deviceName, api.DeviceDecommission{
+				Target: api.DeviceDecommissionTargetTypeUnenroll,
+			})
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(result.Spec).ToNot(BeNil())
+			Expect(result.Spec.Decommissioning).ToNot(BeNil())
+			Expect(result.Spec.Decommissioning.Target).To(Equal(api.DeviceDecommissionTargetTypeUnenroll))
+			Expect(result.Status.Lifecycle.Status).To(Equal(api.DeviceLifecycleStatusDecommissioning))
+			Expect(result.Metadata.Owner).To(BeNil())
+			Expect(lo.FromPtr(result.Metadata.Labels)).To(BeEmpty())
+			Expect(lo.FromPtr(result.Metadata.Generation)).To(Equal(generationBefore))
+
+			stored, err := suite.DeviceStore.Get(suite.Ctx, suite.OrgID, deviceName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stored.Spec.Decommissioning).ToNot(BeNil())
+			Expect(stored.Spec.Decommissioning.Target).To(Equal(api.DeviceDecommissionTargetTypeUnenroll))
+			Expect(stored.Status.Lifecycle.Status).To(Equal(api.DeviceLifecycleStatusDecommissioning))
+			Expect(stored.Metadata.Owner).To(BeNil())
+			Expect(lo.FromPtr(stored.Metadata.Labels)).To(BeEmpty())
+			Expect(result.Metadata.ResourceVersion).To(Equal(stored.Metadata.ResourceVersion))
+			Expect(lo.FromPtr(stored.Metadata.Generation)).To(Equal(generationBefore))
+		})
+
+		It("returns conflict when decommissioning an already-decommissioning device", func() {
+			deviceName := "decom-device-conflict"
+			device := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "img"}},
+			}
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			_, status = suite.Device.DecommissionDevice(suite.Ctx, suite.OrgID, deviceName, api.DeviceDecommission{
+				Target: api.DeviceDecommissionTargetTypeUnenroll,
+			})
+			Expect(status.Code).To(Equal(int32(200)))
+
+			_, status = suite.Device.DecommissionDevice(suite.Ctx, suite.OrgID, deviceName, api.DeviceDecommission{
+				Target: api.DeviceDecommissionTargetTypeUnenroll,
+			})
+			Expect(status.Code).To(Equal(int32(409)))
+			Expect(status.Message).To(Equal(flterrors.ErrResourceVersionConflict.Error()))
+		})
+	})
+
+	Context("SetDeviceServiceConditions", func() {
+		It("persists a changed service condition and skips write when unchanged", func() {
+			deviceName := "svc-conditions-device"
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "img"}},
+			})
+			Expect(status.Code).To(Equal(int32(201)))
+
+			cond := api.Condition{
+				Type:    api.ConditionTypeDeviceSpecValid,
+				Status:  api.ConditionStatusTrue,
+				Reason:  "ok",
+				Message: "ok",
+			}
+			status = suite.Device.SetDeviceServiceConditions(suite.Ctx, suite.OrgID, deviceName, []api.Condition{cond})
+			Expect(status.Code).To(Equal(int32(200)))
+
+			afterWrite, status := suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(api.IsStatusConditionTrue(afterWrite.Status.Conditions, api.ConditionTypeDeviceSpecValid)).To(BeTrue())
+			rvAfterWrite := lo.FromPtr(afterWrite.Metadata.ResourceVersion)
+
+			status = suite.Device.SetDeviceServiceConditions(suite.Ctx, suite.OrgID, deviceName, []api.Condition{cond})
+			Expect(status.Code).To(Equal(int32(200)))
+
+			afterNoop, status := suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(lo.FromPtr(afterNoop.Metadata.ResourceVersion)).To(Equal(rvAfterWrite))
+		})
+	})
+
+	Context("Package-mode OS image rejection", func() {
+		seedDeviceWithOsMode := func(deviceName string, osMode *api.OsModeType) {
+			GinkgoHelper()
+			device := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{},
+			}
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			deviceStatus := api.NewDeviceStatus()
+			if osMode != nil {
+				deviceStatus.Capabilities = &api.DeviceCapabilities{OsMode: osMode}
+			}
+			statusDevice := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Status:   &deviceStatus,
+			}
+			_, status = suite.Device.ReplaceDeviceStatus(suite.Ctx, suite.OrgID, deviceName, statusDevice, false)
+			Expect(status.Code).To(Equal(int32(200)))
+		}
+
+		It("denies PUT with spec.os.image on a package-mode device", func() {
+			deviceName := "pkg-mode-put-deny"
+			seedDeviceWithOsMode(deviceName, lo.ToPtr(api.OsModePackage))
+
+			updated := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/img:latest"}},
+			}
+			_, status := suite.Device.ReplaceDevice(suite.Ctx, suite.OrgID, deviceName, updated, nil, true, true)
+			Expect(status.Code).To(Equal(int32(400)))
+			Expect(status.Message).To(Equal(flterrors.ErrOsTargetNotSupportedOnPackageMode.Error()))
+		})
+
+		It("denies PATCH adding spec.os.image on a package-mode device", func() {
+			deviceName := "pkg-mode-patch-deny"
+			seedDeviceWithOsMode(deviceName, lo.ToPtr(api.OsModePackage))
+
+			var value interface{} = map[string]interface{}{"image": "quay.io/img:latest"}
+			patch := api.PatchRequest{{Op: "add", Path: "/spec/os", Value: &value}}
+			_, status := suite.Device.PatchDevice(suite.Ctx, suite.OrgID, deviceName, patch, true, true)
+			Expect(status.Code).To(Equal(int32(400)))
+			Expect(status.Message).To(Equal(flterrors.ErrOsTargetNotSupportedOnPackageMode.Error()))
+		})
+
+		It("allows PUT with spec.os.image on an image-mode device", func() {
+			deviceName := "img-mode-put-allow"
+			seedDeviceWithOsMode(deviceName, lo.ToPtr(api.OsModeImage))
+
+			updated := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/img:latest"}},
+			}
+			_, status := suite.Device.ReplaceDevice(suite.Ctx, suite.OrgID, deviceName, updated, nil, true, true)
+			Expect(status.Code).To(Equal(int32(200)))
+		})
+
+		It("allows PUT with spec.os.image on a device with no capabilities", func() {
+			deviceName := "no-caps-put-allow"
+			seedDeviceWithOsMode(deviceName, nil)
+
+			updated := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/img:latest"}},
+			}
+			_, status := suite.Device.ReplaceDevice(suite.Ctx, suite.OrgID, deviceName, updated, nil, true, true)
+			Expect(status.Code).To(Equal(int32(200)))
+		})
+
+		It("allows an unrelated PATCH when a package-mode device already has os.image", func() {
+			deviceName := "pkg-mode-retain-image-patch"
+			seedDeviceWithOsMode(deviceName, lo.ToPtr(api.OsModePackage))
+
+			fleetApplied := api.Device{
+				Metadata: api.ObjectMeta{
+					Name:   lo.ToPtr(deviceName),
+					Labels: &map[string]string{"env": "staging"},
+				},
+				Spec: &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fleet-img:latest"}},
+			}
+			_, status := suite.Device.ReplaceDevice(suite.Ctx, suite.OrgID, deviceName, fleetApplied, nil, false, false)
+			Expect(status.Code).To(Equal(int32(200)))
+
+			var value interface{} = "prod"
+			patch := api.PatchRequest{{Op: "replace", Path: "/metadata/labels/env", Value: &value}}
+			_, status = suite.Device.PatchDevice(suite.Ctx, suite.OrgID, deviceName, patch, true, true)
+			Expect(status.Code).To(Equal(int32(200)))
+
+			stored, err := suite.DeviceStore.Get(suite.Ctx, suite.OrgID, deviceName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stored.Spec.Os).ToNot(BeNil())
+			Expect(stored.Spec.Os.Image).To(Equal("quay.io/fleet-img:latest"))
+			Expect(lo.FromPtr(stored.Metadata.Labels)["env"]).To(Equal("prod"))
+		})
+
+		seedCatalog := func() {
+			GinkgoHelper()
+			catalog := v1alpha1.Catalog{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr("testcat")},
+				Spec:     v1alpha1.CatalogSpec{},
+			}
+			_, status := suite.Catalog.CreateCatalog(suite.Ctx, suite.OrgID, catalog)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			item := v1alpha1.CatalogItem{
+				Metadata: v1alpha1.CatalogItemMeta{Name: lo.ToPtr("ositem")},
+				Spec: v1alpha1.CatalogItemSpec{
+					DisplayName: lo.ToPtr("OS Item"),
+					Category:    lo.ToPtr(v1alpha1.CatalogItemCategorySystem),
+					Type:        v1alpha1.CatalogItemTypeOS,
+					Artifacts:   []v1alpha1.CatalogItemArtifact{{Type: v1alpha1.CatalogItemArtifactTypeContainer, Uri: "quay.io/test/os"}},
+					Versions: []v1alpha1.CatalogItemVersion{{
+						Version:    "1.0.0",
+						References: map[v1alpha1.CatalogItemArtifactType]string{"container": "v1.0.0"},
+						Channels:   []string{"stable"},
+					}},
+				},
+			}
+			_, status = suite.Catalog.CreateCatalogItem(suite.Ctx, suite.OrgID, "testcat", item)
+			Expect(status.Code).To(Equal(int32(201)))
+		}
+
+		It("denies PUT with spec.os.catalogItemRef on a package-mode device", func() {
+			seedCatalog()
+			deviceName := "pkg-catref-put-deny"
+			seedDeviceWithOsMode(deviceName, lo.ToPtr(api.OsModePackage))
+
+			updated := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec: &api.DeviceSpec{Os: &api.DeviceOsSpec{
+					CatalogItemRef: &api.CatalogItemRefSpec{Catalog: "testcat", Item: "ositem", Version: "1.0.0"},
+				}},
+			}
+			_, status := suite.Device.ReplaceDevice(suite.Ctx, suite.OrgID, deviceName, updated, nil, true, true)
+			Expect(status.Code).To(Equal(int32(400)))
+			Expect(status.Message).To(Equal(flterrors.ErrOsTargetNotSupportedOnPackageMode.Error()))
+		})
+
+		It("denies PATCH adding spec.os.catalogItemRef on a package-mode device", func() {
+			seedCatalog()
+			deviceName := "pkg-catref-patch-deny"
+			seedDeviceWithOsMode(deviceName, lo.ToPtr(api.OsModePackage))
+
+			var value interface{} = map[string]interface{}{
+				"catalogItemRef": map[string]interface{}{
+					"catalog": "testcat",
+					"item":    "ositem",
+					"version": "1.0.0",
+				},
+			}
+			patch := api.PatchRequest{{Op: "add", Path: "/spec/os", Value: &value}}
+			_, status := suite.Device.PatchDevice(suite.Ctx, suite.OrgID, deviceName, patch, true, true)
+			Expect(status.Code).To(Equal(int32(400)))
+			Expect(status.Message).To(Equal(flterrors.ErrOsTargetNotSupportedOnPackageMode.Error()))
+		})
+
+		It("allows PUT with spec.os.catalogItemRef on an image-mode device", func() {
+			seedCatalog()
+			deviceName := "img-catref-put-allow"
+			seedDeviceWithOsMode(deviceName, lo.ToPtr(api.OsModeImage))
+
+			updated := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec: &api.DeviceSpec{Os: &api.DeviceOsSpec{
+					CatalogItemRef: &api.CatalogItemRefSpec{Catalog: "testcat", Item: "ositem", Version: "1.0.0"},
+				}},
+			}
+			_, status := suite.Device.ReplaceDevice(suite.Ctx, suite.OrgID, deviceName, updated, nil, true, true)
+			Expect(status.Code).To(Equal(int32(200)))
+		})
+
+		It("allows PUT with spec.os.catalogItemRef on a device with no capabilities", func() {
+			seedCatalog()
+			deviceName := "nocaps-catref-put-allow"
+			seedDeviceWithOsMode(deviceName, nil)
+
+			updated := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec: &api.DeviceSpec{Os: &api.DeviceOsSpec{
+					CatalogItemRef: &api.CatalogItemRefSpec{Catalog: "testcat", Item: "ositem", Version: "1.0.0"},
+				}},
+			}
+			_, status := suite.Device.ReplaceDevice(suite.Ctx, suite.OrgID, deviceName, updated, nil, true, true)
+			Expect(status.Code).To(Equal(int32(200)))
+		})
+	})
+
+	Context("DeltaEligible status persist and GET", func() {
+		seedDeviceWithDeltaSystemInfo := func(deviceName string, deltaEligible *bool, bootcVersion, ociDeltaVersion *string) {
+			GinkgoHelper()
+			device := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{},
+			}
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			deviceStatus := api.NewDeviceStatus()
+			deviceStatus.Capabilities = &api.DeviceCapabilities{
+				OsMode: lo.ToPtr(api.OsModeImage),
+			}
+			deviceStatus.SystemInfo.DeltaEligible = deltaEligible
+			deviceStatus.SystemInfo.BootcVersion = bootcVersion
+			deviceStatus.SystemInfo.OciDeltaVersion = ociDeltaVersion
+			statusDevice := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Status:   &deviceStatus,
+			}
+			_, status = suite.Device.ReplaceDeviceStatus(suite.Ctx, suite.OrgID, deviceName, statusDevice, false)
+			Expect(status.Code).To(Equal(int32(200)))
+		}
+
+		It("When status has OsMode but no delta systemInfo fields it should leave them unset on GET", func() {
+			deviceName := "delta-eligible-omitted"
+			seedDeviceWithDeltaSystemInfo(deviceName, nil, nil, nil)
+
+			got, status := suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(got.Status).ToNot(BeNil())
+			Expect(got.Status.Capabilities).ToNot(BeNil())
+			Expect(got.Status.SystemInfo.DeltaEligible).To(BeNil())
+			Expect(got.Status.SystemInfo.BootcVersion).To(BeNil())
+			Expect(got.Status.SystemInfo.OciDeltaVersion).To(BeNil())
+		})
+
+		It("When DeltaEligible is true it should return true on GET", func() {
+			deviceName := "delta-eligible-true"
+			seedDeviceWithDeltaSystemInfo(deviceName, lo.ToPtr(true), lo.ToPtr("bootc 1.15.0"), lo.ToPtr("oci-delta 0.2.1"))
+
+			got, status := suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(got.Status).ToNot(BeNil())
+			Expect(got.Status.SystemInfo.DeltaEligible).ToNot(BeNil())
+			Expect(*got.Status.SystemInfo.DeltaEligible).To(BeTrue())
+			Expect(got.Status.SystemInfo.BootcVersion).ToNot(BeNil())
+			Expect(*got.Status.SystemInfo.BootcVersion).To(Equal("bootc 1.15.0"))
+			Expect(got.Status.SystemInfo.OciDeltaVersion).ToNot(BeNil())
+			Expect(*got.Status.SystemInfo.OciDeltaVersion).To(Equal("oci-delta 0.2.1"))
+		})
+
+		It("When DeltaEligible is false it should return false on GET", func() {
+			deviceName := "delta-eligible-false"
+			seedDeviceWithDeltaSystemInfo(deviceName, lo.ToPtr(false), nil, nil)
+
+			got, status := suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(got.Status).ToNot(BeNil())
+			Expect(got.Status.SystemInfo.DeltaEligible).ToNot(BeNil())
+			Expect(*got.Status.SystemInfo.DeltaEligible).To(BeFalse())
+		})
+	})
+
+	Context("GetRenderedDevice when AwaitingReconnect moves to ConflictPaused", func() {
+		var (
+			suite           *ServiceTestSuite
+			testKvStore     kvstore.KVStore
+			queuesProvider  queues.Provider
+			renderedInitErr error
+		)
+
+		BeforeEach(func() {
+			suite = NewServiceTestSuite()
+			suite.Setup()
+
+			// GetRenderedDevice with agent context calls healthchecker.HealthChecks.Instance().Add()
+			healthchecker.HealthChecks.Initialize(suite.Ctx, suite.Device, suite.Log)
+
+			var err error
+			// Reuse one KV store for the whole context so rendered.Bus (initialized once) and tests share the same instance.
+			if testKvStore == nil {
+				testKvStore, err = kvstore.NewKVStore(suite.Ctx, suite.Log, redisHost, redisPort, redisPassword)
+				Expect(err).ToNot(HaveOccurred())
+				processID := fmt.Sprintf("get-rendered-device-test-%s", uuid.New().String())
+				queuesProvider, err = queues.NewRedisProvider(suite.Ctx, suite.Log, processID, redisHost, redisPort, redisPassword, queues.DefaultRetryConfig())
+				Expect(err).ToNot(HaveOccurred())
+				renderedInitErr = rendered.Bus.Initialize(suite.Ctx, testKvStore, queuesProvider, 10*time.Second, suite.Log)
+				Expect(renderedInitErr).ToNot(HaveOccurred())
+			}
+		})
+
+		AfterEach(func() {
+			suite.Teardown()
+		})
+
+		createMinimalRenderedConfig := func(contents string) (string, error) {
+			provider := api.ConfigProviderSpec{}
+			files := []api.FileSpec{{Content: contents}}
+			if err := provider.FromInlineConfigProviderSpec(api.InlineConfigProviderSpec{Inline: files}); err != nil {
+				return "", err
+			}
+			providers := &[]api.ConfigProviderSpec{provider}
+			b, err := json.Marshal(providers)
+			if err != nil {
+				return "", err
+			}
+			return string(b), nil
+		}
+
+		It("returns 200 with full device when moved to ConflictPaused (avoids 204)", func() {
+			deviceName := "awaiting-reconnect-conflict-paused-device"
+			serviceVersion := "1"    // service knows version 1 (from restore)
+			deviceReportedVer := "5" // agent reports version 5 -> device ahead of service -> ConflictPaused
+
+			// Create device
+			device := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fedora/fedora-coreos:stable"}},
+			}
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			// Give device rendered content (version 1)
+			renderedConfig, err := createMinimalRenderedConfig("test-config")
+			Expect(err).ToNot(HaveOccurred())
+			_, err = setDeviceRendered(suite.Ctx, suite.DeviceStore, suite.OrgID, deviceName, renderedConfig, "", "hash1", "", nil, false)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Set device annotations: AwaitingReconnect and service version 1 (device 5 > service 1 -> ConflictPaused)
+			err = suite.DeviceStore.UpdateAnnotations(suite.Ctx, suite.OrgID, deviceName, map[string]string{
+				api.DeviceAnnotationAwaitingReconnect: "true", api.DeviceAnnotationRenderedVersion: serviceVersion}, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Set KV: awaiting reconnection key so processAwaitingReconnectIfNeeded runs
+			awaitKey := kvstore.AwaitingReconnectionKey{OrgID: suite.OrgID, DeviceName: deviceName}
+			_, err = testKvStore.SetNX(suite.Ctx, awaitKey.ComposeKey(), []byte("true"))
+			Expect(err).ToNot(HaveOccurred())
+
+			// Set KV: rendered version "5" so WaitForNewVersion(known "5") returns isNew=false (no new spec)
+			renderedKey := fmt.Sprintf("v1/%s/device/%s/rendered", suite.OrgID, deviceName)
+			_, err = testKvStore.GetOrSetNX(suite.Ctx, renderedKey, []byte(deviceReportedVer))
+			Expect(err).ToNot(HaveOccurred())
+
+			// Call GetRenderedDevice as agent with KnownRenderedVersion="5" (unchanged; would normally get 204)
+			agentCtx := context.WithValue(suite.Ctx, consts.AgentCtxKey, deviceName)
+			params := domain.GetRenderedDeviceParams{KnownRenderedVersion: &deviceReportedVer}
+			result, status := suite.Device.GetRenderedDevice(agentCtx, suite.OrgID, deviceName, params)
+
+			// Should return 200 with full device (not 204), and device should be ConflictPaused
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(result).ToNot(BeNil())
+			Expect(result.Status).ToNot(BeNil())
+			Expect(result.Status.Summary.Status).To(Equal(api.DeviceSummaryStatusConflictPaused))
+
+			// Next poll: awaiting key was cleared and version unchanged -> must get 204 again
+			result2, status2 := suite.Device.GetRenderedDevice(agentCtx, suite.OrgID, deviceName, params)
+			Expect(status2.Code).To(Equal(int32(204)))
+			Expect(result2).To(BeNil())
+		})
+
+		It("returns 200 when moved to normal (Online) and version unchanged", func() {
+			deviceName := "awaiting-reconnect-normal-device"
+			knownVersion := "1" // device reports "1", service has "1" -> normal, not ConflictPaused
+
+			// Create device
+			device := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fedora/fedora-coreos:stable"}},
+			}
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			renderedConfig, err := createMinimalRenderedConfig("test-config-2")
+			Expect(err).ToNot(HaveOccurred())
+			_, err = setDeviceRendered(suite.Ctx, suite.DeviceStore, suite.OrgID, deviceName, renderedConfig, "", "hash2", "", nil, false)
+			Expect(err).ToNot(HaveOccurred())
+
+			err = suite.DeviceStore.UpdateAnnotations(suite.Ctx, suite.OrgID, deviceName, map[string]string{
+				api.DeviceAnnotationAwaitingReconnect: "true", api.DeviceAnnotationRenderedVersion: knownVersion}, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			awaitKey := kvstore.AwaitingReconnectionKey{OrgID: suite.OrgID, DeviceName: deviceName}
+			_, err = testKvStore.SetNX(suite.Ctx, awaitKey.ComposeKey(), []byte("true"))
+			Expect(err).ToNot(HaveOccurred())
+
+			renderedKey := fmt.Sprintf("v1/%s/device/%s/rendered", suite.OrgID, deviceName)
+			_, err = testKvStore.GetOrSetNX(suite.Ctx, renderedKey, []byte(knownVersion))
+			Expect(err).ToNot(HaveOccurred())
+
+			agentCtx := context.WithValue(suite.Ctx, consts.AgentCtxKey, deviceName)
+			params := domain.GetRenderedDeviceParams{KnownRenderedVersion: &knownVersion}
+			result, status := suite.Device.GetRenderedDevice(agentCtx, suite.OrgID, deviceName, params)
+
+			// ProcessAwaitingReconnect runs: device version 1 <= service version 1 -> Online.
+			// WaitForNewVersion is skipped because the annotation was processed, so the agent
+			// gets a 200 with the current device and can re-push its status.
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(result).ToNot(BeNil())
+		})
+	})
+
+	Context("GetRenderedDevice when the KV rendered version is missing", func() {
+		var (
+			suite          *ServiceTestSuite
+			testKvStore    kvstore.KVStore
+			queuesProvider queues.Provider
+		)
+
+		BeforeEach(func() {
+			suite = NewServiceTestSuite()
+			suite.Setup()
+
+			healthchecker.HealthChecks.Initialize(suite.Ctx, suite.Device, suite.Log)
+
+			var err error
+			if testKvStore == nil {
+				testKvStore, err = kvstore.NewKVStore(suite.Ctx, suite.Log, redisHost, redisPort, redisPassword)
+				Expect(err).ToNot(HaveOccurred())
+				processID := fmt.Sprintf("missing-kv-rendered-version-test-%s", uuid.New().String())
+				queuesProvider, err = queues.NewRedisProvider(suite.Ctx, suite.Log, processID, redisHost, redisPort, redisPassword, queues.DefaultRetryConfig())
+				Expect(err).ToNot(HaveOccurred())
+				err = rendered.Bus.Initialize(suite.Ctx, testKvStore, queuesProvider, 10*time.Second, suite.Log)
+				Expect(err).ToNot(HaveOccurred())
+			}
+		})
+
+		AfterEach(func() {
+			suite.Teardown()
+		})
+
+		It("restores the KV rendered version so the next long-poll returns 204", func() {
+			deviceName := "missing-kv-rendered-version-device"
+
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fedora/fedora-coreos:stable"}},
+			})
+			Expect(status.Code).To(Equal(int32(201)))
+
+			provider := api.ConfigProviderSpec{}
+			Expect(provider.FromInlineConfigProviderSpec(api.InlineConfigProviderSpec{Inline: []api.FileSpec{{Content: "cfg"}}})).To(Succeed())
+			renderedConfig, err := json.Marshal(&[]api.ConfigProviderSpec{provider})
+			Expect(err).ToNot(HaveOccurred())
+			knownVersion, err := setDeviceRendered(suite.Ctx, suite.DeviceStore, suite.OrgID, deviceName, string(renderedConfig), "", "hash1", "", nil, false)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(knownVersion).ToNot(BeEmpty())
+
+			// Simulate a KV store restart without persistence: the rendered version key is gone
+			// while the agent is up to date with the version stored in the database.
+			renderedKey := fmt.Sprintf("v1/%s/device/%s/rendered", suite.OrgID, deviceName)
+			Expect(testKvStore.Delete(suite.Ctx, renderedKey)).To(Succeed())
+
+			agentCtx := context.WithValue(suite.Ctx, consts.AgentCtxKey, deviceName)
+			params := domain.GetRenderedDeviceParams{KnownRenderedVersion: lo.ToPtr(knownVersion)}
+
+			// The missing key is reported as a new version, so the first poll returns the device.
+			result, status := suite.Device.GetRenderedDevice(agentCtx, suite.OrgID, deviceName, params)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(result).ToNot(BeNil())
+
+			kvVersion, err := testKvStore.Get(suite.Ctx, renderedKey)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(kvVersion)).To(Equal(knownVersion), "the missing KV rendered version should be restored")
+
+			// Next poll with unchanged spec must wait and return 204 instead of looping on 200.
+			result2, status2 := suite.Device.GetRenderedDevice(agentCtx, suite.OrgID, deviceName, params)
+			Expect(status2.Code).To(Equal(int32(204)))
+			Expect(result2).To(BeNil())
+		})
+	})
+
+	Context("Device Resume Operations", func() {
+		Describe("ResumeDevice", func() {
+			It("should resume a single device successfully", func() {
+				// Create unique device for this test
+				testId := uuid.New().String()
+				deviceName := "resume-service-test-" + testId
+
+				device := api.Device{
+					Metadata: api.ObjectMeta{
+						Name: lo.ToPtr(deviceName),
+						Labels: &map[string]string{
+							"test-id": testId,
+						},
+					},
+					Spec: &api.DeviceSpec{
+						Os: &api.DeviceOsSpec{Image: "test-os"},
+					},
+				}
+
+				// Create the device
+				_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+				Expect(status.Code).To(Equal(int32(201)))
+
+				// Add conflictPaused annotation directly via store (simulating conflict detection)
+				err := suite.DeviceStore.UpdateAnnotations(suite.Ctx, suite.OrgID, deviceName, map[string]string{api.DeviceAnnotationConflictPaused: "true"}, nil)
+				Expect(err).ToNot(HaveOccurred())
+
+				// Resume the device via service using field selector
+				fieldSelector := "metadata.name=" + deviceName
+				request := api.DeviceResumeRequest{
+					FieldSelector: &fieldSelector,
+				}
+				response, status := suite.Device.ResumeDevices(suite.Ctx, suite.OrgID, request)
+				Expect(status.Code).To(Equal(int32(200)))
+				Expect(response.ResumedDevices).To(Equal(1))
+
+				// Verify the annotation was removed
+				resumedDevice, err := suite.DeviceStore.Get(suite.Ctx, suite.OrgID, deviceName)
+				Expect(err).ToNot(HaveOccurred())
+				if resumedDevice.Metadata.Annotations != nil {
+					_, hasAnnotation := (*resumedDevice.Metadata.Annotations)[api.DeviceAnnotationConflictPaused]
+					Expect(hasAnnotation).To(BeFalse())
+				}
+			})
+
+			It("should return zero count for non-existent device", func() {
+				fieldSelector := "metadata.name=non-existent-device"
+				request := api.DeviceResumeRequest{
+					FieldSelector: &fieldSelector,
+				}
+				response, status := suite.Device.ResumeDevices(suite.Ctx, suite.OrgID, request)
+				Expect(status.Code).To(Equal(int32(200)))
+				Expect(response.ResumedDevices).To(Equal(0))
+			})
+
+			It("should be idempotent when device has no conflictPaused annotation", func() {
+				// Create unique device for this test
+				testId := uuid.New().String()
+				deviceName := "resume-idempotent-service-test-" + testId
+
+				device := api.Device{
+					Metadata: api.ObjectMeta{
+						Name: lo.ToPtr(deviceName),
+					},
+					Spec: &api.DeviceSpec{
+						Os: &api.DeviceOsSpec{Image: "test-os"},
+					},
+				}
+
+				// Create the device
+				_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+				Expect(status.Code).To(Equal(int32(201)))
+
+				// Resume the device (should be idempotent)
+				fieldSelector := "metadata.name=" + deviceName
+				request := api.DeviceResumeRequest{
+					FieldSelector: &fieldSelector,
+				}
+				response, status := suite.Device.ResumeDevices(suite.Ctx, suite.OrgID, request)
+				Expect(status.Code).To(Equal(int32(200)))
+				Expect(response.ResumedDevices).To(Equal(0)) // No devices were actually resumed since none had the annotation
+			})
+		})
+
+		Describe("ResumeDevices", func() {
+			It("should resume multiple devices matching label selector", func() {
+				// Create unique test ID
+				testId := uuid.New().String()
+				labelKey := "resume-test-" + testId
+				labelValue := "staging"
+
+				// Create test devices
+				deviceNames := []string{
+					"bulk-resume-device-1-" + testId,
+					"bulk-resume-device-2-" + testId,
+					"bulk-resume-device-3-" + testId,
+				}
+
+				for _, deviceName := range deviceNames {
+					device := api.Device{
+						Metadata: api.ObjectMeta{
+							Name: lo.ToPtr(deviceName),
+							Labels: &map[string]string{
+								labelKey: labelValue,
+							},
+						},
+						Spec: &api.DeviceSpec{
+							Os: &api.DeviceOsSpec{Image: "test-os"},
+						},
+					}
+
+					// Create the device
+					_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+					Expect(status.Code).To(Equal(int32(201)))
+
+					// Add conflictPaused annotation
+					err := suite.DeviceStore.UpdateAnnotations(suite.Ctx, suite.OrgID, deviceName, map[string]string{api.DeviceAnnotationConflictPaused: "true"}, nil)
+					Expect(err).ToNot(HaveOccurred())
+				}
+
+				// Resume devices via service
+				labelSelector := labelKey + "=" + labelValue
+				request := api.DeviceResumeRequest{
+					LabelSelector: &labelSelector,
+				}
+
+				response, status := suite.Device.ResumeDevices(suite.Ctx, suite.OrgID, request)
+				Expect(status.Code).To(Equal(int32(200)))
+				Expect(response.ResumedDevices).To(Equal(3))
+
+				// Verify all devices had annotations removed
+				for _, deviceName := range deviceNames {
+					device, err := suite.DeviceStore.Get(suite.Ctx, suite.OrgID, deviceName)
+					Expect(err).ToNot(HaveOccurred())
+					if device.Metadata.Annotations != nil {
+						_, hasAnnotation := (*device.Metadata.Annotations)[api.DeviceAnnotationConflictPaused]
+						Expect(hasAnnotation).To(BeFalse())
+					}
+				}
+			})
+
+			It("should return zero counts when no devices match selector", func() {
+				labelSelector := "nonexistent=label"
+				request := api.DeviceResumeRequest{
+					LabelSelector: &labelSelector,
+				}
+
+				response, status := suite.Device.ResumeDevices(suite.Ctx, suite.OrgID, request)
+				Expect(status.Code).To(Equal(int32(200)))
+				Expect(response.ResumedDevices).To(Equal(0))
+			})
+
+			It("should handle invalid label selector", func() {
+				labelSelector := "invalid=selector=format"
+				request := api.DeviceResumeRequest{
+					LabelSelector: &labelSelector,
+				}
+
+				_, status := suite.Device.ResumeDevices(suite.Ctx, suite.OrgID, request)
+				Expect(status.Code).To(Equal(int32(400))) // Bad Request
+			})
+		})
+	})
+
+	Context("CountDevicesByLabels", func() {
+		// Define the device test structure once
+		type testDevice struct {
+			name            string
+			labels          map[string]string
+			status          string
+			renderedVersion string
+			configVersion   string
+		}
+
+		// Define the test case structure once
+		type testCase struct {
+			devices           []testDevice
+			expectedTotal     int64
+			expectedConnected int64
+			expectedBusy      int64
+			groupBy           []string
+			expectedGroups    int
+			groupLabels       map[string]string
+			description       string
+		}
+
+		// Helper function to create and configure devices for testing
+		createTestDevices := func(devices []testDevice) {
+			for _, d := range devices {
+				device := api.Device{
+					Metadata: api.ObjectMeta{
+						Name:   lo.ToPtr(d.name),
+						Labels: &d.labels,
+					},
+					Spec: &api.DeviceSpec{
+						Os: &api.DeviceOsSpec{Image: "test-os"},
+					},
+					Status: &api.DeviceStatus{
+						Summary: api.DeviceSummaryStatus{
+							Status: api.DeviceSummaryStatusType(d.status),
+						},
+						Config: api.DeviceConfigStatus{
+							RenderedVersion: d.configVersion,
+						},
+					},
+				}
+
+				// Create the device
+				_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+				Expect(status.Code).To(Equal(int32(201)))
+
+				// Update the device status after creation since CreateDevice might override it
+				updatedDevice := api.Device{
+					Metadata: api.ObjectMeta{
+						Name:   lo.ToPtr(d.name),
+						Labels: &d.labels,
+					},
+					Spec: &api.DeviceSpec{
+						Os: &api.DeviceOsSpec{Image: "test-os"},
+					},
+					Status: &api.DeviceStatus{
+						Summary: api.DeviceSummaryStatus{
+							Status: api.DeviceSummaryStatusType(d.status),
+						},
+						Config: api.DeviceConfigStatus{
+							RenderedVersion: d.configVersion,
+						},
+					},
+				}
+
+				// Save the updated device using ReplaceDeviceStatus for status updates
+				resultDevice, updateStatus := suite.Device.ReplaceDeviceStatus(suite.Ctx, suite.OrgID, d.name, updatedDevice, true)
+				Expect(updateStatus.Code).To(Equal(int32(200)))
+				Expect(resultDevice).ToNot(BeNil())
+
+				// Add renderedVersion annotation if specified (including empty string)
+				if d.renderedVersion != "" {
+					err := suite.DeviceStore.UpdateAnnotations(suite.Ctx, suite.OrgID, d.name, map[string]string{api.DeviceAnnotationRenderedVersion: d.renderedVersion}, nil)
+					Expect(err).ToNot(HaveOccurred())
+				} else if !strings.HasPrefix(d.name, "missing-annotation-device") {
+					// For empty string, we need to explicitly set it to distinguish from missing annotation
+					err := suite.DeviceStore.UpdateAnnotations(suite.Ctx, suite.OrgID, d.name, map[string]string{api.DeviceAnnotationRenderedVersion: ""}, nil)
+					Expect(err).ToNot(HaveOccurred())
+				}
+				// For missing annotation devices, do nothing (no annotation will be set)
+			}
+		}
+
+		// Helper function to verify count results
+		verifyCountResults := func(result []map[string]any, expectedGroups int, expectedCounts map[string]int64, groupLabels map[string]string) {
+			Expect(result).To(HaveLen(expectedGroups))
+
+			if expectedGroups == 1 {
+				counts := result[0]
+				// Verify label values
+				for key, value := range groupLabels {
+					Expect(counts[key]).To(Equal(value))
+				}
+
+				// Verify counts
+				Expect(counts["total"]).To(Equal(expectedCounts["total"]))
+				Expect(counts["connected"]).To(Equal(expectedCounts["connected"]))
+				Expect(counts["busy_connected"]).To(Equal(expectedCounts["busy_connected"]))
+			} else if expectedGroups > 1 {
+				// For multiple groups, just verify the total count across all groups
+				totalTotal := int64(0)
+				totalConnected := int64(0)
+				totalBusy := int64(0)
+
+				for _, counts := range result {
+					totalTotal += counts["total"].(int64)
+					totalConnected += counts["connected"].(int64)
+					totalBusy += counts["busy_connected"].(int64)
+				}
+
+				Expect(totalTotal).To(Equal(expectedCounts["total"]))
+				Expect(totalConnected).To(Equal(expectedCounts["connected"]))
+				Expect(totalBusy).To(Equal(expectedCounts["busy_connected"]))
+			}
+		}
+
+		DescribeTable("should count devices correctly with different configurations",
+			func(testCase testCase) {
+				// Create all devices for this test case
+				createTestDevices(testCase.devices)
+
+				// Test counting by the specified groups
+				params := api.ListDevicesParams{}
+				result, status := suite.Device.CountDevicesByLabels(suite.Ctx, suite.OrgID, params, nil, testCase.groupBy)
+
+				Expect(status.Code).To(Equal(int32(200)))
+
+				// Verify the results
+				verifyCountResults(result, testCase.expectedGroups, map[string]int64{
+					"total":          testCase.expectedTotal,
+					"connected":      testCase.expectedConnected,
+					"busy_connected": testCase.expectedBusy,
+				}, testCase.groupLabels)
+			},
+			Entry("different renderedVersion annotation values", testCase{
+				devices: []testDevice{
+					{
+						name: "device-1",
+						labels: map[string]string{
+							"environment": "prod",
+							"region":      "us-east",
+						},
+						status:          "Online",
+						renderedVersion: "v1.0.0",
+						configVersion:   "v1.0.0",
+					},
+					{
+						name: "device-2",
+						labels: map[string]string{
+							"environment": "prod",
+							"region":      "us-east",
+						},
+						status:          "Online",
+						renderedVersion: "v1.0.0",
+						configVersion:   "v1.0.1", // Different from renderedVersion
+					},
+					{
+						name: "device-3",
+						labels: map[string]string{
+							"environment": "prod",
+							"region":      "us-east",
+						},
+						status:          "Online",
+						renderedVersion: "v2.0.0",
+						configVersion:   "v2.0.0",
+					},
+					{
+						name: "device-4",
+						labels: map[string]string{
+							"environment": "prod",
+							"region":      "us-east",
+						},
+						status:          "Online",
+						renderedVersion: "", // Empty annotation (will be set to empty string)
+						configVersion:   "v1.0.0",
+					},
+					{
+						name: "device-5",
+						labels: map[string]string{
+							"environment": "prod",
+							"region":      "us-east",
+						},
+						status:          "Unknown", // Keep as "Unknown" to test the logic
+						renderedVersion: "v1.0.0",
+						configVersion:   "v1.0.0",
+					},
+				},
+				expectedTotal:     5,
+				expectedConnected: 5, // All devices are connected (Online) - service sets this
+				expectedBusy:      2, // Devices where config.renderedVersion != annotations.renderedVersion
+				groupBy:           []string{"environment", "region"},
+				expectedGroups:    1,
+				groupLabels: map[string]string{
+					"environment": "prod",
+					"region":      "us-east",
+				},
+				description: "5 devices with different renderedVersion annotations",
+			}),
+			Entry("missing renderedVersion annotation", testCase{
+				devices: []testDevice{
+					{
+						name: "missing-annotation-device-1",
+						labels: map[string]string{
+							"environment": "staging",
+							"zone":        "zone-a",
+						},
+						status:          "Online",
+						renderedVersion: "", // No annotation will be set
+						configVersion:   "v1.0.0",
+					},
+					{
+						name: "missing-annotation-device-2",
+						labels: map[string]string{
+							"environment": "staging",
+							"zone":        "zone-a",
+						},
+						status:          "Online",
+						renderedVersion: "", // No annotation will be set
+						configVersion:   "v1.0.1",
+					},
+				},
+				expectedTotal:     2,
+				expectedConnected: 2,
+				expectedBusy:      0, // No devices are busy when annotation is completely missing (NULL comparison)
+				groupBy:           []string{"environment", "zone"},
+				expectedGroups:    1,
+				groupLabels: map[string]string{
+					"environment": "staging",
+					"zone":        "zone-a",
+				},
+				description: "2 devices without renderedVersion annotation",
+			}),
+			Entry("empty renderedVersion annotation", testCase{
+				devices: []testDevice{
+					{
+						name: "empty-annotation-device-1",
+						labels: map[string]string{
+							"environment": "dev",
+							"cluster":     "cluster-1",
+						},
+						status:          "Online",
+						renderedVersion: "", // Empty string annotation
+						configVersion:   "v1.0.0",
+					},
+					{
+						name: "empty-annotation-device-2",
+						labels: map[string]string{
+							"environment": "dev",
+							"cluster":     "cluster-1",
+						},
+						status:          "Online",
+						renderedVersion: "", // Empty string annotation
+						configVersion:   "v1.0.1",
+					},
+				},
+				expectedTotal:     2,
+				expectedConnected: 2,
+				expectedBusy:      2, // All devices are busy since empty annotation != config version
+				groupBy:           []string{"environment", "cluster"},
+				expectedGroups:    1,
+				groupLabels: map[string]string{
+					"environment": "dev",
+					"cluster":     "cluster-1",
+				},
+				description: "2 devices with empty renderedVersion annotation",
+			}),
+			Entry("mixed status values", testCase{
+				devices: []testDevice{
+					{
+						name: "mixed-status-device-1",
+						labels: map[string]string{
+							"tier": "frontend",
+						},
+						status:          "Online",
+						renderedVersion: "v1.0.0",
+						configVersion:   "v1.0.0",
+					},
+					{
+						name: "mixed-status-device-2",
+						labels: map[string]string{
+							"tier": "frontend",
+						},
+						status:          "Offline",
+						renderedVersion: "v1.0.0",
+						configVersion:   "v1.0.0",
+					},
+					{
+						name: "mixed-status-device-3",
+						labels: map[string]string{
+							"tier": "frontend",
+						},
+						status:          "Unknown", // This will be counted as not connected
+						renderedVersion: "v1.0.0",
+						configVersion:   "v1.0.0",
+					},
+				},
+				expectedTotal:     3,
+				expectedConnected: 3, // All devices are Online - service sets this regardless of input
+				expectedBusy:      0, // All devices have matching versions
+				groupBy:           []string{"tier"},
+				expectedGroups:    1,
+				groupLabels: map[string]string{
+					"tier": "frontend",
+				},
+				description: "3 devices with mixed status values",
+			}),
+			Entry("multiple groups", testCase{
+				devices: []testDevice{
+					{
+						name: "multi-group-device-1",
+						labels: map[string]string{
+							"environment": "prod",
+							"region":      "us-west",
+							"tier":        "backend",
+						},
+						status:          "Online",
+						renderedVersion: "v1.0.0",
+						configVersion:   "v1.0.1", // Different from renderedVersion
+					},
+					{
+						name: "multi-group-device-2",
+						labels: map[string]string{
+							"environment": "prod",
+							"region":      "us-west",
+							"tier":        "backend",
+						},
+						status:          "Online",
+						renderedVersion: "v1.0.0",
+						configVersion:   "v1.0.0", // Same as renderedVersion
+					},
+					{
+						name: "multi-group-device-3",
+						labels: map[string]string{
+							"environment": "prod",
+							"region":      "us-east",
+							"tier":        "frontend",
+						},
+						status:          "Online",
+						renderedVersion: "v2.0.0",
+						configVersion:   "v2.0.0", // Same as renderedVersion
+					},
+					{
+						name: "multi-group-device-4",
+						labels: map[string]string{
+							"environment": "staging",
+							"region":      "us-west",
+							"tier":        "backend",
+						},
+						status:          "Online",
+						renderedVersion: "v1.0.0",
+						configVersion:   "v1.0.2", // Different from renderedVersion
+					},
+					{
+						name: "multi-group-device-5",
+						labels: map[string]string{
+							"environment": "staging",
+							"region":      "us-east",
+							"tier":        "frontend",
+						},
+						status:          "Online",
+						renderedVersion: "v1.0.0",
+						configVersion:   "v1.0.0", // Same as renderedVersion
+					},
+				},
+				expectedTotal:     5,
+				expectedConnected: 5, // All devices are Online
+				expectedBusy:      2, // 2 devices have different versions
+				groupBy:           []string{"environment", "region", "tier"},
+				expectedGroups:    4, // 4 groups: prod/us-west/backend, prod/us-east/frontend, staging/us-west/backend, staging/us-east/frontend
+				groupLabels: map[string]string{
+					"environment": "prod",
+					"region":      "us-west",
+					"tier":        "backend",
+				},
+				description: "5 devices grouped by environment, region, and tier",
+			}),
+		)
+
+	})
+
+	Context("UpdateRenderedDevice", func() {
+		var (
+			testKvStore    kvstore.KVStore
+			queuesProvider queues.Provider
+		)
+
+		BeforeEach(func() {
+			var err error
+			if testKvStore == nil {
+				testKvStore, err = kvstore.NewKVStore(suite.Ctx, suite.Log, redisHost, redisPort, redisPassword)
+				Expect(err).ToNot(HaveOccurred())
+				processID := fmt.Sprintf("update-rendered-device-test-%s", uuid.New().String())
+				queuesProvider, err = queues.NewRedisProvider(suite.Ctx, suite.Log, processID, redisHost, redisPort, redisPassword, queues.DefaultRetryConfig())
+				Expect(err).ToNot(HaveOccurred())
+				err = rendered.Bus.Initialize(suite.Ctx, testKvStore, queuesProvider, 10*time.Second, suite.Log)
+				Expect(err).ToNot(HaveOccurred())
+			}
+		})
+
+		buildRenderedConfig := func(contents string) (string, error) {
+			provider := api.ConfigProviderSpec{}
+			if err := provider.FromInlineConfigProviderSpec(api.InlineConfigProviderSpec{Inline: []api.FileSpec{{Content: contents}}}); err != nil {
+				return "", err
+			}
+			b, err := json.Marshal(&[]api.ConfigProviderSpec{provider})
+			return string(b), err
+		}
+
+		It("persists a new rendered version, updates derived status/SpecValid, and emits events", func() {
+			deviceName := "update-rendered-device-success"
+			device := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fedora/fedora-coreos:stable"}},
+			}
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			renderedConfig, err := buildRenderedConfig("update-rendered-device-config")
+			Expect(err).ToNot(HaveOccurred())
+
+			status = suite.Device.UpdateRenderedDevice(suite.Ctx, suite.OrgID, deviceName, renderedConfig, "", "hash1", "", nil, false, nil)
+			Expect(status.Code).To(Equal(int32(200)))
+
+			updated, err := suite.DeviceStore.Get(suite.Ctx, suite.OrgID, deviceName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Version()).To(Equal("1"))
+			specValid := domain.FindStatusCondition(updated.Status.Conditions, domain.ConditionTypeDeviceSpecValid)
+			Expect(specValid).ToNot(BeNil())
+			Expect(specValid.Status).To(Equal(domain.ConditionStatusTrue))
+
+			// First render of a fresh device: SpecValid goes from absent to True, which
+			// EmitSpecValidEvents reports as a DeviceSpecValidEvent.
+			events := getEventsForDevice(deviceName)
+			specValidEvent := findEventByReason(events, api.EventReasonDeviceSpecValid)
+			Expect(specValidEvent).ToNot(BeNil())
+		})
+	})
+})
+
+var _ = Describe("Device LastSeen Integration Tests", func() {
+	var (
+		suite *ServiceTestSuite
+	)
+
+	BeforeEach(func() {
+		suite = NewServiceTestSuite()
+		suite.Setup()
+	})
+
+	AfterEach(func() {
+		suite.Teardown()
+	})
+
+	Describe("GetDeviceLastSeen", func() {
+		It("should return empty lastSeen for device with no last seen timestamp", func() {
+			// Create a device
+			testId := uuid.New().String()
+			deviceName := "lastseen-test-" + testId
+
+			device := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Spec: &api.DeviceSpec{
+					Os: &api.DeviceOsSpec{
+						Image: "quay.io/fedora/fedora-coreos:stable",
+					},
+				},
+			}
+
+			// Create the device
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			// Get the last seen timestamp
+			lastSeen, status := suite.Device.GetDeviceLastSeen(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(204)))
+			Expect(lastSeen).To(BeNil())
+		})
+
+		It("should return lastSeen timestamp for device with last seen timestamp", func() {
+			// Create a device
+			testId := uuid.New().String()
+			deviceName := "lastseen-test-" + testId
+
+			device := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Spec: &api.DeviceSpec{
+					Os: &api.DeviceOsSpec{
+						Image: "quay.io/fedora/fedora-coreos:stable",
+					},
+				},
+			}
+
+			// Create the device
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			// Set the last seen timestamp directly in the database
+			now := time.Now()
+			err := suite.SetDeviceLastSeen(deviceName, now)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Get the last seen timestamp
+			lastSeen, status := suite.Device.GetDeviceLastSeen(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(lastSeen).ToNot(BeNil())
+			Expect(lastSeen.LastSeen).ToNot(BeZero())
+			Expect(lastSeen.LastSeen.Truncate(time.Second)).To(Equal(now.Truncate(time.Second)))
+		})
+
+		It("should return 404 for non-existent device", func() {
+			nonExistentDevice := "non-existent-device-" + uuid.New().String()
+
+			// Try to get last seen for non-existent device
+			lastSeen, status := suite.Device.GetDeviceLastSeen(suite.Ctx, suite.OrgID, nonExistentDevice)
+			Expect(status.Code).To(Equal(int32(404)))
+			Expect(lastSeen).To(BeNil())
+		})
+
+		It("should handle device with nil lastSeen gracefully", func() {
+			// Create a device
+			testId := uuid.New().String()
+			deviceName := "lastseen-nil-test-" + testId
+
+			device := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Spec: &api.DeviceSpec{
+					Os: &api.DeviceOsSpec{
+						Image: "quay.io/fedora/fedora-coreos:stable",
+					},
+				},
+				Status: &api.DeviceStatus{
+					// LastSeen is nil by default
+				},
+			}
+
+			// Create the device
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			// Get the last seen timestamp
+			lastSeen, status := suite.Device.GetDeviceLastSeen(suite.Ctx, suite.OrgID, deviceName)
+			Expect(status.Code).To(Equal(int32(204)))
+			Expect(lastSeen).To(BeNil())
+		})
+	})
+
+	Context("Device field selector tests", func() {
+		It("should filter devices by lastSeen field selector", func() {
+			ctx := suite.Ctx
+			deviceStore := suite.DeviceStore
+			// Create test devices for ListConnectivityChangedDevices: returns devices that need
+			// connection status update (reconnected: lastSeen >= cutoff and status Unknown;
+			// disconnected: lastSeen < cutoff and status not Unknown).
+			// Use store.Get + UpdateStatus (like test/integration/tasks/device_connection_test.go)
+			// so status is set directly without ReplaceDeviceStatus recomputing it from LastSeen.
+			testId := uuid.New().String()
+
+			recentTime := time.Now()
+			oldTime := time.Now().Add(-2 * time.Hour)
+			cutoffTime := time.Now().Add(-1 * time.Hour)
+
+			// Device 1: After cutoff, Unknown → should be returned (reconnected)
+			device1Name := "field-selector-test-1-" + testId
+			device1 := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(device1Name)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fedora/fedora-coreos:stable"}},
+			}
+			_, status := suite.Device.CreateDevice(ctx, suite.OrgID, device1)
+			Expect(status.Code).To(Equal(int32(201)))
+			err := suite.SetDeviceLastSeen(device1Name, recentTime)
+			Expect(err).ToNot(HaveOccurred())
+			dev1, err := deviceStore.Get(ctx, suite.OrgID, device1Name)
+			Expect(err).ToNot(HaveOccurred())
+			dev1.Status.Summary.Status = api.DeviceSummaryStatusUnknown
+			_, err = setDeviceStatus(ctx, deviceStore, suite.OrgID, dev1, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Device 2: Before cutoff, Unknown → should not be returned
+			device2Name := "field-selector-test-2-" + testId
+			device2 := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(device2Name)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fedora/fedora-coreos:stable"}},
+			}
+			_, status = suite.Device.CreateDevice(ctx, suite.OrgID, device2)
+			Expect(status.Code).To(Equal(int32(201)))
+			err = suite.SetDeviceLastSeen(device2Name, oldTime)
+			Expect(err).ToNot(HaveOccurred())
+			dev2, err := deviceStore.Get(ctx, suite.OrgID, device2Name)
+			Expect(err).ToNot(HaveOccurred())
+			dev2.Status.Summary.Status = api.DeviceSummaryStatusUnknown
+			_, err = setDeviceStatus(ctx, deviceStore, suite.OrgID, dev2, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Device 3: After cutoff, Online → should not be returned
+			device3Name := "field-selector-test-3-" + testId
+			device3 := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(device3Name)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fedora/fedora-coreos:stable"}},
+			}
+			_, status = suite.Device.CreateDevice(ctx, suite.OrgID, device3)
+			Expect(status.Code).To(Equal(int32(201)))
+			err = suite.SetDeviceLastSeen(device3Name, recentTime)
+			Expect(err).ToNot(HaveOccurred())
+			dev3, err := deviceStore.Get(ctx, suite.OrgID, device3Name)
+			Expect(err).ToNot(HaveOccurred())
+			dev3.Status.Summary.Status = api.DeviceSummaryStatusOnline
+			dev3.Status.Updated.Status = api.DeviceUpdatedStatusUpToDate
+			dev3.Status.ApplicationsSummary.Status = api.ApplicationsSummaryStatusHealthy
+			_, err = setDeviceStatus(ctx, deviceStore, suite.OrgID, dev3, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Device 4: Before cutoff, Online → should be returned (disconnected)
+			device4Name := "field-selector-test-4-" + testId
+			device4 := api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(device4Name)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fedora/fedora-coreos:stable"}},
+			}
+			_, status = suite.Device.CreateDevice(ctx, suite.OrgID, device4)
+			Expect(status.Code).To(Equal(int32(201)))
+			err = suite.SetDeviceLastSeen(device4Name, oldTime)
+			Expect(err).ToNot(HaveOccurred())
+			dev4, err := deviceStore.Get(ctx, suite.OrgID, device4Name)
+			Expect(err).ToNot(HaveOccurred())
+			dev4.Status.Summary.Status = api.DeviceSummaryStatusOnline
+			dev4.Status.Updated.Status = api.DeviceUpdatedStatusUpToDate
+			dev4.Status.ApplicationsSummary.Status = api.ApplicationsSummaryStatusHealthy
+			_, err = setDeviceStatus(ctx, deviceStore, suite.OrgID, dev4, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			params := api.ListDevicesParams{
+				Limit: lo.ToPtr(int32(100)),
+			}
+
+			deviceList, status := suite.Device.ListConnectivityChangedDevices(ctx, suite.OrgID, params, cutoffTime)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(deviceList).ToNot(BeNil())
+
+			foundDevice1 := false
+			foundDevice2 := false
+			foundDevice3 := false
+			foundDevice4 := false
+			for _, device := range deviceList.Items {
+				if device.Metadata.Name == nil {
+					continue
+				}
+				switch *device.Metadata.Name {
+				case device1Name:
+					foundDevice1 = true
+				case device2Name:
+					foundDevice2 = true
+				case device3Name:
+					foundDevice3 = true
+				case device4Name:
+					foundDevice4 = true
+				}
+			}
+
+			Expect(foundDevice1).To(BeTrue(), "Device 1 (After, Unknown) should be returned (reconnected)")
+			Expect(foundDevice2).To(BeFalse(), "Device 2 (Before, Unknown) should not be returned")
+			Expect(foundDevice3).To(BeFalse(), "Device 3 (After, Online) should not be returned")
+			Expect(foundDevice4).To(BeTrue(), "Device 4 (Before, Online) should be returned (disconnected)")
+		})
+
+		It("should handle field selector with non-existent lastSeen values", func() {
+			// Create a device without lastSeen (nil value)
+			testId := uuid.New().String()
+			deviceName := "field-selector-nil-test-" + testId
+
+			device := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: lo.ToPtr(deviceName),
+				},
+				Spec: &api.DeviceSpec{
+					Os: &api.DeviceOsSpec{
+						Image: "quay.io/fedora/fedora-coreos:stable",
+					},
+				},
+			}
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(status.Code).To(Equal(int32(201)))
+
+			// Test field selector: get devices with lastSeen after a specific time
+			cutoffTime := time.Now().Add(-1 * time.Hour)
+
+			params := api.ListDevicesParams{
+				Limit: lo.ToPtr(int32(100)),
+			}
+
+			deviceList, status := suite.Device.ListConnectivityChangedDevices(suite.Ctx, suite.OrgID, params, cutoffTime)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(deviceList).ToNot(BeNil())
+
+			// Device with nil lastSeen should not be found in the filtered results
+			foundDevice := false
+			for _, device := range deviceList.Items {
+				if device.Metadata.Name != nil && *device.Metadata.Name == deviceName {
+					foundDevice = true
+				}
+			}
+
+			Expect(foundDevice).To(BeFalse(), "Device with nil lastSeen should not be found in lastSeen> filter")
+		})
+	})
+
+	Context("Console notification via GetRenderedDevice", func() {
+		var (
+			suite          *ServiceTestSuite
+			testKvStore    kvstore.KVStore
+			queuesProvider queues.Provider
+		)
+
+		BeforeEach(func() {
+			suite = NewServiceTestSuite()
+			suite.Setup()
+
+			healthchecker.HealthChecks.Initialize(suite.Ctx, suite.Device, suite.Log)
+
+			var err error
+			if testKvStore == nil {
+				testKvStore, err = kvstore.NewKVStore(suite.Ctx, suite.Log, redisHost, redisPort, redisPassword)
+				Expect(err).ToNot(HaveOccurred())
+				processID := fmt.Sprintf("console-notification-test-%s", uuid.New().String())
+				queuesProvider, err = queues.NewRedisProvider(suite.Ctx, suite.Log, processID, redisHost, redisPort, redisPassword, queues.DefaultRetryConfig())
+				Expect(err).ToNot(HaveOccurred())
+				err = rendered.Bus.Initialize(suite.Ctx, testKvStore, queuesProvider, 10*time.Second, suite.Log)
+				Expect(err).ToNot(HaveOccurred())
+			}
+		})
+
+		AfterEach(func() {
+			suite.Teardown()
+		})
+
+		buildRenderedConfig := func(contents string) string {
+			provider := api.ConfigProviderSpec{}
+			files := []api.FileSpec{{Content: contents}}
+			Expect(provider.FromInlineConfigProviderSpec(api.InlineConfigProviderSpec{Inline: files})).To(Succeed())
+			b, err := json.Marshal(&[]api.ConfigProviderSpec{provider})
+			Expect(err).ToNot(HaveOccurred())
+			return string(b)
+		}
+
+		It("returns 200 immediately when console-pending KV flag is set and spec is unchanged", func() {
+			deviceName := "console-notification-test-wakeup"
+			knownVersion := "3"
+
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fedora/fedora-coreos:stable"}},
+			})
+			Expect(status.Code).To(Equal(int32(201)))
+
+			_, err := setDeviceRendered(suite.Ctx, suite.DeviceStore, suite.OrgID, deviceName, buildRenderedConfig("cfg"), "", "hash1", "", nil, false)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Prime the KV rendered-version to match what the agent reports.
+			renderedKey := fmt.Sprintf("v1/%s/device/%s/rendered", suite.OrgID, deviceName)
+			_, err = testKvStore.GetOrSetNX(suite.Ctx, renderedKey, []byte(knownVersion))
+			Expect(err).ToNot(HaveOccurred())
+
+			// Set the console-pending flag as the console manager would do.
+			consolePendingKey := fmt.Sprintf("v1/%s/device/%s/console-pending", suite.OrgID, deviceName)
+			_, err = testKvStore.SetNX(suite.Ctx, consolePendingKey, []byte("1"))
+			Expect(err).ToNot(HaveOccurred())
+
+			agentCtx := context.WithValue(suite.Ctx, consts.AgentCtxKey, deviceName)
+			params := domain.GetRenderedDeviceParams{KnownRenderedVersion: lo.ToPtr(knownVersion)}
+			result, status := suite.Device.GetRenderedDevice(agentCtx, suite.OrgID, deviceName, params)
+
+			// Even though the spec version hasn't changed, the console-pending flag causes a 200.
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(result).ToNot(BeNil())
+		})
+
+		It("clears the console-pending KV flag after returning 200", func() {
+			deviceName := "console-notification-test-clear"
+			knownVersion := "5"
+
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fedora/fedora-coreos:stable"}},
+			})
+			Expect(status.Code).To(Equal(int32(201)))
+
+			_, err := setDeviceRendered(suite.Ctx, suite.DeviceStore, suite.OrgID, deviceName, buildRenderedConfig("cfg"), "", "hash2", "", nil, false)
+			Expect(err).ToNot(HaveOccurred())
+
+			renderedKey := fmt.Sprintf("v1/%s/device/%s/rendered", suite.OrgID, deviceName)
+			_, err = testKvStore.GetOrSetNX(suite.Ctx, renderedKey, []byte(knownVersion))
+			Expect(err).ToNot(HaveOccurred())
+
+			consolePendingKey := fmt.Sprintf("v1/%s/device/%s/console-pending", suite.OrgID, deviceName)
+			_, err = testKvStore.SetNX(suite.Ctx, consolePendingKey, []byte("1"))
+			Expect(err).ToNot(HaveOccurred())
+
+			agentCtx := context.WithValue(suite.Ctx, consts.AgentCtxKey, deviceName)
+			params := domain.GetRenderedDeviceParams{KnownRenderedVersion: lo.ToPtr(knownVersion)}
+
+			// First call wakes up and clears the flag.
+			result, status := suite.Device.GetRenderedDevice(agentCtx, suite.OrgID, deviceName, params)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(result).ToNot(BeNil())
+
+			// Verify the flag was cleared.
+			flagVal, err := testKvStore.Get(suite.Ctx, consolePendingKey)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(flagVal).To(BeNil(), "console-pending KV flag should be cleared after GetRenderedDevice returns 200")
+
+			// Second call with unchanged spec must return 204 (no busy-loop).
+			result2, status2 := suite.Device.GetRenderedDevice(agentCtx, suite.OrgID, deviceName, params)
+			Expect(status2.Code).To(Equal(int32(204)))
+			Expect(result2).To(BeNil())
+		})
+
+		It("does not bump DeviceAnnotationRenderedVersion when console notification is processed", func() {
+			deviceName := "console-notification-test-no-version-bump"
+			knownVersion := "7"
+
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fedora/fedora-coreos:stable"}},
+			})
+			Expect(status.Code).To(Equal(int32(201)))
+
+			_, err := setDeviceRendered(suite.Ctx, suite.DeviceStore, suite.OrgID, deviceName, buildRenderedConfig("cfg"), "", "hash3", "", nil, false)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Pin the DeviceAnnotationRenderedVersion annotation to a known value.
+			err = suite.DeviceStore.UpdateAnnotations(suite.Ctx, suite.OrgID, deviceName, map[string]string{
+				api.DeviceAnnotationRenderedVersion: knownVersion}, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			renderedKey := fmt.Sprintf("v1/%s/device/%s/rendered", suite.OrgID, deviceName)
+			_, err = testKvStore.GetOrSetNX(suite.Ctx, renderedKey, []byte(knownVersion))
+			Expect(err).ToNot(HaveOccurred())
+
+			consolePendingKey := fmt.Sprintf("v1/%s/device/%s/console-pending", suite.OrgID, deviceName)
+			_, err = testKvStore.SetNX(suite.Ctx, consolePendingKey, []byte("1"))
+			Expect(err).ToNot(HaveOccurred())
+
+			agentCtx := context.WithValue(suite.Ctx, consts.AgentCtxKey, deviceName)
+			params := domain.GetRenderedDeviceParams{KnownRenderedVersion: lo.ToPtr(knownVersion)}
+			result, status := suite.Device.GetRenderedDevice(agentCtx, suite.OrgID, deviceName, params)
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(result).ToNot(BeNil())
+
+			// DeviceAnnotationRenderedVersion must be unchanged — the console event must not
+			// cause a rendered-version bump in the database.
+			device, devStatus := suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(devStatus.Code).To(Equal(int32(200)))
+			Expect(device).ToNot(BeNil())
+			Expect(device.Metadata.Annotations).ToNot(BeNil())
+			Expect((*device.Metadata.Annotations)[api.DeviceAnnotationRenderedVersion]).To(Equal(knownVersion),
+				"DeviceAnnotationRenderedVersion must not be bumped by a console notification")
+		})
+
+		It("returns 200 on fresh connect even when console-pending flag is absent (backward compat)", func() {
+			// No knownRenderedVersion → agent is reconnecting for the first time.
+			// GetRenderedDevice should always return 200 with the current spec.
+			deviceName := "console-notification-test-fresh-connect"
+
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fedora/fedora-coreos:stable"}},
+			})
+			Expect(status.Code).To(Equal(int32(201)))
+
+			_, err := setDeviceRendered(suite.Ctx, suite.DeviceStore, suite.OrgID, deviceName, buildRenderedConfig("cfg"), "", "hash4", "", nil, false)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Set console annotation to simulate an open console session.
+			err = suite.DeviceStore.UpdateAnnotations(suite.Ctx, suite.OrgID, deviceName, map[string]string{
+				api.DeviceAnnotationConsole: `[{"sessionID":"sess-1", "sessionMetadata":"{\"tty\":true}"}]`}, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			agentCtx := context.WithValue(suite.Ctx, consts.AgentCtxKey, deviceName)
+			// No KnownRenderedVersion → fresh connect path.
+			params := domain.GetRenderedDeviceParams{}
+			result, status := suite.Device.GetRenderedDevice(agentCtx, suite.OrgID, deviceName, params)
+
+			Expect(status.Code).To(Equal(int32(200)))
+			Expect(result).ToNot(BeNil())
+			// Console annotation should be present in the returned spec.
+			Expect(result.Metadata.Annotations).ToNot(BeNil())
+			Expect(*result.Metadata.Annotations).To(HaveKey(api.DeviceAnnotationConsole))
+		})
+
+		It("does not bump resource version more than once during a console open cycle", func() {
+			deviceName := "console-notification-test-resource-version"
+			knownVersion := "1"
+
+			_, status := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, api.Device{
+				Metadata: api.ObjectMeta{Name: lo.ToPtr(deviceName)},
+				Spec:     &api.DeviceSpec{Os: &api.DeviceOsSpec{Image: "quay.io/fedora/fedora-coreos:stable"}},
+			})
+			Expect(status.Code).To(Equal(int32(201)))
+
+			_, err := setDeviceRendered(suite.Ctx, suite.DeviceStore, suite.OrgID, deviceName, buildRenderedConfig("cfg"), "", "hash5", "", nil, false)
+			Expect(err).ToNot(HaveOccurred())
+
+			err = suite.DeviceStore.UpdateAnnotations(suite.Ctx, suite.OrgID, deviceName, map[string]string{
+				api.DeviceAnnotationRenderedVersion: knownVersion}, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Capture the resource version before the console open.
+			deviceBefore, devStatus := suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(devStatus.Code).To(Equal(int32(200)))
+			rvBefore := lo.FromPtr(deviceBefore.Metadata.ResourceVersion)
+
+			// Simulate adding a single console session annotation (as the console manager would).
+			err = suite.DeviceStore.UpdateAnnotations(suite.Ctx, suite.OrgID, deviceName, map[string]string{
+				api.DeviceAnnotationConsole: `[{"sessionID":"sess-open", "sessionMetadata":"{\"tty\":true}"}]`}, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			deviceAfterOpen, devStatus := suite.Device.GetDevice(suite.Ctx, suite.OrgID, deviceName)
+			Expect(devStatus.Code).To(Equal(int32(200)))
+			rvAfterOpen := lo.FromPtr(deviceAfterOpen.Metadata.ResourceVersion)
+
+			// Convert resource versions to integers for comparison.
+			rvBeforeInt, err := strconv.Atoi(rvBefore)
+			Expect(err).ToNot(HaveOccurred())
+			rvAfterOpenInt, err := strconv.Atoi(rvAfterOpen)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Console annotation addition is exactly one UpdateAnnotations call → resource version +1.
+			Expect(rvAfterOpenInt).To(BeNumerically(">", rvBeforeInt),
+				"resource version should increase when the console annotation is added")
+			Expect(rvAfterOpenInt-rvBeforeInt).To(Equal(1),
+				"exactly one resource-version bump is expected when opening a console session")
+		})
+	})
+})
+
+func setDeviceRendered(ctx context.Context, s devicestore.Store, orgId uuid.UUID, name, renderedConfig, renderedApplications, specHash, osImage string, configFingerprints []domain.DependencySyncConfigRefStatus, forceUpdate bool) (string, error) {
+	var version string
+	_, _, _, err := s.Mutate(ctx, orgId, name, nil, func(m *devicestore.DeviceMutation) error {
+		if err := m.RequireExisting(); err != nil {
+			return err
+		}
+		ann := util.EnsureMap(lo.FromPtr(m.Device.Metadata.Annotations))
+		var status *domain.DeviceStatus
+		if m.Device.Status != nil {
+			status = m.Device.Status
+		}
+		next, err := domain.GetNextDeviceRenderedVersion(ann, status)
+		if err != nil {
+			return err
+		}
+		if lo.HasKey(ann, domain.DeviceAnnotationRenderedSpecHash) && ann[domain.DeviceAnnotationRenderedSpecHash] == specHash && len(configFingerprints) == 0 && !forceUpdate {
+			return store.ErrMutateSkipWrite
+		}
+		ann[domain.DeviceAnnotationRenderedVersion] = next
+		ann[domain.DeviceAnnotationRenderedSpecHash] = specHash
+		if lo.HasKey(ann, domain.DeviceAnnotationTemplateVersion) {
+			ann[domain.DeviceAnnotationRenderedTemplateVersion] = ann[domain.DeviceAnnotationTemplateVersion]
+		}
+		m.Device.Metadata.Annotations = &ann
+		m.Rendered = &devicestore.DeviceRendered{
+			Config:       renderedConfig,
+			Applications: renderedApplications,
+			OsImage:      osImage,
+		}
+		version = next
+		return nil
+	})
+	return version, err
+}
+
+func setDeviceStatus(ctx context.Context, s devicestore.Store, orgId uuid.UUID, device *domain.Device, previous *domain.Device) (*domain.Device, error) {
+	updated, _, err := s.UpdateStatus(ctx, orgId, device, previous)
+	return updated, err
+}

@@ -1,0 +1,182 @@
+name: CI
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches:
+      - main
+      - release*
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight-check:
+    # Prevents running the workflow when a PR is marked as draft.
+    runs-on: ubuntu-24.04
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - name: Check if PR is draft
+        id: check
+        run: |
+          if [[ "${{ github.event.pull_request.draft }}" == "true" ]]; then
+            skip=true
+          else
+            skip=false
+          fi
+          echo "skip=${skip}" >> $GITHUB_OUTPUT
+          echo "skip=${skip}"
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - name: Install dependencies
+        run: npm ci
+      - name: Run unit tests
+        run: npm run test
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - name: Install dependencies
+        run: npm ci
+      - name: Attempt a build
+        run: npm run build
+      - name: Run eslint
+        run: npm run lint
+  build-standalone:
+    name: Build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - name: Install dependencies
+        run: npm ci
+      - name: Attempt a build
+        run: npm run build
+  build-ocp:
+    name: Build ocp plugin
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - name: Install dependencies
+        run: npm ci
+      - name: Attempt a build
+        run: npm run build:ocp
+  build-containers:
+    name: Build containers
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        os: [el9, el10]
+        variant: [standalone, ocp]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Determine Containerfile
+        id: containerfile
+        run: |
+          if [[ "${{ matrix.variant }}" == "standalone" ]]; then
+            echo "file=packaging/images/${{ matrix.os }}/Containerfile" >> $GITHUB_OUTPUT
+          else
+            echo "file=packaging/images/${{ matrix.os }}/Containerfile.ocp" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build container (${{ matrix.os }} ${{ matrix.variant }})
+        run: |
+          echo "Building ${{ matrix.variant }} UI container for ${{ matrix.os }}..."
+          podman build -f ${{ steps.containerfile.outputs.file }} -t test-ui:${{ matrix.os }}-${{ matrix.variant }} .
+          echo "✓ Successfully built ${{ matrix.os }} ${{ matrix.variant }} container"
+
+      - name: Verify container - help command
+        id: verify-help
+        run: |
+          echo "Testing help command..."
+          if timeout 30s podman run --rm test-ui:${{ matrix.os }}-${{ matrix.variant }} ./flightctl-ui --help; then
+            echo "Help command successful"
+            echo "passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "Help command failed"
+            echo "passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verify container - binary exists
+        if: steps.verify-help.outputs.passed != 'true'
+        run: |
+          echo "Help command failed, checking if binary exists..."
+          if timeout 30s podman run --rm test-ui:${{ matrix.os }}-${{ matrix.variant }} ls -la /app/proxy/flightctl-ui; then
+            echo "Binary exists but help command failed"
+          else
+            echo "Binary missing"
+            exit 1
+          fi
+
+  integration-tests:
+    needs: preflight-check
+    if: needs.preflight-check.outputs.skip == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - name: Run integration tests
+        uses: cypress-io/github-action@c541a95ea92d9239347a2355f2e895cd4b3f8060 # v7.4.6
+        with:
+          install-command: npm ci
+          # integration-tests:build runs `npm run build` then `build:libs`
+          # (the && lives inside the script because the action does not run
+          # this input through a shell). build:libs must come after the app
+          # build, whose `rimraf **/dist` prebuild would otherwise wipe the
+          # libs' dist, which Cypress's webpack preprocessor needs to resolve
+          # the @flightctl/* packages when compiling the specs.
+          build: npm run integration-tests:build
+          config-file: libs/cypress/cypress.config.ts
+          browser: chrome
+          start: npm run integration-tests:ci
+          wait-on: 'http://localhost:9000'
+          wait-on-timeout: 60

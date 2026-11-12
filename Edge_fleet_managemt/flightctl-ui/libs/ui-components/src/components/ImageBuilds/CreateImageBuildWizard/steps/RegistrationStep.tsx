@@ -1,0 +1,200 @@
+import * as React from 'react';
+import {
+  Card,
+  CardBody,
+  Content,
+  DescriptionList,
+  DescriptionListDescription,
+  DescriptionListGroup,
+  DescriptionListTerm,
+  Divider,
+  Flex,
+  FlexItem,
+  FormGroup,
+  FormSection,
+  Radio,
+  Stack,
+  StackItem,
+  Title,
+} from '@patternfly/react-core';
+import { type FormikErrors, useFormikContext } from 'formik';
+
+import { BindingType } from '@flightctl/types/imagebuilder';
+import { type ImageBuildFormValues } from '../types';
+import { PUBLIC_KEY_MAX_LENGTH } from '../../../form/validations';
+import { useTranslation } from '../../../../hooks/useTranslation';
+import { useProductName } from '../../../../hooks/useProductName';
+import FlightCtlForm from '../../../form/FlightCtlForm';
+import TextField from '../../../form/TextField';
+import UploadField from '../../../form/UploadField';
+import SwitchField from '../../../form/SwitchField';
+import { CERTIFICATE_VALIDITY_IN_YEARS } from '../../../../constants';
+
+export const registrationStepId = 'registration';
+
+export const isRegistrationStepValid = (errors: FormikErrors<ImageBuildFormValues>) => {
+  const { userConfiguration } = errors;
+  if (!userConfiguration) {
+    return true;
+  }
+
+  return !userConfiguration.username && !userConfiguration.publickey;
+};
+
+const RegistrationStep = () => {
+  const { t } = useTranslation();
+  const { values, setFieldValue } = useFormikContext<ImageBuildFormValues>();
+  const productName = useProductName();
+
+  const isEarlyBindingSelected = values.bindingType === BindingType.BindingTypeEarly;
+
+  const handleEarlyBindingSelect = () => {
+    if (values.bindingType !== BindingType.BindingTypeEarly) {
+      setFieldValue('bindingType', BindingType.BindingTypeEarly);
+    }
+  };
+
+  const handleLateBindingSelect = () => {
+    if (values.bindingType !== BindingType.BindingTypeLate) {
+      setFieldValue('bindingType', BindingType.BindingTypeLate);
+    }
+  };
+
+  return (
+    <FlightCtlForm>
+      <FormSection>
+        <Card onClick={handleEarlyBindingSelect}>
+          <CardBody>
+            <Stack hasGutter>
+              <StackItem>
+                <Flex alignItems={{ default: 'alignItemsCenter' }} spaceItems={{ default: 'spaceItemsSm' }}>
+                  <FlexItem>
+                    <Radio
+                      id="binding-early"
+                      name="binding-type"
+                      aria-label={t('Early binding')}
+                      isChecked={isEarlyBindingSelected}
+                      onChange={handleEarlyBindingSelect}
+                    />
+                  </FlexItem>
+                  <FlexItem>
+                    <Title headingLevel="h3" size="md">
+                      {t('Early binding')}
+                    </Title>
+                  </FlexItem>
+                </Flex>
+              </StackItem>
+              <StackItem>
+                <Content>
+                  {t(
+                    'This image is automatically secured. Register it within {{ validityPeriod }} years to keep it active.',
+                    { validityPeriod: CERTIFICATE_VALIDITY_IN_YEARS, count: CERTIFICATE_VALIDITY_IN_YEARS },
+                  )}
+                </Content>
+              </StackItem>
+
+              {isEarlyBindingSelected && (
+                <>
+                  <StackItem>
+                    <Divider />
+                  </StackItem>
+                  <StackItem>
+                    <Stack hasGutter>
+                      <StackItem>
+                        <DescriptionList isHorizontal>
+                          <DescriptionListGroup>
+                            <DescriptionListTerm>{t('Enrollment')}</DescriptionListTerm>
+                            <DescriptionListDescription>{t('Auto-create certificate')}</DescriptionListDescription>
+                          </DescriptionListGroup>
+                          <DescriptionListGroup>
+                            <DescriptionListTerm>{t('Registration')}</DescriptionListTerm>
+                            <DescriptionListDescription>
+                              {t('{{ validityPeriod }} years (Standard)', {
+                                validityPeriod: CERTIFICATE_VALIDITY_IN_YEARS,
+                                count: CERTIFICATE_VALIDITY_IN_YEARS,
+                              })}
+                            </DescriptionListDescription>
+                          </DescriptionListGroup>
+                        </DescriptionList>
+                      </StackItem>
+                    </Stack>
+                  </StackItem>
+                </>
+              )}
+            </Stack>
+          </CardBody>
+        </Card>
+
+        <Card onClick={handleLateBindingSelect}>
+          <CardBody>
+            <Stack hasGutter>
+              <StackItem>
+                <Flex alignItems={{ default: 'alignItemsCenter' }} spaceItems={{ default: 'spaceItemsSm' }}>
+                  <FlexItem>
+                    <Radio
+                      id="binding-late"
+                      name="binding-type"
+                      aria-label={t('Late binding')}
+                      isChecked={!isEarlyBindingSelected}
+                      onChange={handleLateBindingSelect}
+                    />
+                  </FlexItem>
+                  <FlexItem>
+                    <Title headingLevel="h3" size="md">
+                      {t('Late binding')}
+                    </Title>
+                  </FlexItem>
+                </Flex>
+              </StackItem>
+              <StackItem>
+                <Content>
+                  {t('No additional user input required (cloud-init and ignition are enabled automatically)')}
+                </Content>
+              </StackItem>
+            </Stack>
+          </CardBody>
+        </Card>
+      </FormSection>
+      <FormSection title={t('{{ productName }} onboarding', { productName })}>
+        <SwitchField
+          name="onboarding"
+          label={t(
+            'Enable the {{ productName }} onboarding wizard powered by Cockpit. Provides a guided first-boot experience for device configuration. Compatible with both early and late binding.',
+            { productName },
+          )}
+          aria-label={t('{{ productName }} onboarding', { productName })}
+        />
+      </FormSection>
+      <FormSection title={t('Remote access')}>
+        <SwitchField
+          name="remoteAccessEnabled"
+          label={t('Provide an SSH public key to enable passwordless login once your image is deployed.')}
+          aria-label={t('SSH public key for remote access')}
+        />
+        {values.remoteAccessEnabled && (
+          <>
+            <FormGroup label={t('Username')} fieldId="user-config-username" isRequired>
+              <TextField
+                name="userConfiguration.username"
+                aria-label={t('Username')}
+                helperText={t('The username for the user account')}
+              />
+            </FormGroup>
+            <FormGroup label={t('SSH public key')} fieldId="user-config-publickey" isRequired>
+              <UploadField
+                name="userConfiguration.publickey"
+                ariaLabel={t('SSH public key')}
+                maxFileBytes={PUBLIC_KEY_MAX_LENGTH}
+              />
+            </FormGroup>
+            <Content component="small">
+              {t('Paste the content of an SSH public key you want to use to connect to the device.')}
+            </Content>
+          </>
+        )}
+      </FormSection>
+    </FlightCtlForm>
+  );
+};
+
+export default RegistrationStep;

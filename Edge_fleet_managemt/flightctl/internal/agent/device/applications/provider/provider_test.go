@@ -1,0 +1,1218 @@
+package provider
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/agent/client"
+	"github.com/flightctl/flightctl/internal/agent/device/dependency"
+	"github.com/flightctl/flightctl/internal/agent/device/errors"
+	"github.com/flightctl/flightctl/internal/agent/device/fileio"
+	"github.com/flightctl/flightctl/internal/api/common"
+	"github.com/flightctl/flightctl/pkg/executer"
+	"github.com/flightctl/flightctl/pkg/log"
+	"github.com/flightctl/flightctl/pkg/poll"
+	"github.com/samber/lo"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+)
+
+func TestExtractQuadletTargets(t *testing.T) {
+	testClientOpts := []client.ClientOption{client.WithPullSecret("/tmp/test-pull-secret")}
+
+	tests := []struct {
+		name           string
+		quad           *common.QuadletReferences
+		setupMocks     func(*dependency.MockPullConfigResolver)
+		expectedCount  int
+		expectedRefs   []string
+		expectedType   dependency.OCIType
+		expectedPolicy v1beta1.ImagePullPolicy
+		expectedOpts   int
+	}{
+		{
+			name: "container with single OCI image",
+			quad: &common.QuadletReferences{
+				Type:  common.QuadletTypeContainer,
+				Image: lo.ToPtr("nginx:latest"),
+			},
+			setupMocks: func(m *dependency.MockPullConfigResolver) {
+				m.EXPECT().Options(gomock.Any()).Return(func() []client.ClientOption {
+					return nil
+				}).AnyTimes()
+			},
+			expectedCount:  1,
+			expectedRefs:   []string{"nginx:latest"},
+			expectedType:   dependency.OCITypePodmanImage,
+			expectedPolicy: v1beta1.PullIfNotPresent,
+			expectedOpts:   0,
+		},
+		{
+			name: "container with multiple mount images",
+			quad: &common.QuadletReferences{
+				Type:        common.QuadletTypeContainer,
+				MountImages: []string{"alpine:3.18", "busybox:latest"},
+			},
+			setupMocks: func(m *dependency.MockPullConfigResolver) {
+				m.EXPECT().Options(gomock.Any()).Return(func() []client.ClientOption {
+					return nil
+				}).AnyTimes()
+			},
+			expectedCount:  2,
+			expectedRefs:   []string{"alpine:3.18", "busybox:latest"},
+			expectedType:   dependency.OCITypePodmanImage,
+			expectedPolicy: v1beta1.PullIfNotPresent,
+			expectedOpts:   0,
+		},
+		{
+			name: "container with both main image and mount images",
+			quad: &common.QuadletReferences{
+				Type:        common.QuadletTypeContainer,
+				Image:       lo.ToPtr("quay.io/myapp:v1.0"),
+				MountImages: []string{"redis:7", "postgres:15"},
+			},
+			setupMocks: func(m *dependency.MockPullConfigResolver) {
+				m.EXPECT().Options(gomock.Any()).Return(func() []client.ClientOption {
+					return nil
+				}).AnyTimes()
+			},
+			expectedCount:  3,
+			expectedRefs:   []string{"quay.io/myapp:v1.0", "redis:7", "postgres:15"},
+			expectedType:   dependency.OCITypePodmanImage,
+			expectedPolicy: v1beta1.PullIfNotPresent,
+			expectedOpts:   0,
+		},
+		{
+			name: "container with pull secret",
+			quad: &common.QuadletReferences{
+				Type:  common.QuadletTypeContainer,
+				Image: lo.ToPtr("private-registry.io/secure-app:latest"),
+			},
+			setupMocks: func(m *dependency.MockPullConfigResolver) {
+				m.EXPECT().Options(gomock.Any()).Return(func() []client.ClientOption {
+					return testClientOpts
+				}).AnyTimes()
+			},
+			expectedCount:  1,
+			expectedRefs:   []string{"private-registry.io/secure-app:latest"},
+			expectedType:   dependency.OCITypePodmanImage,
+			expectedPolicy: v1beta1.PullIfNotPresent,
+			expectedOpts:   1,
+		},
+		{
+			name: "empty quadlet with no images",
+			quad: &common.QuadletReferences{
+				Type: common.QuadletTypeContainer,
+			},
+			setupMocks: func(m *dependency.MockPullConfigResolver) {
+				m.EXPECT().Options(gomock.Any()).Return(func() []client.ClientOption {
+					return nil
+				}).AnyTimes()
+			},
+			expectedCount:  0,
+			expectedRefs:   []string{},
+			expectedType:   dependency.OCITypePodmanImage,
+			expectedPolicy: v1beta1.PullIfNotPresent,
+			expectedOpts:   0,
+		},
+		{
+			name: "image reference to quadlet file should be filtered",
+			quad: &common.QuadletReferences{
+				Type:  common.QuadletTypeContainer,
+				Image: lo.ToPtr("base.image"),
+			},
+			setupMocks: func(m *dependency.MockPullConfigResolver) {
+				m.EXPECT().Options(gomock.Any()).Return(func() []client.ClientOption {
+					return nil
+				}).AnyTimes()
+			},
+			expectedCount:  0,
+			expectedRefs:   []string{},
+			expectedType:   dependency.OCITypePodmanImage,
+			expectedPolicy: v1beta1.PullIfNotPresent,
+			expectedOpts:   0,
+		},
+		{
+			name: "mount images ending with .image should be filtered",
+			quad: &common.QuadletReferences{
+				Type:        common.QuadletTypeContainer,
+				MountImages: []string{"config.image", "data.image"},
+			},
+			setupMocks: func(m *dependency.MockPullConfigResolver) {
+				m.EXPECT().Options(gomock.Any()).Return(func() []client.ClientOption {
+					return nil
+				}).AnyTimes()
+			},
+			expectedCount:  0,
+			expectedRefs:   []string{},
+			expectedType:   dependency.OCITypePodmanImage,
+			expectedPolicy: v1beta1.PullIfNotPresent,
+			expectedOpts:   0,
+		},
+		{
+			name: "mix of OCI images and .image references",
+			quad: &common.QuadletReferences{
+				Type:        common.QuadletTypeContainer,
+				Image:       lo.ToPtr("nginx:alpine"),
+				MountImages: []string{"base.image", "redis:7", "config.image", "postgres:15"},
+			},
+			setupMocks: func(m *dependency.MockPullConfigResolver) {
+				m.EXPECT().Options(gomock.Any()).Return(func() []client.ClientOption {
+					return nil
+				}).AnyTimes()
+			},
+			expectedCount:  3,
+			expectedRefs:   []string{"nginx:alpine", "redis:7", "postgres:15"},
+			expectedType:   dependency.OCITypePodmanImage,
+			expectedPolicy: v1beta1.PullIfNotPresent,
+			expectedOpts:   0,
+		},
+		{
+			name: "nil quad.Image with valid mount images",
+			quad: &common.QuadletReferences{
+				Type:        common.QuadletTypeContainer,
+				Image:       nil,
+				MountImages: []string{"alpine:latest", "busybox:latest"},
+			},
+			setupMocks: func(m *dependency.MockPullConfigResolver) {
+				m.EXPECT().Options(gomock.Any()).Return(func() []client.ClientOption {
+					return nil
+				}).AnyTimes()
+			},
+			expectedCount:  2,
+			expectedRefs:   []string{"alpine:latest", "busybox:latest"},
+			expectedType:   dependency.OCITypePodmanImage,
+			expectedPolicy: v1beta1.PullIfNotPresent,
+			expectedOpts:   0,
+		},
+		{
+			name: "valid quad.Image with empty MountImages slice",
+			quad: &common.QuadletReferences{
+				Type:        common.QuadletTypeContainer,
+				Image:       lo.ToPtr("ubuntu:22.04"),
+				MountImages: []string{},
+			},
+			setupMocks: func(m *dependency.MockPullConfigResolver) {
+				m.EXPECT().Options(gomock.Any()).Return(func() []client.ClientOption {
+					return nil
+				}).AnyTimes()
+			},
+			expectedCount:  1,
+			expectedRefs:   []string{"ubuntu:22.04"},
+			expectedType:   dependency.OCITypePodmanImage,
+			expectedPolicy: v1beta1.PullIfNotPresent,
+			expectedOpts:   0,
+		},
+		{
+			name: "nil pullSecret should work fine",
+			quad: &common.QuadletReferences{
+				Type:        common.QuadletTypeContainer,
+				Image:       lo.ToPtr("fedora:39"),
+				MountImages: []string{"alpine:3.18"},
+			},
+			setupMocks: func(m *dependency.MockPullConfigResolver) {
+				m.EXPECT().Options(gomock.Any()).Return(func() []client.ClientOption {
+					return nil
+				}).AnyTimes()
+			},
+			expectedCount:  2,
+			expectedRefs:   []string{"fedora:39", "alpine:3.18"},
+			expectedType:   dependency.OCITypePodmanImage,
+			expectedPolicy: v1beta1.PullIfNotPresent,
+			expectedOpts:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require := require.New(t)
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockResolver := dependency.NewMockPullConfigResolver(ctrl)
+			tt.setupMocks(mockResolver)
+
+			targets := extractQuadletTargets(tt.quad, mockResolver, v1beta1.CurrentProcessUsername)
+
+			require.Equal(tt.expectedCount, len(targets), "unexpected number of targets")
+
+			for i, target := range targets {
+				require.Equal(tt.expectedRefs[i], target.Reference, "unexpected reference at index %d", i)
+				require.Equal(tt.expectedType, target.Type, "unexpected type at index %d", i)
+				require.Equal(tt.expectedPolicy, target.PullPolicy, "unexpected pull policy at index %d", i)
+				if target.ClientOptsFn != nil {
+					require.Equal(tt.expectedOpts, len(target.ClientOptsFn()), "unexpected client opts count at index %d", i)
+				} else {
+					require.Equal(0, tt.expectedOpts, "expected no client opts but expectedOpts was %d at index %d", tt.expectedOpts, i)
+				}
+			}
+		})
+	}
+}
+
+func TestDecorateApplicationTargets(t *testing.T) {
+	parentHint := "quay.io/acme/deltas/app@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	childHint := "quay.io/acme/deltas/child@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+	targets := []dependency.OCIPullTarget{
+		{Reference: "quay.io/acme/app@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		{Reference: "quay.io/acme/child:latest"},
+		{Reference: "quay.io/acme/other:latest"},
+	}
+
+	got := decorateApplicationTargets(
+		targets,
+		&parentHint,
+		[]v1beta1.ImageDeltaHint{{
+			TargetImage:  "quay.io/acme/child:latest",
+			TargetDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+			DeltaImage:   childHint,
+		}},
+		"app",
+	)
+
+	require.Equal(t, parentHint, got[0].Delta.Hint)
+	require.Equal(t, childHint, got[1].Delta.Hint)
+	require.Equal(t, "app", got[0].Delta.Application)
+	require.Equal(t, "app", got[1].Delta.Application)
+	require.NotNil(t, got[2].Delta)
+	require.Empty(t, got[2].Delta.Hint)
+}
+
+func TestDecorateApplicationTargetsDoesNotTrackHelmChartAsWorkloadDelta(t *testing.T) {
+	parentHint := "quay.io/acme/deltas/chart@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	chart := dependency.OCIPullTarget{
+		Type:      dependency.OCITypeHelmChart,
+		Reference: "quay.io/acme/charts/app:2.0.0",
+	}
+
+	got := decorateApplicationTargets([]dependency.OCIPullTarget{chart}, &parentHint, nil, "helm-app")
+
+	require.Equal(t, &dependency.OCIDeltaTarget{Application: "helm-app", Package: true}, got[0].Delta)
+
+	const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const workloadHint = "quay.io/acme/deltas/workload@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	workload := dependency.OCIPullTarget{
+		Reference: "quay.io/acme/workload:2.0.0",
+		Digest:    digest,
+	}
+	const otherDigest = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	otherWorkload := dependency.OCIPullTarget{Reference: "quay.io/acme/other@" + otherDigest}
+	got = decorateApplicationTargets(
+		[]dependency.OCIPullTarget{chart, workload, otherWorkload},
+		&parentHint,
+		[]v1beta1.ImageDeltaHint{{TargetImage: workload.Reference, TargetDigest: digest, DeltaImage: workloadHint}},
+		"helm-app",
+	)
+
+	require.Equal(t, &dependency.OCIDeltaTarget{Application: "helm-app", Package: true}, got[0].Delta)
+	require.Equal(t, &dependency.OCIDeltaTarget{Hint: workloadHint, SourceDigest: digest, Application: "helm-app"}, got[1].Delta)
+	require.Equal(t, &dependency.OCIDeltaTarget{SourceDigest: otherDigest, Application: "helm-app"}, got[2].Delta)
+}
+
+func TestCollectProviderTargetsDeferredDependencies(t *testing.T) {
+	tests := []struct {
+		name                string
+		providers           func(ctrl *gomock.Controller) []appProvider
+		expectedTargetCount int
+		expectedTargetRefs  []string
+		wantErr             bool
+		wantErrContains     string
+		wantErrEnsuringDeps bool
+	}{
+		{
+			name: "all providers succeed",
+			providers: func(ctrl *gomock.Controller) []appProvider {
+				p1 := NewMockappProvider(ctrl)
+				p1.EXPECT().Name().Return("app1").AnyTimes()
+				p1.EXPECT().ID().Return("app1-123456").AnyTimes()
+				p1.EXPECT().Spec().Return(&ApplicationSpec{User: v1beta1.CurrentProcessUsername}).AnyTimes()
+				p1.EXPECT().EnsureDependencies(gomock.Any()).Return(nil)
+				p1.EXPECT().collectOCITargets(gomock.Any(), gomock.Any()).Return(
+					dependency.OCIPullTargetsByUser{
+						v1beta1.CurrentProcessUsername: []dependency.OCIPullTarget{
+							{Reference: "nginx:latest", Type: dependency.OCITypePodmanImage},
+						},
+					}, nil)
+				p1.EXPECT().parentIsAvailable(gomock.Any()).Return("nginx:latest", "sha256:abc", false, nil)
+
+				p2 := NewMockappProvider(ctrl)
+				p2.EXPECT().Name().Return("app2").AnyTimes()
+				p2.EXPECT().ID().Return("app2-654321").AnyTimes()
+				p2.EXPECT().Spec().Return(&ApplicationSpec{User: v1beta1.CurrentProcessUsername}).AnyTimes()
+				p2.EXPECT().EnsureDependencies(gomock.Any()).Return(nil)
+				p2.EXPECT().collectOCITargets(gomock.Any(), gomock.Any()).Return(
+					dependency.OCIPullTargetsByUser{
+						v1beta1.CurrentProcessUsername: []dependency.OCIPullTarget{
+							{Reference: "redis:7", Type: dependency.OCITypePodmanImage},
+						},
+					}, nil)
+				p2.EXPECT().parentIsAvailable(gomock.Any()).Return("redis:7", "sha256:def", false, nil)
+
+				return []appProvider{p1, p2}
+			},
+			expectedTargetCount: 2,
+			expectedTargetRefs:  []string{"nginx:latest", "redis:7"},
+			wantErr:             false,
+		},
+		{
+			name: "one provider fails dependencies, others succeed",
+			providers: func(ctrl *gomock.Controller) []appProvider {
+				p1 := NewMockappProvider(ctrl)
+				p1.EXPECT().Name().Return("helm-app").AnyTimes()
+				p1.EXPECT().ID().Return("helm-app-123456").AnyTimes()
+				p1.EXPECT().EnsureDependencies(gomock.Any()).Return(
+					fmt.Errorf("%w: helm binary not found", errors.ErrAppDependency))
+
+				p2 := NewMockappProvider(ctrl)
+				p2.EXPECT().Name().Return("container-app").AnyTimes()
+				p2.EXPECT().ID().Return("container-app-654321").AnyTimes()
+				p2.EXPECT().Spec().Return(&ApplicationSpec{User: v1beta1.CurrentProcessUsername}).AnyTimes()
+				p2.EXPECT().EnsureDependencies(gomock.Any()).Return(nil)
+				p2.EXPECT().collectOCITargets(gomock.Any(), gomock.Any()).Return(
+					dependency.OCIPullTargetsByUser{
+						v1beta1.CurrentProcessUsername: []dependency.OCIPullTarget{
+							{Reference: "postgres:15", Type: dependency.OCITypePodmanImage},
+						},
+					}, nil)
+				p2.EXPECT().parentIsAvailable(gomock.Any()).Return("postgres:15", "sha256:ghi", false, nil)
+
+				return []appProvider{p1, p2}
+			},
+			expectedTargetCount: 1,
+			expectedTargetRefs:  []string{"postgres:15"},
+			wantErr:             true,
+			wantErrContains:     "helm-app",
+			wantErrEnsuringDeps: true,
+		},
+		{
+			name: "multiple providers fail dependencies",
+			providers: func(ctrl *gomock.Controller) []appProvider {
+				p1 := NewMockappProvider(ctrl)
+				p1.EXPECT().Name().Return("helm-app").AnyTimes()
+				p1.EXPECT().ID().Return("helm-app-111111").AnyTimes()
+				p1.EXPECT().EnsureDependencies(gomock.Any()).Return(
+					fmt.Errorf("%w: helm binary not found", errors.ErrAppDependency))
+
+				p2 := NewMockappProvider(ctrl)
+				p2.EXPECT().Name().Return("quadlet-app").AnyTimes()
+				p2.EXPECT().ID().Return("quadlet-app-222222").AnyTimes()
+				p2.EXPECT().EnsureDependencies(gomock.Any()).Return(
+					fmt.Errorf("%w: podman binary not found", errors.ErrAppDependency))
+
+				p3 := NewMockappProvider(ctrl)
+				p3.EXPECT().Name().Return("container-app").AnyTimes()
+				p3.EXPECT().ID().Return("container-app-333333").AnyTimes()
+				p3.EXPECT().Spec().Return(&ApplicationSpec{User: v1beta1.CurrentProcessUsername}).AnyTimes()
+				p3.EXPECT().EnsureDependencies(gomock.Any()).Return(nil)
+				p3.EXPECT().collectOCITargets(gomock.Any(), gomock.Any()).Return(
+					dependency.OCIPullTargetsByUser{
+						v1beta1.CurrentProcessUsername: []dependency.OCIPullTarget{
+							{Reference: "alpine:latest", Type: dependency.OCITypePodmanImage},
+						},
+					}, nil)
+				p3.EXPECT().parentIsAvailable(gomock.Any()).Return("alpine:latest", "sha256:jkl", false, nil)
+
+				return []appProvider{p1, p2, p3}
+			},
+			expectedTargetCount: 1,
+			expectedTargetRefs:  []string{"alpine:latest"},
+			wantErr:             true,
+			wantErrContains:     "helm-app",
+			wantErrEnsuringDeps: true,
+		},
+		{
+			name: "all providers fail dependencies",
+			providers: func(ctrl *gomock.Controller) []appProvider {
+				p1 := NewMockappProvider(ctrl)
+				p1.EXPECT().Name().Return("helm-app").AnyTimes()
+				p1.EXPECT().ID().Return("helm-app-444444").AnyTimes()
+				p1.EXPECT().EnsureDependencies(gomock.Any()).Return(
+					fmt.Errorf("%w: helm binary not found", errors.ErrAppDependency))
+
+				p2 := NewMockappProvider(ctrl)
+				p2.EXPECT().Name().Return("quadlet-app").AnyTimes()
+				p2.EXPECT().ID().Return("quadlet-app-555555").AnyTimes()
+				p2.EXPECT().EnsureDependencies(gomock.Any()).Return(
+					fmt.Errorf("%w: podman binary not found", errors.ErrAppDependency))
+
+				return []appProvider{p1, p2}
+			},
+			expectedTargetCount: 0,
+			expectedTargetRefs:  []string{},
+			wantErr:             true,
+			wantErrContains:     "helm-app",
+			wantErrEnsuringDeps: true,
+		},
+		{
+			name: "non-deferrable error stops processing",
+			providers: func(ctrl *gomock.Controller) []appProvider {
+				p1 := NewMockappProvider(ctrl)
+				p1.EXPECT().Name().Return("app1").AnyTimes()
+				p1.EXPECT().ID().Return("app1-666666").AnyTimes()
+				p1.EXPECT().EnsureDependencies(gomock.Any()).Return(
+					fmt.Errorf("critical error: permission denied"))
+
+				return []appProvider{p1}
+			},
+			expectedTargetCount: 0,
+			expectedTargetRefs:  []string{},
+			wantErr:             true,
+			wantErrContains:     "critical error",
+			wantErrEnsuringDeps: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require := require.New(t)
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			logger := log.NewPrefixLogger("test")
+			providers := tt.providers(ctrl)
+			ctx := context.Background()
+
+			collection, err := collectProviderTargets(ctx, logger, providers, nil, NewOCITargetCache(), NewAppDataCache())
+
+			if tt.wantErr {
+				require.Error(err)
+				require.Contains(err.Error(), tt.wantErrContains)
+				if tt.wantErrEnsuringDeps {
+					require.ErrorIs(err, errors.ErrAppDependency)
+				}
+			} else {
+				require.NoError(err)
+			}
+
+			if collection != nil {
+				allTargets := collection.Targets[v1beta1.CurrentProcessUsername]
+				require.Equal(tt.expectedTargetCount, len(allTargets), "unexpected number of targets")
+
+				for i, expectedRef := range tt.expectedTargetRefs {
+					require.Equal(expectedRef, allTargets[i].Reference, "unexpected reference at index %d", i)
+				}
+			} else if tt.expectedTargetCount > 0 {
+				require.Fail("expected collection to be non-nil")
+			}
+		})
+	}
+}
+
+func TestCollectProviderTargetsReusesOnlyExactParentExtractionAfterSkippedCleanup(t *testing.T) {
+	const (
+		applicationID = "app-id"
+		parentRef     = "quay.io/acme/parent:latest"
+		oldDigest     = "sha256:old"
+		newDigest     = "sha256:new"
+		latestDigest  = "sha256:latest"
+	)
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockAppProvider := NewMockappProvider(ctrl)
+	appSpec := &ApplicationSpec{ID: applicationID, Name: "app", Image: parentRef, User: v1beta1.RootUsername}
+	mockAppProvider.EXPECT().ID().Return(applicationID).AnyTimes()
+	mockAppProvider.EXPECT().Name().Return("app").AnyTimes()
+	mockAppProvider.EXPECT().Spec().Return(appSpec).AnyTimes()
+	mockAppProvider.EXPECT().EnsureDependencies(gomock.Any()).Return(nil).Times(3)
+	mockAppProvider.EXPECT().collectOCITargets(gomock.Any(), gomock.Any()).Return(nil, nil).Times(3)
+	parentCall := 0
+	mockAppProvider.EXPECT().parentIsAvailable(gomock.Any()).DoAndReturn(func(context.Context) (string, string, bool, error) {
+		parentCall++
+		if parentCall < 3 {
+			return parentRef, newDigest, true, nil
+		}
+		return parentRef, latestDigest, true, nil
+	}).Times(3)
+	var cleanups []string
+	var extracts int
+	mockAppProvider.EXPECT().extractNestedTargets(gomock.Any(), gomock.Any()).DoAndReturn(func(context.Context, dependency.PullConfigResolver) (*AppData, error) {
+		extracts++
+		digest := newDigest
+		if extracts == 2 {
+			digest = latestDigest
+		}
+		return &AppData{
+			Targets:         []dependency.OCIPullTarget{{Type: dependency.OCITypePodmanImage, Reference: "quay.io/acme/child:v1"}},
+			TmpPath:         "/tmp/extracted-" + digest,
+			ParentReference: parentRef,
+			ParentDigest:    digest,
+			ParentOCIType:   dependency.OCITypePodmanArtifact,
+			CleanupFn:       func() error { cleanups = append(cleanups, digest); return nil },
+		}, nil
+	}).Times(2)
+
+	oldCleanupCount := 0
+	appDataCache := map[string]*AppData{
+		applicationID: {
+			TmpPath:         "/tmp/extracted-old",
+			ParentReference: "quay.io/acme/previous:tag",
+			ParentDigest:    oldDigest,
+			ParentOCIType:   dependency.OCITypePodmanArtifact,
+			CleanupFn:       func() error { oldCleanupCount++; return nil },
+		},
+	}
+	ociCache := NewOCITargetCache()
+	ociCache.Set(CacheEntry{
+		Name:   applicationID,
+		Parent: dependency.OCIPullTarget{Reference: "quay.io/acme/previous:tag", Digest: oldDigest, Type: dependency.OCITypePodmanArtifact},
+	})
+	logger := log.NewPrefixLogger("test")
+
+	for attempt := 0; attempt < 2; attempt++ {
+		collection, err := collectProviderTargets(context.Background(), logger, []appProvider{mockAppProvider}, nil, ociCache, appDataCache)
+		require.NoError(t, err)
+		require.NotNil(t, collection)
+		require.Equal(t, 1, extracts)
+		require.Equal(t, 1, oldCleanupCount)
+		require.Empty(t, cleanups, "the extraction retained after the simulated skipped AfterUpdate must remain reusable")
+		require.Equal(t, newDigest, appDataCache[applicationID].ParentDigest)
+	}
+
+	collection, err := collectProviderTargets(context.Background(), logger, []appProvider{mockAppProvider}, nil, ociCache, appDataCache)
+	require.NoError(t, err)
+	require.NotNil(t, collection)
+	require.Equal(t, 2, extracts, "a different resolved parent digest must be extracted")
+	require.Equal(t, []string{newDigest}, cleanups, "the stale attempt extraction must be cleaned before replacement")
+	require.Equal(t, latestDigest, appDataCache[applicationID].ParentDigest)
+}
+
+func TestCollectProviderTargetsReextractsParentWhenStorageOwnerChanges(t *testing.T) {
+	const (
+		applicationID = "app-id"
+		parentRef     = "quay.io/acme/parent:latest"
+		parentDigest  = "sha256:parent"
+		oldChild      = "quay.io/acme/old-child:v1"
+		newChild      = "quay.io/acme/new-child:v1"
+	)
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockAppProvider := NewMockappProvider(ctrl)
+	appSpec := &ApplicationSpec{ID: applicationID, Name: "app", Image: parentRef, User: "alice"}
+	mockAppProvider.EXPECT().ID().Return(applicationID).AnyTimes()
+	mockAppProvider.EXPECT().Name().Return("app").AnyTimes()
+	mockAppProvider.EXPECT().Spec().Return(appSpec).AnyTimes()
+	mockAppProvider.EXPECT().EnsureDependencies(gomock.Any()).Return(nil)
+	mockAppProvider.EXPECT().collectOCITargets(gomock.Any(), gomock.Any()).Return(nil, nil)
+	mockAppProvider.EXPECT().parentIsAvailable(gomock.Any()).Return(parentRef, parentDigest, true, nil)
+	var oldCleanupCount int
+	appDataCache := map[string]*AppData{
+		applicationID: {
+			TmpPath: parentRef, ParentReference: parentRef, ParentDigest: parentDigest,
+			ParentOCIType: dependency.OCITypePodmanArtifact,
+			CleanupFn:     func() error { oldCleanupCount++; return nil },
+		},
+	}
+	var extracted bool
+	mockAppProvider.EXPECT().extractNestedTargets(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(context.Context, dependency.PullConfigResolver) (*AppData, error) {
+			extracted = true
+			return &AppData{
+				Targets:         []dependency.OCIPullTarget{{Type: dependency.OCITypePodmanImage, Reference: newChild}},
+				TmpPath:         "/tmp/alice-parent",
+				ParentReference: parentRef,
+				ParentDigest:    parentDigest,
+				ParentOCIType:   dependency.OCITypePodmanArtifact,
+			}, nil
+		},
+	)
+
+	ociCache := NewOCITargetCache()
+	ociCache.Set(CacheEntry{
+		Name: applicationID, Owner: "bob",
+		Parent:   dependency.OCIPullTarget{Reference: parentRef, Digest: parentDigest, Type: dependency.OCITypePodmanArtifact},
+		Children: []dependency.OCIPullTarget{{Type: dependency.OCITypePodmanImage, Reference: oldChild}},
+	})
+	collection, err := collectProviderTargets(
+		context.Background(), log.NewPrefixLogger("test"), []appProvider{mockAppProvider}, nil, ociCache, appDataCache,
+	)
+	require.NoError(t, err)
+	require.True(t, extracted, "parent children must be rebuilt from the owning user's store")
+	require.Equal(t, 1, oldCleanupCount, "cached parent bytes from the prior owner must be discarded")
+	require.Equal(t, "alice", string(ociCacheEntryOwner(t, ociCache, applicationID)))
+	require.Len(t, collection.Targets["alice"], 1)
+	require.Equal(t, newChild, collection.Targets["alice"][0].Reference)
+}
+
+func ociCacheEntryOwner(t *testing.T, cache *OCITargetCache, applicationID string) v1beta1.Username {
+	t.Helper()
+	entry, found := cache.Get(applicationID)
+	require.True(t, found)
+	return entry.Owner
+}
+
+type mockProvider struct {
+	id   string
+	name string
+	spec *ApplicationSpec
+}
+
+type nestedTargetsTestProvider struct {
+	spec          *ApplicationSpec
+	parentRef     string
+	nestedTargets []dependency.OCIPullTarget
+	extracted     int
+}
+
+func (p *nestedTargetsTestProvider) ID() string                                 { return p.spec.ID }
+func (p *nestedTargetsTestProvider) Name() string                               { return p.spec.Name }
+func (p *nestedTargetsTestProvider) Spec() *ApplicationSpec                     { return p.spec }
+func (p *nestedTargetsTestProvider) Verify(_ context.Context) error             { return nil }
+func (p *nestedTargetsTestProvider) Install(_ context.Context) error            { return nil }
+func (p *nestedTargetsTestProvider) Remove(_ context.Context) error             { return nil }
+func (p *nestedTargetsTestProvider) EnsureDependencies(_ context.Context) error { return nil }
+func (p *nestedTargetsTestProvider) collectOCITargets(_ context.Context, _ dependency.PullConfigResolver) (dependency.OCIPullTargetsByUser, error) {
+	return nil, nil
+}
+func (p *nestedTargetsTestProvider) extractNestedTargets(_ context.Context, _ dependency.PullConfigResolver) (*AppData, error) {
+	p.extracted++
+	return &AppData{Targets: p.nestedTargets}, nil
+}
+func (p *nestedTargetsTestProvider) parentIsAvailable(_ context.Context) (string, string, bool, error) {
+	return p.parentRef, "", true, nil
+}
+
+func TestCollectNestedForProvider_WhenHelmValuesChange_ItShouldInvalidateCache(t *testing.T) {
+	require := require.New(t)
+	oldValues := map[string]interface{}{"image": map[string]interface{}{"repository": "nginx"}}
+	newValues := map[string]interface{}{"image": map[string]interface{}{"repository": "nginxinc/nginx-unprivileged"}}
+
+	provider := &nestedTargetsTestProvider{
+		spec: &ApplicationSpec{
+			ID:      "hello-helm",
+			Name:    "hello-helm",
+			AppType: v1beta1.AppTypeHelm,
+			Image:   "oci://registry.example.com/charts/hello:0.1.0",
+			Path:    "/var/lib/flightctl/helm/charts/hello",
+			HelmApp: &v1beta1.HelmApplication{Values: &oldValues},
+		},
+		parentRef:     "oci://registry.example.com/charts/hello:0.1.0",
+		nestedTargets: []dependency.OCIPullTarget{{Reference: "docker.io/nginx:latest"}},
+	}
+	cache := NewOCITargetCache()
+	appDataCache := NewAppDataCache()
+	ctx := context.Background()
+	logger := log.NewPrefixLogger("test")
+
+	targets, requeue, err := collectNestedForProvider(ctx, logger, provider, nil, cache, appDataCache)
+	require.NoError(err)
+	require.False(requeue)
+	require.Equal(provider.nestedTargets, targets)
+	require.Equal(1, provider.extracted)
+
+	targets, requeue, err = collectNestedForProvider(ctx, logger, provider, nil, cache, appDataCache)
+	require.NoError(err)
+	require.False(requeue)
+	require.Equal(provider.nestedTargets, targets)
+	require.Equal(1, provider.extracted, "unchanged Helm values should use the cache")
+
+	provider.spec.HelmApp.Values = &newValues
+	provider.nestedTargets = []dependency.OCIPullTarget{{Reference: "docker.io/nginxinc/nginx-unprivileged:1.27-alpine"}}
+	targets, requeue, err = collectNestedForProvider(ctx, logger, provider, nil, cache, appDataCache)
+	require.NoError(err)
+	require.False(requeue)
+	require.Equal(provider.nestedTargets, targets)
+	require.Equal(2, provider.extracted, "changed Helm values should rerun extraction")
+}
+
+func (m *mockProvider) ID() string                                 { return m.id }
+func (m *mockProvider) Name() string                               { return m.name }
+func (m *mockProvider) Spec() *ApplicationSpec                     { return m.spec }
+func (m *mockProvider) Verify(_ context.Context) error             { return nil }
+func (m *mockProvider) Install(_ context.Context) error            { return nil }
+func (m *mockProvider) Remove(_ context.Context) error             { return nil }
+func (m *mockProvider) IsEqual(other Provider) bool                { return m.id == other.ID() }
+func (m *mockProvider) ActionSpec() interface{}                    { return nil }
+func (m *mockProvider) EnsureDependencies(_ context.Context) error { return nil }
+
+func newMockProvider(id, name string) *mockProvider {
+	return &mockProvider{id: id, name: name, spec: &ApplicationSpec{ID: id, Name: name}}
+}
+
+func TestGetDiff_DeterministicOrdering(t *testing.T) {
+	tests := []struct {
+		name            string
+		current         []Provider
+		desired         []Provider
+		expectedRemoved []string
+		expectedEnsure  []string
+		expectedChanged []string
+	}{
+		{
+			name: "removed apps are sorted by ID",
+			current: []Provider{
+				newMockProvider("zebra", "Zebra App"),
+				newMockProvider("alpha", "Alpha App"),
+				newMockProvider("mike", "Mike App"),
+			},
+			desired:         []Provider{},
+			expectedRemoved: []string{"alpha", "mike", "zebra"},
+			expectedEnsure:  []string{},
+			expectedChanged: []string{},
+		},
+		{
+			name:    "ensured apps are sorted by ID",
+			current: []Provider{},
+			desired: []Provider{
+				newMockProvider("zebra", "Zebra App"),
+				newMockProvider("alpha", "Alpha App"),
+				newMockProvider("mike", "Mike App"),
+			},
+			expectedRemoved: []string{},
+			expectedEnsure:  []string{"alpha", "mike", "zebra"},
+			expectedChanged: []string{},
+		},
+		{
+			name: "mixed operations are each sorted by ID",
+			current: []Provider{
+				newMockProvider("charlie", "Charlie App"),
+				newMockProvider("alpha", "Alpha App"),
+			},
+			desired: []Provider{
+				newMockProvider("bravo", "Bravo App"),
+				newMockProvider("alpha", "Alpha App"),
+			},
+			expectedRemoved: []string{"charlie"},
+			expectedEnsure:  []string{"alpha", "bravo"},
+			expectedChanged: []string{},
+		},
+		{
+			name: "ordering is consistent across multiple runs",
+			current: []Provider{
+				newMockProvider("d", "D"),
+				newMockProvider("b", "B"),
+				newMockProvider("a", "A"),
+				newMockProvider("c", "C"),
+			},
+			desired:         []Provider{},
+			expectedRemoved: []string{"a", "b", "c", "d"},
+			expectedEnsure:  []string{},
+			expectedChanged: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require := require.New(t)
+
+			diff, err := GetDiff(tt.current, tt.desired)
+			require.NoError(err)
+
+			removedIDs := make([]string, len(diff.Removed))
+			for i, p := range diff.Removed {
+				removedIDs[i] = p.ID()
+			}
+			require.Equal(tt.expectedRemoved, removedIDs, "removed apps should be sorted by ID")
+
+			ensureIDs := make([]string, len(diff.Ensure))
+			for i, p := range diff.Ensure {
+				ensureIDs[i] = p.ID()
+			}
+			require.Equal(tt.expectedEnsure, ensureIDs, "ensured apps should be sorted by ID")
+
+			changedIDs := make([]string, len(diff.Changed))
+			for i, p := range diff.Changed {
+				changedIDs[i] = p.ID()
+			}
+			require.Equal(tt.expectedChanged, changedIDs, "changed apps should be sorted by ID")
+		})
+	}
+}
+
+func TestGetDiff_DeterministicOrdering_Consistency(t *testing.T) {
+	require := require.New(t)
+
+	current := []Provider{
+		newMockProvider("z", "Z"),
+		newMockProvider("m", "M"),
+		newMockProvider("a", "A"),
+		newMockProvider("f", "F"),
+	}
+	desired := []Provider{}
+
+	for i := 0; i < 100; i++ {
+		diff, err := GetDiff(current, desired)
+		require.NoError(err)
+
+		removedIDs := make([]string, len(diff.Removed))
+		for j, p := range diff.Removed {
+			removedIDs[j] = p.ID()
+		}
+		require.Equal([]string{"a", "f", "m", "z"}, removedIDs,
+			"ordering should be consistent on iteration %d", i)
+	}
+}
+
+// Guards QE regressions where lifecycle-only overlays in the HelmApplication union
+// blob were classified as Changed (helm upgrade) instead of Ensure (QueueLifecycle).
+func TestGetDiff_WhenOnlyHelmLifecycleFieldsDiffer_ItShouldEnsureNotChange(t *testing.T) {
+	const appID = "test-app_helm-demo"
+	const image = "oci://registry.example.com/charts/test-app:0.1.0"
+	const path = "/var/lib/flightctl/helm/charts/test-app"
+
+	tests := []struct {
+		name     string
+		current  v1beta1.HelmApplication
+		desired  v1beta1.HelmApplication
+		curState v1beta1.ApplicationDesiredState
+		desState v1beta1.ApplicationDesiredState
+		curGen   int
+		desGen   int
+	}{
+		{
+			name:     "When only restartGeneration differs it should Ensure not Change",
+			current:  helmAppWithLifecycle(t, "helm-demo", "test-app", image, nil, nil),
+			desired:  helmAppWithLifecycle(t, "helm-demo", "test-app", image, nil, lo.ToPtr(1)),
+			curState: v1beta1.ApplicationDesiredStateRunning,
+			desState: v1beta1.ApplicationDesiredStateRunning,
+			curGen:   0,
+			desGen:   1,
+		},
+		{
+			name:     "When only desiredState differs it should Ensure not Change",
+			current:  helmAppWithLifecycle(t, "helm-demo", "test-app", image, lo.ToPtr(v1beta1.ApplicationDesiredStateRunning), nil),
+			desired:  helmAppWithLifecycle(t, "helm-demo", "test-app", image, lo.ToPtr(v1beta1.ApplicationDesiredStateStopped), nil),
+			curState: v1beta1.ApplicationDesiredStateRunning,
+			desState: v1beta1.ApplicationDesiredStateStopped,
+			curGen:   0,
+			desGen:   0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require := require.New(t)
+			curApp, desApp := tc.current, tc.desired
+			current := []Provider{
+				&mockProvider{
+					id:   appID,
+					name: "helm-demo",
+					spec: &ApplicationSpec{
+						ID:                appID,
+						Name:              "helm-demo",
+						AppType:           v1beta1.AppTypeHelm,
+						Image:             image,
+						Path:              path,
+						HelmApp:           &curApp,
+						DesiredState:      tc.curState,
+						RestartGeneration: tc.curGen,
+					},
+				},
+			}
+			desired := []Provider{
+				&mockProvider{
+					id:   appID,
+					name: "helm-demo",
+					spec: &ApplicationSpec{
+						ID:                appID,
+						Name:              "helm-demo",
+						AppType:           v1beta1.AppTypeHelm,
+						Image:             image,
+						Path:              path,
+						HelmApp:           &desApp,
+						DesiredState:      tc.desState,
+						RestartGeneration: tc.desGen,
+					},
+				},
+			}
+
+			diff, err := GetDiff(current, desired)
+			require.NoError(err)
+			require.Empty(diff.Changed, "lifecycle-only diff must not trigger Update")
+			require.Len(diff.Ensure, 1)
+			require.Equal(appID, diff.Ensure[0].ID())
+		})
+	}
+}
+
+func TestWriteENVFileSystemd(t *testing.T) {
+	tests := []struct {
+		name     string
+		envVars  map[string]string
+		expected map[string]string // key → expected full line in the .env file
+	}{
+		{
+			name:    "When values are plain it should double-quote them",
+			envVars: map[string]string{"FOO": "bar"},
+			expected: map[string]string{
+				"FOO": `FOO="bar"`,
+			},
+		},
+		{
+			name:    "When value contains a colon it should preserve it inside quotes",
+			envVars: map[string]string{"DB_URL": "host:5432"},
+			expected: map[string]string{
+				"DB_URL": `DB_URL="host:5432"`,
+			},
+		},
+		{
+			name:    "When value contains a hash it should preserve it inside quotes",
+			envVars: map[string]string{"COMMENT": "value#with-hash"},
+			expected: map[string]string{
+				"COMMENT": `COMMENT="value#with-hash"`,
+			},
+		},
+		{
+			name:    "When value contains spaces it should preserve them inside quotes",
+			envVars: map[string]string{"GREETING": "hello world"},
+			expected: map[string]string{
+				"GREETING": `GREETING="hello world"`,
+			},
+		},
+		{
+			name:    "When value contains a double-quote it should escape it",
+			envVars: map[string]string{"MSG": `say "hello"`},
+			expected: map[string]string{
+				"MSG": `MSG="say \"hello\""`,
+			},
+		},
+		{
+			name:    "When value contains a backslash it should escape it",
+			envVars: map[string]string{"PATH_VAL": `C:\Users\test`},
+			expected: map[string]string{
+				"PATH_VAL": `PATH_VAL="C:\\Users\\test"`,
+			},
+		},
+		{
+			name:    "When value contains both backslash and double-quote it should escape both",
+			envVars: map[string]string{"COMPLEX": `path\"quoted`},
+			expected: map[string]string{
+				"COMPLEX": `COMPLEX="path\\\"quoted"`,
+			},
+		},
+		{
+			name:    "When value contains a dollar sign it should escape it",
+			envVars: map[string]string{"SECRET": "pa$$word"},
+			expected: map[string]string{
+				"SECRET": `SECRET="pa\$\$word"`,
+			},
+		},
+		{
+			name:    "When value contains dollar backslash and double-quote it should escape all",
+			envVars: map[string]string{"ALL": `cost$10 path\"quoted`},
+			expected: map[string]string{
+				"ALL": `ALL="cost\$10 path\\\"quoted"`,
+			},
+		},
+		{
+			name:    "When value is empty it should produce an empty quoted string",
+			envVars: map[string]string{"EMPTY": ""},
+			expected: map[string]string{
+				"EMPTY": `EMPTY=""`,
+			},
+		},
+		{
+			name:    "When envVars is empty it should not create a file",
+			envVars: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require := require.New(t)
+			tmpDir := t.TempDir()
+			writer := fileio.NewWriter(fileio.WithWriterRootDir(tmpDir))
+			reader := fileio.NewReader(fileio.WithReaderRootDir(tmpDir))
+
+			appPath := "/test-app"
+			err := fileio.NewReadWriter(reader, writer).MkdirAll(appPath, fileio.DefaultDirectoryPermissions)
+			require.NoError(err)
+
+			err = writeENVFile(appPath, writer, tt.envVars, systemdEnvReplacer)
+			require.NoError(err)
+
+			if len(tt.envVars) == 0 {
+				exists, err := fileio.NewReadWriter(reader, writer).PathExists(filepath.Join(appPath, ".env"))
+				require.NoError(err)
+				require.False(exists, ".env file should not be created when envVars is empty")
+				return
+			}
+
+			envFile, err := fileio.NewReadWriter(reader, writer).ReadFile(filepath.Join(appPath, ".env"))
+			require.NoError(err)
+			content := string(envFile)
+
+			for _, expectedLine := range tt.expected {
+				require.Contains(content, expectedLine+"\n")
+			}
+		})
+	}
+}
+
+func TestWriteENVFileCompose(t *testing.T) {
+	tests := []struct {
+		name     string
+		envVars  map[string]string
+		expected map[string]string // key → expected full line in the .env file
+	}{
+		{
+			name:    "When values are plain it should double-quote them",
+			envVars: map[string]string{"FOO": "bar"},
+			expected: map[string]string{
+				"FOO": `FOO="bar"`,
+			},
+		},
+		{
+			name:    "When value contains a dollar sign it should NOT escape it",
+			envVars: map[string]string{"SECRET": "pa$$word"},
+			expected: map[string]string{
+				"SECRET": `SECRET="pa$$word"`,
+			},
+		},
+		{
+			name:    "When value contains a double-quote it should escape it",
+			envVars: map[string]string{"MSG": `say "hello"`},
+			expected: map[string]string{
+				"MSG": `MSG="say \"hello\""`,
+			},
+		},
+		{
+			name:    "When value contains a backslash it should escape it",
+			envVars: map[string]string{"PATH_VAL": `C:\Users\test`},
+			expected: map[string]string{
+				"PATH_VAL": `PATH_VAL="C:\\Users\\test"`,
+			},
+		},
+		{
+			name:    "When value contains dollar and backslash it should escape only the backslash",
+			envVars: map[string]string{"MIXED": `cost$10\path`},
+			expected: map[string]string{
+				"MIXED": `MIXED="cost$10\\path"`,
+			},
+		},
+		{
+			name:    "When envVars is empty it should not create a file",
+			envVars: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require := require.New(t)
+			tmpDir := t.TempDir()
+			writer := fileio.NewWriter(fileio.WithWriterRootDir(tmpDir))
+			reader := fileio.NewReader(fileio.WithReaderRootDir(tmpDir))
+
+			appPath := "/test-app"
+			err := fileio.NewReadWriter(reader, writer).MkdirAll(appPath, fileio.DefaultDirectoryPermissions)
+			require.NoError(err)
+
+			err = writeENVFile(appPath, writer, tt.envVars, composeEnvReplacer)
+			require.NoError(err)
+
+			if len(tt.envVars) == 0 {
+				exists, err := fileio.NewReadWriter(reader, writer).PathExists(filepath.Join(appPath, ".env"))
+				require.NoError(err)
+				require.False(exists, ".env file should not be created when envVars is empty")
+				return
+			}
+
+			envFile, err := fileio.NewReadWriter(reader, writer).ReadFile(filepath.Join(appPath, ".env"))
+			require.NoError(err)
+			content := string(envFile)
+
+			for _, expectedLine := range tt.expected {
+				require.Contains(content, expectedLine+"\n")
+			}
+		})
+	}
+}
+
+func helmAppWithLifecycle(t *testing.T, name, namespace, image string, desiredState *v1beta1.ApplicationDesiredState, restartGeneration *int) v1beta1.HelmApplication {
+	t.Helper()
+	require := require.New(t)
+
+	var app v1beta1.HelmApplication
+	err := app.FromImageApplicationProviderSpec(v1beta1.ImageApplicationProviderSpec{Image: image})
+	require.NoError(err)
+	app.AppType = v1beta1.AppTypeHelm
+	app.Name = lo.ToPtr(name)
+	app.Namespace = lo.ToPtr(namespace)
+	app.DesiredState = desiredState
+	app.RestartGeneration = restartGeneration
+
+	// Round-trip so lifecycle keys land in the union blob the way rendered specs do.
+	raw, err := json.Marshal(app)
+	require.NoError(err)
+	var roundTripped v1beta1.HelmApplication
+	require.NoError(json.Unmarshal(raw, &roundTripped))
+	return roundTripped
+}
+
+func TestWhenParentDigestIsUnknownItShouldCollectNestedWorkloads(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		inspectionExit    int
+		digest            string
+		reuseAfterCleanup bool
+	}{
+		{name: "When registry digest metadata is empty it should still collect workloads"},
+		{name: "When registry digest inspection fails it should still collect workloads", inspectionExit: 1},
+		{name: "When parent contents are unchanged after cleanup it should reuse the collected workload targets", digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", reuseAfterCleanup: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require := require.New(t)
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			binDir := t.TempDir()
+			for _, name := range []string{"podman", "podman-compose", "skopeo"} {
+				require.NoError(os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\n"), 0o600))
+				require.NoError(os.Chmod(filepath.Join(binDir, name), 0o700))
+			}
+			t.Setenv("PATH", binDir)
+			root := t.TempDir()
+			rw := fileio.NewReadWriter(fileio.NewReader(fileio.WithReaderRootDir(root)), fileio.NewWriter(fileio.WithWriterRootDir(root)))
+			require.NoError(rw.MkdirAll("/mounted-parent", fileio.DefaultDirectoryPermissions))
+			require.NoError(rw.WriteFile("/mounted-parent/docker-compose.yaml", []byte("services:\n  web:\n    image: quay.io/acme/web:v1\n"), fileio.DefaultFilePermissions))
+			const parent = "quay.io/acme/bundle:v1"
+			const imageID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			checks := 2
+			if tc.reuseAfterCleanup {
+				checks++
+			}
+			exec := executer.NewMockExecuter(ctrl)
+			exec.EXPECT().ExecuteWithContext(gomock.Any(), "podman", "image", "exists", parent).Return("", "", 0).Times(checks)
+			exec.EXPECT().ExecuteWithContext(gomock.Any(), "podman", "image", "inspect", "--format", "{{.Id}}", parent).Return(imageID, "", 0).Times(checks)
+			exec.EXPECT().ExecuteWithContext(gomock.Any(), "podman", "image", "inspect", "--format", "{{.Digest}}", imageID).Return(tc.digest, "", tc.inspectionExit).Times(checks)
+			exec.EXPECT().ExecuteWithContext(gomock.Any(), "podman", "unshare", "podman", "image", "mount", imageID).Return("/mounted-parent", "", 0)
+			exec.EXPECT().ExecuteWithContext(gomock.Any(), "podman", "image", "unmount", imageID).Return("", "", 0)
+			logger := log.NewPrefixLogger("test")
+			podman := client.NewPodman(logger, exec, rw, poll.Config{})
+			app := v1beta1.ComposeApplication{Name: lo.ToPtr("app"), AppType: v1beta1.AppTypeCompose}
+			require.NoError(app.FromImageApplicationProviderSpec(v1beta1.ImageApplicationProviderSpec{Image: parent}))
+			var appSpec v1beta1.ApplicationProviderSpec
+			require.NoError(appSpec.FromComposeApplication(app))
+			cache := NewOCITargetCache()
+			collect := func() (*dependency.OCICollection, error) {
+				return CollectOCITargets(t.Context(), logger,
+					func(v1beta1.Username) (*client.Podman, error) { return podman, nil }, client.NewCLIClients(),
+					func(v1beta1.Username) (fileio.ReadWriter, error) { return rw, nil },
+					&v1beta1.DeviceSpec{Applications: &[]v1beta1.ApplicationProviderSpec{appSpec}}, WithOCICache(cache), WithAppData(NewAppDataCache()))
+			}
+			collection, err := collect()
+			if tc.reuseAfterCleanup {
+				require.NoError(err)
+				collection, err = collect()
+			}
+			require.NoError(err)
+			require.False(collection.Requeue)
+			var targets []dependency.OCIPullTarget
+			for _, values := range collection.Targets {
+				targets = append(targets, values...)
+			}
+			require.Len(targets, 2)
+			require.Equal(parent, targets[0].Reference)
+			require.True(targets[0].Delta.Package)
+			require.Empty(targets[0].Delta.Hint)
+			require.Equal("quay.io/acme/web:v1", targets[1].Reference)
+			require.False(targets[1].Delta.Package)
+
+		})
+	}
+}

@@ -1,0 +1,1405 @@
+package tasks
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	config_latest "github.com/coreos/ignition/v2/config/v3_4"
+	config_latest_types "github.com/coreos/ignition/v2/config/v3_4/types"
+	"github.com/flightctl/flightctl/api/core/v1alpha1"
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/config"
+	delta "github.com/flightctl/flightctl/internal/delta_worker/store/deltageneration"
+	"github.com/flightctl/flightctl/internal/domain"
+	helmruntime "github.com/flightctl/flightctl/internal/helm"
+	"github.com/flightctl/flightctl/internal/kvstore"
+	catalogservice "github.com/flightctl/flightctl/internal/service/catalog"
+	"github.com/flightctl/flightctl/internal/service/common"
+	deviceservice "github.com/flightctl/flightctl/internal/service/device"
+	repositoryservice "github.com/flightctl/flightctl/internal/service/repository"
+	"github.com/flightctl/flightctl/internal/util"
+	"github.com/flightctl/flightctl/internal/util/validation"
+	"github.com/flightctl/flightctl/pkg/ignition"
+	"github.com/flightctl/flightctl/pkg/k8sclient"
+	"github.com/google/uuid"
+	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
+)
+
+// The deviceRender task is triggered when a device is updated or its template version changes.
+// It renders the device’s configuration and applications into a final form that can be consumed
+// by the edge device, and stores the rendered output.
+//
+// To ensure idempotency:
+// - If the device spec hasn't changed (as determined by UpdateRenderedDevice), the rendered
+//   version is not bumped.
+// - The rendering process is deterministic, based on the device spec, configuration sources,
+//   and application specs.
+// - External inputs (e.g., Git repositories, HTTP endpoints, Kubernetes secrets) are frozen per
+//   fleet/template version using a KV store. Writes to the store use SetNX to prevent changes
+//   after freezing, and to detect inconsistencies.
+// - The rendered output and device condition status are safely overwritten or retried without
+//   side effects.
+//
+// This design ensures the task can be retried safely, detects mid-write inconsistencies,
+// and avoids unnecessary reprocessing when the output is already up to date.
+
+func deviceRender(ctx context.Context, orgId uuid.UUID, event domain.Event, logic *DeviceRenderLogic, log logrus.FieldLogger) error {
+	if event.InvolvedObject.Kind != domain.DeviceKind {
+		log.Errorf("DeviceRender called with unexpected kind %s and op %s", event.InvolvedObject.Kind, event.Reason)
+		return nil
+	}
+
+	// Detach from the parent's EventProcessingTimeout so that the render
+	// operation runs under its own configurable deadline. Explicit parent
+	// cancellation (e.g. shutdown) still propagates through the goroutine.
+	renderCtx, cancelRender := context.WithTimeout(context.WithoutCancel(ctx), logic.cfg.EffectiveRenderTimeout())
+	defer cancelRender()
+	go func() {
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.Canceled) {
+				cancelRender()
+			}
+		case <-renderCtx.Done():
+		}
+	}()
+
+	err := logic.renderDevice(renderCtx, orgId, event, log)
+	if err != nil {
+		log.Errorf("failed rendering device %s/%s: %v", orgId, event.InvolvedObject.Name, err)
+	} else {
+		log.Infof("completed rendering device %s/%s", orgId, event.InvolvedObject.Name)
+	}
+	return nil
+}
+
+type DeviceRenderLogic struct {
+	log                 logrus.FieldLogger
+	deviceSvc           deviceservice.Service
+	repositorySvc       repositoryservice.Service
+	catalogSvc          catalogservice.Service
+	k8sClient           k8sclient.K8SClient
+	kvStore             kvstore.KVStore
+	cfg                 *config.Config
+	vmConverterOverride VmConverterFn
+	helmRenderer        helmImageRenderer
+	deltaLookup         generationLookup
+}
+
+type helmImageRenderer interface {
+	ImageRefs(context.Context, v1beta1.HelmApplication, *domain.Device, []byte, *domain.OciRepoSpec) ([]string, error)
+}
+
+func NewDeviceRenderLogic(log logrus.FieldLogger, deviceSvc deviceservice.Service, repositorySvc repositoryservice.Service, catalogSvc catalogservice.Service, k8sClient k8sclient.K8SClient, kvStore kvstore.KVStore, cfg *config.Config) *DeviceRenderLogic {
+	return &DeviceRenderLogic{
+		log:           log,
+		deviceSvc:     deviceSvc,
+		repositorySvc: repositorySvc,
+		catalogSvc:    catalogSvc,
+		k8sClient:     k8sClient,
+		kvStore:       kvStore,
+		cfg:           cfg,
+		helmRenderer:  helmruntime.NewRenderer(nil, log),
+	}
+}
+
+// RenderHelmImageRefs renders a target Helm application using the resolved
+// config files that will be delivered to the device and returns its workload
+// image references. The same method is used during delta preparation and when
+// attaching delta hints to a rendered device spec.
+func (t *DeviceRenderLogic) RenderHelmImageRefs(
+	ctx context.Context,
+	orgID uuid.UUID,
+	device *domain.Device,
+	app v1beta1.HelmApplication,
+	renderedConfig []byte,
+) ([]string, error) {
+	if t.helmRenderer == nil {
+		return nil, errors.New("Helm image renderer is not configured")
+	}
+	imageSpec, err := app.AsImageApplicationProviderSpec()
+	if err != nil {
+		return nil, fmt.Errorf("get Helm chart image reference: %w", err)
+	}
+	cacheTTL := t.cfg.EffectiveHelmImageRefsCacheTTL()
+	cacheKey := ""
+	if t.kvStore != nil && cacheTTL > 0 {
+		key, keyErr := helmruntime.ImageRefsCacheKey(orgID, app, device, renderedConfig, cacheTTL)
+		if keyErr != nil {
+			t.log.WithError(keyErr).Warn("failed to build Helm image refs cache key; rendering chart without cache")
+		} else {
+			cacheKey = key
+			cached, cacheErr := t.kvStore.Get(ctx, cacheKey)
+			if cacheErr != nil {
+				t.log.WithError(cacheErr).Warn("failed to read Helm image refs cache; rendering chart")
+			} else if len(cached) > 0 {
+				var imageRefs []string
+				if err := json.Unmarshal(cached, &imageRefs); err != nil || imageRefs == nil {
+					if err == nil {
+						err = errors.New("cached Helm image refs are null")
+					}
+					t.log.WithError(err).Warn("invalid Helm image refs cache entry; rendering chart")
+				} else {
+					t.log.Debug("using cached Helm workload image references")
+					return imageRefs, nil
+				}
+			}
+		}
+	}
+
+	// Repository lookup supplies chart-pull credentials and transport settings,
+	// but does not change rendered workload images. Delay the paginated lookup
+	// until after a cache miss.
+	registrySpec, err := helmruntime.ResolveOCIRepositorySpec(
+		ctx,
+		t.repositorySvc,
+		orgID,
+		imageSpec.Image,
+		deltaWriteSpec(t.cfg),
+	)
+	if err != nil {
+		return nil, err
+	}
+	imageRefs, err := t.helmRenderer.ImageRefs(ctx, app, device, renderedConfig, registrySpec)
+	if err != nil {
+		return nil, err
+	}
+	if imageRefs == nil {
+		imageRefs = []string{}
+	}
+	if cacheKey != "" {
+		cached, marshalErr := json.Marshal(imageRefs)
+		if marshalErr != nil {
+			t.log.WithError(marshalErr).Warn("failed to encode Helm image refs cache entry")
+		} else if cacheErr := t.kvStore.Set(ctx, cacheKey, cached, cacheTTL); cacheErr != nil {
+			t.log.WithError(cacheErr).Warn("failed to write Helm image refs cache entry")
+		}
+	}
+	return imageRefs, nil
+}
+
+// WithHelmImageRenderer returns a copy configured with a renderer implementation.
+// This keeps Helm command execution injectable in unit tests.
+func (t *DeviceRenderLogic) WithHelmImageRenderer(renderer helmImageRenderer) *DeviceRenderLogic {
+	clone := *t
+	clone.helmRenderer = renderer
+	return &clone
+}
+
+// NewDeviceRenderLogicWithDeltaStore creates device-render logic with the
+// dependencies required to look up OS delta hints. NewDeviceRenderLogic is
+// also used for spec-only rendering, which does not need a delta store.
+func NewDeviceRenderLogicWithDeltaStore(log logrus.FieldLogger, deviceSvc deviceservice.Service, repositorySvc repositoryservice.Service, catalogSvc catalogservice.Service, k8sClient k8sclient.K8SClient, kvStore kvstore.KVStore, deltaStore delta.Store, cfg *config.Config) (*DeviceRenderLogic, error) {
+	return newDeviceRenderLogicWithDeltaLookup(log, deviceSvc, repositorySvc, catalogSvc, k8sClient, kvStore, deltaStore, cfg)
+}
+
+func newDeviceRenderLogicWithDeltaLookup(log logrus.FieldLogger, deviceSvc deviceservice.Service, repositorySvc repositoryservice.Service, catalogSvc catalogservice.Service, k8sClient k8sclient.K8SClient, kvStore kvstore.KVStore, deltaLookup generationLookup, cfg *config.Config) (*DeviceRenderLogic, error) {
+	if kvStore == nil {
+		return nil, errors.New("KV store is required for device rendering")
+	}
+	if deltaLookup == nil {
+		return nil, errors.New("delta generation lookup is required for device rendering")
+	}
+	logic := NewDeviceRenderLogic(log, deviceSvc, repositorySvc, catalogSvc, k8sClient, kvStore, cfg)
+	logic.deltaLookup = deltaLookup
+	return logic, nil
+}
+
+// WithVmConverter returns a copy of DeviceRenderLogic configured with the given
+// converter for VM application rendering. Intended for integration tests that
+// extract the kubevirt-vm-to-pod binary into a temporary directory and supply
+// its path via NewVmConverter.
+func (t *DeviceRenderLogic) WithVmConverter(fn VmConverterFn) *DeviceRenderLogic {
+	clone := *t
+	clone.vmConverterOverride = fn
+	return &clone
+}
+
+// deviceRenderState carries values that belong to one render invocation.
+// DeviceRenderLogic itself contains only startup-owned dependencies and can
+// safely be shared by concurrent event handlers.
+type deviceRenderState struct {
+	*DeviceRenderLogic
+	log             logrus.FieldLogger
+	orgId           uuid.UUID
+	event           domain.Event
+	ownerFleet      *string
+	templateVersion *string
+	vmConverter     VmConverterFn
+	vmRenderOptions VmRenderOptions
+}
+
+func (t *DeviceRenderLogic) newRenderState(orgId uuid.UUID, event domain.Event) *deviceRenderState {
+	opts := vmRenderOptionsFromConfig(t.cfg, "")
+	converter := t.vmConverterOverride
+	if converter == nil {
+		converter = NewVmConverter(vmToQuadletBinary, opts)
+	}
+	return &deviceRenderState{
+		DeviceRenderLogic: t,
+		log:               t.log,
+		orgId:             orgId,
+		event:             event,
+		vmConverter:       converter,
+		vmRenderOptions:   opts,
+	}
+}
+
+func (t *deviceRenderState) bindVmLauncher(device *domain.Device) {
+	opts := vmRenderOptionsFromConfig(t.cfg, osKeyFromDevice(device))
+	t.vmRenderOptions = opts
+	if t.DeviceRenderLogic.vmConverterOverride != nil {
+		return
+	}
+	t.vmConverter = NewVmConverter(vmToQuadletBinary, opts)
+}
+
+// RenderDevice processes one device event. orgId and event are call-scoped so
+// the renderer's startup-owned dependencies can be reused across events.
+//
+//nolint:gocyclo
+func (t *DeviceRenderLogic) RenderDevice(ctx context.Context, orgId uuid.UUID, event domain.Event) error {
+	return t.renderDevice(ctx, orgId, event, t.log)
+}
+
+func (t *DeviceRenderLogic) renderDevice(ctx context.Context, orgId uuid.UUID, event domain.Event, log logrus.FieldLogger) error {
+	state := t.newRenderState(orgId, event)
+	if log != nil {
+		state.log = log
+	}
+	return state.renderDevice(ctx)
+}
+
+//nolint:gocyclo
+func (t *deviceRenderState) renderDevice(ctx context.Context) error {
+	device, status := t.deviceSvc.GetDevice(ctx, t.orgId, t.event.InvolvedObject.Name)
+	if status.Code != http.StatusOK {
+		return fmt.Errorf("failed getting device %s/%s: %s", t.orgId, t.event.InvolvedObject.Name, status.Message)
+	}
+	if t.event.Reason == domain.EventReasonDeltaGenerationCompleted {
+		generation := device.Metadata.Generation
+		completedGeneration := lo.FromPtr(t.event.Metadata.Annotations)[domain.EventAnnotationDeltaGeneration]
+		if generation == nil || *generation <= 0 || completedGeneration != strconv.FormatInt(*generation, 10) {
+			t.log.Infof("Dropping delta completion for device %s: prepared generation %q does not match current generation", t.event.InvolvedObject.Name, completedGeneration)
+			return nil
+		}
+	}
+
+	t.bindVmLauncher(device)
+
+	// Calculate hash including device spec and selected virt-launcher image.
+	specHash := hashRenderedWithSpec(device.Spec, t.vmRenderOptions.LauncherImage)
+
+	// bypassHashCheck is true for event reasons that must always produce a fresh render even
+	// though specHash (computed from device.Spec alone) hasn't changed: dependency changes and
+	// application lifecycle changes affect the rendered output without changing device.Spec.
+	bypassHashCheck := lo.Contains([]domain.EventReason{
+		domain.EventReasonDependencyChangeDetected,
+		domain.EventReasonFleetRolloutDeviceSelected,
+		domain.EventReasonApplicationLifecycleChanged,
+	}, t.event.Reason)
+
+	if device.Metadata.Annotations != nil {
+		annotations := lo.FromPtr(device.Metadata.Annotations)
+
+		// Don't render if the device is awaiting reconnection or paused due to conflicts after restore
+		if val, ok := annotations[domain.DeviceAnnotationAwaitingReconnect]; ok {
+			if val == "true" {
+				t.log.Infof("Device %s is awaiting reconnection after restore", t.event.InvolvedObject.Name)
+				return nil
+			}
+		}
+		if val, ok := annotations[domain.DeviceAnnotationConflictPaused]; ok {
+			if val == "true" {
+				t.log.Infof("Device %s is paused due to conflicts", t.event.InvolvedObject.Name)
+				return nil
+			}
+		}
+
+		// FleetRolloutDeviceSelected is re-emitted by the disruption-budget reconciler on every
+		// reconcile tick for any device still mid-rollout, without knowing whether an earlier
+		// event (or an earlier duplicate of itself, still queued behind it) already rendered the
+		// device for the current template version. Skip redundant duplicates here rather than
+		// falling through to bypassHashCheck, which would otherwise force a phantom re-render,
+		// rendered-version bump, and agent update cycle for a device that already caught up.
+		if t.event.Reason == domain.EventReasonFleetRolloutDeviceSelected {
+			templateVersion, hasTemplateVersion := annotations[domain.DeviceAnnotationTemplateVersion]
+			renderedTemplateVersion, hasRenderedTemplateVersion := annotations[domain.DeviceAnnotationRenderedTemplateVersion]
+			if hasTemplateVersion && hasRenderedTemplateVersion && templateVersion == renderedTemplateVersion {
+				t.log.Infof("Device %s already rendered for template version %s, skipping redundant rollout selection event", t.event.InvolvedObject.Name, templateVersion)
+				return nil
+			}
+		}
+
+		// Don't render if the device spec hash hasn't changed since the last render, unless
+		// bypassHashCheck says this event must always produce a fresh render.
+		if !bypassHashCheck {
+			if val, ok := annotations[domain.DeviceAnnotationRenderedSpecHash]; ok {
+				if val == specHash {
+					t.log.Infof("Device %s spec hash hasn't changed since the last render", t.event.InvolvedObject.Name)
+					return nil
+				}
+			}
+		}
+	}
+
+	if device.Metadata.Owner != nil {
+		_, owner, err := util.GetResourceOwner(device.Metadata.Owner)
+		if err != nil {
+			return fmt.Errorf("failed getting device owner %s/%s: %w", t.orgId, t.event.InvolvedObject.Name, err)
+		}
+		t.ownerFleet = &owner
+
+		annotations := lo.FromPtr(device.Metadata.Annotations)
+		tvString, exists := util.GetFromMap(annotations, domain.DeviceAnnotationTemplateVersion)
+		if !exists {
+			return fmt.Errorf("device has no templateversion annotation")
+		}
+		t.templateVersion = &tvString
+	}
+
+	// Overlay the fleet-level application lifecycle default and the device-level override on
+	// top of the declarative application specs, baking the result into RenderedApplications
+	// only; neither is ever persisted back into the device's Spec. A malformed annotation is
+	// logged and skipped rather than failing the render, since it's only an optional overlay.
+	annotations := lo.FromPtr(device.Metadata.Annotations)
+	deviceLifecycleRaw := annotations[domain.DeviceAnnotationApplicationLifecycle]
+	fleetLifecycleRaw := ""
+	if t.ownerFleet != nil {
+		fleetLifecycleRaw = annotations[domain.DeviceAnnotationFleetApplicationLifecycle]
+	}
+	var applications *[]domain.ApplicationProviderSpec
+	if device.Spec != nil && device.Spec.Applications != nil {
+		// Copy rather than alias device.Spec.Applications: the lifecycle overlay below replaces
+		// elements in place, and must not mutate the device object read above.
+		appsCopy := append([]domain.ApplicationProviderSpec(nil), (*device.Spec.Applications)...)
+		applications = &appsCopy
+	}
+	if deviceLifecycleRaw != "" || fleetLifecycleRaw != "" {
+		if err := domain.OverlayApplicationLifecycle(applications, deviceLifecycleRaw, fleetLifecycleRaw); err != nil {
+			t.log.Errorf("failed to overlay application lifecycle for device %s/%s, skipping override: %v", t.orgId, t.event.InvolvedObject.Name, err)
+		}
+	}
+
+	spec := device.Spec
+	if spec != nil {
+		specCopy := *spec
+		specCopy.Applications = applications
+		spec = &specCopy
+	}
+
+	rendered, renderErr := t.renderSpec(ctx, spec)
+	if renderErr == nil {
+		renderErr = t.resolveRenderedAppDeltaHints(ctx, device, &rendered)
+	}
+	if errors.Is(renderErr, errIgnitionConversion) {
+		return t.setErrorStatus(ctx, renderErr)
+	}
+	if device.Metadata.Owner == nil || *device.Metadata.Owner == "" {
+		status = t.deviceSvc.OverwriteDeviceRepositoryRefs(ctx, t.orgId, *device.Metadata.Name, rendered.referencedRepos...)
+		if status.Code != http.StatusOK {
+			return t.setErrorStatus(ctx, fmt.Errorf("setting repository references: %s", status.Message))
+		}
+	}
+	if renderErr != nil {
+		if isPermanentRenderError(renderErr) {
+			t.markPermanentRenderFailure(ctx, specHash)
+		}
+		return t.setErrorStatus(ctx, renderErr)
+	}
+
+	var syncRefs []domain.DependencySyncConfigRefStatus
+	for _, fp := range rendered.configFingerprints {
+		ref := domain.DependencySyncConfigRefStatus{
+			ConfigProviderName: fp.ConfigProviderName,
+			Fingerprint:        lo.ToPtr(fp.Fingerprint),
+		}
+		syncRefs = append(syncRefs, ref)
+	}
+
+	osHints := t.resolveOSDeltaHint(ctx, device, rendered)
+	if len(rendered.appDeltaSizes) > 0 {
+		if osHints == nil {
+			osHints = &deviceservice.RenderedOSHints{}
+		}
+		osHints.AppDeltaSizes = rendered.appDeltaSizes
+	}
+	status = t.deviceSvc.UpdateRenderedDevice(ctx, t.orgId, t.event.InvolvedObject.Name, string(rendered.Config), string(rendered.Applications), specHash, rendered.OsImage, syncRefs, bypassHashCheck, osHints)
+	if err := common.ApiStatusToErr(status); err != nil {
+		return t.setErrorStatus(ctx, err)
+	}
+	return nil
+}
+
+var errIgnitionConversion = errors.New("failed converting ignition config to rendered config")
+
+type RenderedSpec struct {
+	OsImage      string
+	Config       []byte
+	Applications []byte
+
+	referencedRepos    []string
+	configFingerprints []ConfigRefFingerprint
+	// appDeltaSizes maps application name to its IEC-formatted control-plane
+	// delta payload size.
+	appDeltaSizes map[string]*string
+}
+
+// RenderSpec resolves a spec for orgId without device-event state.
+func (t *DeviceRenderLogic) RenderSpec(ctx context.Context, orgId uuid.UUID, spec *domain.DeviceSpec) (RenderedSpec, error) {
+	return t.newRenderState(orgId, domain.Event{}).renderSpec(ctx, spec)
+}
+
+// RenderSpecForDevice resolves a spec using the VM render options selected for
+// the device's reported OS, matching the options used by RenderDevice.
+func (t *DeviceRenderLogic) RenderSpecForDevice(ctx context.Context, orgId uuid.UUID, device *domain.Device, spec *domain.DeviceSpec) (RenderedSpec, error) {
+	state := t.newRenderState(orgId, domain.Event{})
+	state.bindVmLauncher(device)
+	return state.renderSpec(ctx, spec)
+}
+
+func (t *deviceRenderState) renderSpec(ctx context.Context, spec *domain.DeviceSpec) (RenderedSpec, error) {
+	var deviceConfig *[]domain.ConfigProviderSpec
+	var applications *[]domain.ApplicationProviderSpec
+	if spec != nil {
+		deviceConfig = spec.Config
+		if spec.Applications != nil {
+			appsCopy := append([]domain.ApplicationProviderSpec(nil), (*spec.Applications)...)
+			applications = &appsCopy
+		}
+	}
+
+	ignitionConfig, referencedRepos, configFingerprints, renderErr := t.renderConfig(ctx, deviceConfig)
+	renderedConfig, err := ignitionConfigToRenderedConfig(ignitionConfig)
+	if err != nil {
+		return RenderedSpec{referencedRepos: referencedRepos, configFingerprints: configFingerprints}, fmt.Errorf("%w: %v", errIgnitionConversion, err)
+	}
+	result := RenderedSpec{
+		Config:             renderedConfig,
+		referencedRepos:    referencedRepos,
+		configFingerprints: configFingerprints,
+	}
+	if renderErr != nil {
+		return result, renderErr
+	}
+
+	if spec != nil && spec.Os != nil {
+		if spec.Os.CatalogItemRef != nil {
+			osImage, err := resolveCatalogItemRef(ctx, *spec.Os.CatalogItemRef, t.orgId, t.catalogSvc, v1alpha1.CatalogItemTypeOS)
+			if err != nil {
+				return result, err
+			}
+			result.OsImage = osImage
+		} else {
+			result.OsImage = spec.Os.Image
+		}
+	}
+
+	renderedApplications, err := t.renderApplications(ctx, applications)
+	if err != nil {
+		return result, err
+	}
+	result.Applications = renderedApplications
+	return result, nil
+}
+
+func (t *deviceRenderState) markPermanentRenderFailure(ctx context.Context, specHash string) {
+	annotations := map[string]string{
+		domain.DeviceAnnotationRenderedSpecHash: specHash,
+	}
+	if t.templateVersion != nil {
+		annotations[domain.DeviceAnnotationRenderedTemplateVersion] = *t.templateVersion
+	}
+
+	status := t.deviceSvc.UpdateDeviceAnnotations(ctx, t.orgId, t.event.InvolvedObject.Name, annotations, nil)
+	if status.Code != http.StatusOK {
+		t.log.Errorf("Failed writing render-failure annotations for device %s/%s: %s", t.orgId, t.event.InvolvedObject.Name, status.Message)
+	}
+}
+
+// setErrorStatus records a render failure as SpecValid=False. All call sites already gate
+// on a non-nil error, so renderErr is always expected to be set.
+func (t *deviceRenderState) setErrorStatus(ctx context.Context, renderErr error) error {
+	condition := domain.Condition{
+		Type:    domain.ConditionTypeDeviceSpecValid,
+		Status:  domain.ConditionStatusFalse,
+		Reason:  "Invalid",
+		Message: renderErr.Error(),
+	}
+
+	status := t.deviceSvc.SetDeviceServiceConditions(ctx, t.orgId, t.event.InvolvedObject.Name, []domain.Condition{condition})
+	if status.Code != http.StatusOK {
+		t.log.Errorf("Failed setting condition for device %s/%s: %s", t.orgId, t.event.InvolvedObject.Name, status.Message)
+	} else if err := t.deviceSvc.UpdateServerSideDeviceStatus(ctx, t.orgId, t.event.InvolvedObject.Name); err != nil {
+		t.log.Errorf("Failed updating device status for device %s/%s: %v", t.orgId, t.event.InvolvedObject.Name, err)
+	}
+	return renderErr
+}
+
+func (t *deviceRenderState) renderApplications(ctx context.Context, applications *[]domain.ApplicationProviderSpec) ([]byte, error) {
+	if applications == nil {
+		return nil, nil
+	}
+
+	var invalidApplications []string
+	var renderedApplications []domain.ApplicationProviderSpec
+	var firstError error
+
+	for i := range *applications {
+		application := (*applications)[i]
+		name, renderedApplication, renderErr := renderApplication(ctx, &application, t.vmConverter, t.vmRenderOptions, t.kvStore, t.orgId, t.catalogSvc)
+		applicationName := util.DefaultIfNil(name, "<unknown>")
+
+		// Append invalid configs only if there's an error
+		if renderErr != nil {
+			invalidApplications = append(invalidApplications, applicationName)
+			if firstError == nil {
+				firstError = renderErr
+			}
+		} else {
+			if renderedApplication != nil {
+				renderedApplications = append(renderedApplications, *renderedApplication)
+			}
+		}
+	}
+
+	if len(invalidApplications) > 0 {
+		pluralSuffix := ""
+		errorPrefix := "Error"
+		if len(invalidApplications) > 1 {
+			pluralSuffix = "s"
+			errorPrefix = "First error"
+		}
+		return nil, fmt.Errorf("%d invalid application%s: %s. %s: %w", len(invalidApplications), pluralSuffix, strings.Join(invalidApplications, ", "), errorPrefix, firstError)
+	}
+
+	renderedApplicationBytes, err := json.Marshal(renderedApplications)
+	if err != nil {
+		return nil, fmt.Errorf("failed marshalling applications: %w", err)
+	}
+
+	return renderedApplicationBytes, nil
+}
+
+func (t *deviceRenderState) renderConfig(ctx context.Context, deviceConfig *[]domain.ConfigProviderSpec) (*config_latest_types.Config, []string, []ConfigRefFingerprint, error) {
+	ignitionConfig := &config_latest_types.Config{
+		Ignition: config_latest_types.Ignition{
+			Version: config_latest_types.MaxVersion.String(),
+		},
+	}
+
+	if deviceConfig == nil {
+		return ignitionConfig, nil, nil, nil
+	}
+
+	invalidConfigs := []string{}
+	referencedRepos := []string{}
+	var fingerprints []ConfigRefFingerprint
+	var firstError error
+	for i := range *deviceConfig {
+		configItem := (*deviceConfig)[i]
+		name, repoName, fingerprint, err := t.renderConfigItem(ctx, &configItem, &ignitionConfig)
+
+		if repoName != nil {
+			referencedRepos = append(referencedRepos, *repoName)
+		}
+
+		if err != nil {
+			invalidConfigs = append(invalidConfigs, util.DefaultIfNil(name, "<unknown>"))
+			if len(invalidConfigs) == 1 {
+				firstError = err
+			}
+		} else if fingerprint != nil && name != nil {
+			fingerprints = append(fingerprints, ConfigRefFingerprint{
+				ConfigProviderName: *name,
+				Fingerprint:        *fingerprint,
+			})
+		}
+	}
+
+	if len(invalidConfigs) != 0 {
+		configurationStr := "configuration"
+		errorStr := "Error"
+		if len(invalidConfigs) > 1 {
+			configurationStr += "s"
+			errorStr = "First error"
+		}
+		return nil, referencedRepos, nil, fmt.Errorf("%d invalid %s: %s. %s: %w", len(invalidConfigs), configurationStr, strings.Join(invalidConfigs, ", "), errorStr, firstError)
+	}
+
+	return ignitionConfig, referencedRepos, fingerprints, nil
+}
+
+// ConfigRefFingerprint holds the fingerprint captured for one config provider at render time.
+type ConfigRefFingerprint struct {
+	ConfigProviderName string
+	Fingerprint        string
+}
+
+// cachedSecretData wraps secret data with its ResourceVersion for KV storage.
+// Older entries may contain only the raw data map (no ResourceVersion).
+type cachedSecretData struct {
+	Data            map[string][]byte `json:"data"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+}
+
+type RenderItem interface {
+	MarshalJSON() ([]byte, error)
+}
+
+func (t *deviceRenderState) renderConfigItem(ctx context.Context, configItem *domain.ConfigProviderSpec, ignitionConfig **config_latest_types.Config) (*string, *string, *string, error) {
+	configType, err := configItem.Type()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%w: failed getting config type: %w", ErrUnknownConfigName, err)
+	}
+
+	switch configType {
+	case domain.GitConfigProviderType:
+		return t.renderGitConfig(ctx, configItem, ignitionConfig)
+	case domain.KubernetesSecretProviderType:
+		return t.renderK8sConfig(ctx, configItem, ignitionConfig)
+	case domain.InlineConfigProviderType:
+		return t.renderInlineConfig(configItem, ignitionConfig)
+	case domain.HttpConfigProviderType:
+		return t.renderHttpProviderConfig(ctx, configItem, ignitionConfig)
+	default:
+		return nil, nil, nil, fmt.Errorf("%w: unsupported config type %q", ErrUnknownConfigName, configType)
+	}
+}
+
+func renderApplication(ctx context.Context, app *domain.ApplicationProviderSpec, vmConverter VmConverterFn, vmOpts VmRenderOptions, kvStore kvstore.KVStore, orgId uuid.UUID, catalogSvc catalogservice.Service) (*string, *domain.ApplicationProviderSpec, error) {
+	appType, err := (*app).GetAppType()
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: failed to get app type: %w", ErrUnknownApplicationType, err)
+	}
+
+	switch appType {
+	case domain.AppTypeContainer:
+		container, err := app.AsContainerApplication()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse application spec for type %s: %w", appType, err)
+		}
+		err = resolveApplicationCatalogItemRefIfExists(ctx, appType, &container, orgId, catalogSvc)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to resolve catalog item ref: %w", err)
+		}
+		if err := resolveVolumeCatalogItemRefs(ctx, container.Volumes, orgId, catalogSvc); err != nil {
+			return nil, nil, fmt.Errorf("failed to resolve volume catalog item refs: %w", err)
+		}
+		if err := app.FromContainerApplication(container); err != nil {
+			return nil, nil, fmt.Errorf("failed to apply resolved container app: %w", err)
+		}
+		return container.Name, app, nil
+	case domain.AppTypeHelm:
+		helm, err := app.AsHelmApplication()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse application spec for type %s: %w", appType, err)
+		}
+		err = resolveApplicationCatalogItemRefIfExists(ctx, appType, &helm, orgId, catalogSvc)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to resolve catalog item ref: %w", err)
+		}
+		if err := app.FromHelmApplication(helm); err != nil {
+			return nil, nil, fmt.Errorf("failed to apply resolved helm app: %w", err)
+		}
+		return helm.Name, app, nil
+	case domain.AppTypeCompose:
+		compose, err := app.AsComposeApplication()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse application spec for type %s: %w", appType, err)
+		}
+		err = resolveApplicationCatalogItemRefIfExists(ctx, appType, &compose, orgId, catalogSvc)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to resolve catalog item ref: %w", err)
+		}
+		if err := resolveVolumeCatalogItemRefs(ctx, compose.Volumes, orgId, catalogSvc); err != nil {
+			return nil, nil, fmt.Errorf("failed to resolve volume catalog item refs: %w", err)
+		}
+		if err := app.FromComposeApplication(compose); err != nil {
+			return nil, nil, fmt.Errorf("failed to apply resolved compose app: %w", err)
+		}
+		return compose.Name, app, nil
+	case domain.AppTypeQuadlet:
+		quadlet, err := app.AsQuadletApplication()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse application spec for type %s: %w", appType, err)
+		}
+		err = resolveApplicationCatalogItemRefIfExists(ctx, appType, &quadlet, orgId, catalogSvc)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to resolve catalog item ref: %w", err)
+		}
+		if err := resolveVolumeCatalogItemRefs(ctx, quadlet.Volumes, orgId, catalogSvc); err != nil {
+			return nil, nil, fmt.Errorf("failed to resolve volume catalog item refs: %w", err)
+		}
+		if err := app.FromQuadletApplication(quadlet); err != nil {
+			return nil, nil, fmt.Errorf("failed to apply resolved quadlet app: %w", err)
+		}
+		return quadlet.Name, app, nil
+	case domain.AppTypeVm:
+		vmApp, parseErr := (*app).AsVmApplication()
+		if parseErr != nil {
+			return nil, nil, fmt.Errorf("%w: failed to parse application spec for type %s: %w", ErrUnknownApplicationType, appType, parseErr)
+		}
+		appName := vmApp.Name
+		converted, renderErr := renderVmApplication(ctx, vmApp, vmConverter, vmOpts, kvStore)
+		if renderErr != nil {
+			return appName, nil, renderErr
+		}
+		return appName, converted, nil
+	default:
+		return nil, nil, fmt.Errorf("%w: unsupported application type: %q", ErrUnknownApplicationType, appType)
+	}
+}
+
+func (t *deviceRenderState) renderGitConfig(ctx context.Context, configItem *domain.ConfigProviderSpec, ignitionConfig **config_latest_types.Config) (*string, *string, *string, error) {
+	gitSpec, err := configItem.AsGitConfigProviderSpec()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%w: failed getting config item as GitConfigProviderSpec: %w", ErrUnknownConfigName, err)
+	}
+
+	repo, status := t.repositorySvc.GetRepository(ctx, t.orgId, gitSpec.GitRef.Repository)
+	if status.Code != http.StatusOK {
+		return &gitSpec.Name, &gitSpec.GitRef.Repository, nil, fmt.Errorf("failed fetching specified Repository definition %s/%s: %s", t.orgId, gitSpec.GitRef.Repository, status.Message)
+	}
+
+	var ignition *config_latest_types.Config
+	var commitHash string
+
+	if t.ownerFleet == nil {
+		var hash string
+		ignition, hash, err = CloneGitRepoToIgnition(ctx, repo, gitSpec.GitRef.TargetRevision, gitSpec.GitRef.Path, t.cfg)
+		if err != nil {
+			return &gitSpec.Name, &gitSpec.GitRef.Repository, nil, fmt.Errorf("failed cloning specified git repository %s/%s: %w", t.orgId, gitSpec.GitRef.Repository, err)
+		}
+		commitHash = hash
+	} else {
+		depFingerprint, depResourceKey := t.getDepChangeDetails()
+		expectedResourceKey := fmt.Sprintf("git:%s/%s", gitSpec.GitRef.Repository, gitSpec.GitRef.TargetRevision)
+		if depResourceKey != expectedResourceKey {
+			depFingerprint = ""
+		}
+		var hash string
+		ignition, hash, err = t.cloneCachedGitRepoToIgnition(ctx, repo, gitSpec.GitRef.TargetRevision, gitSpec.GitRef.Path, depFingerprint)
+		if err != nil {
+			return &gitSpec.Name, &gitSpec.GitRef.Repository, nil, fmt.Errorf("failed fetching specified git repository %s/%s: %w", t.orgId, gitSpec.GitRef.Repository, err)
+		}
+		commitHash = hash
+	}
+
+	for _, f := range ignition.Storage.Files {
+		if err := validation.DenyForbiddenDevicePath(f.Path); err != nil {
+			return &gitSpec.Name, &gitSpec.GitRef.Repository, nil, fmt.Errorf("invalid path from git config: %w", err)
+		}
+	}
+	for _, dir := range ignition.Storage.Directories {
+		if err := validation.DenyForbiddenDevicePath(dir.Path); err != nil {
+			return &gitSpec.Name, &gitSpec.GitRef.Repository, nil, fmt.Errorf("invalid path from git config: %w", err)
+		}
+	}
+	for _, link := range ignition.Storage.Links {
+		if err := validation.DenyForbiddenDevicePath(link.Path); err != nil {
+			return &gitSpec.Name, &gitSpec.GitRef.Repository, nil, fmt.Errorf("invalid path from git config: %w", err)
+		}
+		if link.Target != nil {
+			var resolvedTarget string
+			if filepath.IsAbs(*link.Target) {
+				resolvedTarget = filepath.Clean(*link.Target)
+			} else {
+				resolvedTarget = filepath.Clean(filepath.Join(filepath.Dir(link.Path), *link.Target))
+			}
+			if err := validation.DenyForbiddenDevicePath(resolvedTarget); err != nil {
+				return &gitSpec.Name, &gitSpec.GitRef.Repository, nil, fmt.Errorf("invalid symlink target from git config: %w", err)
+			}
+		}
+	}
+
+	mergedConfig := config_latest.Merge(**ignitionConfig, *ignition)
+	*ignitionConfig = &mergedConfig
+
+	return &gitSpec.Name, &gitSpec.GitRef.Repository, &commitHash, nil
+}
+
+func (t *deviceRenderState) renderK8sConfig(ctx context.Context, configItem *domain.ConfigProviderSpec, ignitionConfig **config_latest_types.Config) (*string, *string, *string, error) {
+	k8sSpec, err := configItem.AsKubernetesSecretProviderSpec()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%w: failed getting config item as KubernetesSecretProviderSpec: %w", ErrUnknownConfigName, err)
+	}
+	if t.k8sClient == nil {
+		return &k8sSpec.Name, nil, nil, fmt.Errorf("kubernetes API is not available")
+	}
+
+	var secretData map[string][]byte
+	var resourceVersion string
+	var key kvstore.K8sSecretKey
+	needToStoreData := false
+
+	depFingerprint, depResourceKey := t.getDepChangeDetails()
+	if depResourceKey != fmt.Sprintf("secret:%s/%s", k8sSpec.SecretRef.Namespace, k8sSpec.SecretRef.Name) {
+		depFingerprint = ""
+	}
+
+	if t.ownerFleet != nil {
+		key = kvstore.K8sSecretKey{
+			OrgID:           t.orgId,
+			Fleet:           *t.ownerFleet,
+			TemplateVersion: *t.templateVersion,
+			Namespace:       k8sSpec.SecretRef.Namespace,
+			Name:            k8sSpec.SecretRef.Name,
+		}
+		data, err := t.kvStore.Get(ctx, key.ComposeKey())
+		if err != nil {
+			return &k8sSpec.Name, nil, nil, fmt.Errorf("failed fetching cached secret data: %w", err)
+		}
+		if data != nil {
+			var cached cachedSecretData
+			if err = json.Unmarshal(data, &cached); err != nil {
+				return &k8sSpec.Name, nil, nil, fmt.Errorf("failed parsing cached secret data: %w", err)
+			}
+			// For parameterized secret name/namespace the template version never
+			// bumps, so the cache key is unchanged across re-renders. The cached
+			// ResourceVersion acts as the freshness signal: if it differs from the
+			// event fingerprint the secret content has changed and we must re-fetch.
+			if depFingerprint != "" && cached.ResourceVersion != depFingerprint {
+				if err := t.kvStore.Delete(ctx, key.ComposeKey()); err != nil {
+					return &k8sSpec.Name, nil, nil, fmt.Errorf("failed invalidating secret cache: %w", err)
+				}
+				needToStoreData = true
+			} else {
+				secretData = cached.Data
+				resourceVersion = cached.ResourceVersion
+			}
+		} else {
+			needToStoreData = true
+		}
+	}
+
+	if secretData == nil {
+		secret, err := t.k8sClient.GetSecret(ctx, k8sSpec.SecretRef.Namespace, k8sSpec.SecretRef.Name)
+		if err != nil {
+			return &k8sSpec.Name, nil, nil, fmt.Errorf("failed getting secret %s/%s: %w", k8sSpec.SecretRef.Namespace, k8sSpec.SecretRef.Name, err)
+		}
+		secretData = secret.Data
+		resourceVersion = secret.ResourceVersion
+	}
+
+	if needToStoreData {
+		cached := cachedSecretData{
+			Data:            secretData,
+			ResourceVersion: resourceVersion,
+		}
+		secretDataToStore, err := json.Marshal(cached)
+		if err != nil {
+			return &k8sSpec.Name, nil, nil, fmt.Errorf("failed marshalling secret data %s/%s: %w", k8sSpec.SecretRef.Namespace, k8sSpec.SecretRef.Name, err)
+		}
+		if _, err := t.kvStore.SetNX(ctx, key.ComposeKey(), secretDataToStore); err != nil {
+			return &k8sSpec.Name, nil, nil, fmt.Errorf("failed storing secret %s/%s: %w", k8sSpec.SecretRef.Namespace, k8sSpec.SecretRef.Name, err)
+		}
+	}
+
+	ignitionWrapper, err := ignition.NewWrapper()
+	if err != nil {
+		return &k8sSpec.Name, nil, nil, fmt.Errorf("failed to create ignition wrapper: %w", err)
+	}
+	base := filepath.Clean(k8sSpec.SecretRef.MountPath)
+	for name, contents := range secretData {
+		if name == "." || name == ".." || strings.ContainsRune(name, '/') {
+			return &k8sSpec.Name, nil, nil, fmt.Errorf("invalid secret key %q: must be a single file name", name)
+		}
+		dest := filepath.Join(base, name)
+		if err := validation.DenyForbiddenDevicePath(dest); err != nil {
+			return &k8sSpec.Name, nil, nil, fmt.Errorf("invalid secret-derived path %q: %w", dest, err)
+		}
+		ignitionWrapper.SetFile(dest, contents, 0o644, false, k8sSpec.SecretRef.User.String(), k8sSpec.SecretRef.Group)
+	}
+
+	*ignitionConfig = lo.ToPtr(ignitionWrapper.Merge(**ignitionConfig))
+	var fingerprint *string
+	if resourceVersion != "" {
+		fingerprint = &resourceVersion
+	}
+	return &k8sSpec.Name, nil, fingerprint, nil
+}
+
+func (t *deviceRenderState) renderInlineConfig(configItem *domain.ConfigProviderSpec, ignitionConfig **config_latest_types.Config) (*string, *string, *string, error) {
+	inlineSpec, err := configItem.AsInlineConfigProviderSpec()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%w: failed getting config item as InlineConfigProviderSpec: %w", ErrUnknownConfigName, err)
+	}
+
+	ignitionWrapper, err := ignition.NewWrapper()
+	if err != nil {
+		return &inlineSpec.Name, nil, nil, fmt.Errorf("failed to create ignition wrapper: %w", err)
+	}
+
+	for _, file := range inlineSpec.Inline {
+		mode := 0o644
+		if file.Mode != nil {
+			mode = *file.Mode
+		}
+
+		isBase64 := false
+		if file.ContentEncoding != nil && *file.ContentEncoding == domain.EncodingBase64 {
+			isBase64 = true
+		}
+		ignitionWrapper.SetFile(file.Path, []byte(file.Content), mode, isBase64, file.User.String(), file.Group)
+	}
+
+	*ignitionConfig = lo.ToPtr(ignitionWrapper.Merge(**ignitionConfig))
+	return &inlineSpec.Name, nil, nil, nil
+}
+
+func (t *deviceRenderState) renderHttpProviderConfig(ctx context.Context, configItem *domain.ConfigProviderSpec, ignitionConfig **config_latest_types.Config) (*string, *string, *string, error) {
+	httpConfigProviderSpec, err := configItem.AsHttpConfigProviderSpec()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%w: failed getting config item as HttpConfigProviderSpec: %w", ErrUnknownConfigName, err)
+	}
+	repo, status := t.repositorySvc.GetRepository(ctx, t.orgId, httpConfigProviderSpec.HttpRef.Repository)
+	if status.Code != http.StatusOK {
+		return &httpConfigProviderSpec.Name, &httpConfigProviderSpec.HttpRef.Repository, nil, fmt.Errorf("failed fetching specified Repository definition %s/%s: %s", t.orgId, httpConfigProviderSpec.HttpRef.Repository, status.Message)
+	}
+
+	if t.ownerFleet != nil {
+		err = t.getFrozenRepositoryURL(ctx, repo)
+		if err != nil {
+			return &httpConfigProviderSpec.Name, &httpConfigProviderSpec.HttpRef.Repository, nil, err
+		}
+	}
+	repoURL, err := repo.Spec.GetRepoURL()
+	if err != nil {
+		return &httpConfigProviderSpec.Name, &httpConfigProviderSpec.HttpRef.Repository, nil, err
+	}
+
+	suffix := ""
+	if httpConfigProviderSpec.HttpRef.Suffix != nil {
+		suffix = *httpConfigProviderSpec.HttpRef.Suffix
+	}
+	repoURL = repoURL + suffix
+
+	depFingerprint, depResourceKey := t.getDepChangeDetails()
+	if depResourceKey != httpResourceKey(httpConfigProviderSpec.HttpRef.Repository, suffix) {
+		depFingerprint = ""
+	}
+
+	var httpData []byte
+	var httpKey kvstore.HttpKey
+	var httpFingerprintKey kvstore.HttpFingerprintKey
+	needToStoreData := false
+
+	if t.ownerFleet != nil {
+		httpKey = kvstore.HttpKey{
+			OrgID:           t.orgId,
+			Fleet:           *t.ownerFleet,
+			TemplateVersion: *t.templateVersion,
+			URL:             repoURL,
+		}
+		httpFingerprintKey = kvstore.HttpFingerprintKey{
+			OrgID:           t.orgId,
+			Fleet:           *t.ownerFleet,
+			TemplateVersion: *t.templateVersion,
+			URL:             repoURL,
+		}
+		data, err := t.kvStore.Get(ctx, httpKey.ComposeKey())
+		if err != nil {
+			return &httpConfigProviderSpec.Name, nil, nil, fmt.Errorf("failed fetching cached data: %w", err)
+		}
+
+		// For parameterized HTTP suffix the template version never bumps, so
+		// the cache key is unchanged across re-renders. Compare the stored
+		// fingerprint against the event's fingerprint to detect staleness.
+		needToStoreData = data == nil
+		if !needToStoreData && depFingerprint != "" {
+			cachedFP, err := t.kvStore.Get(ctx, httpFingerprintKey.ComposeKey())
+			if err != nil {
+				return &httpConfigProviderSpec.Name, nil, nil, fmt.Errorf("failed fetching cached http fingerprint: %w", err)
+			}
+			if string(cachedFP) != depFingerprint {
+				if err := t.kvStore.Delete(ctx, httpKey.ComposeKey()); err != nil {
+					return &httpConfigProviderSpec.Name, nil, nil, fmt.Errorf("failed invalidating http cache: %w", err)
+				}
+				if err := t.kvStore.Delete(ctx, httpFingerprintKey.ComposeKey()); err != nil {
+					return &httpConfigProviderSpec.Name, nil, nil, fmt.Errorf("failed invalidating http fingerprint cache: %w", err)
+				}
+				needToStoreData = true
+			}
+		}
+		if !needToStoreData {
+			httpData = data
+		}
+	}
+
+	if httpData == nil {
+		httpData, err = sendHTTPrequest(ctx, repo.Spec, repoURL)
+		if err != nil {
+			return &httpConfigProviderSpec.Name, nil, nil, fmt.Errorf("failed fetching data: %w", err)
+		}
+	}
+
+	if needToStoreData {
+		if _, err := t.kvStore.SetNX(ctx, httpKey.ComposeKey(), httpData); err != nil {
+			return &httpConfigProviderSpec.Name, nil, nil, fmt.Errorf("failed storing data: %w", err)
+		}
+		// Store the fingerprint alongside the body. depFingerprint may be empty
+		// for non-dependency-triggered renders; a subsequent DependencyChangeDetected
+		// event with a non-empty fingerprint will still detect staleness correctly.
+		if _, err := t.kvStore.SetNX(ctx, httpFingerprintKey.ComposeKey(), []byte(depFingerprint)); err != nil {
+			return &httpConfigProviderSpec.Name, nil, nil, fmt.Errorf("failed storing http fingerprint: %w", err)
+		}
+	}
+
+	ignitionWrapper, err := ignition.NewWrapper()
+	if err != nil {
+		return &httpConfigProviderSpec.Name, &httpConfigProviderSpec.HttpRef.Repository, nil, fmt.Errorf("failed to create ignition wrapper: %w", err)
+	}
+
+	ignitionWrapper.SetFile(httpConfigProviderSpec.HttpRef.FilePath, httpData, 0o644, false, "", "")
+	*ignitionConfig = lo.ToPtr(ignitionWrapper.Merge(**ignitionConfig))
+
+	bodyHash := fmt.Sprintf("sha256:%x", sha256.Sum256(httpData))
+	return &httpConfigProviderSpec.Name, &httpConfigProviderSpec.HttpRef.Repository, &bodyHash, nil
+}
+
+// getDepChangeDetails returns the fingerprint and resourceKey from a
+// DependencyChangeDetected event. Both values are empty when the event is of a
+// different type or carries no details.
+func (t *deviceRenderState) getDepChangeDetails() (fingerprint, resourceKey string) {
+	if t.event.Reason != domain.EventReasonDependencyChangeDetected || t.event.Details == nil {
+		return "", ""
+	}
+	details, err := t.event.Details.AsDependencyChangeDetectedDetails()
+	if err != nil {
+		t.log.WithError(err).Warn("failed extracting details from DependencyChangeDetected event")
+		return "", ""
+	}
+	return details.Fingerprint, details.ResourceKey
+}
+
+func (t *deviceRenderState) getFrozenRepositoryURL(ctx context.Context, repo *domain.Repository) error {
+	repoURL, err := repo.Spec.GetRepoURL()
+	if err != nil {
+		return fmt.Errorf("failed fetching git repository URL %s/%s: %w", t.orgId, *repo.Metadata.Name, err)
+	}
+
+	repoKey := kvstore.RepositoryUrlKey{
+		OrgID:           t.orgId,
+		Fleet:           *t.ownerFleet,
+		TemplateVersion: *t.templateVersion,
+		Repository:      *repo.Metadata.Name,
+	}
+	origRepoURL, err := t.kvStore.GetOrSetNX(ctx, repoKey.ComposeKey(), []byte(repoURL))
+	if err != nil {
+		return fmt.Errorf("failed storing repository url for %s/%s: %w", t.orgId, *repo.Metadata.Name, err)
+	}
+	if repoURL != string(origRepoURL) {
+		t.log.Warnf("repository URL updated from %s to %s for %s/%s", origRepoURL, repoURL, t.orgId, *repo.Metadata.Name)
+		err = repo.Spec.MergeGitRepoSpec(domain.GitRepoSpec{Url: string(origRepoURL)})
+		if err != nil {
+			return fmt.Errorf("failed updating changed repository url for %s/%s: %w", t.orgId, *repo.Metadata.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// cloneCachedGitRepoToIgnition fetches git content for a fleet-owned device,
+// using a per-(fleet, templateVersion, repo, revision) KV cache to ensure all
+// devices in a fleet see identical content for a given template version.
+//
+// newFingerprint is the commit SHA from a DependencyChangeDetected event.
+// When it is set and differs from the currently frozen hash, the stale cache
+// entries are deleted so this call (or a concurrent one) re-fetches and
+// re-freezes with the new commit. Subsequent callers that find the updated hash
+// already matching newFingerprint skip the clone entirely.
+func (t *deviceRenderState) cloneCachedGitRepoToIgnition(ctx context.Context, repo *domain.Repository, targetRevision string, path string, newFingerprint string) (*config_latest_types.Config, string, error) {
+	err := t.getFrozenRepositoryURL(ctx, repo)
+	if err != nil {
+		return nil, "", err
+	}
+
+	gitRevisionKey := kvstore.GitRevisionKey{
+		OrgID:           t.orgId,
+		Fleet:           *t.ownerFleet,
+		TemplateVersion: *t.templateVersion,
+		Repository:      *repo.Metadata.Name,
+		TargetRevision:  targetRevision,
+	}
+	frozenHashBytes, err := t.kvStore.Get(ctx, gitRevisionKey.ComposeKey())
+	if err != nil {
+		return nil, "", fmt.Errorf("failed fetching frozen git revision: %w", err)
+	}
+
+	gitContentsKey := kvstore.GitContentsKey{
+		OrgID:           t.orgId,
+		Fleet:           *t.ownerFleet,
+		TemplateVersion: *t.templateVersion,
+		Repository:      *repo.Metadata.Name,
+		TargetRevision:  targetRevision,
+		Path:            path,
+	}
+
+	// For parameterized targetRevision the template version never bumps, so the
+	// cache key is identical across re-renders even when the remote content
+	// changes. When a DependencyChangeDetected event carries a newer fingerprint,
+	// invalidate the stale entries so this call re-fetches. Callers that run
+	// after the cache is refreshed will find the new hash matching newFingerprint
+	// and return without cloning.
+	if newFingerprint != "" && frozenHashBytes != nil && string(frozenHashBytes) != newFingerprint {
+		if err := t.kvStore.Delete(ctx, gitRevisionKey.ComposeKey()); err != nil {
+			return nil, "", fmt.Errorf("failed invalidating git revision cache: %w", err)
+		}
+		if err := t.kvStore.Delete(ctx, gitContentsKey.ComposeKey()); err != nil {
+			return nil, "", fmt.Errorf("failed invalidating git contents cache: %w", err)
+		}
+		frozenHashBytes = nil
+	}
+
+	if frozenHashBytes != nil {
+		cachedGitData, err := t.kvStore.Get(ctx, gitContentsKey.ComposeKey())
+		if err != nil {
+			return nil, "", fmt.Errorf("failed fetching cached git data: %w", err)
+		}
+
+		if cachedGitData != nil {
+			wrapper, err := ignition.NewWrapperFromJson(cachedGitData)
+			if err != nil {
+				return nil, "", fmt.Errorf("fetched invalid json-encoded ignition from kvstore: %w", err)
+			}
+
+			ign := wrapper.AsIgnitionConfig()
+			return &ign, string(frozenHashBytes), nil
+		}
+	}
+
+	revisionToClone := targetRevision
+	if frozenHashBytes != nil {
+		revisionToClone = string(frozenHashBytes)
+	}
+
+	ign, hash, err := CloneGitRepoToIgnition(ctx, repo, revisionToClone, path, t.cfg)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed cloning git: %w", err)
+	}
+
+	if frozenHashBytes == nil {
+		_, err = t.kvStore.SetNX(ctx, gitRevisionKey.ComposeKey(), []byte(hash))
+		if err != nil {
+			return nil, "", fmt.Errorf("failed freezing git hash: %w", err)
+		}
+	}
+
+	wrapper := ignition.NewWrapperFromIgnition(*ign)
+	jsonData, err := wrapper.AsJson()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed converting git ignition to json: %w", err)
+	}
+	_, err = t.kvStore.SetNX(ctx, gitContentsKey.ComposeKey(), jsonData)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed caching git data: %w", err)
+	}
+
+	ignToReturn := wrapper.AsIgnitionConfig()
+	return &ignToReturn, hash, nil
+}
+
+// TODO: this is temporary, ignition will be removed in the future
+// ignitionConfigToRenderedConfig converts an ignition config to rendered config bytes
+func ignitionConfigToRenderedConfig(ignition *config_latest_types.Config) ([]byte, error) {
+	emptyConfig := []byte("[]")
+
+	if ignition == nil || len(ignition.Storage.Files) == 0 {
+		return emptyConfig, nil
+	}
+
+	var files []domain.FileSpec
+	for _, file := range ignition.Storage.Files {
+		content := lo.FromPtr(file.Contents.Source)
+		encoding := domain.EncodingPlain
+
+		// parse encoding
+		if strings.HasPrefix(content, "data:") {
+			encoding = domain.EncodingBase64
+			if commaIndex := strings.Index(content, ","); commaIndex != -1 {
+				content = content[commaIndex+1:]
+			}
+		}
+
+		group := lo.FromPtr(file.Group.Name)
+		if file.Group.ID != nil {
+			group = strconv.Itoa(*file.Group.ID)
+		}
+
+		user := lo.FromPtr(file.User.Name)
+		if file.User.ID != nil {
+			user = strconv.Itoa(*file.User.ID)
+		}
+
+		fileSpec := domain.FileSpec{
+			Content:         content,
+			ContentEncoding: &encoding,
+			Path:            file.Path,
+			User:            v1beta1.Username(user),
+			Group:           group,
+			Mode:            file.Mode,
+		}
+
+		files = append(files, fileSpec)
+	}
+
+	// convert all files to a single inline config provider
+	provider := domain.ConfigProviderSpec{}
+	err := provider.FromInlineConfigProviderSpec(domain.InlineConfigProviderSpec{
+		Inline: files,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("converting files to inline config provider: %w", err)
+	}
+	providers := &[]domain.ConfigProviderSpec{provider}
+	renderedConfig, err := json.Marshal(providers)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling rendered config: %w", err)
+	}
+
+	return renderedConfig, nil
+}
+
+// hashRenderedWithSpec creates a hash of the device spec and selected
+// virt-launcher image so an OS-major change re-renders VM applications.
+func hashRenderedWithSpec(deviceSpec *domain.DeviceSpec, launcherImage string) string {
+	if deviceSpec == nil {
+		return ""
+	}
+	payload := struct {
+		Spec          *domain.DeviceSpec `json:"spec"`
+		LauncherImage string             `json:"launcherImage"`
+	}{deviceSpec, launcherImage}
+	specBytes, _ := json.Marshal(payload)
+	hash := sha256.Sum256(specBytes)
+	return hex.EncodeToString(hash[:])
+}
+
+func resolveCatalogItemRef(ctx context.Context, ref v1beta1.CatalogItemRefSpec, orgId uuid.UUID, catalogSvc catalogservice.Service, expectedItemType v1alpha1.CatalogItemType) (string, error) {
+	catalogItem, status := catalogSvc.GetCatalogItem(ctx, orgId, ref.Catalog, ref.Item)
+	if status.Code != http.StatusOK {
+		return "", fmt.Errorf("invalid catalog item reference: %s", status.Message)
+	}
+
+	if catalogItem.Spec.Type != expectedItemType {
+		return "", fmt.Errorf("cannot use catalog item of type %s as type %s", catalogItem.Spec.Type, expectedItemType)
+	}
+
+	specVersion := catalogItem.Spec.FindVersion(ref.Version)
+	if specVersion == nil {
+		return "", fmt.Errorf("unknown version %s for catalog item %s/%s", ref.Version, ref.Catalog, ref.Item)
+	}
+
+	artifact := catalogItem.Spec.FindArtifact(v1alpha1.CatalogItemArtifactTypeContainer)
+	if artifact == nil {
+		return "", fmt.Errorf("catalog item reference %s/%s must have container artifact", ref.Catalog, ref.Item)
+	}
+
+	tag := specVersion.References[v1alpha1.CatalogItemArtifactTypeContainer]
+	if len(tag) == 0 {
+		return "", fmt.Errorf("catalog item version %s for %s/%s lacks container version ref", ref.Version, ref.Catalog, ref.Item)
+	}
+
+	sep := ":"
+	if strings.Contains(tag, ":") {
+		sep = "@"
+	}
+	return artifact.Uri + sep + tag, nil
+}
+
+func resolveApplicationCatalogItemRefIfExists(ctx context.Context, appType v1beta1.AppType, ref v1beta1.CatalogItemRefSource, orgId uuid.UUID, catalogSvc catalogservice.Service) error {
+	spec, err := ref.AsCatalogItemRefApplicationProviderSpec()
+	if err != nil {
+		return err
+	}
+
+	if (spec.CatalogItemRef == v1beta1.CatalogItemRefSpec{}) {
+		return nil
+	}
+
+	var expectedItemType v1alpha1.CatalogItemType
+	switch appType {
+	case v1beta1.AppTypeCompose:
+		expectedItemType = v1alpha1.CatalogItemTypeCompose
+	case v1beta1.AppTypeContainer:
+		expectedItemType = v1alpha1.CatalogItemTypeContainer
+	case v1beta1.AppTypeHelm:
+		expectedItemType = v1alpha1.CatalogItemTypeHelm
+	case v1beta1.AppTypeQuadlet:
+		expectedItemType = v1alpha1.CatalogItemTypeQuadlet
+	default:
+		return fmt.Errorf("appType %s does not support catalog item refs", appType)
+	}
+
+	image, err := resolveCatalogItemRef(ctx, spec.CatalogItemRef, orgId, catalogSvc, expectedItemType)
+	if err != nil {
+		return err
+	}
+
+	return ref.FromImageApplicationProviderSpec(v1beta1.ImageSpec{
+		Image: image,
+	})
+}
+
+func resolveVolumeCatalogItemRefs(ctx context.Context, volumes *[]v1beta1.ApplicationVolume, orgId uuid.UUID, catalogSvc catalogservice.Service) error {
+	if volumes == nil {
+		return nil
+	}
+
+	for i := range *volumes {
+		vol := &(*volumes)[i]
+		volType, err := vol.Type()
+		if err != nil {
+			return fmt.Errorf("volume %s: %w", vol.Name, err)
+		}
+
+		switch volType {
+		case v1beta1.ImageApplicationVolumeProviderType:
+			provider, err := vol.AsImageVolumeProviderSpec()
+			if err != nil {
+				return fmt.Errorf("volume %s: %w", vol.Name, err)
+			}
+			if provider.Image.CatalogItemRef == nil {
+				continue
+			}
+			resolved, err := resolveCatalogItemRef(ctx, *provider.Image.CatalogItemRef, orgId, catalogSvc, v1alpha1.CatalogItemTypeData)
+			if err != nil {
+				return fmt.Errorf("volume %s: %w", vol.Name, err)
+			}
+			provider.Image.Reference = resolved
+			provider.Image.CatalogItemRef = nil
+			if err := vol.FromImageVolumeProviderSpec(provider); err != nil {
+				return fmt.Errorf("volume %s: failed to update resolved image: %w", vol.Name, err)
+			}
+
+		case v1beta1.ImageMountApplicationVolumeProviderType:
+			provider, err := vol.AsImageMountVolumeProviderSpec()
+			if err != nil {
+				return fmt.Errorf("volume %s: %w", vol.Name, err)
+			}
+			if provider.Image.CatalogItemRef == nil {
+				continue
+			}
+			resolved, err := resolveCatalogItemRef(ctx, *provider.Image.CatalogItemRef, orgId, catalogSvc, v1alpha1.CatalogItemTypeData)
+			if err != nil {
+				return fmt.Errorf("volume %s: %w", vol.Name, err)
+			}
+			provider.Image.Reference = resolved
+			provider.Image.CatalogItemRef = nil
+			if err := vol.FromImageMountVolumeProviderSpec(provider); err != nil {
+				return fmt.Errorf("volume %s: failed to update resolved image: %w", vol.Name, err)
+			}
+		}
+	}
+	return nil
+}

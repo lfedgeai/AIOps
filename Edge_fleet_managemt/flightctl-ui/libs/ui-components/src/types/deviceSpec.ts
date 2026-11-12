@@ -1,0 +1,359 @@
+import {
+  AppType,
+  type ApplicationProviderSpec,
+  type CatalogItemRefSpec,
+  type ComposeApplication,
+  type ConfigProviderSpec,
+  type ContainerApplication,
+  type DisruptionBudget,
+  type GitConfigProviderSpec,
+  type HelmApplication,
+  type HttpConfigProviderSpec,
+  type ImageApplicationProviderSpec,
+  type ImageOrCatalogItemRefSpec,
+  type InlineApplicationProviderSpec,
+  type InlineConfigProviderSpec,
+  type KubernetesSecretProviderSpec,
+  type QuadletApplication,
+  type VmApplication,
+} from '@flightctl/types';
+import { type FlightCtlLabel } from './extraTypes';
+import { type UpdateScheduleMode } from '../utils/time';
+import { formatCatalogItemRef } from '../utils/catalog';
+import type { ApplicationVolumeForm } from '../utils/volumes';
+
+// At the moment the "root" user is the default user when no user is specified.
+export const RUN_AS_ROOT_USER = 'root';
+export const RUN_AS_FLIGHTCTL_USER = 'flightctl';
+
+export enum ConfigType {
+  GIT = 'git',
+  HTTP = 'http',
+  K8S_SECRET = 'secret',
+  INLINE = 'inline',
+}
+
+export type ConfigTemplate = {
+  type: ConfigType;
+  name: string;
+};
+
+export type GitConfigTemplate = ConfigTemplate & {
+  type: ConfigType.GIT;
+  repository: string;
+  targetRevision: string;
+  path: string;
+};
+
+/** Used when adding a Compose/Quadlet app to choose image vs inline source. */
+export enum AppSpecType {
+  OCI_IMAGE = 'image',
+  INLINE = 'inline',
+}
+
+export const isGitConfigTemplate = (configTemplate: ConfigTemplate): configTemplate is GitConfigTemplate =>
+  configTemplate.type === ConfigType.GIT;
+
+export const isGitProviderSpec = (providerSpec: ConfigProviderSpec): providerSpec is GitConfigProviderSpec =>
+  'gitRef' in providerSpec;
+
+export type ConfigSourceProvider =
+  | GitConfigProviderSpec
+  | KubernetesSecretProviderSpec
+  | InlineConfigProviderSpec
+  | HttpConfigProviderSpec;
+
+export type RepoConfig = GitConfigProviderSpec | HttpConfigProviderSpec;
+
+export const isRepoConfig = (config: ConfigSourceProvider): config is RepoConfig =>
+  isGitProviderSpec(config) || isHttpProviderSpec(config);
+
+export const isImageVariantApp = (
+  app: ApplicationProviderSpec,
+): app is ApplicationProviderSpec & ImageApplicationProviderSpec => 'image' in app;
+
+export const isCatalogItemRefVariantApp = (
+  app: ApplicationProviderSpec,
+): app is ApplicationProviderSpec & { catalogItemRef: CatalogItemRefSpec } =>
+  'catalogItemRef' in app && !!(app as { catalogItemRef?: CatalogItemRefSpec }).catalogItemRef;
+
+export const isInlineVariantApp = (
+  app: ApplicationProviderSpec,
+): app is ApplicationProviderSpec & InlineApplicationProviderSpec => 'inline' in app;
+
+export const isVmAppSpec = (app: ApplicationProviderSpec): app is VmApplication => app.appType === AppType.AppTypeVm;
+
+export const isHelmAppSpec = (app: ApplicationProviderSpec): app is HelmApplication =>
+  app.appType === AppType.AppTypeHelm;
+
+export const isQuadletAppSpec = (app: ApplicationProviderSpec): app is QuadletApplication =>
+  app.appType === AppType.AppTypeQuadlet;
+
+export const isComposeAppSpec = (app: ApplicationProviderSpec): app is ComposeApplication =>
+  app.appType === AppType.AppTypeCompose;
+
+export const isContainerAppSpec = (app: ApplicationProviderSpec): app is ContainerApplication =>
+  app.appType === AppType.AppTypeContainer;
+
+export type PortMapping = {
+  hostPort: string;
+  targetPort: string;
+  protocol?: string;
+};
+
+export type VariablesForm = { name: string; value: string }[];
+
+export type InlineFileForm = { path: string; content?: string; base64?: boolean };
+
+// Manual apps can only use plain images, not catalogItemRef
+type InlineOrImageVariantForm = {
+  specType: AppSpecType;
+  image?: string;
+  files: InlineFileForm[];
+};
+
+export type SingleContainerAppForm = Omit<ContainerApplication, 'ports' | 'resources' | 'envVars' | 'volumes'> & {
+  specType: AppSpecType.OCI_IMAGE;
+  image?: string;
+  ports: PortMapping[];
+  cpuLimit: string;
+  memoryLimit: string;
+  variables: VariablesForm;
+  volumes: ApplicationVolumeForm[];
+};
+
+export type HelmAppForm = Omit<HelmApplication, 'values'> & {
+  specType: AppSpecType.OCI_IMAGE;
+  image?: string;
+  valuesYaml?: string;
+  valuesFiles: string[];
+};
+
+export type QuadletAppForm = Omit<QuadletApplication, 'envVars' | 'volumes' | 'inline'> &
+  InlineOrImageVariantForm & {
+    variables: VariablesForm;
+    volumes: ApplicationVolumeForm[];
+  };
+
+export type ComposeAppForm = Omit<ComposeApplication, 'envVars' | 'volumes' | 'inline'> &
+  InlineOrImageVariantForm & {
+    variables: VariablesForm;
+    volumes: ApplicationVolumeForm[];
+  };
+
+export type VmConfigMode = 'form' | 'yaml';
+
+export type VmAppForm = {
+  appType: AppType.AppTypeVm;
+  name: string;
+  specType: AppSpecType.INLINE;
+  configMode: VmConfigMode;
+  // Full vm.yaml file that can be edited in YAML mode; independent from form field
+  vmYaml: string;
+  // Whether this app was loaded from an existing device/fleet spec (not newly added in the form).
+  isExisting: boolean;
+  // Whether vm.yaml has settings which are not supported by the guided form.
+  // Only meaningful for existing applications.
+  hasAdvancedVmSettings: boolean;
+  diskImage: string;
+  cpuCores: number;
+  memory: string;
+  enableSshKey: boolean;
+  sshPublicKey: string;
+  enablePassword: boolean;
+  password: string;
+  cloudInit: string;
+  // Protocol is mandatory for VM publish ports
+  publishPorts: Required<PortMapping>[];
+};
+
+/** Curated form apps added/edited manually (not via Software Catalog). */
+export type ManualAppForm = SingleContainerAppForm | HelmAppForm | QuadletAppForm | ComposeAppForm | VmAppForm;
+
+/**
+ * Catalog-sourced application in the fleet/device template wizard.
+ * Holds the API application for round-trip load/save; channel/version stay pinned on catalogItemRef.
+ */
+export type CatalogAppForm = {
+  catalogItemRef: CatalogItemRefSpec;
+  name?: string;
+  apiApp: ApplicationProviderSpec;
+};
+
+export type ApplicationEntry = { type: 'manual'; app: ManualAppForm } | { type: 'catalog'; app: CatalogAppForm };
+
+export const isManualAppEntry = (entry: ApplicationEntry): entry is { type: 'manual'; app: ManualAppForm } =>
+  entry.type === 'manual';
+
+export const isCatalogAppEntry = (entry: ApplicationEntry): entry is { type: 'catalog'; app: CatalogAppForm } =>
+  entry.type === 'catalog';
+
+const hasTemplateVariables = (str: string) => /{{.+?}}/.test(str);
+
+export const getManualAppIdentifier = (app: ManualAppForm): string => {
+  if (app.name) return app.name;
+  // Name is mandatory for all apps, except when the apps have an image which then becomes the ID.
+  if ('image' in app && app.image) {
+    return app.image;
+  }
+  return '';
+};
+
+export const getAppIdentifier = (entry: ApplicationEntry): string => {
+  if (entry.type === 'catalog') {
+    return entry.app.name || formatCatalogItemRef(entry.app.catalogItemRef);
+  }
+  return getManualAppIdentifier(entry.app);
+};
+
+const removeSlashes = (url: string | undefined) => (url || '').replace(/^\/+|\/+$/g, '');
+const getFinalRepoUrl = (baseUrl: string, relativePath: string) => {
+  if (relativePath && !hasTemplateVariables(relativePath)) {
+    return `${baseUrl}/${relativePath}`;
+  }
+  return baseUrl;
+};
+
+export const getConfigFullRepoUrl = (config: RepoConfig, repositoryUrl: string) => {
+  const baseUrl = removeSlashes(repositoryUrl).replace(/\.git\/?$/, '');
+  if (isHttpProviderSpec(config)) {
+    return getFinalRepoUrl(baseUrl, removeSlashes(config.httpRef.suffix));
+  }
+  if (isGitProviderSpec(config) && /github|gitlab/.test(repositoryUrl)) {
+    const configPath = removeSlashes(config.gitRef.path);
+    const pathSegments = configPath.split('/');
+    const lastSegment = pathSegments[pathSegments.length - 1];
+
+    // Extension-less files cannot be identified as such. GitHub and Gitlab both redirect to the correct URL to show the file contents
+    const fileOrDir = lastSegment.includes('.') ? 'blob' : 'tree';
+    return getFinalRepoUrl(baseUrl, `${fileOrDir}/${config.gitRef.targetRevision}/${configPath}`);
+  }
+
+  // We return just the base repository URL as a fallback
+  return baseUrl;
+};
+
+export const getRepoName = (config: RepoConfig) =>
+  isGitProviderSpec(config) ? config.gitRef.repository : config.httpRef.repository;
+
+export type KubeSecretTemplate = ConfigTemplate & {
+  type: ConfigType.K8S_SECRET;
+  secretName: string;
+  secretNs: string;
+  mountPath: string;
+};
+
+export const isKubeSecretTemplate = (configTemplate: ConfigTemplate): configTemplate is KubeSecretTemplate =>
+  configTemplate.type === ConfigType.K8S_SECRET;
+
+export const isK8sSecretProviderSpec = (
+  providerSpec: ConfigProviderSpec,
+): providerSpec is KubernetesSecretProviderSpec => 'secretRef' in providerSpec;
+
+export type InlineConfigTemplate = ConfigTemplate & {
+  type: ConfigType.INLINE;
+  files: Array<InlineFileForm & { permissions?: string; user?: string; group?: string }>;
+};
+
+export const isInlineConfigTemplate = (configTemplate: ConfigTemplate): configTemplate is InlineConfigTemplate =>
+  configTemplate.type === ConfigType.INLINE;
+
+export const isInlineProviderSpec = (providerSpec: ConfigProviderSpec): providerSpec is InlineConfigProviderSpec =>
+  'inline' in providerSpec;
+
+export type HttpConfigTemplate = ConfigTemplate & {
+  type: ConfigType.HTTP;
+  repository: string;
+  validationSuffix: string;
+  suffix: string;
+  filePath: string;
+};
+
+export const isHttpConfigTemplate = (configTemplate: ConfigTemplate): configTemplate is HttpConfigTemplate =>
+  configTemplate.type === ConfigType.HTTP;
+
+export const isHttpProviderSpec = (providerSpec: ConfigProviderSpec): providerSpec is HttpConfigProviderSpec =>
+  'httpRef' in providerSpec;
+
+export type SpecConfigTemplate = GitConfigTemplate | HttpConfigTemplate | KubeSecretTemplate | InlineConfigTemplate;
+export type SystemdUnitFormValue = {
+  pattern: string;
+  exists: boolean;
+};
+
+export enum UpdateMode {
+  Default = 'default',
+  Customized = 'customized',
+}
+
+export type DeviceSpecConfigFormValues = {
+  osSpec?: ImageOrCatalogItemRefSpec;
+  configTemplates: SpecConfigTemplate[];
+  applications: ApplicationEntry[];
+  systemdUnits: SystemdUnitFormValue[];
+  updatePolicy: UpdatePolicyForm;
+  registerMicroShift: boolean;
+  updateMode: UpdateMode;
+};
+
+export type EditDeviceFormValues = DeviceSpecConfigFormValues & {
+  deviceAlias: string;
+  labels: FlightCtlLabel[];
+  fleetMatch: string;
+};
+
+export type DeltaGenerationForm = {
+  isCustomized: boolean;
+  generateDelta: boolean;
+  maxWaitForDelta: string;
+  deltaGenerationTimeout: string;
+};
+
+export type FleetFormValues = DeviceSpecConfigFormValues & {
+  name: string;
+  fleetLabels: FlightCtlLabel[];
+  labels: FlightCtlLabel[];
+  rolloutPolicy: RolloutPolicyForm;
+  disruptionBudget: DisruptionBudgetForm;
+  updatePolicy: UpdatePolicyForm;
+  deltaGeneration: DeltaGenerationForm;
+};
+
+export enum BatchLimitType {
+  BatchLimitPercent = 'percent',
+  BatchLimitAbsoluteNumber = 'value',
+}
+
+export type BatchForm = {
+  selector: FlightCtlLabel[];
+  limit?: number;
+  limitType: BatchLimitType;
+  successThreshold?: number;
+};
+
+export type RolloutPolicyForm = {
+  isCustomized: boolean;
+  updateTimeout: number;
+  batches: BatchForm[];
+};
+
+export type DisruptionBudgetForm = DisruptionBudget & {
+  isCustomized: boolean;
+};
+
+export type UpdatePolicyForm = {
+  isCustomized: boolean;
+  downloadAndInstallDiffer: boolean;
+  downloadStartsAt?: string;
+  downloadEndsAt?: string;
+  downloadStartGraceDuration?: string;
+  downloadScheduleMode: UpdateScheduleMode;
+  downloadWeekDays: boolean[];
+  downloadTimeZone: string;
+  installStartsAt?: string;
+  installEndsAt?: string;
+  installStartGraceDuration?: string;
+  installScheduleMode: UpdateScheduleMode;
+  installWeekDays: boolean[];
+  installTimeZone: string;
+};

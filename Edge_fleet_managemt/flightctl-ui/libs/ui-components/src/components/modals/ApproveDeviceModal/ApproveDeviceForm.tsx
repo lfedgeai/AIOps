@@ -1,0 +1,75 @@
+import * as React from 'react';
+import { useFormikContext } from 'formik';
+import { ActionGroup, Alert, Button, FormGroup } from '@patternfly/react-core';
+
+import { type EnrollmentRequest } from '@flightctl/types';
+import RichValidationTextField from '../../form/RichValidationTextField';
+import LabelsField from '../../form/LabelsField';
+import { getLabelValueValidations } from '../../form/validations';
+import FlightCtlForm from '../../form/FlightCtlForm';
+import { type FlightCtlLabel } from '../../../types/extraTypes';
+import { useTranslation } from '../../../hooks/useTranslation';
+import useDeviceLabelMatch from '../../../hooks/useDeviceLabelMatch';
+import DeviceLabelMatch from './DeviceLabelMatch';
+
+export type ApproveDeviceFormValues = {
+  labels: FlightCtlLabel[];
+  deviceAlias: string;
+};
+
+export type ApproveDeviceFormProps = {
+  enrollmentRequest: EnrollmentRequest;
+  onClose: (refetch?: boolean) => void;
+  error?: string;
+  children?: React.ReactNode;
+};
+
+const ApproveDeviceForm: React.FC<ApproveDeviceFormProps> = ({ enrollmentRequest, onClose, error, children }) => {
+  const { t } = useTranslation();
+  const { submitForm, isSubmitting, errors: formErrors } = useFormikContext<ApproveDeviceFormValues>();
+
+  const disableSubmit = Object.keys(formErrors).length > 0;
+  const [matchLabelsOnChange, matchStatus] = useDeviceLabelMatch();
+
+  return (
+    <FlightCtlForm>
+      <RichValidationTextField
+        fieldName="deviceAlias"
+        aria-label={t('Alias')}
+        validations={getLabelValueValidations(t)}
+      />
+      <FormGroup label={t('Name')} aria-label={t('Name')}>
+        {enrollmentRequest.metadata.name}
+      </FormGroup>
+      <FormGroup label={t('Labels')}>
+        <LabelsField name="labels" onChangeCallback={matchLabelsOnChange} />
+      </FormGroup>
+      <DeviceLabelMatch isApproval matchStatus={matchStatus} />
+      {children}
+      {error && <Alert isInline title={error} variant="danger" />}
+      <ActionGroup>
+        <Button
+          key="confirm"
+          variant="primary"
+          onClick={submitForm}
+          isDisabled={disableSubmit || isSubmitting}
+          isLoading={isSubmitting}
+          data-testid="approve-device-form-submit"
+        >
+          {t('Approve')}
+        </Button>
+        <Button
+          key="cancel"
+          variant="link"
+          onClick={() => onClose()}
+          isDisabled={isSubmitting}
+          data-testid="approve-device-form-cancel"
+        >
+          {t('Cancel')}
+        </Button>
+      </ActionGroup>
+    </FlightCtlForm>
+  );
+};
+
+export default ApproveDeviceForm;

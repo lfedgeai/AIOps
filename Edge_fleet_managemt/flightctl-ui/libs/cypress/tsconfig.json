@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.json",
+  "include": ["@types", "../../node_modules/cypress", "**/*.ts"],
+  "exclude": ["node_modules"],
+  "compilerOptions": {
+    "noEmit": false,
+    "target": "es2018",
+    "sourceMap": false,
+    "lib": ["es2018", "dom"],
+    "types": ["cypress"],
+    "paths": {
+      "@flightctl/types": ["../types"],
+    },
+  },
+}

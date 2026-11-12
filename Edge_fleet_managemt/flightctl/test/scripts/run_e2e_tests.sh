@@ -1,0 +1,432 @@
+#!/usr/bin/env bash
+set -x -euo pipefail
+
+# Ensure /usr/local/bin is in PATH (for helm, kind, etc.)
+export PATH="/usr/local/bin:${PATH}"
+
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+source "${SCRIPT_DIR}"/functions
+source "${SCRIPT_DIR}"/detect_container_runtime.sh
+
+E2E_PACKAGE_MODE_LAYOUT=""
+cleanup_package_mode_layout() {
+    if [[ -n "${E2E_PACKAGE_MODE_LAYOUT}" ]]; then
+        rm -rf -- "${E2E_PACKAGE_MODE_LAYOUT}" || true
+        E2E_PACKAGE_MODE_LAYOUT=""
+    fi
+}
+
+cleanup_e2e_runtime() {
+    cleanup_package_mode_layout
+    stop_testcontainers_podman_service
+}
+trap cleanup_e2e_runtime EXIT
+
+REPORTS=${1}
+GO_E2E_DIRS=("${@:2}")
+GINKGO_FOCUS=${GINKGO_FOCUS:-""}
+#Filtering e2e tests by labels
+GINKGO_LABEL_FILTER=${GINKGO_LABEL_FILTER:-""}
+#Parallel execution - default to 1 but can be overridden
+GINKGO_PROCS=${GINKGO_PROCS:-1}
+#Output interceptor mode for parallel execution - 'dup' shows output from all nodes
+GINKGO_OUTPUT_INTERCEPTOR_MODE=${GINKGO_OUTPUT_INTERCEPTOR_MODE:-"dup"}
+# Manual test splitting variables
+GINKGO_TOTAL_NODES=${GINKGO_TOTAL_NODES:-1}
+GINKGO_NODE=${GINKGO_NODE:-1}
+# Pre-computed LPT shard assignment file produced by go run ./compute_test_assignments.
+# When set and the file exists, used instead of round-robin splitting.
+ASSIGNMENTS_PATH=${ASSIGNMENTS_PATH:-""}
+# Discovery control variables
+DISCOVERY_PATH=${DISCOVERY_PATH:-"discovery.json"}
+DISCOVERY_ONLY=${DISCOVERY_ONLY:-""}
+# If set (true/1), run all suites even when one fails (ginkgo --keep-going). Default: unset (stop after first suite failure).
+GINKGO_KEEP_GOING=${GINKGO_KEEP_GOING:-""}
+# Global timeout for the entire test run (e.g. 120m, 180m). Default: 120m.
+GINKGO_TIMEOUT=${GINKGO_TIMEOUT:-120m}
+FOCUS_FLAG=""
+
+
+go install github.com/onsi/ginkgo/v2/ginkgo
+
+GOBIN=$(go env GOBIN)
+if [ -z "$GOBIN" ]; then
+    GOBIN=$(go env GOPATH)/bin
+fi
+
+should_preload_package_mode_image() {
+    local suite_dir
+    for suite_dir in "${GO_E2E_DIRS[@]}"; do
+        if [[ "${suite_dir}" == *"/package_mode" || \
+              "${suite_dir}" == *"/package_mode/"* || \
+              "${suite_dir}" == "./test/e2e/package_mode" || \
+              "${suite_dir}" == "./test/e2e/..." || \
+              "${suite_dir}" == "test/e2e/..." || \
+              "${suite_dir}" == *"/test/e2e/..." ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+find_package_mode_bundle() {
+    local preferred_bundle bundle_dir bundle_path
+    local -a bundles
+    bundle_dir="$(readlink -f bin/agent-artifacts)"
+
+    if [[ -n "${AGENT_OS_ID:-}" ]]; then
+        preferred_bundle="bin/agent-artifacts/agent-images-bundle-${AGENT_OS_ID}.tar"
+        if [[ -f "${preferred_bundle}" ]]; then
+            bundle_path="$(readlink -f "${preferred_bundle}")"
+            if [[ "${bundle_path}" == "${bundle_dir}/"* ]]; then
+                printf '%s\n' "${bundle_path}"
+                return 0
+            fi
+            echo "ERROR: package-mode bundle resolved outside bin/agent-artifacts: ${bundle_path}"
+            return 1
+        fi
+    fi
+
+    mapfile -t bundles < <(find bin/agent-artifacts -maxdepth 1 -type f -name 'agent-images-bundle-*.tar' | LC_ALL=C sort)
+
+    if [[ -n "${AGENT_OS_ID:-}" ]]; then
+        if [[ ${#bundles[@]} -gt 0 ]]; then
+            echo "ERROR: expected package-mode bundle ${preferred_bundle}, but found different agent bundles under bin/agent-artifacts/" >&2
+        fi
+        return 1
+    fi
+
+    case "${#bundles[@]}" in
+        1)
+            bundle_path="$(readlink -f "${bundles[0]}")"
+            if [[ "${bundle_path}" == "${bundle_dir}/"* ]]; then
+                printf '%s\n' "${bundle_path}"
+                return 0
+            fi
+            echo "ERROR: package-mode bundle resolved outside bin/agent-artifacts: ${bundle_path}"
+            return 1
+            ;;
+        0)
+            return 1
+            ;;
+        *)
+            echo "ERROR: multiple agent bundles found under bin/agent-artifacts/; set AGENT_OS_ID so package-mode preload picks the correct OS bundle" >&2
+            return 1
+            ;;
+    esac
+}
+
+preload_package_mode_image() {
+    local archive archive_digest archive_ref bundle config_digest expected_digest image_id layout loaded_digest package_ref runtime source_package_ref src
+
+    if ! should_preload_package_mode_image; then
+        return 0
+    fi
+
+    if ! bundle="$(find_package_mode_bundle)"; then
+        echo "ERROR: package-mode suite requires an agent image bundle under bin/agent-artifacts/"
+        return 1
+    fi
+
+    source_package_ref="quay.io/flightctl/flightctl-device:package"
+    package_ref="${E2E_PACKAGE_MODE_IMAGE:-quay.io/flightctl/flightctl-device:package}"
+    if ! ensure_testcontainers_podman_runtime; then
+        return 1
+    fi
+    runtime="$(detect_testcontainers_runtime)"
+    if [[ "${runtime}" != "podman" || -z "${DOCKER_HOST:-}" ]]; then
+        echo "ERROR: package-mode OCI image staging requires the Podman runtime"
+        return 1
+    fi
+
+    echo "Preloading package-mode helper image from ${bundle}"
+    echo "Package-mode helper image ref: ${package_ref}"
+    echo "Package-mode bundle source ref: ${source_package_ref}"
+    echo "Detected testcontainers runtime: ${runtime} (DOCKER_HOST=${DOCKER_HOST:-unset})"
+
+    layout="$(mktemp -d)"
+    E2E_PACKAGE_MODE_LAYOUT="${layout}"
+    if ! tar -xf "${bundle}" -C "${layout}"; then
+        cleanup_package_mode_layout
+        return 1
+    fi
+    src="oci:${layout}/oci:package"
+    expected_digest="$(skopeo inspect --format '{{.Digest}}' "${src}")"
+    config_digest="$(skopeo inspect --raw "${src}" | jq -er '.config.digest')"
+    archive="${layout}/package.oci.tar"
+    archive_ref="oci-archive:${archive}:package"
+    if ! skopeo copy --preserve-digests "${src}" "${archive_ref}"; then
+        cleanup_package_mode_layout
+        return 1
+    fi
+    archive_digest="$(skopeo inspect --format '{{.Digest}}' "${archive_ref}")"
+    if [[ "${archive_digest}" != "${expected_digest}" ]]; then
+        echo "ERROR: OCI archive changed manifest digest: source ${expected_digest}, archive ${archive_digest}"
+        cleanup_package_mode_layout
+        return 1
+    fi
+    if ! podman --url "${DOCKER_HOST}" load -i "${archive}"; then
+        cleanup_package_mode_layout
+        return 1
+    fi
+    image_id="${config_digest#sha256:}"
+    loaded_digest="$(podman --url "${DOCKER_HOST}" image inspect --format '{{.Digest}}' "${image_id}")"
+    if [[ "${loaded_digest}" != "${expected_digest}" ]]; then
+        echo "ERROR: Podman load changed manifest digest: source ${expected_digest}, loaded ${loaded_digest}"
+        cleanup_package_mode_layout
+        return 1
+    fi
+    cleanup_package_mode_layout
+    podman --url "${DOCKER_HOST}" tag "${image_id}" "${package_ref}"
+    podman --url "${DOCKER_HOST}" image exists "${package_ref}"
+
+    export E2E_PACKAGE_MODE_IMAGE="${package_ref}"
+}
+
+# Run discovery and save to file
+run_discovery() {
+    echo "Running test discovery..."
+    DISCOVER_CMD=("${GOBIN}/ginkgo" "run" "--dry-run" "--json-report" "${DISCOVERY_PATH}")
+
+    if [[ -n "${GINKGO_FOCUS}" ]]; then
+        DISCOVER_CMD+=("--focus" "${GINKGO_FOCUS}")
+    fi
+
+    if [[ -n "${GINKGO_LABEL_FILTER}" ]]; then
+        DISCOVER_CMD+=("--label-filter" "${GINKGO_LABEL_FILTER}")
+    fi
+
+    DISCOVER_CMD+=("${GO_E2E_DIRS[@]}")
+
+    # Run discovery - fail if ginkgo fails (compilation errors, etc.)
+    if ! "${DISCOVER_CMD[@]}"; then
+        echo "ERROR: Test discovery failed!"
+        exit 1
+    fi
+    echo "Discovery saved to: ${DISCOVERY_PATH}"
+}
+
+# Discovery-only mode: run discovery and exit (no cluster required)
+if [[ -n "${DISCOVERY_ONLY}" ]]; then
+    echo "Discovery-only mode enabled"
+    run_discovery
+    exit 0
+fi
+
+# Determine environment type and set API_ENDPOINT accordingly
+E2E_ENVIRONMENT=${E2E_ENVIRONMENT:-""}
+
+# Auto-detect environment if not set
+if [[ -z "${E2E_ENVIRONMENT}" ]]; then
+    if kubectl config current-context &>/dev/null; then
+        context=$(kubectl config current-context 2>/dev/null || true)
+        if [[ "$context" == *kind* ]]; then
+            E2E_ENVIRONMENT="kind"
+        elif kubectl api-resources --api-group=route.openshift.io &>/dev/null; then
+            E2E_ENVIRONMENT="ocp"
+        else
+            E2E_ENVIRONMENT="k8s"
+        fi
+    elif systemctl is-active flightctl-api.service &>/dev/null || sudo systemctl is-active flightctl-api.service &>/dev/null; then
+        E2E_ENVIRONMENT="quadlet"
+    else
+        E2E_ENVIRONMENT="k8s"  # Default to k8s
+    fi
+    echo "Auto-detected E2E_ENVIRONMENT: ${E2E_ENVIRONMENT}"
+fi
+export E2E_ENVIRONMENT
+
+# Set API_ENDPOINT and QUADLET_HOST based on environment
+case "${E2E_ENVIRONMENT}" in
+    quadlet)
+        # For Quadlet always set from E2E_SSH_HOST so remote host is used when set
+        if [[ -n "${E2E_SSH_HOST:-}" ]]; then
+            QUADLET_HOST="${E2E_SSH_HOST}"
+            export E2E_SSH_HOST
+            echo "Using remote Quadlet host: ${QUADLET_HOST} (E2E_SSH_HOST)"
+        else
+            QUADLET_HOST=$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "localhost")
+            echo "Using local Quadlet host: ${QUADLET_HOST} (set E2E_SSH_HOST for remote Quadlet)"
+        fi
+        export QUADLET_HOST
+        API_ENDPOINT="https://${QUADLET_HOST}"
+        echo "Using Quadlet API endpoint: ${API_ENDPOINT}"
+        ;;
+    *)
+        if [[ -z "${API_ENDPOINT:-}" ]]; then
+            API_ENDPOINT=https://$(get_endpoint_host flightctl-api)
+            echo "Using K8s API endpoint: ${API_ENDPOINT}"
+        fi
+        ;;
+esac
+export API_ENDPOINT
+
+# Set registry endpoint (K8s-specific, optional for Quadlet)
+if [[ "${E2E_ENVIRONMENT}" != "quadlet" ]]; then
+    REGISTRY_ENDPOINT=$(registry_address)
+    export REGISTRY_ENDPOINT
+else
+    # For Quadlet, registry may not be needed or use a local one
+    REGISTRY_ENDPOINT=${REGISTRY_ENDPOINT:-""}
+    if [[ -n "${REGISTRY_ENDPOINT}" ]]; then
+        export REGISTRY_ENDPOINT
+    fi
+fi
+
+# Export E2E_AUX_HOST for Go tests to use correct host IP (IPv6-aware)
+# This overrides GetHostIP() which otherwise dials 1.1.1.1 (IPv4-only)
+E2E_AUX_HOST="${E2E_AUX_HOST:-$(get_ext_ip)}"
+export E2E_AUX_HOST
+echo "E2E_AUX_HOST: ${E2E_AUX_HOST}"
+
+# Use the local auxiliary registry for the OTLP test collector when the mirrored
+# image is present. This keeps disconnected OCP runs from pulling the collector
+# from registry.access.redhat.com without breaking reused registries created by
+# older test runs.
+if [[ -z "${E2E_TELEMETRY_COLLECTOR_IMAGE:-}" && -n "${REGISTRY_ENDPOINT:-}" ]]; then
+    local_collector_image="${REGISTRY_ENDPOINT}/ubi9/python-312:latest"
+    if skopeo inspect --tls-verify=false "docker://${local_collector_image}" >/dev/null 2>&1; then
+        E2E_TELEMETRY_COLLECTOR_IMAGE="${local_collector_image}"
+        export E2E_TELEMETRY_COLLECTOR_IMAGE
+        echo "E2E_TELEMETRY_COLLECTOR_IMAGE: ${E2E_TELEMETRY_COLLECTOR_IMAGE}"
+    else
+        echo "Local OTLP test collector image is not present; using the default collector image"
+    fi
+fi
+
+# Set PAM authentication credentials for Quadlet environments
+if [[ "${E2E_ENVIRONMENT}" == "quadlet" ]]; then
+    # Default PAM admin user credentials for E2E tests
+    # These can be overridden by setting E2E_PAM_USER and E2E_PAM_PASSWORD
+    export E2E_PAM_USER="${E2E_PAM_USER:-admin}"
+    export E2E_DEFAULT_PAM_PASSWORD="${E2E_DEFAULT_PAM_PASSWORD:-flightctl-e2e}"
+    echo "PAM credentials configured for user: ${E2E_PAM_USER}"
+fi
+
+# Handle test splitting if enabled
+if [[ "${GINKGO_TOTAL_NODES}" -gt 1 ]]; then
+    echo "Test splitting enabled: Node ${GINKGO_NODE} of ${GINKGO_TOTAL_NODES}"
+
+    NODE_TESTS=$(mktemp)
+
+    if [[ -n "${ASSIGNMENTS_PATH}" && -f "${ASSIGNMENTS_PATH}" ]]; then
+        # Use pre-computed LPT assignments produced by compute_test_assignments.py.
+        echo "Using pre-computed LPT assignment from: ${ASSIGNMENTS_PATH}"
+        jq -r --arg node "${GINKGO_NODE}" '.[$node][]' "${ASSIGNMENTS_PATH}" > "${NODE_TESTS}"
+    else
+        # Fallback: round-robin over alphabetically sorted spec names.
+        [[ -z "${ASSIGNMENTS_PATH}" ]] && echo "ASSIGNMENTS_PATH not set; falling back to round-robin splitting" \
+            || echo "Assignment file not found (${ASSIGNMENTS_PATH}); falling back to round-robin splitting"
+
+        TEMP_TEST_LIST=$(mktemp)
+        DISCOVERY_GENERATED=false
+
+        if [[ -f "${DISCOVERY_PATH}" ]]; then
+            echo "Loading discovery from existing file: ${DISCOVERY_PATH}"
+        else
+            echo "Discovery file not found, running discovery..."
+            run_discovery
+            DISCOVERY_GENERATED=true
+        fi
+
+        jq -r '
+            .[] |
+            .SpecReports[]? |
+            select(.LeafNodeType == "It" and .State != "skipped") |
+            .LeafNodeText
+        ' "${DISCOVERY_PATH}" | LC_ALL=C sort -u > "${TEMP_TEST_LIST}"
+
+        if [[ "${DISCOVERY_GENERATED}" == "true" ]]; then
+            rm -f "${DISCOVERY_PATH}"
+        fi
+
+        TOTAL_TESTS=$(wc -l < "${TEMP_TEST_LIST}")
+        echo "Total tests found: ${TOTAL_TESTS}"
+
+        awk -v node="${GINKGO_NODE}" -v total="${GINKGO_TOTAL_NODES}" \
+            'NR % total == node - 1' "${TEMP_TEST_LIST}" > "${NODE_TESTS}"
+
+        rm -f "${TEMP_TEST_LIST}"
+    fi
+
+    NODE_TEST_COUNT=$(wc -l < "${NODE_TESTS}")
+    echo "Tests for node ${GINKGO_NODE}: ${NODE_TEST_COUNT}"
+
+    if [[ "${NODE_TEST_COUNT}" -eq 0 ]]; then
+        echo "No tests assigned to node ${GINKGO_NODE}. Skipping execution."
+        rm -f "${NODE_TESTS}"
+        exit 0
+    fi
+
+    echo "Node ${GINKGO_NODE} will run the following tests:"
+    cat "${NODE_TESTS}"
+
+    FOCUS_PATTERN=$(sed 's/[[\.*^$()+?{|\\]/\\&/g' "${NODE_TESTS}" | paste -sd '|')
+    echo "Focus pattern for node ${GINKGO_NODE}: ${FOCUS_PATTERN}"
+    GINKGO_FOCUS="${FOCUS_PATTERN}"
+
+    rm -f "${NODE_TESTS}"
+fi
+
+# Build the ginkgo command using guard patterns for each flag
+CMD=("${GOBIN}/ginkgo" "run")
+
+if [[ -n "${GINKGO_FOCUS}" ]]; then
+    CMD+=("--focus" "${GINKGO_FOCUS}")
+fi
+
+if [[ -n "${GINKGO_LABEL_FILTER}" ]]; then
+    CMD+=("--label-filter" "${GINKGO_LABEL_FILTER}")
+fi
+
+# Add standard flags
+CMD+=(--timeout "${GINKGO_TIMEOUT}" --race -vv -nodes="${GINKGO_PROCS}")
+if [[ "${GINKGO_KEEP_GOING}" == "true" || "${GINKGO_KEEP_GOING}" == "1" ]]; then
+    CMD+=(--keep-going)
+fi
+CMD+=(--show-node-events --trace --force-newlines --output-interceptor-mode "${GINKGO_OUTPUT_INTERCEPTOR_MODE}" --github-output --output-dir "${REPORTS}" --junit-report junit_e2e_test.xml)
+
+# Add progress polling flags for parallel execution
+if [[ "${GINKGO_PROCS}" -gt 1 ]]; then
+    CMD+=(--poll-progress-after=2m --poll-progress-interval=30s)
+fi
+
+# Add the test directories last
+CMD+=("${GO_E2E_DIRS[@]}")
+
+echo "Running e2e tests with ${GINKGO_PROCS} parallel processes (timeout: ${GINKGO_TIMEOUT})..."
+echo "Output interceptor mode: ${GINKGO_OUTPUT_INTERCEPTOR_MODE} (dup=show all output, swap=clean output)"
+echo "Reports will be saved to: ${REPORTS}"
+
+preload_package_mode_image
+
+# Step 1: Run startup
+echo "🔄 [Test Execution] Step 1: Running startup..."
+if ! test/scripts/e2e_startup.sh; then
+    echo "❌ [Test Execution] Startup failed, exiting"
+    exit 1
+fi
+echo "✅ [Test Execution] Startup completed successfully"
+
+# Step 2: Run the tests
+echo "🔄 [Test Execution] Step 2: Running tests..."
+TEST_EXIT_CODE=0
+"${CMD[@]}" || TEST_EXIT_CODE=$?
+
+# Step 3: Run cleanup (always run, even if tests failed)
+echo "🔄 [Test Execution] Step 3: Running cleanup..."
+if ! test/scripts/e2e_cleanup.sh; then
+    echo "⚠️  [Test Execution] Cleanup failed, but continuing..."
+fi
+echo "✅ [Test Execution] Cleanup completed"
+
+# Step 3b: Re-run the same cluster resource cleanup as startup
+echo "🔄 [Test Execution] Step 3b: Running post-test resource cleanup (same logic as e2e_startup.sh)..."
+if ! test/scripts/e2e_startup.sh; then
+    echo "⚠️  [Test Execution] Post-test resource cleanup failed, but continuing to report test result..."
+else
+    echo "✅ [Test Execution] Post-test resource cleanup completed successfully"
+fi
+
+# Exit with the test exit code
+exit $TEST_EXIT_CODE

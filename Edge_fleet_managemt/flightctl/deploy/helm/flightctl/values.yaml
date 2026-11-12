@@ -1,0 +1,808 @@
+
+# -- Global parameters
+# This section contains parameters common to all the components in the deployment, including sub-charts, ui charts, etc.
+
+global:
+  # -- Enable OpenShift extensions - one of 'auto', 'true', 'false'.
+  enableOpenShiftExtensions: "auto"
+  # -- Enable MultiCluster Engine extensions - one of 'auto', 'true', 'false'.
+  enableMulticlusterExtensions: "auto"
+  # -- Namespace where MultiCluster Engine is installed. Used for creating discovery ConfigMap and RBAC bindings.
+  multiclusterEngineNamespace: "multicluster-engine"
+  # -- Certificate generation method - one of 'none', 'cert-manager', 'builtin', 'auto'.
+  # - none: Do not generate required certificates. The user must provide the Secrets containing the required certificates or the service will fail to start.
+  # - cert-manager: Request cert-manager to issue the required certificates. cert-manager must be installed on the cluster.
+  # - builtin: Generate required certificates using Helm's builtin library functions.
+  # - auto: If cert-manager is installed, use it; otherwise, fall back to builtin.
+  generateCertificates: "auto"
+  # -- Whether to use generated TLS certificates on edge-terminated routes via externalCertificate.
+  # - auto: use externalCertificate for synchronous builtin certificates, or configure it after the generated Secret exists for asynchronous certificates.
+  # - true: use externalCertificate; with cert-manager, configure it after the generated Secret exists.
+  # - false: never use externalCertificate (rely on default router cert).
+  routeExternalCertificate: "auto"
+  # -- A separate Namespace to which non-user-facing components should be deployed for increased security isolation.
+  internalNamespace: ""
+  # -- Base domain to construct the FQDN for the service endpoints.
+  baseDomain: ""
+  # -- Secret containing TLS ca/cert/key. It should be valid for *.${baseDomain}. This certificate is only used for non-mTLS endpoints, mTLS endpoints like agent-api, etc will use different certificates.
+  baseDomainTlsSecretName: ""
+  # -- Storage class name for the PVCs. Keep empty to use the default storage class. Note: for a component
+  # that also sets volumeName or selector.matchLabels for static PV binding, leaving this empty makes the
+  # chart render storageClassName: "" for that PVC instead of omitting the field — see the volumeName
+  # comments below.
+  storageClassName: ""
+  # -- Name of the secret that holds image pull secret for accessing private container registries
+  imagePullSecretName: ""
+  # -- Image pull policy for all containers
+  imagePullPolicy: IfNotPresent
+  auth:
+    # -- Type of authentication to use. Allowed values: 'k8s', 'oidc', 'aap', 'openshift', 'oauth2', or 'none'.
+    # When left empty (default and recommended), authentication type is auto-detected: 'openshift' on OpenShift clusters, 'k8s' otherwise.
+    type: "" # Auto-detect (openshift on OpenShift, k8s otherwise), or explicitly set: k8s, oidc, aap, openshift, oauth2, none
+    # -- The custom CA cert.
+    caCert: ""
+    # -- True if verification of authority TLS cert should be skipped.
+    insecureSkipTlsVerify: false
+    k8s:
+      # -- API URL of k8s cluster that will be used as authentication authority
+      apiUrl: https://kubernetes.default.svc
+      # -- In case flightctl is not running within a cluster, you can provide a name of a secret that holds the API token
+      externalApiTokenSecretName: ""
+      # -- Namespace that should be used for the RBAC checks
+      rbacNs: ""
+      # -- Create default flightctl-admin ServiceAccount with admin access
+      createAdminUser: true
+      # -- Optional prefix for org names from this provider (e.g. "k8s-"). Incoming org name is exposed as prefix + name.
+      organizationNamePrefix: ""
+    oidc:
+      # -- Authorization prompt exposed to login clients. Empty string omits the prompt parameter; omitted or null defaults to select_account.
+      prompt: "select_account"
+      # -- OIDC Client ID
+      clientId: "flightctl-client"
+      # -- List of OIDC scopes to request (e.g. openid, profile, email, roles, offline_access)
+      scopes:
+        - "openid"
+        - "profile"
+        - "email"
+        - "roles"
+        - "offline_access"
+      # -- The base URL for the OIDC provider that is reachable by flightctl services. Example: https://auth.foo.internal/realms/flightctl
+      issuer: ""
+      # -- The base URL for the OIDC provider that is reachable by clients. Example: https://auth.foo.net/realms/flightctl
+      externalOidcAuthority: ""
+      # -- OIDC client secret (optional; prefer mounting from a secret)
+      clientSecret: ""
+      # -- Organization assignment configuration
+      organizationAssignment:
+        type: "static"
+        organizationName: "default"
+        # -- JSON path to the claim for dynamic assignment (when type: dynamic)
+        # claimPath: []
+        # organizationNamePrefix: ""
+        # organizationNameSuffix: ""
+      # -- Username claim to extract from OIDC token (default: "preferred_username")
+      usernameClaim:
+        - "preferred_username"
+      # -- Role assignment configuration
+      roleAssignment:
+        type: "dynamic"
+        claimPath:
+          - "groups"
+        # -- Separator for org:role format (default ":")
+        # separator: ":"
+        # -- Static list of role names (when type: static)
+        # roles: []
+    aap:
+      # -- The URL of the AAP Gateway API endpoint
+      apiUrl: ""
+      # -- The URL of the AAP Gateway API endpoint that is reachable by clients
+      externalApiUrl: ""
+      # -- OAuth2 authorization endpoint URL
+      authorizationUrl: ""
+      # -- OAuth2 token endpoint URL
+      tokenUrl: ""
+      # -- OAuth2 client ID
+      clientId: ""
+      # -- OAuth2 client secret (prefer mounting from a secret)
+      clientSecret: ""
+      # -- Whether the AAP provider is enabled
+      enabled: true
+      # -- List of OAuth2 scopes to request
+      scopes:
+        - "read"
+        - "write"
+      # -- Optional prefix for org names from this provider (e.g. "aap-"). Incoming org names are exposed as prefix + name.
+      organizationNamePrefix: ""
+      # -- TTL for AAP identity cache (Go duration string, e.g. "45s", "2m")
+      identityCacheTTL: "45s"
+    openshift:
+      # -- Create default flightctl-admin ServiceAccount with admin access
+      createAdminUser: true
+      # -- OpenShift cluster control plane API URL for RBAC checks (leave empty for auto-detection)
+      clusterControlPlaneUrl: "https://kubernetes.default.svc"
+      # -- In case flightctl is not running within a cluster, you can provide a name of a secret that holds the API token
+      externalApiTokenSecretName: ""
+      # -- OAuth client ID (will be set to flightctl-{releaseName})
+      clientId: ""
+      # -- OAuth client secret (leave empty for auto-generation)
+      clientSecret: ""
+      # -- OAuth authorization URL (leave empty to auto-detect from OpenShift cluster)
+      authorizationUrl: ""
+      # -- OAuth token URL (leave empty to auto-detect from OpenShift cluster)
+      tokenUrl: ""
+      # -- OAuth issuer URL (defaults to authorizationUrl if not specified)
+      issuer: ""
+      # -- Project label filter for OpenShift projects (leave empty to use default: io.flightctl/instance=<releaseName>)
+      projectLabelFilter: ""
+      # -- Optional prefix for org (project) names from this provider (e.g. "ocp-"). Incoming names are exposed as prefix + name.
+      organizationNamePrefix: ""
+  # -- How the Flight Control services should be exposed. Can be either 'auto', 'route', 'gateway' (experimental) or 'none'
+  exposeServicesMethod: "auto"
+  # -- Configuration for 'gateway' service exposure method
+  gateway:
+    # -- Gateway API class name for gateway exposure method
+    gatewayClassName: ""
+    ports:
+      # -- TLS port for Gateway API configuration
+      tls: 443
+      # -- HTTP port for Gateway API configuration
+      http: 80
+  sshKnownHosts:
+    # -- SSH known hosts file content for Git repository host key verification.
+    data: ""
+  # -- Additional labels for routes.
+  additionalRouteLabels: null
+  # -- Additional labels for PVCs.
+  additionalPVCLabels: null
+
+# -- Component specific parameters
+# This section provides individual parameters for each component
+
+# -- Database Configuration
+db:
+  # -- Type of database to use. Can be 'builtin' or 'external'. Only PostgreSQL DB is supported.
+  type: "builtin"
+  # -- Database name for Flight Control
+  name: "flightctl"
+  # -- Settings for builtin DB
+  builtin:
+    # -- Database application user secret name containing username/password. If not provided, the secret will be generated
+    applicationUserSecretName: ""
+    # -- Database migration user secret name containing username/password. If not provided, the secret will be generated
+    migrationUserSecretName: ""
+    # -- Database master/admin secret name containing username/password. If not provided, the secret will be generated
+    masterUserSecretName: ""
+    image:
+      # -- PostgreSQL container image
+      image: quay.io/sclorg/postgresql-16-c9s
+      # -- PostgreSQL image tag
+      tag: "20250214"
+      # -- Image pull policy for database container
+      pullPolicy: ""
+    # -- Maximum number of database connections
+    maxConnections: 200
+    storage:
+      # -- Persistent volume size for database storage
+      size: "60Gi"
+    resources:
+      requests:
+        # -- CPU resource requests for database pod
+        cpu: "512m"
+        # -- Memory resource requests for database pod
+        memory: "512Mi" 
+    # -- File system group ID for database pod security context
+    fsGroup: ""
+    # -- Additional labels for DB PVCs.
+    additionalPVCLabels: null
+    # -- Name of a specific pre-provisioned PersistentVolume to bind this PVC to. Only takes effect when the PVC is first created — changing this on an already-bound PVC will make `helm upgrade` fail, because Kubernetes forbids mutating volumeName after creation. Leave empty for normal (dynamic or best-fit static) binding. Note: the target PV's capacity must be >= `storage.size` above, or binding will fail. Setting this (or selector.matchLabels below) also makes the chart render storageClassName: "" on this PVC when global.storageClassName is left empty, so a cluster-default StorageClass can't get injected and mismatch the target PV.
+    volumeName: ""
+    selector:
+      # -- Label selector for binding this PVC to a pre-provisioned PersistentVolume by matching labels on the PV. Same immutability caveat as volumeName applies. Leave empty to disable label-based selection.
+      matchLabels: {}
+  external:
+    # -- External database hostname
+    hostname: ""
+    # -- Database port number
+    port: 5432
+    # -- Database application user secret name containing username/password.
+    applicationUserSecretName: ""
+    # -- Database migration user secret name containing username/password.
+    migrationUserSecretName: ""
+    # -- SSL mode for database connections (disable, allow, prefer, require, verify-ca, verify-full)
+    sslmode: ""
+    # -- ConfigMap containing CA certificate (automatically mounted at /etc/ssl/postgres/)
+    tlsConfigMapName: ""
+    # -- Secret containing client certificates (automatically mounted at /etc/ssl/postgres/)
+    tlsSecretName: ""
+
+# -- Key-Value Store Configuration
+kv:
+  image:
+    # -- Valkey container image
+    image: quay.io/sclorg/valkey-8-c10s
+    # -- Valkey image tag
+    tag: "20260121"
+    # -- Image pull policy for Valkey container
+    pullPolicy: ""
+  # -- Secret containing password for Valkey (leave empty for auto-generation)
+  passwordSecretName: ""
+  # -- Valkey log level (debug, verbose, notice, warning)
+  loglevel: warning
+  # -- File system group ID for Valkey pod security context
+  fsGroup: ""
+  # Memory management for in-memory Valkey
+  # -- Maximum memory usage for Valkey
+  maxmemory: "1gb"
+  # -- Valkey memory eviction policy
+  maxmemoryPolicy: "allkeys-lru"
+
+# -- Alertmanager Configuration
+alertmanager:
+  # -- Enable Alertmanager for alert handling
+  enabled: true
+  image:
+    # -- Alertmanager container image
+    image: quay.io/prometheus/alertmanager
+    # -- Alertmanager image tag
+    tag: "v0.28.1"
+    # -- Image pull policy for Alertmanager container
+    pullPolicy: ""
+  # -- Additional labels for Alert Manager routes.
+  additionalRouteLabels: null
+  # -- Additional labels for Alert Manager PVCs.
+  additionalPVCLabels: null
+  # -- Name of a specific pre-provisioned PersistentVolume to bind this PVC to. Only takes effect when the PVC is first created — changing this on an already-bound PVC will make `helm upgrade` fail, because Kubernetes forbids mutating volumeName after creation. Leave empty for normal (dynamic or best-fit static) binding. Note: the target PV's capacity must be >= the fixed `2Gi` this PVC requests, or binding will fail. Setting this (or selector.matchLabels below) also makes the chart render storageClassName: "" on this PVC when global.storageClassName is left empty, so a cluster-default StorageClass can't get injected and mismatch the target PV.
+  volumeName: ""
+  selector:
+    # -- Label selector for binding this PVC to a pre-provisioned PersistentVolume by matching labels on the PV. Same immutability caveat as volumeName applies. Leave empty to disable label-based selection.
+    matchLabels: {}
+
+# -- Initial LabelSyncMapping provisioning configuration
+organizations:
+  # -- YAML sequence of LabelSyncMapping resources attempted for each new or existing organization. Replaces the defaults; set to [] to disable automatic mapping creation.
+  initialLabelSyncMappings:
+    # BEGIN GENERATED INITIAL LABEL SYNC MAPPINGS
+    - apiVersion: flightctl.io/v1beta1
+      kind: LabelSyncMapping
+      metadata:
+        name: system-info
+      spec:
+        resourceType: Device
+        expression: >-
+          status.systemInfo.transformMapEntry(
+            k,
+            v,
+            k in [
+              "agentVersion",
+              "architecture",
+              "biosVendor",
+              "biosVersion",
+              "cpuProcessors",
+              "deltaEligible",
+              "distroId",
+              "distroVersion",
+              "kernel",
+              "memoryTotalKb",
+              "productName"
+            ],
+            {"systeminfo.flightctl.io/" + k: v}
+          )
+    - apiVersion: flightctl.io/v1beta1
+      kind: LabelSyncMapping
+      metadata:
+        name: custom-info
+      spec:
+        resourceType: Device
+        expression: >-
+          (has(status.systemInfo.customInfo) && status.systemInfo.customInfo != null
+            ? status.systemInfo.customInfo
+            : {}).transformMapEntry(
+            k,
+            v,
+            {"custominfo.flightctl.io/" + k: v}
+          )
+    - apiVersion: flightctl.io/v1beta1
+      kind: LabelSyncMapping
+      metadata:
+        name: tpm-enabled
+      spec:
+        resourceType: Device
+        key: feature.flightctl.io/tpm.enabled
+        expression: >-
+          has(status.systemInfo.tpmVendorInfo) && status.systemInfo.tpmVendorInfo != null
+            ? true
+            : dyn(null)
+    - apiVersion: flightctl.io/v1beta1
+      kind: LabelSyncMapping
+      metadata:
+        name: gpu-present
+      spec:
+        resourceType: Device
+        key: feature.flightctl.io/gpu.present
+        expression: >-
+          has(status.systemInfo.gpus) && status.systemInfo.gpus != null
+            ? size(status.systemInfo.gpus) > 0
+            : dyn(null)
+    - apiVersion: flightctl.io/v1beta1
+      kind: LabelSyncMapping
+      metadata:
+        name: kvm-enabled
+      spec:
+        resourceType: Device
+        key: feature.flightctl.io/kvm.enabled
+        expression: >-
+          has(status.systemInfo.kvm) && status.systemInfo.kvm != null
+            && has(status.systemInfo.kvm.enabled) && status.systemInfo.kvm.enabled != null
+            ? status.systemInfo.kvm.enabled
+            : dyn(null)
+    - apiVersion: flightctl.io/v1beta1
+      kind: LabelSyncMapping
+      metadata:
+        name: os-mode
+      spec:
+        resourceType: Device
+        key: feature.flightctl.io/os.mode
+        expression: >-
+          has(status.systemInfo.osMode) && status.systemInfo.osMode != null
+            && status.systemInfo.osMode != ""
+            ? status.systemInfo.osMode
+            : has(status.capabilities) && status.capabilities != null
+              && has(status.capabilities.osMode) && status.capabilities.osMode != null
+              ? status.capabilities.osMode
+              : dyn(null)
+
+    # END GENERATED INITIAL LABEL SYNC MAPPINGS
+
+
+# -- API Server Configuration
+api:
+  image:
+    # -- API server container image
+    image: quay.io/flightctl/flightctl-api-el9
+    # -- API server image tag (leave empty to use chart appVersion)
+    tag: ""
+    # -- Image pull policy for API server container
+    pullPolicy: ""
+  # Rate limiting configuration - enabled by default for production
+  rateLimit:
+    # -- Enable or disable rate limiting
+    enabled: true
+    # -- Maximum requests per window for general API endpoints
+    # General API rate limiting
+    requests: 300
+    # -- Time window for rate limiting (e.g., "1m", "1h")
+    window: "1m"
+    # -- Maximum authentication requests per auth window
+    # Auth-specific rate limiting
+    authRequests: 20
+    # -- Time window for authentication rate limiting
+    authWindow: "1h"
+    # -- List of trusted proxy IP ranges that can set X-Forwarded-For headers
+    # Trusted proxies that can set X-Forwarded-For/X-Real-IP headers
+    # This should include your load balancer and UI proxy IPs
+    trustedProxies:
+      - "10.0.0.0/8"    # Example: Internal network range
+      - "172.16.0.0/12" # Example: Docker/container network range
+      - "192.168.0.0/16" # Example: Private network range
+  # -- Additional labels for API routes.
+  additionalRouteLabels: null
+  # -- Additional labels for API PVCs.
+  additionalPVCLabels: null
+
+# -- CLI Artifacts Configuration
+cliArtifacts:
+  # -- Enable CLI artifacts service
+  enabled: true
+  image:
+    # -- CLI artifacts container image
+    image: quay.io/flightctl/flightctl-cli-artifacts-el9
+    # -- CLI artifacts image tag
+    tag: ""
+    # -- Image pull policy for CLI artifacts container
+    pullPolicy: ""
+  # -- Additional labels for CLI Artifacts routes.
+  additionalRouteLabels: null
+
+# -- Worker Configuration
+worker:
+  image:
+    # -- Worker container image
+    image: quay.io/flightctl/flightctl-worker-el9
+    # -- Worker image tag
+    tag: ""
+    # -- Image pull policy for worker container
+    pullPolicy: ""
+  # -- Allow flightctl-worker to access secrets at the cluster level for embedding in device configs
+  clusterLevelSecretAccess: false
+  # -- Time budget for a single device render operation including VM conversion and DB writes (default "60s")
+  renderTimeout: "60s"
+  # -- Maximum age of cached OCI image digest resolutions used during delta preparation (default "15m")
+  imageDigestCacheTTL: "15m"
+  # -- Maximum age of cached Helm workload image references before the chart is rendered again (default "15m")
+  helmImageRefsCacheTTL: "15m"
+  # -- VM application render options passed to vm-to-quadlet by both worker services
+  vmRender:
+    # -- virt-launcher image used when converting VmApplications to Quadlet units (leave empty to use the worker default)
+    launcherImage: ""
+    # -- virt-launcher images keyed by os-release ID and major from status.systemInfo (e.g. "rhel-9", "rhel-10")
+    launcherImages: {}
+    # -- Enable passt networking workarounds for older virt-launcher images (default false; enable only for older images)
+    passtWorkarounds: false
+
+# -- Delta-worker Configuration
+deltaWorker:
+  image:
+    # -- Delta-worker container image
+    image: quay.io/flightctl/flightctl-delta-worker-el9
+    # -- Delta-worker image tag
+    tag: ""
+    # -- Image pull policy for delta-worker container
+    pullPolicy: ""
+  # -- Resource requests and limits for the delta-worker container
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+
+# -- Periodic Configuration
+periodic:
+  image:
+    # -- Periodic container image
+    image: quay.io/flightctl/flightctl-periodic-el9
+    # -- Periodic image tag
+    tag: ""
+    # -- Image pull policy for periodic container
+    pullPolicy: ""
+  # -- Number of periodic consumers
+  consumers: 5
+  # -- Allow flightctl-periodic to list/watch secrets at the cluster level for change detection
+  clusterLevelSecretAccess: false
+  tasks:
+    # -- Delta prepare deadline sweep schedule
+    deltaPrepareDeadline:
+      schedule:
+        # -- How often flightctl-periodic checks for expired delta prepares
+        interval: 1m
+    labelMappingScan:
+      schedule:
+        # -- How often to scan devices after a label mapping changes
+        interval: 2m
+      # -- Maximum number of devices in each label mapping scan page (1–1000)
+      pageSize: 1000
+      # -- Maximum work time per label mapping scan invocation
+      timeBudget: 30s
+  # -- Metrics configuration for flightctl-periodic
+  metrics:
+    # -- Enable Prometheus metrics endpoint
+    enabled: true
+    # -- Address for the metrics HTTP server
+    address: ":15690"
+# -- Remote Access Configuration
+remoteAccess:
+  # -- Enable remote access service
+  enabled: true
+  # -- Log level for the remote access service
+  logLevel: info
+  image:
+    # -- Remote access container image
+    image: quay.io/flightctl/flightctl-remote-access-el9
+    # -- Remote access image tag (leave empty to use chart appVersion)
+    tag: ""
+    # -- Image pull policy for remote access container
+    pullPolicy: ""
+  # -- Additional environment variables for the remote access container
+  env: {}
+  # -- Resource requests and limits for the remote access container
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+# -- Alert Exporter Configuration
+alertExporter:
+  # -- Enable alert exporter service
+  enabled: true
+  image:
+    # -- Alert exporter container image
+    image: quay.io/flightctl/flightctl-alert-exporter-el9
+    # -- Alert exporter image tag
+    tag: ""
+    # -- Image pull policy for alert exporter container
+    pullPolicy: ""
+
+# -- Alertmanager Proxy Configuration
+alertmanagerProxy:
+  # -- Enable Alertmanager proxy service
+  enabled: true
+  image:
+    # -- Alertmanager proxy container image
+    image: quay.io/flightctl/flightctl-alertmanager-proxy-el9
+    # -- Alertmanager proxy image tag
+    tag: ""
+    # -- Image pull policy for Alertmanager proxy container
+    pullPolicy: ""
+
+# -- UBI Minimal base image used by init containers (cert setup, etc.)
+# Override this when deploying in an air-gapped environment where
+# registry.access.redhat.com is unreachable — set image and tag to the
+# mirrored location produced by the flightctl-mirror-images tool.
+ubiMinimal:
+  # -- UBI minimal image repository
+  image: registry.access.redhat.com/ubi9/ubi-minimal
+  # -- UBI minimal image tag (pinned to avoid unexpected updates)
+  tag: "9.8-1793578971"
+
+# -- ImageBuilder API Configuration
+imageBuilderApi:
+  # -- Enable imagebuilder API service
+  enabled: true
+  image:
+    # -- ImageBuilder API container image
+    image: quay.io/flightctl/flightctl-imagebuilder-api-el9
+    # -- ImageBuilder API image tag
+    tag: ""
+    # -- Image pull policy for ImageBuilder API container
+    pullPolicy: ""
+
+# -- ImageBuilder Worker Configuration
+imageBuilderWorker:
+  # -- Enable imagebuilder worker service
+  enabled: true
+  # -- Number of worker replicas
+  replicas: 1
+  image:
+    # -- ImageBuilder Worker container image
+    image: quay.io/flightctl/flightctl-imagebuilder-worker-el9
+    # -- ImageBuilder Worker image tag
+    tag: ""
+    # -- Image pull policy for ImageBuilder Worker container
+    pullPolicy: ""
+  # -- Log level for the imagebuilder worker
+  logLevel: info
+  # -- Maximum number of concurrent image builds
+  maxConcurrentBuilds: 2
+  # -- Default TTL for image build resources
+  defaultTTL: 168h
+  # -- Inactivity timeout for image builds and exports
+  imageBuilderTimeout: 3m
+  # -- Interval between image build and export timeout checks
+  timeoutCheckTaskInterval: 1m
+  # -- Enable privileged mode for container-in-container builds
+  privileged: true
+  # -- Secret name containing yum repository configuration files, mounted at /etc/yum.repos.d
+  yumReposSecretName: ""
+  # -- Secret name containing RHEL subscription manager configuration, mounted at /etc/rhsm
+  rhsmSecretName: ""
+  # -- Secret name containing RHSM CA certificates, mounted at /etc/rhsm/ca
+  rhsmCaSecretName: ""
+  # -- Builder images (podman, bootc-image-builder, syft) and skip-TLS options
+  serviceImages:
+    # -- Secret name containing registry credentials (auth.json) for pulling builder service images.
+    # Required when serviceImages are hosted in an authenticated or air-gapped registry.
+    # The secret must contain a key named `auth.json` in standard podman/Docker auth format.
+    # Mounted read-only at /root/.config/containers/auth.json inside the worker container.
+    pullSecretName: ""
+    podman:
+      # -- Podman builder image (leave empty to use default).
+      image: ""
+      # -- Set to true to skip TLS verification when pulling the Podman builder image.
+      skipTlsVerify: false
+    bootcImageBuilder:
+      # -- bootc-image-builder image (leave empty to use default).
+      image: ""
+      # -- Set to true to skip TLS verification when pulling the bootc-image-builder image.
+      skipTlsVerify: false
+    syft:
+      # -- Syft image for SBOM generation. If empty, defaults to `docker.io/anchore/syft:v1.44.0`.
+      image: ""
+      # -- Set to true to skip TLS verification when pulling the Syft image.
+      skipTlsVerify: false
+  # -- SBOM generation after image push (Syft produces CycloneDX JSON; PURL normalization; optional OCI referrer push and Trustify upload when configured).
+  sbom:
+    # -- Run SBOM generation after a successful image push.
+    enabled: true
+    # -- Attach the SBOM to the pushed image as an OCI 1.1 referrer artifact on the destination registry.
+    pushToRegistry: true
+    # -- Upload the SBOM to Trustify when vulnerability reporting is enabled and Trustify is configured (same settings as `vulnerabilityReporting` elsewhere in this chart).
+    uploadToTrustify: true
+    purlTransform:
+      # -- Normalize RPM PURLs (namespace/distro/qualifiers) before push/upload for advisory matching.
+      enabled: true
+  # -- Resource requests and limits
+  resources: {}
+
+telemetryGateway:
+  image:
+    # -- Telemetry gateway container image
+    image: quay.io/flightctl/flightctl-telemetry-gateway-el9
+    # -- Telemetry gateway image tag
+    tag: ""
+    # -- Image pull policy for Telemetry gateway container
+    pullPolicy: ""
+  additionalRouteLabels: null
+  # -- Extra environment variables for the telemetry gateway container.
+  # Use to inject secrets for forward header values via ${VAR} expansion.
+  extraEnvs: []
+  # -- Extra volume mounts for the telemetry gateway container.
+  # Use to mount TLS certificates for mTLS forward connections.
+  extraVolumeMounts: []
+  # -- Extra volumes for the telemetry gateway pod.
+  extraVolumes: []
+  # -- Forward telemetry to an upstream OTLP collector.
+  # Uses OTLP/gRPC for bare host:port endpoints, OTLP/HTTP for http(s):// URLs.
+  # Header values support ${ENV_VAR} expansion for secret injection.
+  forward:
+    # -- Upstream OTLP endpoint (e.g. "collector:4317" for gRPC, "https://host/api/v2/otlp" for HTTP)
+    endpoint: ""
+    # -- Custom HTTP headers for authentication (only used with OTLP/HTTP endpoints).
+    # Values support ${ENV_VAR} expansion — use extraEnvs with secretKeyRef to avoid
+    # storing tokens in the ConfigMap.
+    headers: {}
+    tls:
+      # -- Skip TLS certificate verification
+      insecureSkipTlsVerify: false
+      # -- Path to CA certificate file
+      caFile: ""
+      # -- Path to client certificate file (for mTLS)
+      certFile: ""
+      # -- Path to client key file (for mTLS)
+      keyFile: ""
+
+# -- UI Configuration
+ui:
+  # -- Enable web UI deployment
+  enabled: true
+  image:
+    # -- UI container image
+    image: quay.io/flightctl/flightctl-ui-el9
+    # -- UI Plugin container image
+    pluginImage: quay.io/flightctl/flightctl-ocp-ui-el9
+    # -- UI container image tag
+    tag: ""
+    # -- Image pull policy for UI container
+    pullPolicy: ""
+  auth:
+    # -- Set to true if auth TLS certificate validation should be skipped.
+    insecureSkipTlsVerify: false
+    # -- A custom CA cert for Auth TLS.
+    caCert: ""
+  # -- When true, the UI proxy uses X-Forwarded-Proto and X-Forwarded-Host for OAuth redirect
+  # validation (required when TLS terminates at an ingress). Disable if the UI is reached directly
+  # without a trusted reverse proxy. Optional trustedProxyCidrs restricts this to listed CIDRs.
+  trustXForwardedHeaders: true
+  # -- Comma-separated CIDRs for immediate clients that may set forwarded headers (e.g. ingress pod
+  # network). Empty means any client when trustXForwardedHeaders is true.
+  trustedProxyCidrs: ""
+  # -- Additional labels for UI routes.
+  additionalRouteLabels: null
+
+# -- Cluster CLI Configuration
+clusterCli:
+  image:
+    # -- Cluster CLI container image
+    image: quay.io/openshift/origin-cli
+    # -- Cluster CLI image tag
+    tag: "4.20.0"
+    # -- Image pull policy for cluster CLI container
+    pullPolicy: ""
+
+# -- Database Setup Configuration
+dbSetup:
+  image:
+    # -- Database setup container image
+    image: quay.io/flightctl/flightctl-db-setup-el9
+    # -- Database setup image tag
+    tag: ""
+    # -- Image pull policy for database setup container
+    pullPolicy: ""
+  # Database wait configuration (optional)
+  wait:
+    # -- Seconds to wait for database readiness before failing
+    # Default timeout for database wait (can be overridden per deployment)
+    timeout: 60
+    # -- Seconds to sleep between database connection attempts
+    # Default sleep interval between connection attempts
+    sleep: 2
+  migration:
+    # -- Number of retries for the migration Job on failure 
+    backoffLimit: 2147483647
+    # -- Maximum runtime in seconds for the migration Job (0 = no deadline)
+    activeDeadlineSeconds: 0
+
+# -- Vulnerability Integration Configuration
+vulnerabilityReporting:
+  # -- Enable vulnerability integration (sync task + API endpoints).
+  enabled: false
+  # -- Sync interval for periodic Trustify fetch (e.g. "15m", "1h").
+  syncInterval: "15m"
+  # -- Vulnerability scanning backend ("trustify" or "quay"); leave empty to default to Trustify when a trustify config with a non-empty endpoint is present.
+  backend: ""
+  trustify:
+    # -- Trustify API base URL (do not include /api/v1 or /api/v2 paths).
+    endpoint: ""
+    auth:
+      # -- Authentication mode for Trustify. Allowed values: 'client-credentials', 'none'.
+      mode: "none"
+      # -- OIDC issuer URL for client-credentials mode.
+      oidcIssuerUrl: ""
+      # -- Name of the Kubernetes Secret containing 'client_id' and 'client_secret' keys.
+      secretName: ""
+    # -- Path to a CA bundle for verifying the Trustify server certificate. If unset, system roots are used.
+    caFile: ""
+    # -- Name of a ConfigMap containing key 'ca-cert.pem' with the CA bundle for the Trustify server. When set, it is mounted and used instead of caFile.
+    caCertConfigMapName: ""
+    # -- Skip TLS certificate verification (insecure, for lab/air-gap only). Defaults to false.
+    skipTlsVerify: false
+  quay:
+    # -- Quay API base URL (e.g. "https://quay.io").
+    endpoint: ""
+    # -- Name of the Kubernetes Secret containing the 'token' key for Quay Security API bearer authentication.
+    secretName: ""
+    # -- Maximum number of concurrent Quay API requests. Defaults to 5 when unset.
+    maxConcurrentRequests: 5
+    # -- Path to a CA bundle for verifying the Quay server certificate. If unset, system roots are used.
+    caFile: ""
+    # -- Name of a ConfigMap containing key 'ca-cert.pem' with the CA bundle for the Quay server. When set, it is mounted and used instead of caFile.
+    caCertConfigMapName: ""
+    # -- Skip TLS certificate verification (insecure, for lab/air-gap only). Defaults to false.
+    skipTlsVerify: false
+
+# -- Default OCI write target for generated deltas when an organization has no deltaStorageTarget Repository.
+# Username and password must come from the Secret named in secretName (keys: username, password); they are not written to config.yaml.
+deltaGeneration:
+  defaultRepository:
+    # -- Registry hostname used as the login/CA host and as the prefix of the push path.
+    registry: ""
+    # -- Optional repository path under registry (e.g. my-org/diffs). Mutually exclusive with namespace.
+    repository: ""
+    # -- Optional namespace under registry (e.g. my-org). Mutually exclusive with repository.
+    namespace: ""
+    # -- URL scheme for connecting to the registry. Allowed values: http, https.
+    scheme: ""
+    # -- Skip TLS verification when connecting to the registry.
+    skipServerVerification: false
+    # -- Base64-encoded PEM of a custom registry CA (same encoding as Repository spec ca.crt).
+    caCrt: ""
+    # -- Name of the Kubernetes Secret containing 'username' and 'password' keys.
+    secretName: ""
+  # -- Maximum number of concurrent delta generation jobs. Defaults to 2 when omitted or <= 0.
+  maxConcurrentDeltaGenerations: 2
+  # -- Per-job timeout for oci-delta/ORAS. Defaults to 30m when omitted or <= 0.
+  timeout: 30m
+  # -- Timeout for terminal-generation completion fan-out. Defaults to 10m when omitted or <= 0.
+  completionTimeout: 10m
+  # -- Optional prepare wait cap (Go duration, e.g. 10m). Omitted means no deadline. 0s generates then resumes immediately.
+  # maxWaitForDelta: 10m
+
+# -- Upgrade hooks
+upgradeHooks:
+  scaleDown:
+    # -- When to run pre-upgrade scale down job: "always", "never", or "chart" (default). "chart" runs only if helm.sh/chart changed.
+    condition: chart
+    # -- List of Deployments to scale down in order
+    deployments:
+      - flightctl-periodic
+      - flightctl-worker
+      - flightctl-delta-worker
+    # -- Timeout in seconds to wait for rollout per Deployment
+    timeoutSeconds: 120
+  # -- Enable pre-upgrade DB migration dry-run as a hook
+  databaseMigrationDryRun: true
+
+# -- Encryption-at-rest key configuration.
+# The flightctl-encryption-key Secret is mounted at /root/.flightctl/encryption/ in all services.
+# Each key entry maps a logical key ID to a filename within that Secret.
+# For key rotation: add a new key file to the Secret, add it here, then change activeKeyID.
+encryption:
+  # -- Key ID used for new encryptions. Must match one of the IDs in the keys list.
+  activeKeyID: "default"
+  # -- List of available encryption keys. Old keys remain available for decryption during rotation.
+  keys:
+    - id: "default"
+      file: "key"

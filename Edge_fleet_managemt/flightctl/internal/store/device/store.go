@@ -1,0 +1,2073 @@
+package device
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/flterrors"
+	"github.com/flightctl/flightctl/internal/store"
+	"github.com/flightctl/flightctl/internal/store/model"
+	"github.com/flightctl/flightctl/internal/store/selector"
+	"github.com/flightctl/flightctl/internal/util"
+	"github.com/google/uuid"
+	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+// DeviceStatusType represents the type of device status to query
+type DeviceStatusType string
+
+const (
+	DeviceStatusTypeSummary     DeviceStatusType = "summary"
+	DeviceStatusTypeApplication DeviceStatusType = "application"
+	DeviceStatusTypeUpdate      DeviceStatusType = "update"
+)
+
+// String returns the string representation of the status type
+func (d DeviceStatusType) String() string {
+	return string(d)
+}
+
+// Validate ensures the status type is valid
+func (d DeviceStatusType) Validate() error {
+	switch d {
+	case DeviceStatusTypeSummary, DeviceStatusTypeApplication, DeviceStatusTypeUpdate:
+		return nil
+	default:
+		return fmt.Errorf("invalid device status type: %s", d)
+	}
+}
+
+// DeviceListParams extends store.ListParams with device-specific filter options.
+type DeviceListParams struct {
+	store.ListParams
+	CveID *string // Filter devices by CVE ID (join vulnerability_findings; selectors use devices.*)
+}
+
+type Store interface {
+	InitialMigration(ctx context.Context) error
+	WithTransaction(ctx context.Context, fn func(ctx context.Context) error) error
+
+	// Exposed to users
+	// Create inserts a device. Duplicate names return ErrDuplicateName.
+	// rendered is optional storage-only column data (nil on normal creates).
+	// No events; the caller fires its own callback.
+	Create(ctx context.Context, orgId uuid.UUID, device *domain.Device, rendered *DeviceRendered) (*domain.Device, error)
+	// Mutate loads (or uses previous once), runs apply, and persists via Create / Update.
+	// If the device does not exist, m.Device is nil and apply must assign it (create);
+	// otherwise apply mutates a clone. Returns created and the pre-mutation snapshot so
+	// the caller can fire its own event callback; Mutate itself never calls one.
+	// Create-only API callers should use Create instead. Update-only callers should call
+	// m.RequireExisting() in apply.
+	// Pass WithTimestamp() when apply will run UpdateServiceSideStatus (needs LastSeen).
+	Mutate(ctx context.Context, orgId uuid.UUID, name string, previous *domain.Device, apply DeviceApplyFunc, opts ...MutateOption) (updated *domain.Device, before *domain.Device, created bool, err error)
+	// UpdateStatus writes status + resource_version only (service_conditions unchanged).
+	// previous is optional (first attempt only). No events; caller uses before/updated.
+	UpdateStatus(ctx context.Context, orgId uuid.UUID, device *domain.Device, previous *domain.Device) (updated *domain.Device, before *domain.Device, err error)
+	// ReplaceServiceOwnedStatus updates service-owned status fields without
+	// replacing the device's desired state or agent-owned status.
+	ReplaceServiceOwnedStatus(ctx context.Context, orgId uuid.UUID, device *domain.Device) (updated *domain.Device, before *domain.Device, err error)
+	// UpdateAnnotations merges annotations (and applies deleteKeys) via Mutate.
+	UpdateAnnotations(ctx context.Context, orgId uuid.UUID, name string, annotations map[string]string, deleteKeys []string) error
+	GetLabelSnapshot(ctx context.Context, orgId uuid.UUID, name string) (domain.DeviceLabelSnapshot, error)
+	GetLabelSyncMappingIDsByKeys(ctx context.Context, orgId uuid.UUID, labelKeys []string) (map[string][]uuid.UUID, error)
+	ApplyLabels(ctx context.Context, orgId uuid.UUID, name string, snapshot domain.DeviceLabelSnapshot, desired map[string]domain.DesiredDeviceLabel, condition *domain.Condition) (domain.DeviceLabelApplyResult, error)
+	Get(ctx context.Context, orgId uuid.UUID, name string) (*domain.Device, error)
+	List(ctx context.Context, orgId uuid.UUID, listParams DeviceListParams) (*domain.DeviceList, error)
+	Labels(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (domain.LabelList, error)
+	Delete(ctx context.Context, orgId uuid.UUID, name string, eventCallback store.EventCallback) (bool, error)
+	GetRendered(ctx context.Context, orgId uuid.UUID, name string, knownRenderedVersion *string, consoleGrpcEndpoint string) (*domain.Device, error)
+	Healthcheck(ctx context.Context, orgId uuid.UUID, names []string) error
+	ProcessAwaitingReconnectAnnotation(ctx context.Context, orgId uuid.UUID, deviceName string, deviceReportedVersion *string) (bool, error)
+	GetLastSeen(ctx context.Context, orgId uuid.UUID, name string) (*time.Time, error)
+
+	// Used internally
+	ClearDeltaPreparingIfCurrent(ctx context.Context, orgID uuid.UUID, name string, generation int64) (bool, error)
+	OverwriteRepositoryRefs(ctx context.Context, orgId uuid.UUID, name string, repositoryNames ...string) error
+	GetRepositoryRefs(ctx context.Context, orgId uuid.UUID, name string) (*domain.RepositoryList, error)
+	RemoveConflictPausedAnnotation(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (int64, []string, error)
+	SetOutOfDate(ctx context.Context, orgId uuid.UUID, owner string) error
+	ListConnectivityChanged(ctx context.Context, orgId uuid.UUID, listParams store.ListParams, cutoffTime time.Time) (*domain.DeviceList, error)
+	GetWithTimestamp(ctx context.Context, orgId uuid.UUID, name string) (*domain.Device, error)
+
+	// Used only by rollout
+	Count(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (int64, error)
+	UnmarkRolloutSelection(ctx context.Context, orgId uuid.UUID, fleetName string) error
+	MarkRolloutSelection(ctx context.Context, orgId uuid.UUID, listParams store.ListParams, limit *int) error
+	CompletionCounts(ctx context.Context, orgId uuid.UUID, owner string, templateVersion string, updateTimeout *time.Duration) ([]domain.DeviceCompletionCount, error)
+	CountByLabels(ctx context.Context, orgId uuid.UUID, listParams store.ListParams, groupBy []string) ([]map[string]any, error)
+	Summary(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (*domain.DevicesSummary, error)
+
+	// Used by fleet selector
+	ListDevicesByServiceCondition(ctx context.Context, orgId uuid.UUID, conditionType string, conditionStatus string, listParams store.ListParams) (*domain.DeviceList, error)
+
+	// Used by catalog
+	ListDevicesByOsCatalogItemRef(ctx context.Context, orgId uuid.UUID, catalog string, item string, listParams store.ListParams) (*domain.DeviceList, error)
+	ListDevicesByAppCatalogItemRef(ctx context.Context, orgId uuid.UUID, catalog string, item string, listParams store.ListParams) (*domain.DeviceList, error)
+	ListDevicesByVolumeCatalogItemRef(ctx context.Context, orgId uuid.UUID, catalog string, item string, listParams store.ListParams) (*domain.DeviceList, error)
+
+	// Used by tests
+	SetIntegrationTestCreateOrUpdateCallback(store.IntegrationTestCallback)
+	CountByOrgAndStatus(ctx context.Context, orgId *uuid.UUID, statusType DeviceStatusType, groupByFleet bool) ([]CountByOrgAndStatusResult, error)
+}
+type DeviceStore struct {
+	dbHandler    *gorm.DB
+	log          logrus.FieldLogger
+	genericStore *store.GenericStore[*model.Device, model.Device, domain.Device, domain.DeviceList]
+}
+
+// DeviceRendered holds rendered_* column values and control-plane estimates
+// that are not represented directly on domain.Device. When set on
+// DeviceMutation, Mutate persists them and bumps render_timestamp.
+type DeviceRendered struct {
+	Config       string
+	Applications string
+	OsImage      string
+	// DeltaImage is the control-plane hint stored in the rendered OS spec.
+	DeltaImage     *string
+	DeltaEstimates *DeviceDeltaEstimates
+}
+
+// DeviceDeltaEstimates carries control-plane size estimates through a render
+// mutation into the service-owned status store.
+type DeviceDeltaEstimates struct {
+	OSDeltaSize           *string
+	ApplicationDeltaSizes map[string]*string
+}
+
+func renderedOsSpec(rendered *DeviceRendered) domain.DeviceOsSpec {
+	if rendered == nil {
+		return domain.DeviceOsSpec{}
+	}
+	return domain.DeviceOsSpec{Image: rendered.OsImage, DeltaImage: rendered.DeltaImage}
+}
+
+func applyRenderedDeltaEstimates(device *model.Device, estimates *DeviceDeltaEstimates) {
+	if device == nil {
+		return
+	}
+	serviceConditions := model.ServiceConditions{}
+	if device.ServiceConditions != nil {
+		serviceConditions = device.ServiceConditions.Data
+	}
+
+	storedEstimates := &model.DeviceDeltaEstimates{}
+	if estimates != nil {
+		if estimates.OSDeltaSize != nil {
+			deltaSize := *estimates.OSDeltaSize
+			storedEstimates.OS = &model.DeviceDeltaEstimate{DeltaSize: &deltaSize}
+		}
+		if len(estimates.ApplicationDeltaSizes) > 0 {
+			storedEstimates.Applications = make(map[string]model.DeviceDeltaEstimate, len(estimates.ApplicationDeltaSizes))
+			for application, deltaSize := range estimates.ApplicationDeltaSizes {
+				if deltaSize == nil {
+					continue
+				}
+				copiedDeltaSize := *deltaSize
+				storedEstimates.Applications[application] = model.DeviceDeltaEstimate{DeltaSize: &copiedDeltaSize}
+			}
+		}
+	}
+	if storedEstimates.OS == nil && len(storedEstimates.Applications) == 0 {
+		storedEstimates = nil
+	}
+	serviceConditions.DeltaEstimates = storedEstimates
+	device.ServiceConditions = model.MakeJSONField(serviceConditions)
+}
+
+// DeviceMutation is the unit apply mutates. Handlers decide all field changes.
+// Device is nil on the create path until apply assigns it.
+type DeviceMutation struct {
+	Device   *domain.Device
+	Rendered *DeviceRendered
+	// PreserveGeneration keeps metadata.generation unchanged on PersistUpdate
+	// even when Spec changes (e.g. decommission historically did not bump it).
+	PreserveGeneration bool
+}
+
+func (m *DeviceMutation) Resource() *domain.Device { return m.Device }
+
+func (m *DeviceMutation) SetResource(device *domain.Device) { m.Device = device }
+
+func (m *DeviceMutation) Clone() (store.ResourceMutation[domain.Device], error) {
+	out := &DeviceMutation{PreserveGeneration: m.PreserveGeneration}
+	if m.Device != nil {
+		cloned, err := store.CloneJSON(m.Device)
+		if err != nil {
+			return nil, err
+		}
+		// Status.LastSeen is tagged json:"-" and does not survive JSON clone.
+		if m.Device.Status != nil && cloned.Status != nil {
+			cloned.Status.LastSeen = m.Device.Status.LastSeen
+		}
+		out.Device = cloned
+	}
+	if m.Rendered != nil {
+		rendered := *m.Rendered
+		if m.Rendered.DeltaEstimates != nil {
+			estimates := *m.Rendered.DeltaEstimates
+			if estimates.ApplicationDeltaSizes != nil {
+				estimates.ApplicationDeltaSizes = make(map[string]*string, len(m.Rendered.DeltaEstimates.ApplicationDeltaSizes))
+				for application, deltaSize := range m.Rendered.DeltaEstimates.ApplicationDeltaSizes {
+					if deltaSize == nil {
+						estimates.ApplicationDeltaSizes[application] = nil
+						continue
+					}
+					copiedDeltaSize := *deltaSize
+					estimates.ApplicationDeltaSizes[application] = &copiedDeltaSize
+				}
+			}
+			if estimates.OSDeltaSize != nil {
+				copiedDeltaSize := *estimates.OSDeltaSize
+				estimates.OSDeltaSize = &copiedDeltaSize
+			}
+			rendered.DeltaEstimates = &estimates
+		}
+		out.Rendered = &rendered
+	}
+	return out, nil
+}
+
+// RequireExisting returns ErrResourceNotFound when Device is nil (create path).
+// Update-only callers should invoke this at the start of apply.
+func (m *DeviceMutation) RequireExisting() error {
+	if m.Device == nil {
+		return flterrors.ErrResourceNotFound
+	}
+	return nil
+}
+
+// DeviceApplyFunc mutates m in place on every Mutate attempt.
+type DeviceApplyFunc func(m *DeviceMutation) error
+
+type mutateConfig struct {
+	withTimestamp                        bool
+	allowDecommissionManagedLabelCleanup bool
+	preserveOmittedManagedLabels         bool
+	explicitLabelRemovalPaths            map[string]struct{}
+}
+
+// MutateOption configures DeviceStore.Mutate.
+type MutateOption func(*mutateConfig)
+
+// WithTimestamp loads the device via GetWithTimestamp (devices ⟕ device_timestamps) so
+// Status.LastSeen is populated. Use when apply will call UpdateServiceSideStatus.
+func WithTimestamp() MutateOption {
+	return func(c *mutateConfig) {
+		c.withTimestamp = true
+	}
+}
+
+// WithDecommissionManagedLabelCleanup allows decommission to remove all labels
+// owned by mappings. The update still has to set lifecycle to Decommissioning
+// and clear every device label.
+func WithDecommissionManagedLabelCleanup() MutateOption {
+	return func(c *mutateConfig) {
+		c.allowDecommissionManagedLabelCleanup = true
+	}
+}
+
+// WithManagedLabelMapReplacement preserves omitted mapping-owned labels during
+// a whole-map device label replacement, except for explicitly removed paths.
+func WithManagedLabelMapReplacement(explicitRemovalPaths []string) MutateOption {
+	return func(c *mutateConfig) {
+		c.preserveOmittedManagedLabels = true
+		c.explicitLabelRemovalPaths = make(map[string]struct{}, len(explicitRemovalPaths))
+		for _, path := range explicitRemovalPaths {
+			c.explicitLabelRemovalPaths[path] = struct{}{}
+		}
+	}
+}
+
+// HasWithTimestamp reports whether opts include WithTimestamp (for tests/fakes).
+func HasWithTimestamp(opts ...MutateOption) bool {
+	cfg := &mutateConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	return cfg.withTimestamp
+}
+
+var _ store.ResourceMutation[domain.Device] = (*DeviceMutation)(nil)
+
+// Make sure we conform to the Store interface
+var _ Store = (*DeviceStore)(nil)
+
+func NewDeviceStore(db *gorm.DB, log logrus.FieldLogger) *DeviceStore {
+	genericStore := store.NewGenericStore[*model.Device, model.Device, domain.Device, domain.DeviceList](
+		db,
+		log,
+		model.NewDeviceFromApiResource,
+		(*model.Device).ToApiResource,
+		model.DevicesToApiResource,
+	)
+	return &DeviceStore{dbHandler: db, log: log, genericStore: genericStore}
+}
+
+// ResumeDeltaIfCurrent clears the device's delta-preparing state only when
+// its desired spec generation still matches the prepare. The preparing condition is
+// part of the predicate so a redelivered completion event cannot claim the
+// same resource twice.
+func (s *DeviceStore) ResumeDeltaIfCurrent(ctx context.Context, orgID uuid.UUID, name string, generation int64) (bool, error) {
+	return s.clearDeltaPreparingIfCurrent(ctx, orgID, name, generation, true)
+}
+
+// ClearDeltaPreparingIfCurrent also matches an already-cleared marker, allowing
+// a deadline retry to recover its resume event after a process failure.
+func (s *DeviceStore) ClearDeltaPreparingIfCurrent(ctx context.Context, orgID uuid.UUID, name string, generation int64) (bool, error) {
+	return s.clearDeltaPreparingIfCurrent(ctx, orgID, name, generation, false)
+}
+
+func (s *DeviceStore) clearDeltaPreparingIfCurrent(ctx context.Context, orgID uuid.UUID, name string, generation int64, requirePreparing bool) (bool, error) {
+	if generation <= 0 {
+		return false, nil
+	}
+	result := s.getDB(ctx).Exec(`
+		UPDATE devices
+		SET service_conditions = (
+				jsonb_set(
+					COALESCE(service_conditions, '{}'::jsonb),
+					'{conditions}',
+					COALESCE((
+						SELECT jsonb_agg(condition_json ORDER BY ordinal)
+						FROM jsonb_array_elements(COALESCE(service_conditions->'conditions', '[]'::jsonb))
+							WITH ORDINALITY AS condition_rows(condition_json, ordinal)
+						WHERE condition_json->>'type' <> @condition_type
+					), '[]'::jsonb),
+					true
+				)
+				- 'deltaGeneration'
+			),
+			resource_version = resource_version + 1
+		WHERE org_id = @org_id
+		  AND name = @name
+		  AND deleted_at IS NULL
+		  AND generation = @generation
+		  AND (NOT @require_preparing OR EXISTS (
+				SELECT 1
+				FROM jsonb_array_elements(COALESCE(service_conditions->'conditions', '[]'::jsonb)) AS condition_rows(condition_json)
+				WHERE condition_json->>'type' = @condition_type
+		  ))
+	`, map[string]interface{}{
+		"org_id":            orgID,
+		"name":              name,
+		"generation":        generation,
+		"require_preparing": requirePreparing,
+		"condition_type":    string(domain.ConditionTypeDeviceDeltaPreparing),
+	})
+	if result.Error != nil {
+		return false, store.ErrorFromGormError(result.Error)
+	}
+	return result.RowsAffected > 0, nil
+}
+
+func (s *DeviceStore) callEventCallback(ctx context.Context, eventCallback store.EventCallback, orgId uuid.UUID, name string, oldDevice, newDevice *domain.Device, created bool, err error) {
+	if eventCallback == nil {
+		return
+	}
+
+	store.SafeEventCallback(s.log, func() {
+		eventCallback(ctx, domain.DeviceKind, orgId, name, oldDevice, newDevice, created, err)
+	})
+}
+
+func (s *DeviceStore) getDB(ctx context.Context) *gorm.DB {
+	return store.DB(ctx, s.dbHandler)
+}
+
+func (s *DeviceStore) WithTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
+	return store.WithTransaction(ctx, s.dbHandler, fn)
+}
+
+func (s *DeviceStore) SetIntegrationTestCreateOrUpdateCallback(c store.IntegrationTestCallback) {
+	s.genericStore.IntegrationTestCreateOrUpdateCallback = c
+}
+
+func (s *DeviceStore) InitialMigration(ctx context.Context) error {
+	db := s.getDB(ctx)
+
+	if err := db.AutoMigrate(&model.Device{}, &model.DeviceLabel{}, &model.DeviceTimestamp{}); err != nil {
+		return err
+	}
+
+	if err := s.createDeviceNameIndex(db); err != nil {
+		return err
+	}
+
+	if err := s.createDeviceAliasIndexes(db); err != nil {
+		return err
+	}
+
+	if err := s.createDeviceLabelsIndex(db); err != nil {
+		return err
+	}
+
+	if err := s.createDeviceAnnotationsIndex(db); err != nil {
+		return err
+	}
+
+	if err := s.createDeviceStatusIndex(db); err != nil {
+		return err
+	}
+
+	if err := s.createDeviceLabelsPartialIndex(db); err != nil {
+		return err
+	}
+
+	if err := s.createServiceConditionsIndex(db); err != nil {
+		return err
+	}
+
+	if err := s.createDeviceLabelsTrigger(db); err != nil {
+		return err
+	}
+
+	if err := s.createDeviceTimestampInsertTrigger(db); err != nil {
+		return err
+	}
+
+	if err := s.backfillDeviceTimestamps(db); err != nil {
+		return err
+	}
+
+	if err := s.dropLastSeenColumnIfExists(db); err != nil {
+		return err
+	}
+
+	if err := s.createDeviceOsImageDigestIndex(db); err != nil {
+		return err
+	}
+
+	if err := s.createDeviceOsCatalogRefIndex(db); err != nil {
+		return err
+	}
+
+	if err := s.createDeviceAppCatalogRefIndex(db); err != nil {
+		return err
+	}
+
+	if err := s.createDeviceVolumeCatalogRefIndex(db); err != nil {
+		return err
+	}
+
+	if err := s.createDeviceSystemInfoOsModeIndex(db); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *DeviceStore) createDeviceNameIndex(db *gorm.DB) error {
+	if !db.Migrator().HasIndex(&model.Device{}, "idx_device_primary_key_name") {
+		if db.Dialector.Name() == "postgres" {
+			return db.Exec("CREATE INDEX idx_device_primary_key_name ON devices USING BTREE (name)").Error
+		} else {
+			return db.Migrator().CreateIndex(&model.Device{}, "PrimaryKeyColumnName")
+		}
+	}
+	return nil
+}
+
+func (s *DeviceStore) createDeviceAliasIndexes(db *gorm.DB) error {
+	if !db.Migrator().HasIndex(&model.Device{}, "device_alias") {
+		if db.Dialector.Name() == "postgres" {
+			// Enable pg_trgm extension if not already enabled
+			if err := db.Exec("CREATE EXTENSION IF NOT EXISTS pg_trgm").Error; err != nil {
+				return err
+			}
+			// Create a B-Tree index for exact matches on the 'Alias' field
+			if err := db.Exec("CREATE INDEX IF NOT EXISTS device_alias_btree ON devices USING BTREE (alias)").Error; err != nil {
+				return err
+			}
+			// Create a GIN index for substring matches on the 'Alias' field
+			return db.Exec("CREATE INDEX IF NOT EXISTS device_alias_gin ON devices USING GIN (alias gin_trgm_ops)").Error
+		} else {
+			return db.Migrator().CreateIndex(&model.Device{}, "device_alias")
+		}
+	}
+	return nil
+}
+
+func (s *DeviceStore) createDeviceLabelsIndex(db *gorm.DB) error {
+	if !db.Migrator().HasIndex(&model.Device{}, "idx_device_labels") {
+		if db.Dialector.Name() == "postgres" {
+			return db.Exec("CREATE INDEX idx_device_labels ON devices USING GIN (labels)").Error
+		} else {
+			return db.Migrator().CreateIndex(&model.Device{}, "Labels")
+		}
+	}
+	return nil
+}
+
+func (s *DeviceStore) createDeviceAnnotationsIndex(db *gorm.DB) error {
+	if !db.Migrator().HasIndex(&model.Device{}, "idx_device_annotations") {
+		if db.Dialector.Name() == "postgres" {
+			return db.Exec("CREATE INDEX idx_device_annotations ON devices USING GIN (annotations)").Error
+		} else {
+			return db.Migrator().CreateIndex(&model.Device{}, "Annotations")
+		}
+	}
+	return nil
+}
+
+func (s *DeviceStore) createDeviceStatusIndex(db *gorm.DB) error {
+	if !db.Migrator().HasIndex(&model.Device{}, "idx_device_status") {
+		if db.Dialector.Name() == "postgres" {
+			return db.Exec("CREATE INDEX idx_device_status ON devices USING GIN (status)").Error
+		} else {
+			return db.Migrator().CreateIndex(&model.Device{}, "Status")
+		}
+	}
+	return nil
+}
+
+func (s *DeviceStore) createDeviceLabelsPartialIndex(db *gorm.DB) error {
+	if !db.Migrator().HasIndex(&model.DeviceLabel{}, "idx_device_labels_partial") {
+		if db.Dialector.Name() == "postgres" {
+			// Enable pg_trgm extension for partial matching
+			if err := db.Exec("CREATE EXTENSION IF NOT EXISTS pg_trgm").Error; err != nil {
+				return err
+			}
+			// Create GIN index for partial match searches
+			return db.Exec("CREATE INDEX IF NOT EXISTS idx_device_labels_partial ON device_labels USING GIN (label_key gin_trgm_ops, label_value gin_trgm_ops)").Error
+		}
+	}
+	return nil
+}
+
+func (s *DeviceStore) createServiceConditionsIndex(db *gorm.DB) error {
+	if !db.Migrator().HasIndex(&model.Device{}, "idx_devices_service_conditions") {
+		if db.Dialector.Name() == "postgres" {
+			// Create a GIN index on the service_conditions JSONB field
+			// This provides optimal performance for JSONB path operations
+			return db.Exec("CREATE INDEX IF NOT EXISTS idx_devices_service_conditions ON devices USING GIN ((service_conditions->'conditions')) WHERE service_conditions IS NOT NULL").Error
+		} else {
+			return db.Migrator().CreateIndex(&model.Device{}, "ServiceConditions")
+		}
+	}
+	return nil
+}
+
+// createDeviceOsImageDigestIndex creates a partial expression index on
+// devices(status->'os'->>'imageDigest') so queries that look up deployed OS
+// image digests (e.g. for vulnerability scanning) can use an index scan instead
+// of a full sequential scan as the devices table grows.
+func (s *DeviceStore) createDeviceOsImageDigestIndex(db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	return db.Exec(`CREATE INDEX IF NOT EXISTS idx_devices_os_image_digest
+		ON devices ((status->'os'->>'imageDigest'))
+		WHERE deleted_at IS NULL
+		  AND status->'os'->>'imageDigest' IS NOT NULL
+		  AND status->'os'->>'imageDigest' <> ''`).Error
+}
+
+func (s *DeviceStore) createDeviceOsCatalogRefIndex(db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	return db.Exec(`CREATE INDEX IF NOT EXISTS idx_devices_os_catalog_ref
+		ON devices ((spec->'os'->'catalogItemRef'->>'catalog'), (spec->'os'->'catalogItemRef'->>'item'))
+		WHERE deleted_at IS NULL`).Error
+}
+
+func (s *DeviceStore) createDeviceAppCatalogRefIndex(db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	return db.Exec(`CREATE INDEX IF NOT EXISTS idx_devices_app_catalog_refs
+		ON devices USING GIN ((jsonb_path_query_array(spec, '$.applications[*].catalogItemRef')) jsonb_path_ops)
+		WHERE deleted_at IS NULL`).Error
+}
+
+func (s *DeviceStore) createDeviceVolumeCatalogRefIndex(db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	return db.Exec(`CREATE INDEX IF NOT EXISTS idx_devices_volume_catalog_refs
+		ON devices USING GIN ((jsonb_path_query_array(spec, '$.applications[*].volumes[*].image.catalogItemRef')) jsonb_path_ops)
+		WHERE deleted_at IS NULL`).Error
+}
+
+// createDeviceSystemInfoOsModeIndex creates an expression index on
+// devices(status->'systemInfo'->>'osMode') so that the
+// "status.systemInfo.osMode" field selector can use an index scan. The GIN
+// index on the whole "status" column does not index this extracted text
+// expression, so without this index PostgreSQL falls back to a sequential scan
+// of the devices table on large fleets.
+func (s *DeviceStore) createDeviceSystemInfoOsModeIndex(db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	return db.Exec(`CREATE INDEX IF NOT EXISTS idx_devices_system_info_os_mode
+		ON devices ((status->'systemInfo'->>'osMode'))
+		WHERE deleted_at IS NULL`).Error
+}
+
+func (s *DeviceStore) createDeviceLabelsTrigger(db *gorm.DB) error {
+	if db.Dialector.Name() == "postgres" {
+		triggerSQL := `
+		DROP TRIGGER IF EXISTS device_labels_insert ON devices;
+		DROP TRIGGER IF EXISTS device_labels_update ON devices;
+
+		CREATE OR REPLACE FUNCTION sync_device_labels()
+		RETURNS TRIGGER AS $$
+		DECLARE
+			label RECORD;
+		BEGIN
+			IF TG_OP = 'UPDATE' THEN
+				DELETE FROM device_labels
+				WHERE org_id = OLD.org_id AND device_name = OLD.name
+				AND label_key NOT IN (SELECT jsonb_object_keys(NEW.labels));
+			END IF;
+
+			FOR label IN SELECT * FROM jsonb_each_text(NEW.labels)
+			LOOP
+				INSERT INTO device_labels (org_id, device_name, label_key, label_value)
+				VALUES (NEW.org_id, NEW.name, label.key, label.value)
+				ON CONFLICT (org_id, device_name, label_key) DO UPDATE
+				SET label_value = EXCLUDED.label_value;
+			END LOOP;
+
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql;
+
+		CREATE TRIGGER device_labels_insert
+		AFTER INSERT ON devices
+		FOR EACH ROW
+		EXECUTE FUNCTION sync_device_labels();
+
+		CREATE TRIGGER device_labels_update
+		AFTER UPDATE OF labels ON devices
+		FOR EACH ROW
+		WHEN (OLD.labels IS DISTINCT FROM NEW.labels)
+		EXECUTE FUNCTION sync_device_labels();
+		`
+		return db.Exec(triggerSQL).Error
+	}
+	return nil
+}
+
+func (s *DeviceStore) createDeviceTimestampInsertTrigger(db *gorm.DB) error {
+	if db.Dialector.Name() == "postgres" {
+		triggerSQL := `
+		DROP TRIGGER IF EXISTS device_after_insert ON devices;
+		DROP FUNCTION IF EXISTS create_device_timestamp();
+		CREATE OR REPLACE FUNCTION create_device_timestamp()
+		RETURNS TRIGGER AS $$
+		BEGIN
+		    INSERT INTO device_timestamps (name, org_id)
+		    VALUES (NEW.name, NEW.org_id);
+		    RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql;
+		CREATE TRIGGER device_after_insert
+		AFTER INSERT ON devices
+		FOR EACH ROW
+		EXECUTE FUNCTION create_device_timestamp();
+		`
+		return db.Exec(triggerSQL).Error
+	}
+	return nil
+}
+
+func (s *DeviceStore) backfillDeviceTimestamps(db *gorm.DB) error {
+	return db.Exec(`INSERT INTO device_timestamps (org_id, name)
+		SELECT org_id, name FROM devices WHERE (org_id, name) NOT IN (SELECT org_id, name FROM device_timestamps)`).Error
+}
+
+func (s *DeviceStore) dropLastSeenColumnIfExists(db *gorm.DB) error {
+	if db.Migrator().HasColumn(&model.Device{}, "last_seen") {
+		return db.Migrator().DropColumn(&model.Device{}, "last_seen")
+	}
+	return nil
+}
+
+// Mutate loads the named device (or uses previous on the first attempt), runs apply,
+// and persists via GenericStore.Mutate using Create / Update.
+// Missing devices are created (apply must set Device); existing ones are updated.
+// The caller is responsible for firing any event callback using the returned
+// before/updated/created values.
+// WithTimestamp() makes loads use a single devices⟕device_timestamps query so
+// Status.LastSeen is set (required before UpdateServiceSideStatus).
+func (s *DeviceStore) Mutate(ctx context.Context, orgId uuid.UUID, name string, previous *domain.Device, apply DeviceApplyFunc, opts ...MutateOption) (*domain.Device, *domain.Device, bool, error) {
+	cfg := &mutateConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	if previous != nil && lo.FromPtr(previous.Metadata.Name) != name {
+		previous = nil
+	}
+	// previous without LastSeen would defeat WithTimestamp on attempt 0; force a joined load.
+	if cfg.withTimestamp && previous != nil && (previous.Status == nil || previous.Status.LastSeen == nil) {
+		previous = nil
+	}
+
+	hooks := store.MutateHooks[domain.Device]{
+		Wrap: func(device *domain.Device) store.ResourceMutation[domain.Device] {
+			return &DeviceMutation{Device: device}
+		},
+		PersistCreate: func(ctx context.Context, orgId uuid.UUID, m store.ResourceMutation[domain.Device]) (*domain.Device, error) {
+			dm := m.(*DeviceMutation)
+			return s.Create(ctx, orgId, dm.Device, dm.Rendered)
+		},
+		PersistUpdate: func(ctx context.Context, orgId uuid.UUID, _ string, before *domain.Device, m store.ResourceMutation[domain.Device]) (bool, error) {
+			dm := m.(*DeviceMutation)
+			return s.update(ctx, orgId, before, dm.Device, dm.Rendered, dm.PreserveGeneration, cfg)
+		},
+	}
+	if cfg.withTimestamp {
+		hooks.Load = func(ctx context.Context, orgId uuid.UUID, name string) (*domain.Device, error) {
+			device, err := s.getWithTimestamp(ctx, orgId, name)
+			if errors.Is(err, flterrors.ErrResourceNotFound) {
+				return nil, nil
+			}
+			return device, err
+		}
+	}
+
+	return s.genericStore.Mutate(ctx, orgId, name, previous, hooks, func(m store.ResourceMutation[domain.Device]) error {
+		return apply(m.(*DeviceMutation))
+	})
+}
+
+// UpdateStatus writes only status + resource_version so service_conditions
+// (SpecValid, DependencySync, delta estimates, …) are left intact. previous is
+// optional (first attempt).
+func (s *DeviceStore) UpdateStatus(ctx context.Context, orgId uuid.UUID, device *domain.Device, previous *domain.Device) (*domain.Device, *domain.Device, error) {
+	if device == nil {
+		return nil, nil, flterrors.ErrResourceIsNil
+	}
+	name := lo.FromPtr(device.Metadata.Name)
+	// device doesn't change across retries, so convert it once instead of on every attempt.
+	fromAPI, err := model.NewDeviceFromApiResource(device)
+	if err != nil {
+		return nil, nil, err
+	}
+	fromAPI.OrgID = orgId
+
+	var before, updated *domain.Device
+	attempt := 0
+	err = store.RetryUpdate(func() (bool, error) {
+		var current *domain.Device
+		if attempt == 0 && previous != nil && lo.FromPtr(previous.Metadata.Name) == name {
+			current = previous
+		} else {
+			loaded, getErr := s.getWithTimestamp(ctx, orgId, name)
+			if getErr != nil {
+				return false, getErr
+			}
+			current = loaded
+		}
+		attempt++
+		// current is only read below, never mutated, so it's safe to return directly as
+		// "before" instead of paying for a full JSON round-trip clone (which would also
+		// silently drop Status.LastSeen, since it's tagged json:"-").
+		before = current
+
+		rv, rvErr := strconv.ParseInt(lo.FromPtr(current.Metadata.ResourceVersion), 10, 64)
+		if rvErr != nil {
+			return false, flterrors.ErrIllegalResourceVersionFormat
+		}
+		// Return the stored service conditions with the CAS update so the API
+		// response can merge estimates with the new agent status without a read.
+		var returned model.Device
+		result := s.getDB(ctx).Model(&returned).
+			Where("org_id = ? AND name = ? AND resource_version = ?", orgId, name, rv).
+			Clauses(clause.Returning{Columns: []clause.Column{{Name: "service_conditions"}}}).
+			Updates(map[string]interface{}{
+				"status":           fromAPI.Status,
+				"resource_version": gorm.Expr("resource_version + 1"),
+			})
+		if result.Error != nil {
+			err := store.ErrorFromGormError(result.Error)
+			return strings.Contains(err.Error(), "deadlock"), err
+		}
+		if result.RowsAffected == 0 {
+			return true, flterrors.ErrNoRowsUpdated
+		}
+		statusModel := &model.Device{
+			Status:            fromAPI.Status,
+			ServiceConditions: returned.ServiceConditions,
+		}
+		mergedStatusResource, err := statusModel.ToApiResource()
+		if err != nil {
+			return false, err
+		}
+		next := *current
+		next.Status = mergedStatusResource.Status
+		if next.Status != nil && device.Status != nil {
+			next.Status.LastSeen = device.Status.LastSeen
+		}
+		next.Metadata.ResourceVersion = lo.ToPtr(strconv.FormatInt(rv+1, 10))
+		updated = &next
+		return false, nil
+	})
+	return updated, before, err
+}
+
+// ReplaceServiceOwnedStatus persists the service-owned portions of a device's
+// status while retaining the rest of the resource from the CAS-fresh row.
+// Callers provide a device loaded by the service layer and may update service
+// conditions (for example, delta-preparing) without changing the desired spec
+// or agent-owned status fields.
+func (s *DeviceStore) ReplaceServiceOwnedStatus(ctx context.Context, orgId uuid.UUID, device *domain.Device) (*domain.Device, *domain.Device, error) {
+	if device == nil || device.Metadata.Name == nil {
+		return nil, nil, flterrors.ErrResourceIsNil
+	}
+	name := *device.Metadata.Name
+	updated, before, _, err := s.Mutate(ctx, orgId, name, nil, func(m *DeviceMutation) error {
+		if err := m.RequireExisting(); err != nil {
+			return err
+		}
+		if device.Status == nil {
+			return nil
+		}
+		if m.Device.Status == nil {
+			m.Device.Status = &domain.DeviceStatus{}
+		}
+		m.Device.Status.Conditions = device.Status.Conditions
+		m.Device.Status.DeltaGeneration = device.Status.DeltaGeneration
+		return nil
+	}, WithTimestamp())
+	return updated, before, err
+}
+
+// UpdateAnnotations merges annotations via Mutate.
+func (s *DeviceStore) UpdateAnnotations(ctx context.Context, orgId uuid.UUID, name string, annotations map[string]string, deleteKeys []string) error {
+	_, _, _, err := s.Mutate(ctx, orgId, name, nil, func(m *DeviceMutation) error {
+		if err := m.RequireExisting(); err != nil {
+			return err
+		}
+		merged := store.MergeAnnotations(m.Device.Metadata.Annotations, annotations, deleteKeys)
+		m.Device.Metadata.Annotations = &merged
+		return nil
+	})
+	return err
+}
+
+// Create inserts a device. No events; callers fire their own callbacks.
+// rendered is optional storage-only column data (nil on normal creates).
+func (s *DeviceStore) Create(ctx context.Context, orgId uuid.UUID, device *domain.Device, rendered *DeviceRendered) (*domain.Device, error) {
+	if device == nil {
+		return nil, flterrors.ErrResourceIsNil
+	}
+	deviceModel, err := model.NewDeviceFromApiResource(device)
+	if err != nil {
+		return nil, err
+	}
+	deviceModel.OrgID = orgId
+	deviceModel.Generation = lo.ToPtr(int64(1))
+	deviceModel.ResourceVersion = lo.ToPtr(int64(1))
+	if rendered != nil {
+		cfg := rendered.Config
+		if strings.TrimSpace(cfg) == "" {
+			cfg = "[]"
+		}
+		deviceModel.RenderedConfig = model.MakeJSONField(json.RawMessage(cfg))
+		apps := rendered.Applications
+		if strings.TrimSpace(apps) == "" {
+			apps = "[]"
+		}
+		deviceModel.RenderedApplications = model.MakeJSONField(json.RawMessage(apps))
+		deviceModel.RenderedOs = model.MakeJSONField(renderedOsSpec(rendered))
+		deviceModel.RenderTimestamp = time.Now()
+		applyRenderedDeltaEstimates(deviceModel, rendered.DeltaEstimates)
+	}
+
+	result := s.getDB(ctx).Create(deviceModel)
+	if result.Error != nil {
+		return nil, store.ErrorFromGormError(result.Error)
+	}
+	return deviceModel.ToApiResource()
+}
+
+// Update writes a device update. Returns retry=true on lost optimistic lock / deadlock.
+// rendered is optional; when nil, rendered_* columns are left unchanged.
+func (s *DeviceStore) Update(ctx context.Context, orgId uuid.UUID, before, device *domain.Device, rendered *DeviceRendered, preserveGeneration bool) (bool, error) {
+	return s.update(ctx, orgId, before, device, rendered, preserveGeneration, &mutateConfig{})
+}
+
+func (s *DeviceStore) update(ctx context.Context, orgId uuid.UUID, before, device *domain.Device, rendered *DeviceRendered, preserveGeneration bool, cfg *mutateConfig) (bool, error) {
+	existing, err := model.NewDeviceFromApiResource(before)
+	if err != nil {
+		return false, err
+	}
+	existing.OrgID = orgId
+
+	fromAPI, err := model.NewDeviceFromApiResource(device)
+	if err != nil {
+		return false, err
+	}
+	fromAPI.OrgID = orgId
+	if cfg.preserveOmittedManagedLabels {
+		if err := s.preserveOmittedManagedLabels(ctx, orgId, existing, fromAPI, device, cfg.explicitLabelRemovalPaths); err != nil {
+			return false, err
+		}
+	}
+	if rendered != nil {
+		applyRenderedDeltaEstimates(fromAPI, rendered.DeltaEstimates)
+	} else {
+		preserveDeltaEstimatesFromSnapshot(fromAPI, existing)
+	}
+	var renderedStatus *domain.DeviceStatus
+	if rendered != nil {
+		updatedResource, err := fromAPI.ToApiResource()
+		if err != nil {
+			return false, err
+		}
+		renderedStatus = updatedResource.Status
+	}
+
+	// Prefer API-level Spec comparison so generation tracks the same Spec delta
+	// that event emission uses (HasSameSpecAs alone can miss union/ref changes
+	// if model conversion ever loses fields).
+	generation := lo.FromPtr(existing.Generation)
+	if !preserveGeneration {
+		apiSpecChanged := before != nil && device != nil &&
+			!domain.DeviceSpecsAreEqual(lo.FromPtr(before.Spec), lo.FromPtr(device.Spec))
+		if apiSpecChanged || !fromAPI.HasSameSpecAs(existing) {
+			generation++
+		}
+	}
+
+	updates := map[string]interface{}{
+		"spec":               fromAPI.Spec,
+		"alias":              fromAPI.Alias,
+		"labels":             model.MakeJSONMap(fromAPI.Labels),
+		"annotations":        model.MakeJSONMap(fromAPI.Annotations),
+		"owner":              fromAPI.Owner,
+		"generation":         generation,
+		"status":             fromAPI.Status,
+		"service_conditions": fromAPI.ServiceConditions,
+		"resource_version":   gorm.Expr("resource_version + 1"),
+	}
+	if rendered != nil {
+		// *string so encryptMap treats rendered blobs as opaque JSON (arrays), not nested maps.
+		cfg := rendered.Config
+		if strings.TrimSpace(cfg) == "" {
+			cfg = "[]"
+		}
+		apps := rendered.Applications
+		if strings.TrimSpace(apps) == "" {
+			apps = "[]"
+		}
+		updates["rendered_config"] = &cfg
+		updates["rendered_applications"] = &apps
+		updates["rendered_os"] = model.MakeJSONField(renderedOsSpec(rendered))
+		updates["render_timestamp"] = time.Now()
+	}
+
+	decommissionCleanup := cfg.allowDecommissionManagedLabelCleanup && device != nil &&
+		device.Status != nil && device.Status.Lifecycle.Status == domain.DeviceLifecycleStatusDecommissioning &&
+		len(lo.FromPtr(device.Metadata.Labels)) == 0
+	if !decommissionCleanup {
+		if err := s.rejectManagedLabelChanges(ctx, orgId, existing.Name, map[string]string(existing.Labels), map[string]string(fromAPI.Labels)); err != nil {
+			return false, err
+		}
+	}
+	result := s.getDB(ctx).Model(existing).Where("resource_version = ?", lo.FromPtr(existing.ResourceVersion)).Updates(updates)
+	if result.Error != nil {
+		err := store.ErrorFromGormError(result.Error)
+		return strings.Contains(err.Error(), "deadlock"), err
+	}
+	if result.RowsAffected == 0 {
+		return true, flterrors.ErrNoRowsUpdated
+	}
+
+	if renderedStatus != nil {
+		if device.Status != nil {
+			renderedStatus.LastSeen = device.Status.LastSeen
+		}
+		device.Status = renderedStatus
+	}
+	device.Metadata.Generation = lo.ToPtr(generation)
+	device.Metadata.ResourceVersion = lo.ToPtr(strconv.FormatInt(lo.FromPtr(existing.ResourceVersion)+1, 10))
+	return false, nil
+}
+
+// preserveDeltaEstimatesFromSnapshot keeps delta estimates service-owned for
+// non-render updates, including when the stored snapshot has no estimates.
+func preserveDeltaEstimatesFromSnapshot(updated, existing *model.Device) {
+	serviceConditions := model.ServiceConditions{}
+	if updated.ServiceConditions != nil {
+		serviceConditions = updated.ServiceConditions.Data
+	}
+	// Copy the value unconditionally: nil in the snapshot must clear any
+	// caller-supplied estimates extracted from the mutated API status. The
+	// resource-version check retries if the snapshot changed during this update.
+	if existing != nil && existing.ServiceConditions != nil {
+		serviceConditions.DeltaEstimates = existing.ServiceConditions.Data.DeltaEstimates
+	} else {
+		serviceConditions.DeltaEstimates = nil
+	}
+	updated.ServiceConditions = model.MakeJSONField(serviceConditions)
+}
+
+func (s *DeviceStore) getWithTimestamp(ctx context.Context, orgId uuid.UUID, name string, opts ...model.APIResourceOption) (*domain.Device, error) {
+	var deviceModel model.DeviceWithTimestamp
+	// LEFT JOIN so a devices row without a device_timestamps row still loads
+	// (LastSeen nil → disconnected), instead of masquerading as not-found/create.
+	device := s.getDB(ctx).Raw(`SELECT d.*, dt.last_seen
+          FROM devices d
+          LEFT JOIN device_timestamps dt ON d.org_id = dt.org_id AND d.name = dt.name
+          WHERE d.org_id = ? AND d.name = ? AND d.deleted_at is NULL`, orgId, name).Scan(&deviceModel)
+	if device.Error != nil {
+		return nil, store.ErrorFromGormError(device.Error)
+	}
+	if device.RowsAffected == 0 {
+		return nil, flterrors.ErrResourceNotFound
+	}
+	ret, err := deviceModel.ToApiResource(opts...)
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
+func (s *DeviceStore) Get(ctx context.Context, orgId uuid.UUID, name string) (*domain.Device, error) {
+	return s.genericStore.Get(ctx, orgId, name)
+}
+
+func (s *DeviceStore) GetWithTimestamp(ctx context.Context, orgId uuid.UUID, name string) (*domain.Device, error) {
+	return s.getWithTimestamp(ctx, orgId, name)
+}
+
+func (s *DeviceStore) List(ctx context.Context, orgId uuid.UUID, listParams DeviceListParams) (*domain.DeviceList, error) {
+	var devices []model.Device
+	var nextContinue *string
+	var numRemaining *int64
+
+	listQueryOpts := []store.ListQueryOption(nil)
+	if listParams.CveID != nil {
+		// Joining vulnerability_findings exposes its "status" column alongside devices.status JSON.
+		// CompositeSelectorResolver qualifies selector SQL as devices.* so it is unambiguous.
+		r, err := selector.NewCompositeSelectorResolver(&model.Device{})
+		if err != nil {
+			return nil, err
+		}
+		listQueryOpts = append(listQueryOpts, store.WithSelectorResolver(r))
+	}
+
+	// Build base query with selectors
+	baseQuery, err := store.ListQuery(&model.Device{}, listQueryOpts...).Build(ctx, s.getDB(ctx), orgId, listParams.ListParams)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply CVE filter if specified
+	if listParams.CveID != nil {
+		baseQuery = s.applyCveFilter(baseQuery, *listParams.CveID)
+	}
+
+	// Device model has a spec column
+	baseQuery = baseQuery.Where("spec IS NOT NULL")
+
+	// Create query for fetching with pagination
+	query := baseQuery.Session(&gorm.Session{})
+	if listParams.Limit > 0 {
+		query = store.AddPaginationToQuery(query, listParams.Limit+1, listParams.Continue, listParams.ListParams)
+	}
+
+	// Execute query
+	result := query.Find(&devices)
+	if result.Error != nil {
+		return nil, store.ErrorFromGormError(result.Error)
+	}
+
+	// Handle continue token if we got more than requested
+	if listParams.Limit > 0 && len(devices) > listParams.Limit {
+		lastIndex := len(devices) - 1
+		lastItem := devices[lastIndex]
+		columns, _, _ := getSortColumns(listParams.ListParams)
+
+		// Build values for continue token
+		continueValues := make([]string, len(columns))
+		for i, col := range columns {
+			switch col {
+			case store.SortByName:
+				continueValues[i] = lastItem.Name
+			case store.SortByCreatedAt:
+				continueValues[i] = lastItem.CreatedAt.Format(time.RFC3339Nano)
+			default:
+				continueValues[i] = ""
+			}
+		}
+
+		devices = devices[:lastIndex]
+
+		var numRemainingVal int64
+		if listParams.Continue != nil {
+			numRemainingVal = listParams.Continue.Count - int64(listParams.Limit)
+			if numRemainingVal < 1 {
+				numRemainingVal = 1
+			}
+		} else {
+			numRemainingVal = store.CountRemainingItems(baseQuery, continueValues, listParams.ListParams)
+		}
+
+		nextContinue = store.BuildContinueString(continueValues, numRemainingVal)
+		numRemaining = &numRemainingVal
+	}
+
+	ret, err := model.DevicesToApiResource(devices, nextContinue, numRemaining)
+	if err != nil {
+		return nil, err
+	}
+	return &ret, nil
+}
+
+// applyCveFilter adds a join with vulnerability_findings to filter devices by CVE ID.
+func (s *DeviceStore) applyCveFilter(query *gorm.DB, cveID string) *gorm.DB {
+	return query.Joins(
+		"JOIN vulnerability_findings ON devices.status->'os'->>'imageDigest' = vulnerability_findings.image_digest",
+	).Where("vulnerability_findings.cve_id = ?", strings.ToUpper(cveID))
+}
+
+func (s *DeviceStore) ListConnectivityChanged(ctx context.Context, orgId uuid.UUID, listParams store.ListParams, cutoffTime time.Time) (*domain.DeviceList, error) {
+	var nextContinue *string
+	var numRemaining *int64
+	var devices []model.DeviceWithTimestamp
+	queryStr := `SELECT d.*, dt.last_seen
+          FROM devices d, device_timestamps dt
+          WHERE d.org_id = ? AND d.deleted_at is NULL AND d.name = dt.name AND d.org_id = dt.org_id AND ((dt.last_seen < ? AND d.status->'summary'->>'status' != ?)
+          OR (dt.last_seen >= ? AND d.status->'summary'->>'status' = ?))`
+
+	args := []interface{}{
+		orgId,
+		cutoffTime,
+		domain.DeviceSummaryStatusUnknown,
+		cutoffTime,
+		domain.DeviceSummaryStatusUnknown,
+	}
+
+	if listParams.Continue != nil && len(listParams.Continue.Names) == 1 {
+		queryStr += ` AND d.name >= ? `
+		args = append(args, listParams.Continue.Names[0])
+	}
+
+	queryStr += ` order by d.name `
+
+	if listParams.Limit > 0 {
+		queryStr += ` limit ?`
+		args = append(args, listParams.Limit+1)
+	}
+
+	if err := s.getDB(ctx).Raw(queryStr, args...).Scan(&devices).Error; err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	// If we got more than the user requested, remove one record and calculate "continue"
+	if listParams.Limit > 0 && len(devices) > listParams.Limit {
+		lastIndex := len(devices) - 1
+		lastItem := devices[lastIndex]
+		continueValues := []string{lastItem.Name}
+
+		devices = devices[:lastIndex]
+
+		var numRemainingVal int64
+		if listParams.Continue != nil {
+			numRemainingVal = listParams.Continue.Count - int64(listParams.Limit)
+			if numRemainingVal < 1 {
+				numRemainingVal = 1
+			}
+		} else {
+			countQuery, err := store.ListQuery(&model.Device{}).Build(ctx, s.getDB(ctx), orgId, listParams)
+			if err != nil {
+				return nil, err
+			}
+			numRemainingVal = store.CountRemainingItems(countQuery, continueValues, listParams)
+		}
+
+		nextContinue = store.BuildContinueString(continueValues, numRemainingVal)
+		numRemaining = &numRemainingVal
+	}
+
+	ret, err := model.DevicesToApiResource(devices, nextContinue, numRemaining)
+	if err != nil {
+		return nil, err
+	}
+
+	return lo.ToPtr(ret), nil
+}
+
+func (s *DeviceStore) Labels(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (domain.LabelList, error) {
+	var labels []model.DeviceLabel
+
+	resolver, err := selector.NewCompositeSelectorResolver(&model.DeviceLabel{}, &model.Device{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create selector resolver: %w", err)
+	}
+
+	query, err := store.ListQuery(model.Device{}, store.WithSelectorResolver(resolver)).BuildNoOrder(ctx, s.getDB(ctx), orgId, listParams)
+	if err != nil {
+		return nil, err
+	}
+
+	query = query.Select("DISTINCT device_labels.label_key, device_labels.label_value").
+		Joins("JOIN device_labels ON devices.org_id = device_labels.org_id AND devices.name = device_labels.device_name")
+
+	if listParams.Limit > 0 {
+		query = query.Limit(listParams.Limit)
+	}
+
+	if err := query.Find(&labels).Error; err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	labelStrings := make([]string, len(labels))
+	for i, label := range labels {
+		labelStrings[i] = fmt.Sprintf("%s=%s", label.LabelKey, label.LabelValue)
+	}
+
+	return labelStrings, nil
+}
+
+func (s *DeviceStore) Delete(ctx context.Context, orgId uuid.UUID, name string, eventCallback store.EventCallback) (bool, error) {
+	var rowsAffected int64
+	err := s.getDB(ctx).Transaction(func(innerTx *gorm.DB) error {
+		// Delete the device
+		result := innerTx.Unscoped().Delete(&model.Device{Resource: model.Resource{OrgID: orgId, Name: name}})
+		if result.Error != nil {
+			return store.ErrorFromGormError(result.Error)
+		}
+		rowsAffected = result.RowsAffected
+
+		// Delete associated enrollment requests
+		if err := innerTx.Unscoped().
+			Table("enrollment_requests").
+			Where("org_id = ? AND name = ? AND spec IS NOT NULL", orgId.String(), name).
+			Delete(nil).Error; err != nil {
+			return store.ErrorFromGormError(err)
+		}
+
+		// Purge enrollment hook notify secrets (uses device_name, not name)
+		if err := innerTx.
+			Where("org_id = ? AND device_name = ?", orgId, name).
+			Delete(&model.EnrollmentHookNotifySecret{}).Error; err != nil {
+			return store.ErrorFromGormError(err)
+		}
+
+		return nil
+	})
+	deleted := err == nil && rowsAffected != 0
+	if deleted && eventCallback != nil {
+		s.callEventCallback(ctx, eventCallback, orgId, name, nil, nil, false, err)
+	}
+	return deleted, err
+}
+
+func (s *DeviceStore) Count(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (int64, error) {
+	query, err := store.ListQuery(&model.Device{}).Build(ctx, s.getDB(ctx), orgId, listParams)
+	if err != nil {
+		return 0, err
+	}
+	var devicesCount int64
+	if err := query.Count(&devicesCount).Error; err != nil {
+		return 0, store.ErrorFromGormError(err)
+	}
+	return devicesCount, nil
+}
+
+// CompletionCounts is used for finding if a rollout batch is complete or to set the success percentage of the batch.
+// The result is a count of devices grouped by some fields:
+// - rendered_template_version: taken from the annotation 'device-controller/renderedTemplateVersion'
+// - summary_status: taken from the field 'status.summary.status'
+// - updating_reason: it is the reason field from a condition having type 'Updating'
+// - same_rendered_version: it is the result of comparison for equality between the annotation 'device-controller/renderedVersion' and the field 'status.config.renderedVersion'
+// - update_timed_out: it is a boolean value indicating if the update of the device has been timed out
+func (s *DeviceStore) CompletionCounts(ctx context.Context, orgId uuid.UUID, owner string, templateVersion string, updateTimeout *time.Duration) ([]domain.DeviceCompletionCount, error) {
+	var (
+		results            []domain.DeviceCompletionCount
+		updateTimeoutValue any
+	)
+
+	if updateTimeout != nil {
+		updateTimeoutValue = gorm.Expr("render_timestamp < ?", time.Now().Add(-(*updateTimeout)))
+	} else {
+		updateTimeoutValue = gorm.Expr("false")
+	}
+	err := s.getDB(ctx).Raw(fmt.Sprintf(`select count(*) as count,
+                                 status -> 'config' ->> 'renderedVersion' = annotations->>'%s' AS same_rendered_version,
+                                 elem ->> 'reason' as updating_reason,
+                                 annotations->>'%s' = ? as same_template_version,
+								 ? as update_timed_out
+                          from devices d LEFT JOIN LATERAL (
+                            SELECT elem
+						    FROM jsonb_array_elements(d.status->'conditions') AS elem
+						    WHERE elem->>'type' = 'Updating'
+						    LIMIT 1
+							) subquery ON TRUE
+						     where
+						        org_id = ? and owner = ? and annotations ? '%s' and deleted_at is null
+						        group by same_rendered_version, updating_reason, same_template_version, update_timed_out`,
+		domain.DeviceAnnotationRenderedVersion, domain.DeviceAnnotationRenderedTemplateVersion, domain.DeviceAnnotationSelectedForRollout),
+		templateVersion,
+		updateTimeoutValue,
+		orgId,
+		owner,
+		gorm.Expr("?")).Scan(&results).Error
+	if err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+	return results, nil
+}
+
+func (s *DeviceStore) unmarkRolloutSelection(ctx context.Context, orgId uuid.UUID, fleetName string) (bool, error) {
+	err := s.getDB(ctx).Model(&model.Device{}).Where("org_id = ? and owner = ? and annotations ? ?",
+		orgId, util.ResourceOwner(domain.FleetKind, fleetName), gorm.Expr("?"), domain.DeviceAnnotationSelectedForRollout).Updates(map[string]any{
+		"annotations":      gorm.Expr("annotations - ?", domain.DeviceAnnotationSelectedForRollout),
+		"resource_version": gorm.Expr("resource_version + 1"),
+	}).Error
+	err = store.ErrorFromGormError(err)
+	if err != nil {
+		return strings.Contains(err.Error(), "deadlock"), err
+	}
+	return false, nil
+}
+
+// UnmarkRolloutSelection unmarks all previously marked devices for rollout in a fleet
+func (s *DeviceStore) UnmarkRolloutSelection(ctx context.Context, orgId uuid.UUID, fleetName string) error {
+	return store.RetryUpdate(func() (bool, error) {
+		return s.unmarkRolloutSelection(ctx, orgId, fleetName)
+	})
+}
+
+func (s *DeviceStore) markRolloutSelection(ctx context.Context, orgId uuid.UUID, listParams store.ListParams, limit *int) (bool, error) {
+	query, err := store.ListQuery(&model.Device{}).Build(ctx, s.getDB(ctx), orgId, listParams)
+	if err != nil {
+		return false, err
+	}
+	if limit != nil {
+		query = query.Limit(*limit)
+		query = s.getDB(ctx).Model(&model.Device{}).Where("org_id = ? and name in (?)", orgId,
+			query.Select("name"))
+	}
+	err = query.Updates(map[string]any{
+		"annotations":      gorm.Expr(fmt.Sprintf(`jsonb_set(COALESCE(annotations, '{}'::jsonb), '{%s}', '""')`, domain.DeviceAnnotationSelectedForRollout)),
+		"resource_version": gorm.Expr("resource_version + 1")}).Error
+	err = store.ErrorFromGormError(err)
+	if err != nil {
+		return strings.Contains(err.Error(), "deadlock"), err
+	}
+	return false, nil
+}
+
+// MarkRolloutSelection marks all devices that can be filtered by the list params.  If limit is provided then the number of marked devices
+// will not be greater than the provided limit.
+func (s *DeviceStore) MarkRolloutSelection(ctx context.Context, orgId uuid.UUID, listParams store.ListParams, limit *int) error {
+	return store.RetryUpdate(func() (bool, error) {
+		return s.markRolloutSelection(ctx, orgId, listParams, limit)
+	})
+}
+
+// labelKeyToSymbol transforms a label key to a valid postgres symbol.
+func labelKeyToSymbol(labelKey string) string {
+	var builder strings.Builder
+	for _, c := range labelKey {
+		switch c {
+		case '.':
+			builder.WriteString("_dot_")
+		case '-':
+			builder.WriteString("_dash_")
+		case '/':
+			builder.WriteString("_slash_")
+		default:
+			builder.WriteRune(c)
+		}
+	}
+	return builder.String()
+}
+
+func quoteIdentifier(name string) string {
+	end := strings.IndexRune(name, 0)
+	if end > -1 {
+		name = name[:end]
+	}
+	return `"` + strings.Replace(name, `"`, `""`, -1) + `"`
+}
+
+// CountByLabels is used for rollout policy disruption budget to provide device count values grouped by the label values.
+func (s *DeviceStore) CountByLabels(ctx context.Context, orgId uuid.UUID, listParams store.ListParams, groupBy []string) ([]map[string]any, error) {
+	query, err := store.ListQuery(&model.Device{}).BuildNoOrder(ctx, s.getDB(ctx), orgId, listParams)
+	if err != nil {
+		return nil, err
+	}
+
+	selectList := lo.RepeatBy(len(groupBy), func(_ int) string { return "labels ->> ? as ?" })
+	countByCondition := "count(case when ? then 1 end) as ?"
+	selectList = append(selectList,
+		"count(*) as total",
+		countByCondition,
+		countByCondition)
+
+	labelSymbols := lo.Map(groupBy, func(s string, _ int) string { return labelKeyToSymbol(s) })
+
+	args := lo.Interleave(lo.ToAnySlice(groupBy), lo.Map(labelSymbols, func(s string, _ int) any { return gorm.Expr(quoteIdentifier(s)) }))
+	args = append(args, gorm.Expr("status -> 'summary' ->> 'status' <> 'Unknown'"), gorm.Expr("connected"))
+	args = append(args, gorm.Expr("status -> 'summary' ->> 'status' <> 'Unknown' and status -> 'config' ->> 'renderedVersion' <> annotations ->> ?",
+		domain.DeviceAnnotationRenderedVersion), gorm.Expr("busy_connected"))
+
+	query.Select(strings.Join(selectList, ","), args...)
+	for _, g := range labelSymbols {
+		query = query.Group(quoteIdentifier(g))
+	}
+	var results []map[string]any
+	err = query.Scan(&results).Error
+	if err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+	ret := lo.Map(results, func(m map[string]any, _ int) map[string]any {
+		return lo.SliceToMap(append(groupBy, "total", "connected", "busy_connected"), func(s string) (string, any) {
+			return s, m[labelKeyToSymbol(s)]
+		})
+	})
+	return ret, nil
+}
+
+func (s *DeviceStore) Summary(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (*domain.DevicesSummary, error) {
+	query, err := store.ListQuery(&model.Device{}).Build(ctx, s.getDB(ctx), orgId, listParams)
+	if err != nil {
+		return nil, err
+	}
+
+	var devicesCount int64
+	if err := query.Count(&devicesCount).Error; err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	statusCount, err := store.CountStatusList(ctx, query,
+		"status.applicationsSummary.status",
+		"status.summary.status",
+		"status.updated.status",
+		store.OsModeStatusSelector)
+	if err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	applicationStatus := statusCount.List("status.applicationsSummary.status")
+	summaryStatus := statusCount.List("status.summary.status")
+	updateStatus := statusCount.List("status.updated.status")
+	osModeStatus := statusCount.List(store.OsModeStatusSelector)
+	return &domain.DevicesSummary{
+		Total:             devicesCount,
+		ApplicationStatus: applicationStatus,
+		SummaryStatus:     summaryStatus,
+		UpdateStatus:      updateStatus,
+		Capabilities:      model.NewDevicesSummaryCapabilities(osModeStatus),
+	}, nil
+}
+
+func (s *DeviceStore) healthcheck(ctx context.Context, orgId uuid.UUID, names []string) (bool, error) {
+	// Handle empty device list gracefully
+	if len(names) == 0 {
+		return false, nil
+	}
+
+	result := s.getDB(ctx).Model(&model.DeviceTimestamp{}).Where("org_id = ? and name in (?)", orgId, names).Update(
+		"last_seen", time.Now().UTC())
+	err := store.ErrorFromGormError(result.Error)
+	if err != nil {
+		return strings.Contains(err.Error(), "deadlock"), err
+	}
+
+	return false, nil
+}
+
+func (s *DeviceStore) Healthcheck(ctx context.Context, orgId uuid.UUID, names []string) error {
+	return store.RetryUpdate(func() (bool, error) {
+		return s.healthcheck(ctx, orgId, names)
+	})
+}
+
+// ProcessAwaitingReconnectAnnotation processes the AwaitingReconnect annotation for a specific device
+// This is called from GetRenderedDevice when a device connects and has the awaiting-reconnect annotation
+// Returns true if the device was moved to conflict paused state, false otherwise
+func (s *DeviceStore) ProcessAwaitingReconnectAnnotation(ctx context.Context, orgId uuid.UUID, deviceName string, deviceReportedVersion *string) (bool, error) {
+	var wasConflictPaused bool
+	err := store.RetryUpdate(func() (bool, error) {
+		var retry bool
+		var err error
+		retry, wasConflictPaused, err = s.processAwaitingReconnectAnnotation(ctx, orgId, deviceName, deviceReportedVersion)
+		return retry, err
+	})
+	return wasConflictPaused, err
+}
+
+func (s *DeviceStore) processAwaitingReconnectAnnotation(ctx context.Context, orgId uuid.UUID, deviceName string, deviceReportedVersion *string) (bool, bool, error) {
+	s.log.Infof("Starting processAwaitingReconnectAnnotation for device %s (orgId: %s)", deviceName, orgId)
+
+	// First, get the device to check its current annotations
+	var device model.Device
+	result := s.getDB(ctx).Where("org_id = ? and name = ?", orgId, deviceName).First(&device)
+	if result.Error != nil {
+		s.log.WithError(result.Error).Errorf("Failed to fetch device %s from database", deviceName)
+		return strings.Contains(result.Error.Error(), "deadlock"), false, store.ErrorFromGormError(result.Error)
+	}
+	s.log.Infof("Successfully fetched device %s from database", deviceName)
+
+	// Check if device has awaiting reconnect annotation
+	annotations := util.EnsureMap(device.Annotations)
+	waitingAnnotation, hasWaitingAnnotation := annotations[domain.DeviceAnnotationAwaitingReconnect]
+	s.log.Infof("Device %s awaiting reconnect annotation: hasAnnotation=%t, value=%s", deviceName, hasWaitingAnnotation, waitingAnnotation)
+
+	if !hasWaitingAnnotation || waitingAnnotation != "true" {
+		s.log.Infof("Device %s does not have awaiting reconnect annotation or value is not 'true', skipping processing", deviceName)
+		return false, false, nil // No awaiting reconnect annotation, nothing to do
+	}
+
+	// Get device-reported version from params (what the device thinks its current version is)
+	var deviceVersion int64 = 0
+	deviceVersionStr := "0"
+	if deviceReportedVersion != nil && *deviceReportedVersion != "" {
+		var err error
+		deviceVersion, err = strconv.ParseInt(*deviceReportedVersion, 10, 64)
+		if err != nil {
+			s.log.Warnf("Failed to parse device reported version '%s' for device %s: %v", *deviceReportedVersion, deviceName, err)
+			// Ignore parsing errors, use default value 0
+			deviceVersionStr = "0"
+		} else {
+			s.log.Infof("Successfully parsed device reported version '%s' to %d for device %s", *deviceReportedVersion, deviceVersion, deviceName)
+			deviceVersionStr = *deviceReportedVersion
+		}
+	} else {
+		s.log.Infof("No device reported version provided for device %s, using default 0", deviceName)
+	}
+
+	// Get service version from annotations
+	var serviceVersion int64 = 0
+	serviceVersionStr := "not found"
+	if serviceVersionStrFromAnnotation, hasServiceVersion := annotations[domain.DeviceAnnotationRenderedVersion]; hasServiceVersion {
+		serviceVersionStr = serviceVersionStrFromAnnotation
+		var err error
+		serviceVersion, err = strconv.ParseInt(serviceVersionStrFromAnnotation, 10, 64)
+		if err != nil {
+			s.log.Warnf("Failed to parse service version '%s' for device %s: %v", serviceVersionStrFromAnnotation, deviceName, err)
+			// Ignore parsing errors, use default value 0
+		} else {
+			s.log.Infof("Successfully parsed service version '%s' to %d for device %s", serviceVersionStrFromAnnotation, serviceVersion, deviceName)
+		}
+	} else {
+		s.log.Infof("No service version annotation found for device %s, using default 0", deviceName)
+	}
+
+	// Track whether device will be moved to conflict paused state
+	willBeConflictPaused := deviceVersion > serviceVersion
+	s.log.Infof("Version comparison for device %s: deviceVersion=%d (from '%s'), serviceVersion=%d (from '%s'), willBeConflictPaused=%t",
+		deviceName, deviceVersion, deviceVersionStr, serviceVersion, serviceVersionStr, willBeConflictPaused)
+
+	// Generate detailed conflict paused info message
+	var infoMessage string
+	if willBeConflictPaused {
+		deviceVersionDisplay := "unknown"
+		if deviceReportedVersion != nil && *deviceReportedVersion != "" {
+			deviceVersionDisplay = *deviceReportedVersion
+		}
+		infoMessage = fmt.Sprintf("Device reconciliation is paused due to a state conflict between the service and the device's agent; manual intervention is required. (device reported version %s > device version known to service %d)", deviceVersionDisplay, serviceVersion)
+		s.log.Infof("Device %s will be moved to conflict paused state: %s", deviceName, infoMessage)
+	} else {
+		infoMessage = "Device is up to date"
+		s.log.Infof("Device %s is up to date, will be set to online status", deviceName)
+	}
+
+	// Use raw SQL with parameterized queries to avoid JSON path syntax issues
+	sql := `
+		UPDATE devices
+		SET
+			annotations = (annotations - $1) || CASE
+				WHEN $2 THEN jsonb_build_object($3::text, 'true')
+				ELSE '{}'::jsonb
+			END,
+			status = jsonb_set(
+				jsonb_set(
+					jsonb_set(COALESCE(status, '{}'::jsonb), '{summary}', jsonb_build_object('status', $4::text, 'info', $5::text), true),
+					'{updated}', jsonb_build_object('status', $9::text), true
+				),
+				'{config,renderedVersion}', to_jsonb($8::text), true
+			),
+			resource_version = COALESCE(resource_version, 0) + 1
+		WHERE org_id = $6 AND name = $7 AND deleted_at IS NULL
+	`
+
+	var status string
+	if willBeConflictPaused {
+		status = string(domain.DeviceSummaryStatusConflictPaused)
+	} else {
+		status = string(domain.DeviceSummaryStatusOnline)
+	}
+
+	// Determine updated status based on version comparison
+	var updatedStatus string
+	if deviceVersion == serviceVersion {
+		updatedStatus = string(domain.DeviceUpdatedStatusUpToDate)
+	} else {
+		updatedStatus = string(domain.DeviceUpdatedStatusOutOfDate)
+	}
+
+	// Prepare the device reported version for the update
+	deviceReportedVersionStr := "0"
+	if deviceReportedVersion != nil && *deviceReportedVersion != "" {
+		deviceReportedVersionStr = *deviceReportedVersion
+	}
+
+	s.log.Infof("Executing database update for device %s with status=%s, willBeConflictPaused=%t, deviceReportedVersionStr=%s, updatedStatus=%s",
+		deviceName, status, willBeConflictPaused, deviceReportedVersionStr, updatedStatus)
+
+	result = s.getDB(ctx).Exec(sql,
+		domain.DeviceAnnotationAwaitingReconnect,
+		willBeConflictPaused,
+		domain.DeviceAnnotationConflictPaused,
+		status,
+		infoMessage,
+		orgId,
+		deviceName,
+		deviceReportedVersionStr,
+		updatedStatus,
+	)
+	err := store.ErrorFromGormError(result.Error)
+	if err != nil {
+		s.log.WithError(err).Errorf("Failed to update device %s in database", deviceName)
+		return strings.Contains(err.Error(), "deadlock"), false, err
+	}
+	if result.RowsAffected == 0 {
+		s.log.Warnf("No rows were updated for device %s - device may have been deleted or modified concurrently", deviceName)
+		return true, false, flterrors.ErrNoRowsUpdated
+	}
+
+	s.log.Infof("Successfully updated device %s in database: rowsAffected=%d, willBeConflictPaused=%t",
+		deviceName, result.RowsAffected, willBeConflictPaused)
+	return false, willBeConflictPaused, nil
+}
+
+func (s *DeviceStore) setOutOfDate(ctx context.Context, orgId uuid.UUID, owner string) (bool, error) {
+	err := s.getDB(ctx).Model(&model.Device{}).Where("org_id = ? AND owner = ? AND (status->'updated'->>'status' = ?)",
+		orgId, owner, domain.DeviceUpdatedStatusUpToDate).Updates(map[string]any{
+		"status": gorm.Expr(`jsonb_set(jsonb_set(status, '{updated,status}', to_jsonb(?::text)),'{updated,info}', to_jsonb(?::text))`,
+			domain.DeviceUpdatedStatusOutOfDate, domain.DeviceOutOfSyncWithFleetText),
+		"resource_version": gorm.Expr("resource_version + 1"),
+	}).Error
+	if err != nil {
+		return strings.Contains(err.Error(), "deadlock"), store.ErrorFromGormError(err)
+	}
+	return false, nil
+}
+
+func (s *DeviceStore) SetOutOfDate(ctx context.Context, orgId uuid.UUID, owner string) error {
+	return store.RetryUpdate(func() (bool, error) {
+		return s.setOutOfDate(ctx, orgId, owner)
+	})
+}
+
+func (s *DeviceStore) GetRendered(ctx context.Context, orgId uuid.UUID, name string, knownRenderedVersion *string, consoleGrpcEndpoint string) (*domain.Device, error) {
+	deviceModel := model.Device{
+		Resource: model.Resource{OrgID: orgId, Name: name},
+	}
+	result := s.getDB(ctx).Take(&deviceModel)
+	if result.Error != nil {
+		return nil, store.ErrorFromGormError(result.Error)
+	}
+
+	return deviceModel.ToApiResource(model.WithRendered(ctx, knownRenderedVersion))
+}
+
+func (s *DeviceStore) GetLastSeen(ctx context.Context, orgId uuid.UUID, name string) (*time.Time, error) {
+	deviceModel := model.DeviceTimestamp{
+		OrgID: orgId, Name: name,
+	}
+	result := s.getDB(ctx).Take(&deviceModel)
+	if result.Error != nil {
+		return nil, store.ErrorFromGormError(result.Error)
+	}
+
+	return deviceModel.LastSeen, nil
+}
+
+func (s *DeviceStore) OverwriteRepositoryRefs(ctx context.Context, orgId uuid.UUID, name string, repositoryNames ...string) error {
+	repos := []model.Repository{}
+	for _, repoName := range repositoryNames {
+		repos = append(repos, model.Repository{Resource: model.Resource{OrgID: orgId, Name: repoName}})
+	}
+	return s.getDB(ctx).Transaction(func(innerTx *gorm.DB) error {
+		device := model.Device{Resource: model.Resource{OrgID: orgId, Name: name}}
+		if err := innerTx.Model(&device).Association("Repositories").Replace(repos); err != nil {
+			return store.ErrorFromGormError(err)
+		}
+		return nil
+	})
+}
+
+func (s *DeviceStore) GetRepositoryRefs(ctx context.Context, orgId uuid.UUID, name string) (*domain.RepositoryList, error) {
+	device := model.Device{Resource: model.Resource{OrgID: orgId, Name: name}}
+	var repos []model.Repository
+	err := s.getDB(ctx).Model(&device).Association("Repositories").Find(&repos)
+	if err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+	repositories, err := model.RepositoriesToApiResource(repos, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &repositories, nil
+}
+
+func (s *DeviceStore) ListDevicesByServiceCondition(ctx context.Context, orgId uuid.UUID, conditionType string, conditionStatus string, listParams store.ListParams) (*domain.DeviceList, error) {
+	// Use raw SQL to efficiently query JSONB service_conditions field
+	// The service_conditions field is stored as JSONB for optimal performance
+	var devices []model.Device
+	var nextContinue *string
+	var numRemaining *int64
+
+	// Decommissioning devices are outside mapping rollouts and may retain stale conditions until deletion.
+	// Build the raw SQL query with proper pagination support for JSONB
+	baseSQL := `
+		SELECT * FROM devices
+		WHERE org_id = ?
+			AND deleted_at IS NULL
+			AND spec->'decommissioning' IS NULL
+			AND service_conditions IS NOT NULL
+			AND (service_conditions->'conditions') @>
+				jsonb_build_array(jsonb_build_object('type', ?::text, 'status', ?::text))`
+
+	// Handle pagination - add WHERE condition before ORDER BY
+	var args []interface{}
+	args = append(args, orgId, conditionType, conditionStatus)
+
+	if listParams.Continue != nil && len(listParams.Continue.Names) > 0 {
+		baseSQL += " AND name > ?"
+		args = append(args, listParams.Continue.Names[0])
+	}
+
+	// Add ORDER BY after all WHERE conditions
+	baseSQL += " ORDER BY name ASC"
+
+	// Add limit
+	baseSQL += " LIMIT ?"
+	args = append(args, listParams.Limit)
+
+	// Execute the query
+	if err := s.getDB(ctx).Raw(baseSQL, args...).Scan(&devices).Error; err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	// Calculate pagination metadata
+	if len(devices) > 0 && len(devices) == listParams.Limit {
+		// Check if there are more results
+		var count int64
+		countSQL := `
+			SELECT COUNT(*) FROM devices
+			WHERE org_id = ?
+				AND deleted_at IS NULL
+				AND spec->'decommissioning' IS NULL
+				AND service_conditions IS NOT NULL
+				AND (service_conditions->'conditions') @>
+					jsonb_build_array(jsonb_build_object('type', ?::text, 'status', ?::text))
+				AND name > ?`
+
+		countArgs := []interface{}{orgId, conditionType, conditionStatus, devices[len(devices)-1].Name}
+		if err := s.getDB(ctx).Raw(countSQL, countArgs...).Scan(&count).Error; err != nil {
+			return nil, store.ErrorFromGormError(err)
+		}
+
+		if count > 0 {
+			nextContinue = store.BuildContinueString([]string{devices[len(devices)-1].Name}, count)
+			numRemaining = &count
+		}
+	}
+
+	result, err := model.DevicesToApiResource(devices, nextContinue, numRemaining)
+	return &result, err
+}
+
+func (s *DeviceStore) ListDevicesByOsCatalogItemRef(ctx context.Context, orgId uuid.UUID, catalog string, item string, listParams store.ListParams) (*domain.DeviceList, error) {
+	var devices []model.Device
+	var nextContinue *string
+	var numRemaining *int64
+
+	querySQL := `
+		SELECT * FROM devices
+		WHERE org_id = ?
+			AND deleted_at IS NULL
+			AND spec->'os'->'catalogItemRef'->>'catalog' = ?
+			AND spec->'os'->'catalogItemRef'->>'item' = ?`
+
+	args := []interface{}{orgId, catalog, item}
+
+	if listParams.Continue != nil && len(listParams.Continue.Names) > 0 {
+		querySQL += " AND name > ?"
+		args = append(args, listParams.Continue.Names[0])
+	}
+
+	querySQL += " ORDER BY name ASC"
+
+	if listParams.Limit > 0 {
+		querySQL += " LIMIT ?"
+		args = append(args, listParams.Limit+1)
+	}
+
+	if err := s.getDB(ctx).Raw(querySQL, args...).Scan(&devices).Error; err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	if listParams.Limit > 0 && len(devices) > listParams.Limit {
+		devices = devices[:listParams.Limit]
+
+		var numRemainingVal int64
+		if listParams.Continue != nil {
+			numRemainingVal = listParams.Continue.Count - int64(listParams.Limit)
+			if numRemainingVal < 1 {
+				numRemainingVal = 1
+			}
+		} else {
+			numRemainingVal = 1
+		}
+
+		nextContinue = store.BuildContinueString([]string{devices[len(devices)-1].Name}, numRemainingVal)
+		numRemaining = &numRemainingVal
+	}
+
+	result, err := model.DevicesToApiResource(devices, nextContinue, numRemaining)
+	return &result, err
+}
+
+func (s *DeviceStore) ListDevicesByAppCatalogItemRef(ctx context.Context, orgId uuid.UUID, catalog string, item string, listParams store.ListParams) (*domain.DeviceList, error) {
+	var devices []model.Device
+	var nextContinue *string
+	var numRemaining *int64
+
+	querySQL := `
+		SELECT * FROM devices
+		WHERE org_id = ?
+			AND deleted_at IS NULL
+			AND jsonb_path_query_array(spec, '$.applications[*].catalogItemRef') @> ?::jsonb`
+
+	catalogRef, err := json.Marshal([]map[string]string{{"catalog": catalog, "item": item}})
+	if err != nil {
+		return nil, err
+	}
+	args := []interface{}{orgId, string(catalogRef)}
+
+	if listParams.Continue != nil && len(listParams.Continue.Names) > 0 {
+		querySQL += " AND name > ?"
+		args = append(args, listParams.Continue.Names[0])
+	}
+
+	querySQL += " ORDER BY name ASC"
+
+	if listParams.Limit > 0 {
+		querySQL += " LIMIT ?"
+		args = append(args, listParams.Limit+1)
+	}
+
+	if err := s.getDB(ctx).Raw(querySQL, args...).Scan(&devices).Error; err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	if listParams.Limit > 0 && len(devices) > listParams.Limit {
+		devices = devices[:listParams.Limit]
+
+		var numRemainingVal int64
+		if listParams.Continue != nil {
+			numRemainingVal = listParams.Continue.Count - int64(listParams.Limit)
+			if numRemainingVal < 1 {
+				numRemainingVal = 1
+			}
+		} else {
+			numRemainingVal = 1
+		}
+
+		nextContinue = store.BuildContinueString([]string{devices[len(devices)-1].Name}, numRemainingVal)
+		numRemaining = &numRemainingVal
+	}
+
+	result, err := model.DevicesToApiResource(devices, nextContinue, numRemaining)
+	return &result, err
+}
+
+func (s *DeviceStore) ListDevicesByVolumeCatalogItemRef(ctx context.Context, orgId uuid.UUID, catalog string, item string, listParams store.ListParams) (*domain.DeviceList, error) {
+	var devices []model.Device
+	var nextContinue *string
+	var numRemaining *int64
+
+	querySQL := `
+		SELECT * FROM devices
+		WHERE org_id = ?
+			AND deleted_at IS NULL
+			AND jsonb_path_query_array(spec, '$.applications[*].volumes[*].image.catalogItemRef') @> ?::jsonb`
+
+	catalogRef, err := json.Marshal([]map[string]string{{"catalog": catalog, "item": item}})
+	if err != nil {
+		return nil, err
+	}
+	args := []interface{}{orgId, string(catalogRef)}
+
+	if listParams.Continue != nil && len(listParams.Continue.Names) > 0 {
+		querySQL += " AND name > ?"
+		args = append(args, listParams.Continue.Names[0])
+	}
+
+	querySQL += " ORDER BY name ASC"
+
+	if listParams.Limit > 0 {
+		querySQL += " LIMIT ?"
+		args = append(args, listParams.Limit+1)
+	}
+
+	if err := s.getDB(ctx).Raw(querySQL, args...).Scan(&devices).Error; err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	if listParams.Limit > 0 && len(devices) > listParams.Limit {
+		devices = devices[:listParams.Limit]
+
+		var numRemainingVal int64
+		if listParams.Continue != nil {
+			numRemainingVal = listParams.Continue.Count - int64(listParams.Limit)
+			if numRemainingVal < 1 {
+				numRemainingVal = 1
+			}
+		} else {
+			numRemainingVal = 1
+		}
+
+		nextContinue = store.BuildContinueString([]string{devices[len(devices)-1].Name}, numRemainingVal)
+		numRemaining = &numRemainingVal
+	}
+
+	result, err := model.DevicesToApiResource(devices, nextContinue, numRemaining)
+	return &result, err
+}
+
+// CountByOrgAndStatusResult holds the result of the group by query
+// for organization and status.
+type CountByOrgAndStatusResult struct {
+	OrgID  string
+	Status string
+	Fleet  string
+	Count  int64
+}
+
+// CountByOrgAndStatus returns the count of devices grouped by org_id and status.
+func (s *DeviceStore) CountByOrgAndStatus(ctx context.Context, orgId *uuid.UUID, statusType DeviceStatusType, groupByFleet bool) ([]CountByOrgAndStatusResult, error) {
+	var query *gorm.DB
+	var err error
+
+	if orgId != nil {
+		query, err = store.ListQuery(&model.Device{}).BuildNoOrder(ctx, s.getDB(ctx), *orgId, store.ListParams{})
+	} else {
+		// When orgId is nil, we don't filter by org_id
+		query = s.getDB(ctx).Model(&model.Device{})
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate the status type
+	if err := statusType.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Determine which status field to use
+	var statusField string
+	switch statusType {
+	case DeviceStatusTypeSummary:
+		statusField = "status->'summary'->>'status'"
+	case DeviceStatusTypeApplication:
+		statusField = "status->'applicationsSummary'->>'status'"
+	case DeviceStatusTypeUpdate:
+		statusField = "status->'updated'->>'status'"
+	default:
+		statusField = "status->'summary'->>'status'" // default to summary
+	}
+
+	selectList := []string{
+		"org_id as org_id",
+		statusField + " as status",
+		"COUNT(*) as count",
+	}
+
+	if groupByFleet {
+		selectList = append(selectList, "owner as fleet")
+	}
+	groupList := []string{"org_id", statusField}
+	if groupByFleet {
+		groupList = append(groupList, "owner")
+	}
+	query = query.Select(selectList).Group(strings.Join(groupList, ","))
+
+	var results []CountByOrgAndStatusResult
+	err = query.Scan(&results).Error
+	if err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+	return results, nil
+}
+
+// RemoveConflictPausedAnnotation removes the conflictPaused annotation from all devices matching the selector
+// Returns the count of affected devices and their IDs
+func (s *DeviceStore) RemoveConflictPausedAnnotation(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (int64, []string, error) {
+	var affectedRows int64
+	var deviceIDs []string
+
+	err := store.RetryUpdate(func() (bool, error) {
+		// Use RETURNING clause to get the names of actually updated devices
+		var updatedDevices []model.Device
+
+		query, err := store.ListQuery(&updatedDevices).BuildNoOrder(ctx, s.getDB(ctx), orgId, listParams)
+		if err != nil {
+			return false, err
+		}
+
+		// Only update devices that actually have the conflictPaused annotation
+		query = query.Where("annotations ? ?", gorm.Expr("?"), domain.DeviceAnnotationConflictPaused)
+
+		result := query.
+			Clauses(clause.Returning{}).
+			Updates(map[string]any{
+				"annotations":      gorm.Expr("annotations - ? - ?", domain.DeviceAnnotationConflictPaused, domain.DeviceAnnotationRenderedSpecHash),
+				"resource_version": gorm.Expr("resource_version + 1"),
+			})
+
+		affectedRows = result.RowsAffected
+		err = store.ErrorFromGormError(result.Error)
+		if err != nil {
+			return strings.Contains(err.Error(), "deadlock"), err
+		}
+
+		// Extract device names from the returned devices
+		deviceIDs = make([]string, len(updatedDevices))
+		for i, device := range updatedDevices {
+			deviceIDs[i] = device.Name
+		}
+
+		return false, nil
+	})
+
+	return affectedRows, deviceIDs, err
+}
+
+func getSortColumns(listParams store.ListParams) ([]store.SortColumn, store.SortOrder, string) {
+	order := store.SortAsc
+	if listParams.SortOrder != nil {
+		order = *listParams.SortOrder
+	}
+	op := map[store.SortOrder]string{store.SortAsc: ">=", store.SortDesc: "<="}[order]
+
+	columns := listParams.SortColumns
+	if len(columns) == 0 {
+		columns = []store.SortColumn{store.SortByName}
+	}
+
+	return columns, order, op
+}

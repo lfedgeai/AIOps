@@ -1,0 +1,130 @@
+import * as React from 'react';
+import { useField } from 'formik';
+import { Label, LabelGroup } from '@patternfly/react-core';
+
+import { type FlightCtlLabel } from '../../types/extraTypes';
+import EditableLabelControl from '../common/EditableLabelControl';
+import LabelsView from '../common/LabelsView';
+import { toAPILabel } from '../../utils/labels';
+import ErrorHelperText, { DefaultHelperText } from './FieldHelperText';
+
+type LabelsFieldProps = {
+  name: string;
+  isLoading?: boolean;
+  addButtonText?: string;
+  helperText?: React.ReactNode;
+  onChangeCallback?: (newLabels: FlightCtlLabel[], hasErrors: boolean) => void;
+  /** Applied to the PatternFly `LabelGroup` root for E2E selectors (e.g. fleet wizard fleet labels). */
+  labelGroupTestId?: string;
+  isManagedLabel?: (key: string) => boolean;
+};
+
+const maxLabelWidth = '25ch';
+
+const LabelsField = ({
+  name,
+  onChangeCallback,
+  addButtonText,
+  helperText,
+  isLoading,
+  labelGroupTestId,
+  isManagedLabel,
+}: LabelsFieldProps) => {
+  const [{ value: labels }, meta, { setValue: setLabels }] = useField<FlightCtlLabel[]>(name);
+  const updateLabels = async (newLabels: FlightCtlLabel[]) => {
+    const errors = await setLabels(newLabels, true);
+    const hasErrors = Object.keys(errors || {}).length > 0;
+
+    onChangeCallback?.(newLabels, hasErrors);
+  };
+
+  const onDelete = async (_ev: React.MouseEvent<Element, MouseEvent>, index: number) => {
+    if (isLoading) {
+      return;
+    }
+    const newLabels = [...labels];
+    newLabels.splice(index, 1);
+    await updateLabels(newLabels);
+  };
+
+  const onAdd = async (text: string) => {
+    if (!text) {
+      return;
+    }
+    const split = text.split('=');
+    let newLabel: FlightCtlLabel;
+    if (split.length === 2) {
+      newLabel = { key: split[0], value: split[1] };
+    } else {
+      newLabel = { key: text || '', value: '' };
+    }
+
+    const newLabels = [...labels, newLabel];
+
+    await updateLabels(newLabels);
+  };
+
+  const onEdit = async (index: number, nextText: string) => {
+    const label = nextText.split('=');
+    const newLabels = [...labels];
+    newLabels.splice(index, 1, { key: label[0], value: label.length ? label[1] : undefined });
+
+    await updateLabels(newLabels);
+  };
+
+  return (
+    <>
+      <LabelGroup numLabels={5} isEditable={!isLoading} data-testid={labelGroupTestId}>
+        {labels
+          .map((label, originalIndex) => ({ ...label, originalIndex }))
+          .map(({ key, value, originalIndex }) => {
+            const text = value ? `${key}=${value}` : key;
+            const elKey = `${key}__${originalIndex}`;
+
+            const closeButtonProps = isLoading && { isDisabled: true };
+            const isLabelEditable = !isLoading;
+            return (
+              <Label
+                key={elKey}
+                color={isManagedLabel?.(key) ? 'grey' : 'blue'}
+                textMaxWidth={maxLabelWidth}
+                closeBtnProps={closeButtonProps}
+                onClose={(e) => onDelete(e, originalIndex)}
+                onEditCancel={(_, prevText) => onEdit(originalIndex, prevText)}
+                onEditComplete={(_, newText) => onEdit(originalIndex, newText)}
+                /* Add a basic tooltip as the PF tooltip doesn't work for editable labels */
+                title={isLabelEditable ? text : undefined}
+                isEditable={isLabelEditable}
+              >
+                {text}
+              </Label>
+            );
+          })}
+      </LabelGroup>
+      <EditableLabelControl
+        placeholder="key=value"
+        addButtonText={addButtonText}
+        onAddLabel={onAdd}
+        isEditable={!isLoading}
+        className={labels.length === 0 ? '' : 'pf-v6-u-mt-md'}
+      />
+      <DefaultHelperText helperText={helperText} />
+      <ErrorHelperText meta={meta} touchRequired={false} />
+    </>
+  );
+};
+
+const LabelsFieldWrapper = ({
+  name,
+  isDisabled,
+  isManagedLabel,
+  ...rest
+}: LabelsFieldProps & { isDisabled?: boolean }) => {
+  const [{ value }] = useField<FlightCtlLabel[]>(name);
+  if (isDisabled) {
+    return <LabelsView prefix={name} labels={toAPILabel(value)} isManagedLabel={isManagedLabel} />;
+  }
+  return <LabelsField name={name} isManagedLabel={isManagedLabel} {...rest} />;
+};
+
+export default LabelsFieldWrapper;

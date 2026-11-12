@@ -1,0 +1,477 @@
+# Testing strategy
+
+This document describes the desired testing strategy for the project, which should
+slowly be implemented over time.
+
+This is a live document and should be updated as the project evolves, to cover
+details like `api` testing or `benchmarking`.
+
+## Introduction
+
+This project is a complex system with many moving parts. It is important to have a
+coherent testing strategy to ensure that the system works as expected,
+doesn't break over time, and very importantly, make sure that developers know
+where and how to test things.
+
+As testing tools we use two frameworks:
+
+- Ginkgo and Gomega, a BDD-style testing framework for Go, used for more complex
+  testing where BeforeEach/AfterEach is beneficial. It has the benefit of allowing
+  to write tests in a more human-readable way.
+
+- Go's built-in testing framework with testify, used for simpler unit tests.
+
+## Internal test libraries
+
+We maintain our internal test libraries in `/test/pkg/`
+
+# Types of tests
+
+## Unit testing
+
+Unit tests are used to test individual functions or methods in isolation. They
+should be fast, and should not depend on external services or databases.
+
+Cross-package tests can be performed sometimes in our unit testing, as long
+as there is no dependency on the database or other services functionality.
+
+We keep the test files for unit tests in the same directory as the code we are
+testing.
+
+i.e.
+
+code in `pkg/log/log.go` should have unit tests in `pkg/log/log_test.go`
+
+We use the go unit test framework with testify for unit tests.
+
+Unit tests can be run locally with:
+
+```bash
+make unit-test
+```
+
+### Mocking
+
+Sometimes we need to mock interfaces to make unit testing possible in
+isolation. For that we use the `mockgen` tool from `go.uber.org/mock`
+
+If you want to generate mocks for a package, you can add the reference to
+`/hack/mock.list.txt` and run `make generate` to generate the mocks.
+
+Find more information about using mockgen [here](https://pkg.go.dev/go.uber.org/mock#readme-building-mocks)
+
+
+## Integration testing
+
+Tests the interactions between our different software components in a mocked
+environment, here we are not testing dependencies with the operating system or external
+services (beyond the database) and we are not deploying the components of the system,
+but we run instances of our objects from the go tests.
+
+External systems or OS interaction are mocked.
+
+Those tests are stored on a separate directory `/test/integration/<topic>`,
+i.e. we can test the following topics:
+
+* agent
+* storage
+* server-api
+* cmdline
+
+We use ginkgo/gomega for these tests, as they are more complex and require
+more setup and teardown than unit tests.
+
+Tests made for integration testing can be built with the testing harness
+provided in `/test/pkg/harness` which provides an object to test
+a server and an agent together, building any necessary crypto material,
+providing a test database and a mock directory for the agent to interact with.
+
+can be run with:
+
+```bash
+make integration-test
+```
+
+#### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INTEGRATION_PROCS` | `4` | Number of parallel test suite processes. Set to `1` to disable parallel execution. |
+| `TEST_DIR` | `./test/integration/...` | Directory to run tests from (e.g., `./test/integration/store`). |
+| `INTEGRATION_GINKGO_FOCUS` | (none) | Ginkgo focus regex to run specific tests (e.g., `"should create device"`). |
+| `TESTS` | (none) | Alternative to `INTEGRATION_GINKGO_FOCUS` for focus regex. |
+| `KEEP_INTEGRATION_STACK` | `0` | Set to `1` to keep containers running after tests (useful for debugging). |
+
+Examples:
+
+```bash
+# Run all integration tests with 8 parallel processes
+make integration-test INTEGRATION_PROCS=8
+
+# Run only store tests
+make integration-test TEST_DIR=./test/integration/store
+
+# Run a specific test by name
+make integration-test INTEGRATION_GINKGO_FOCUS="should create device"
+
+# Combine options
+make integration-test TEST_DIR=./test/integration/agent INTEGRATION_PROCS=1 INTEGRATION_GINKGO_FOCUS="enrollment"
+```
+
+For mocking specific interfaces please refer to the unit-test mocking section.
+
+### How integration tests work
+
+Integration tests use **testcontainers** to automatically start ephemeral Postgres,
+Redis, and Alertmanager instances. No manual deployment or external containers are
+required - everything is managed by the test framework.
+
+- **Postgres**: A shared integration container runs migrations once; each test suite
+  gets its own isolated database cloned from the migrated template for fast,
+  parallel-safe execution.
+- **Redis**: Each test suite creates its own ephemeral Redis instance via
+  `testdb.CreateTestRedis()`.
+- **Alertmanager**: Shared integration container for alert-related tests.
+
+The test framework handles all setup, migrations, and teardown automatically.
+Requires Podman (or Docker) to be available.
+
+## E2E testing
+
+This type of testing verifies the interaction of our software components with
+external software or services, such as the operating system, registries,
+git repositories, etc.
+
+**For detailed e2e usage (make targets, environment variables, aux services, OpenShift/Quadlets), see [e2e/README.md](e2e/README.md). For concepts and guidelines on writing tests, the harness, and aux services, see [e2e/GUIDELINES.md](e2e/GUIDELINES.md).**
+
+Our stack helps deploy a complete system with `make deploy` and this stack
+should provide everything necessary to perform e2e testing.
+
+We maintain the end-to-end test files in `/test/e2e/<topic>`
+directory, ie. `/test/e2e/agent/`, `/test/e2e/cli/`, etc.
+
+as examples:
+
+* `agent` contains tests for the agent component in interaction with the OS and
+          registries: switching an image, rebooting, failure and rollback, etc.
+
+* `gitops` contains tests for the server that verify interaction
+           with external git repositories.
+
+* `k8s/secrets` contains for the server that verify interaction with a k8s API
+                in terms of secret retrieval.
+
+* `cli` contains tests for the command line interface `flightctl`
+
+E2E tests can be run with our testing harness in `/test/pkg/harness/e2e` which
+provides additional functionality on top of `/test/pkg/harness` to interact
+with agents on VMs, or connect the server to the local kind k8s cluster.
+
+We use ginkgo/gomega for these tests, as they are more complex and require
+more setup and teardown than unit tests.
+
+#### Filtering the e2e test run
+
+You can filter which e2e tests to run by pointing to the e2e directory
+using the GO_E2E_DIRS environment variable.
+
+For example, if we wanted to run only the cli tests, we could execute
+```
+make e2e-test GO_E2E_DIRS=test/e2e/cli
+```
+
+or, if we ran e2e-test before and all the necessary artifacts and deployments are
+in place, we could speed up furter by using the `run-e2e-test` target.
+
+```bash
+make run-e2e-test GO_E2E_DIRS=test/e2e/cli
+```
+
+You can also filter by providing the GINKGO_FOCUS environment variable, which
+will filter the tests by the provided string.
+```
+make e2e-test GINKGO_FOCUS="should create a new project"
+```
+
+Additionally, you can filter tests using Ginkgo labels with the GINKGO_LABEL_FILTER
+environment variable. When running locally with make, all tests run by default (no label filtering).
+In CI/CD workflows, only tests labeled with 'sanity' run by default. On pull requests, bare `run-e2e` keeps that default. A suffixed label selects a `+`-separated list of Ginkgo labels on both existing rows. GitHub rejects commas in label names, so use `+` between selections. CS9 runs the selected filter; CS10 runs its `sanity && agent && !microshift` filter plus selected labels except `microshift`. For example, `run-e2e:sanity+vulnerability-gating` selects `sanity || vulnerability-gating` on CS9 and `sanity && agent && !microshift || vulnerability-gating && !microshift` on CS10. The matrix rows and node counts stay the same. `run-e2e:delta` does not create reusable merge-queue proof because sanity was not selected.
+```
+# Run all tests (local default - no filtering)
+make e2e-test
+
+# Run tests with specific labels
+make e2e-test GINKGO_LABEL_FILTER="sanity"
+```
+
+#### Environment flags
+
+* `FLIGHTCTL_NS` - the namespace where the flightctl is deployed, this is
+  used by the scripts to figure out the routes/endpoints.
+
+* `KUBEADMIN_PASS` - the OpenShift kubeadmin (or user with the right to
+  authenticate to flightctl) password for the cluster, used sometimes to
+  request a token for automatic login.
+
+* `DEBUG_VM_CONSOLE` - if set to `1`, the VM console output will be printed
+  to stdout during test execution.
+
+### Local testing side services
+For the purpose of providing a local testing environment, we have a set of side services
+that run inside the kind cluster to provide a complete testing environment.
+Therefore, [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/) and [kind](https://kind.sigs.k8s.io/) must be installed.
+
+#### Local container registry
+
+Running on `${IP}:5000` and `localhost:5000`, exposed via TLS,
+we configure the test host to consider that an insecure registry, but we configure
+the agents to trust the CA generated by the `test/scripts/create_e2e_certs.sh` script.
+
+For E2E testing we build several agent images that we push into this registry,
+that we use to exercise the agent and update through in the tests,
+more details can be found here  [Agent Images](./scripts/agent-images/README.md)
+
+#### Local ssh+git server
+Running on ${IP}:3222 and localhost:3222, authentication to this
+repository can be performed with the `bin/.ssh/id_rsa` key with the `user` user,
+the git ssh connection also accepts the `user` password.
+
+This is an example `~/.ssh/config` entry, assuming that flightctl is checked out in `~/flightctl` and
+deployed with `make deploy`:
+
+```
+Host gitserver
+     Hostname localhost
+     Port 3222
+     IdentityFile ~/flightctl/bin/.ssh/id_rsa
+```
+
+Connection via ssh allows three commands:
+* create-repo <name> - creates a new git repository with the given name
+* delete-repo <name> - deletes the git repository with the given name
+* quit/exit - closes the connection
+
+Example:
+```bash
+$ ssh user@gitserver -p3222
+git> create-repo test1
+Initialized empty Git repository in /home/user/repos/test1.git/
+git> create-repo test2
+Initialized empty Git repository in /home/user/repos/test2.git/
+git> delete-repo test1
+git> delete-repo test2
+git> quit
+Connection to 192.168.1.10 closed.
+```
+
+Repositories can be accessed as:
+```bash
+git clone user@gitserver:repos/test1.git
+```
+
+### Running E2E tests
+```bash
+make e2e-test
+```
+
+### Running E2E with an existing cluster
+If you have a cluster already running, you can run the tests with:
+```bash
+export FLIGHTCTL_NS=flightctl
+export KUBEADMIN_PASS=your-oc-password-for-kubeadmin
+
+make in-cluster-e2e-test
+```
+
+You can also use `FLIGHTCTL_RPM=release/0.3.0`, `FLIGHTCTL_RPM=devel/0.3.0.rc1-5.20241104145530808450.main.19.ga531984`
+or simply `FLIGHTCTL_RPM=release` or `FLIGHTCTL_RPM=devel` to consume an specific version/repository
+of the CLI and agent rpm.
+
+I.e. if you wanted to test the cluster along with the 0.3.0 release in
+https://copr.fedorainfracloud.org/coprs/g/redhat-et/flightctl/builds/, you would run:
+```bash
+export FLIGHTCTL_NS=flightctl
+export KUBEADMIN_PASS=your-oc-password-for-kubeadmin
+export FLIGHTCTL_RPM=release/0.3.0
+
+make in-cluster-e2e-test
+```
+
+If you wanted to test the cluster along with the latest devel build in
+https://copr.fedorainfracloud.org/coprs/g/redhat-et/flightctl-dev/builds/, you could use run:
+```bash
+export FLIGHTCTL_RPM=devel/0.3.0.rc2-1.20241104145530808450.main.19.ga531984
+
+make in-cluster-e2e-test
+```
+
+#### Using Brew Registry Builds
+
+You can also use RPMs from the Red Hat Brew registry by specifying a `BREW_BUILD_URL`. This is useful for testing
+specific builds from the Red Hat internal build system.
+
+To use a brew build for both the agent image and CLI, set the `BREW_BUILD_URL` environment variable:
+
+```bash
+export FLIGHTCTL_NS=flightctl
+export KUBEADMIN_PASS=your-oc-password-for-kubeadmin
+export BREW_BUILD_URL=brew-registry-build-url
+
+make in-cluster-e2e-test
+```
+
+The `BREW_BUILD_URL` should be a valid URL to the Red Hat Brew system task page. Both the agent image and CLI will be built
+using the RPMs downloaded from the specified brew URL.
+
+#### OpenShift namespace
+
+The e2e infra in `test/e2e/infra/` discovers namespaces from the cluster by finding pods with labels `flightctl.service=flightctl-api` (external) and `flightctl.service=flightctl-worker` (internal), so you usually do not need to set any namespace. Set **`FLIGHTCTL_NS`** only when you need to override (e.g. the e2e login flow uses it to run `kubectl create token` in the right namespace, or CI pins a namespace).
+
+(Optional: set `E2E_ENVIRONMENT=ocp` so the environment is not auto-detected.)
+
+#### OpenShift with shared network (QE)
+
+When the test VM and the OpenShift cluster **share a network** (e.g. the same libvirt network such as `ocp3m0w-ic4s20`), the cluster can reach local testcontainers (registry, git server, prometheus) on the VM. No in-cluster registry is required.
+
+- Set `E2E_ENVIRONMENT=ocp` (or rely on context detection). Start aux as usual; suites that need it call `auxiliary.Get()` and pass registry/git data from the result into the harness and scripts. The cluster and tests will use that endpoint.
+- If the test VM has **two NICs** (e.g. default for installing dependencies, OCP network for tests), set `E2E_AUX_HOST` to the VM's IP on the OCP network so registry/git/prometheus are advertised on the interface the cluster can reach:
+
+```bash
+export FLIGHTCTL_NS=flightctl
+export KUBEADMIN_PASS=your-oc-password-for-kubeadmin
+export E2E_AUX_HOST=192.168.122.10   # VM IP on the OCP network (e.g. ocp3m0w-ic4s20)
+
+make in-cluster-e2e-test
+```
+
+This behaves the same as disconnected envs today: one host for registry, git, and prometheus.
+
+#### If your host system is not suitable for bootc image builder
+
+* Create a test vm. Note the ssh command in the cmd output.
+```bash
+KUBECONFIG_PATH=/path/to/your/kubeconfig make deploy-e2e-ocp-test-vm
+```
+The default image for the VM is 10G which,by default is increased by 30G to 40G.
+You can set the `VM_DISK_SIZE_INC` environment variable to change it so the VM
+will have a bigger disk.
+
+* Ssh into the vm.
+```bash
+ssh kni@${VM_IP}
+```
+
+* Continue inside the vm
+
+```bash
+cd ~/flightctl
+
+export FLIGHTCTL_NS=flightctl
+export KUBEADMIN_PASS=your-oc-password-for-kubeadmin
+export API_SERVER=your-oc-api-server
+
+oc login -u kubeadmin -p ${KUBEADMIN_PASS} ${API_SERVER}
+
+oc delete ns flightctl-e2e
+
+make clean build in-cluster-e2e-test
+
+```
+
+#### Deploying FlightCtl with Quadlets on RHEL
+
+For testing FlightCtl deployment using systemd Quadlets on RHEL, you can use the `deploy-quadlets-vm` target to create a RHEL VM with FlightCtl services pre-installed and running.
+
+**Prerequisites:**
+
+1. **Red Hat Account**: You need a Red Hat account with active subscriptions to register the RHEL9 VM.
+
+2. **SSH Keys**: You need to have SSH private and public keys in `~/.ssh/` (typically `~/.ssh/id_rsa` and `~/.ssh/id_rsa.pub`). If you don't have them, generate them with:
+```bash
+ssh-keygen -t rsa -b 4096 -C "your-email@example.com"
+```
+
+**Deploy the VM:**
+The standard command format is:
+```bash
+USER='your-user' REDHAT_USER='user@redhat.com' REDHAT_PASSWORD='your-redhat-password' make deploy-quadlets-vm
+```
+
+Replace the values with your own:
+- `USER`: Your local username (will be created in the VM)
+- `REDHAT_USER`: Your Red Hat account email
+- `REDHAT_PASSWORD`: Your Red Hat account password
+
+**Alternative using environment variables:**
+You can also export the variables first:
+```bash
+export USER="your-username"
+export REDHAT_USER="your-email@redhat.com"
+export REDHAT_PASSWORD="your-password"
+make deploy-quadlets-vm
+```
+
+**Optional configuration:**
+- Set custom disk size increment (default is 30G):
+```bash
+USER=redhat-user REDHAT_USER=redhat-user@redhat.com REDHAT_PASSWORD='your-password' VM_DISK_SIZE_INC=50 make deploy-quadlets-vm
+```
+
+- Build and install from a specific git tag/version (builds inside VM):
+```bash
+GIT_VERSION="v1.0.0" USER=redhat-user REDHAT_USER=redhat-user@redhat.com REDHAT_PASSWORD='your-password' make deploy-quadlets-vm
+```
+
+- Install from brew build (downloads inside VM):
+```bash
+BREW_BUILD_URL="<brew-url>?taskID=<task-id>" USER=redhat-user REDHAT_USER=redhat-user@redhat.com REDHAT_PASSWORD='your-password' make deploy-quadlets-vm
+```
+
+**Access the VM:**
+After deployment, you'll get the VM IP address. SSH into it:
+```bash
+ssh ${USER}@${VM_IP}
+```
+
+**Inside the VM:**
+The VM comes pre-configured with:
+- FlightCtl services running via systemd Quadlets
+- All necessary dependencies installed
+- FlightCtl CLI available
+- OpenShift client (oc) installed
+
+You can check the status of FlightCtl services:
+```bash
+sudo systemctl list-units flightctl-*.service
+sudo podman ps
+
+```
+
+**Clean up:**
+To remove the VM and all associated files:
+```bash
+make clean-quadlets-vm
+```
+
+Or manually:
+```bash
+sudo virsh destroy quadlets-vm
+sudo virsh undefine quadlets-vm
+sudo rm -f /var/lib/libvirt/images/quadlets-vm*.qcow2
+```
+## Command line tool testing
+
+Today we test the command line tool using the bash/github actions, we
+may want to migrate this under integration testing in the future as described
+in the integration testing section.
+
+For more details look at the .github/workflows/pr-smoke-testing.yaml
+
+
+# Future work
+
+Additional testing will be analyzed in the future, including:
+
+* upgrade testing between versions
+* load testing
+* scale testing

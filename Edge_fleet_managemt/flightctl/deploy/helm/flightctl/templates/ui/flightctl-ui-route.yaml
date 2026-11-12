@@ -1,0 +1,83 @@
+{{- if .Values.ui.enabled }}
+{{- if and (eq (include "flightctl.enableMulticlusterExtensions" .) "false") (eq (include "flightctl.getServiceExposeMethod" .) "route") }}
+{{- $routeExternalCertificate := .Values.global.routeExternalCertificate | default "auto" | toString }}
+{{- $certificateMethod := include "flightctl.getCertificateGenerationMethod" . }}
+{{- $useExtCert := eq (include "flightctl.useRouteExternalCertificate" (dict "root" . "routeName" "flightctl-ui" "secretName" "flightctl-ui-server-tls")) "true" }}
+{{- $tlsSecretName := "" }}
+{{- $routeCertSecretName := "" }}
+{{- if .Values.global.baseDomainTlsSecretName }}
+  {{- $tlsSecretName = .Values.global.baseDomainTlsSecretName }}
+  {{- $routeCertSecretName = .Values.global.baseDomainTlsSecretName }}
+{{- else if $useExtCert }}
+  {{- $tlsSecretName = "flightctl-ui-server-tls" }}
+  {{- $routeCertSecretName = "flightctl-ui-server-tls" }}
+{{- else if and (or (eq $routeExternalCertificate "auto") (eq $routeExternalCertificate "true")) (eq $certificateMethod "cert-manager") }}
+  {{- $routeCertSecretName = "flightctl-ui-server-tls" }}
+{{- end }}
+kind: Route
+apiVersion: route.openshift.io/v1
+metadata:
+  name: flightctl-ui
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+    {{- with .Values.global.additionalRouteLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.ui.additionalRouteLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    flightctl.service: flightctl-ui
+spec:
+  host:  ui.{{ include "flightctl.getBaseDomain" . }}
+  to:
+    kind: Service
+    name: flightctl-ui
+    weight: 100
+  port:
+    targetPort: 8080-tcp
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+    {{- if $tlsSecretName }}
+    externalCertificate:
+      name: {{ $tlsSecretName }}
+    {{- end }}
+  wildcardPolicy: None
+
+{{- if $routeCertSecretName }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flightctl-ui-route-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+    flightctl.service: flightctl-ui
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["{{ $routeCertSecretName }}"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flightctl-ui-route-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+    flightctl.service: flightctl-ui
+subjects:
+  - kind: ServiceAccount
+    name: router
+    namespace: openshift-ingress
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flightctl-ui-route-cert
+{{- end }}
+{{- end }}
+{{- end }}

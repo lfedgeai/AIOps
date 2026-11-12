@@ -1,0 +1,654 @@
+# Installing and configuring the Flight Control Agent
+
+This document describes how to install `flightctl-agent` from the public RPM
+repository on Fedora or CentOS Stream, and how to configure the agent after
+installation.
+
+For air-gapped RHEL installs, see
+[Installing the Flight Control agent offline on RHEL](installing-agent-offline.md).
+
+## Installing the agent RPM
+
+Agent RPM packages are hosted at [rpm.flightctl.io](https://rpm.flightctl.io/).
+Enable the repository, then install the package that matches the device OS mode.
+
+The syntax for adding a repository depends on your `dnf` version (4 or 5).
+
+Get the `dnf` version:
+
+```bash
+dnf --version
+```
+
+### Add the FlightCtl repository
+
+With dnf 4:
+
+```bash
+sudo dnf config-manager --add-repo https://rpm.flightctl.io/flightctl-epel.repo
+```
+
+With dnf 5:
+
+```bash
+sudo dnf config-manager addrepo --from-repofile=https://rpm.flightctl.io/flightctl-epel.repo
+```
+
+### Package-mode installation
+
+On package-mode hosts (traditional package management, without `bootc` or
+`rpm-ostree` image management), install the agent without weak dependencies so
+`flightctl-greenboot` is not pulled in:
+
+```bash
+sudo dnf install -y --setopt=install_weak_deps=False flightctl-agent
+```
+
+This installs the agent binary, systemd unit, and related core files. It does
+not install greenboot health checks or bootc timer masking. See
+[Integrating with Greenboot](configuring-device-greenboot.md) for the optional
+`flightctl-greenboot` subpackage.
+
+### Image-mode installation
+
+On image-mode hosts (`bootc` or `rpm-ostree`), install the agent with the
+default weak-dependency behavior:
+
+```bash
+sudo dnf install -y flightctl-agent
+```
+
+This pulls in `flightctl-greenboot` through a `Recommends` dependency and
+enables greenboot integration for image-based OS updates.
+
+### Start the agent
+
+After installation, enable and start the agent service:
+
+```bash
+sudo systemctl enable --now flightctl-agent
+```
+
+Verify that the service is running:
+
+```bash
+systemctl status flightctl-agent
+```
+
+Configure enrollment and other agent settings **before** starting the
+service so the agent has a server to connect to. If you start the agent
+first, it keeps retrying until configuration is available. See the
+configuration sections below.
+
+## Installing the agent binary on ARMv7 (experimental)
+
+Use this procedure to install the agent on 32-bit ARM (ARMv7) devices where the RPM packages are not available. Each release publishes the `flightctl-agent-linux-armv7` binary and a `flightctl-agent-linux-armv7-sha256.txt` checksum file as release assets.
+
+> [!NOTE]
+> The ARMv7 agent is experimental and community-supported. There is no commitment to hardware validation or to compatibility across releases.
+
+1. Download the binary and the checksum file, where `<tag>` is a release tag such as `v1.4.0`, or `latest`:
+
+   ```bash
+   curl -LO https://github.com/flightctl/flightctl/releases/download/<tag>/flightctl-agent-linux-armv7
+   curl -LO https://github.com/flightctl/flightctl/releases/download/<tag>/flightctl-agent-linux-armv7-sha256.txt
+   ```
+
+2. Verify the checksum:
+
+   ```bash
+   echo "$(cat flightctl-agent-linux-armv7-sha256.txt)  flightctl-agent-linux-armv7" | sha256sum -c -
+   ```
+
+3. Install the binary:
+
+   ```bash
+   sudo install -m 0755 flightctl-agent-linux-armv7 /usr/local/bin/flightctl-agent
+   ```
+
+You must provide the systemd unit, Podman, and the agent configuration yourself. For the configuration, see [Configuring the agent](#configuring-the-agent).
+
+## Configuring the agent
+
+When the `flightctl-agent` starts, it reads its configuration from `/etc/flightctl/config.yaml` as well as a number of drop-in directories:
+
+* `/etc/flightctl/conf.d/`: Drop-in directory for the agent configuration.
+* `/etc/flightctl/hooks.d/`: Drop-in directory for device lifecycle hooks. Overrides hooks of the same name under `/usr/lib/flightctl/hooks.d`.
+* `/usr/lib/flightctl/hooks.d/`: Drop-in directory for device lifecycle hooks.
+* `/usr/lib/flightctl/custom-info.d/`: Drop-in directory for custom system info collectors.
+
+To preserve logs across reboots for debugging rollback issues, see [systemd Journal Service Configuration](configuring-device-greenboot.md#the-systemd-journal-service-configuration).
+
+## Agent `config.yaml` configuration file
+
+The agent's configuration file `/etc/flightctl/config.yaml` takes the following parameters:
+
+| Parameter | Type | Required | Description|
+| --------- | ---- | :------: |------------|
+| `enrollment-service`     | `EnrollmentService` | Y | Connection details for the device owner's Flight Control service used by the agent to enroll the device. |
+| `spec-fetch-interval`    | `Duration` | | **Deprecated**: This parameter is no longer used. The agent now uses long-polling to receive specification updates immediately when available. |
+| `status-update-interval` | `Duration` | | Interval in which the agent reports its device status under normal conditions. The agent immediately sends status reports on major events related to the health of the system and application workloads as well as on the progress during a system update. Default: `60s` |
+| `status-update-jitter` | `Duration` | | Maximum random delay before the first status push after agent start. The delay is chosen uniformly in `[0, status-update-jitter)`. Use `0` to disable jitter and push immediately. When omitted, the agent defaults this value to `status-update-interval`. Must be less than or equal to `status-update-interval`. Default: same as `status-update-interval` |
+| `spec-fetch-error-base-delay` | `Duration` | | Initial delay after a failed `/rendered` poll before the agent retries. Repeated failures double this delay up to `spec-fetch-error-max-delay`. Successful polls keep the normal long-poll pacing and reset the backoff. Default: `5s` |
+| `spec-fetch-error-max-delay` | `Duration` | | Maximum delay between `/rendered` retries after repeated failures. Must be greater than or equal to `spec-fetch-error-base-delay`. Default: `5m` |
+| `default-labels`         | `object` (`string`) | | Labels (`key: value`-pairs) that the agent requests for the device during enrollment. **Important:** Label values must be valid Kubernetes labels (alphanumeric, `-`, `_`, `.`, max 63 chars). Invalid labels are skipped with an error log. Default: `{}` |
+| `label-from-systeminfo`  | `object` (`string`) | | Maps system information fields to device labels at enrollment time. See [Enrollment-time label mapping](#enrollment-time-label-mapping). Default: `{}` |
+| `system-info`            | `array` (`string`) | | System info that the agent shall include in status updates from built-in collectors. See [Built-in system info collectors](#built-in-system-info-collectors) and [Managed system-info collectors](#managed-system-info-collectors). Default: `["hostname", "kernel", "distroName", "distroVersion", "distroId", "productName", "productUuid", "productSerial", "netInterfaceDefault", "netIpDefault", "netMacDefault", "managementCertNotAfter", "managementCertSerial", "tpmVendorInfo"]` |
+| `system-info-custom`     | `array` (`string`) | | System info that the agent shall include in status updates from user-defined collectors. When absent or `null`, the agent auto-discovers all scripts in the custom info directory. An empty list `[]` disables custom info collection. A wildcard `['*']` is the explicit equivalent of auto-discovery. Specific entries like `['cpu-temp', 'gpu-info']` run only the named scripts. See [Custom system info collectors](#custom-system-info-collectors). Default: `null` (auto-discover) |
+| `system-info-periodic`   | `object`           | | Configuration for periodic re-collection of system info (built-in and custom). Contains an `interval` sub-key that controls how often system info is collected. Falls back to `status-update-interval` if not set. The interval must be greater than or equal to the agent's minimum sync interval. See [Periodic system info collection](#periodic-system-info-collection). Default: interval from `status-update-interval` |
+| `system-info-timeout`    | `Duration` | | The timeout for collecting system info. Default: `2m`. Maximum: `2m` |
+| `pull-timeout`           | `Duration` | | The timeout for pulling a single OCI target. Default: `10m` |
+| `log-level`              | `string` | | The level of logging: "panic", "fatal", "error", "warn"/"warning", "info", "debug", or "trace". Default: `info` |
+| `metrics-enabled`        | `boolean` | | Enable Prometheus metrics endpoint. See [Metrics Configuration](#metrics-configuration). Default: `false` |
+| `profiling-enabled`      | `boolean` | | Enable pprof profiling endpoint. See [Profiling Configuration](#profiling-configuration). Default: `false` |
+| `audit`                  | `Audit` | | Audit logging configuration. See [Audit Configuration](#audit-configuration). Default: enabled |
+| `tpm`                    | `TPM` | | TPM configuration for hardware-based device identity. See [TPM Configuration](#tpm-configuration). Default: TPM disabled |
+
+`Duration` values are strings of an integer value with appended unit of time ('s' for seconds, 'm' for minutes, or 'h' for hours). Examples: `30s`, `10m`, `24h`
+
+> [!NOTE]
+> The `/etc/flightctl/conf.d/` drop-in directory supports only a subset of the agent configuration. Currently supported keys include:
+> `log-level`, `system-info`, `system-info-custom`, `system-info-periodic`, `system-info-timeout`, and `label-from-systeminfo`.
+
+## Communication Timeouts
+
+The agent uses the following internal timeouts when communicating with the Flight Control service:
+
+| Operation | Timeout | Description |
+| --------- | ------- | ----------- |
+| Spec fetch (long-poll) | 4 minutes | The agent uses long-polling to fetch device specification updates. The server holds the connection open until a new specification is available or the timeout expires. |
+| Status update | 60 seconds | Timeout for pushing device status updates to the service. If the update times out, the agent retries on the next status sync interval. |
+
+These timeouts are not configurable. The spec fetch timeout is intentionally long to support efficient long-polling, while the status update timeout is shorter to ensure timely retries within the configured `status-update-interval`.
+
+> [!NOTE]
+> If a status update fails (including timeout), the agent preserves the pending status and automatically retries on the next sync cycle. This ensures status updates are eventually delivered even during transient network issues.
+
+## Built-in system info collectors
+
+The agent has a set of built-in collectors for system information. You can see the information collected by these collectors using the following command:
+
+```console
+sudo flightctl-agent system-info | jq '.'
+```
+
+Out of these, the agent includes a standard set of system infos in its device status:
+
+```console
+status:
+  [...]
+  systemInfo:
+    architecture: amd64
+    operatingSystem: linux
+    agentVersion: v0.7.0
+    bootID: 87f7e27e-bdc0-42b1-b909-6dc81fe43ea2
+```
+
+You can specify extra system infos to be included in the device status by listing them under the `system-info` configuration parameter:
+
+| System Info           | Description                                                       |
+|-----------------------|-------------------------------------------------------------------|
+| `hostname`            | The system hostname reported by the device                        |
+| `kernel`              | The running Linux kernel version                                  |
+| `distroName`          | The name of the operating system distribution.                    |
+| `distroVersion`       | The version of the operating system distribution                  |
+| `distroId`            | The os-release `ID` (for example `rhel` or `fedora`). Used with `distroVersion` to select `launcherImages` keys such as `rhel-9`. See [Configuring VM application rendering](configuring-vm-render.md). |
+| `productName`         | The system’s product or model name (from DMI data)                |
+| `productSerial`       | The hardware serial number (if available)                         |
+| `productUuid`         | The UUID of the system board or chassis                           |
+| `biosVendor`          | The vendor of the BIOS or firmware                                |
+| `biosVersion`         | The version of the BIOS or firmware                               |
+| `netInterfaceDefault` | The name of the default network interface                         |
+| `netIpDefault`        | The first usable IP address of the default network interface      |
+| `netMacDefault`       | The MAC address of the default network interface                  |
+| `gpu`                 | Lists detected GPU devices                                        |
+| `memoryTotalKb`       | Total memory (RAM) in kilobytes                                   |
+| `cpuCores`            | Number of physical CPU cores detected                             |
+| `cpuProcessors`       | Number of logical processors detected                             |
+| `cpuModel`            | CPU vendor and model name                                         |
+
+For example, if you add the following parameter to your agent's `config.yaml`
+
+```console
+system-info: [hostname, kernel, distroName, distroVersion, distroId]
+```
+
+then the reported device status might look like
+
+```console
+status:
+  [...]
+  systemInfo:
+    architecture: amd64
+    operatingSystem: linux
+    agentVersion: v0.7.0
+    bootID: 87f7e27e-bdc0-42b1-b909-6dc81fe43ea2
+    hostname: device.example.com
+    kernel: 5.14.0-503.38.1.el9_5.x86_64
+    distroName: Red Hat Enterprise Linux
+    distroVersion: 9.5 (Plow)
+    distroId: rhel
+```
+
+## Managed system info collectors
+
+These system info fields are populated internally by the `flightctl-agent`.
+They reflect the agent lifecycle state and are updated only when the underlying state changes
+(for example, certificate rotation or TPM initialization).
+
+| System Info Key          | Description                                                              |
+|--------------------------|--------------------------------------------------------------------------|
+| `managementCertSerial`   | Serial number of the active device management certificate                |
+| `managementCertNotAfter` | Expiration time (`NotAfter`) of the active device management certificate |
+| `tpmVendorInfo`          | TPM vendor information derived from the device’s TPM manufacturer data   |
+
+> [!NOTE]
+> These managed system info fields follow the same configuration and reporting semantics as built-in system information collectors, and can be included or excluded from device status reporting via the `system-info` configuration parameter.
+
+## Periodic system info collection
+
+By default, the agent periodically re-collects all system info (both built-in and custom) on an interval controlled by `system-info-periodic.interval`. If not set, this interval falls back to `status-update-interval`.
+
+To configure a custom collection interval, add the following to the agent's `config.yaml`:
+
+```yaml
+system-info-periodic:
+  interval: 5m
+```
+
+The interval must be greater than or equal to the agent's minimum sync interval. Each collection cycle shuffles the order of sources so that a slow or timing-out collector does not always delay the same set of sources behind it.
+
+## Custom system info collectors
+
+You can specify custom system info collectors that the agent calls and whose output it includes under `status.systemInfo.customInfo` in the device status.
+
+To add a key `myInfo`,
+
+1. add an executable with that name to `/usr/lib/flightctl/custom-info.d/` that when it is executed returns the desired value, and
+2. enable the collection and reporting of this info by adding the key `myInfo` to the agent's `config.yaml` under the `system-info-custom` configuration parameter.
+
+The `system-info-custom` parameter supports the following modes:
+
+* **Absent or `null`** (default): Auto-discovers and runs all executable scripts in `/usr/lib/flightctl/custom-info.d/`.
+* **Empty list `[]`**: Disables custom info collection entirely.
+* **Wildcard `['*']`**: Explicit equivalent of auto-discovery; runs all scripts in the custom info directory.
+* **Specific keys** (for example `['fips', 'gpu-temp']`): Runs only the named scripts.
+
+Custom collector scripts are re-executed periodically alongside built-in collectors (see [Periodic system info collection](#periodic-system-info-collection)). Each script's standard output is bounded to 256 bytes; any excess is truncated. Output values are sanitized by stripping non-printable characters.
+
+For example, to have the agent report the system's [FIPS](https://en.wikipedia.org/wiki/FIPS_140-2) mode status, create a file `/usr/lib/flightctl/custom-info.d/fips` with the following content and "executable" file permissions:
+
+```bash
+#!/bin/sh
+
+fips-mode-setup --is-enabled
+case $? in
+    0) echo "enabled";;
+    1) echo "inconsistent";;
+    2) echo "disabled";;
+    *) echo "unknown";;
+esac
+```
+
+Then, add the following to the agent's `config.yaml`:
+
+```console
+system-info-custom: [fips]
+```
+
+The reported device status might look like
+
+```console
+status:
+  [...]
+  systemInfo:
+    architecture: amd64
+    operatingSystem: linux
+    agentVersion: v0.7.0
+    bootID: 87f7e27e-bdc0-42b1-b909-6dc81fe43ea2
+    customInfo:
+      fips: disabled
+```
+
+## Enrollment-time label mapping
+
+The `label-from-systeminfo` configuration parameter enables automatic device labeling during enrollment by mapping system information fields to device labels. This allows devices to self-describe their characteristics without manual intervention, enabling automatic fleet selection based on hardware, location, or custom attributes.
+
+> [!TIP]
+> Labels configured with `label-from-systeminfo` can be used in fleet selectors to automatically assign devices to fleets based on their characteristics. See [Selecting Devices into a Fleet](../using/managing-fleets.md#selecting-devices-into-a-fleet) for details on how fleet selectors work with device labels.
+
+### How it works
+
+During enrollment, the agent collects system information and applies the configured label mappings. The resulting labels are included in the enrollment request and become part of the device's metadata. These labels can then be used by fleet selectors to automatically assign devices to the appropriate fleets.
+
+**Label value sanitization:** System information values are automatically sanitized to ensure they meet Kubernetes label requirements. Values containing spaces or special characters (e.g., `"CentOS Stream"`, `"9.5 (Plow)"`) are transformed into valid label values (e.g., `"CentOS-Stream"`, `"9.5--Plow"`). Invalid characters are replaced with hyphens, and values are truncated to 63 characters if needed. If a value cannot be sanitized into a valid label, the label is skipped and a warning is logged.
+
+### Mapping built-in fields
+
+You can map any built-in system information field to a label. Reference built-in fields by their field name:
+
+```yaml
+label-from-systeminfo:
+  arch: architecture
+  os-name: distroName
+  os-version: distroVersion
+```
+
+This configuration creates device labels by mapping built-in systemInfo fields:
+
+- Label `arch` ← `systemInfo.architecture` (e.g., `amd64`, `arm64`)
+- Label `os-name` ← `systemInfo.distroName` (e.g., `Red Hat Enterprise Linux`)
+- Label `os-version` ← `systemInfo.distroVersion` (e.g., `9.5 (Plow)`)
+
+The label name (left side) can be anything you choose; the field name (right side) must be one of the built-in system info fields. See [Built-in system info collectors](#built-in-system-info-collectors) for the complete list of available fields.
+
+### Mapping custom fields
+
+You can also map custom system information fields to labels. Reference custom fields using the `customInfo.` prefix followed by the field name:
+
+```yaml
+system-info-custom: [region, siteId, rackNumber]
+label-from-systeminfo:
+  region: customInfo.region
+  site: customInfo.siteId
+  rack: customInfo.rackNumber
+```
+
+This configuration:
+
+1. Enables collection of custom info from scripts in `/usr/lib/flightctl/custom-info.d/`
+2. Maps each custom field to a corresponding label
+
+See [Custom system info collectors](#custom-system-info-collectors) for details on creating custom info scripts.
+
+### Default alias behavior
+
+By default, the agent automatically adds an `alias` label set to the device's hostname if no `alias` mapping is configured in `label-from-systeminfo`. This provides a human-readable identifier for devices.
+
+To override this behavior and set the alias from a different source:
+
+```yaml
+system-info-custom: [productName]
+label-from-systeminfo:
+  alias: customInfo.productName
+```
+
+### Label precedence
+
+When the same label key is defined in multiple places, labels are applied in the following precedence order (highest to lowest):
+
+1. `default-labels` (highest precedence - always wins)
+2. `label-from-systeminfo` (mapped from system info)
+3. Default `alias=hostname` (lowest precedence - only if no alias is configured)
+
+Example showing precedence:
+
+```yaml
+default-labels:
+  env: production      # This value wins
+label-from-systeminfo:
+  env: customInfo.env  # This is ignored due to default-labels taking precedence
+  region: customInfo.region
+```
+
+In this case, the device will have `env=production` (from `default-labels`) and `region` mapped from custom info.
+
+**Label validation:** `label-from-systeminfo` values are automatically **sanitized** to meet Kubernetes requirements (spaces and special characters become hyphens), while `default-labels` values are **validated** but not modified. Invalid `default-labels` are skipped with an error log, allowing the agent to enroll successfully while alerting administrators to fix their configuration.
+
+### Complete example
+
+Here's a complete configuration for a wayside device that automatically selects the appropriate protocol fleet based on its installed protocol:
+
+```yaml
+# /usr/lib/flightctl/custom-info.d/waysideProtocol
+#!/bin/bash
+# Outputs: Wayside-Protocol-A or Wayside-Protocol-B
+cat /etc/wayside/protocol.txt
+```
+
+```yaml
+# /etc/flightctl/config.yaml
+system-info-custom: [waysideProtocol]
+label-from-systeminfo:
+  protocol: customInfo.waysideProtocol
+  arch: architecture
+default-labels:
+  env: production
+```
+
+With this configuration:
+
+- Devices automatically get a `protocol` label based on their installed protocol
+- Devices get an `arch` label based on their CPU architecture  
+- All devices get `env=production` from default-labels
+- Devices get `alias=hostname` automatically
+
+Fleets can then target devices by protocol:
+
+```yaml
+apiVersion: flightctl.io/v1beta1
+kind: Fleet
+metadata:
+  name: wayside-protocol-a
+spec:
+  selector:
+    matchLabels:
+      protocol: Wayside-Protocol-A
+```
+
+## Audit Configuration
+
+The audit configuration controls whether the agent generates audit logs that track device specification changes and system state transitions. Audit logs are written to `/var/log/flightctl/audit.log` in JSONL format and are automatically rotated.
+
+### Audit Configuration Parameters
+
+The `audit` configuration object accepts the following parameter:
+
+| Parameter | Type | Required | Description |
+| --------- | ---- | :------: | ----------- |
+| `enabled` | `boolean` | | Enable audit logging. When true, the agent records specification transitions to the audit log. Default: `true` |
+
+### Example Audit Configuration
+
+Audit logging is enabled by default. To explicitly disable it:
+
+```yaml
+# /etc/flightctl/config.yaml
+[...]
+audit:
+  enabled: false
+
+status-update-interval: 60s
+```
+
+## Metrics Configuration
+
+Metrics are **disabled by default**. To enable the Prometheus metrics endpoint (exposed on `127.0.0.1:15690`):
+
+```yaml
+# /etc/flightctl/config.yaml
+[...]
+metrics-enabled: true
+
+status-update-interval: 60s
+```
+
+## Profiling Configuration
+
+Profiling is **disabled by default**. To enable the pprof profiling endpoint (exposed on `127.0.0.1:15689`):
+
+```yaml
+# /etc/flightctl/config.yaml
+[...]
+profiling-enabled: true
+
+status-update-interval: 60s
+```
+
+## TPM Configuration
+
+The Trusted Platform Module (TPM) configuration allows the agent to use hardware-based device identity and authentication. When enabled, the agent uses the TPM 2.0 module to generate and protect cryptographic keys, providing a hardware root-of-trust for device authentication.
+
+### TPM Configuration Parameters
+
+The `tpm` configuration object accepts the following parameters:
+
+| Parameter | Type | Required | Description |
+| --------- | ---- | :------: | ----------- |
+| `enabled` | `boolean` | | Enable TPM device identity. When true, the agent uses TPM for key generation and protection. Default: `false` |
+| `device-path` | `string` | | Path to the TPM device. If not specified, the agent auto-discovers available TPM devices, preferring resource manager devices (`/dev/tpmrm*`) over direct devices. Default: auto-discovery |
+| `auth-enabled` | `boolean` | | Enable TPM owner hierarchy password authentication. Should only be used in ephemeral development/test environments. Default: `false` |
+| `storage-file-path` | `string` | | File path for TPM key handle persistence. Default: `/var/lib/flightctl/tpm-blob.yaml` |
+
+### Example TPM Configuration
+
+```yaml
+# /etc/flightctl/config.yaml
+[...]
+tpm:
+  enabled: true
+  device-path: /dev/tpm0
+  auth-enabled: false
+  storage-file-path: /var/lib/flightctl/tpm-blob.yaml
+
+status-update-interval: 60s
+```
+
+### TPM Auto-Discovery
+
+When `device-path` is not specified or is empty, the agent automatically discovers TPM devices by:
+
+1. Scanning `/sys/class/tpm/` for available TPM devices
+2. Validating TPM version (must be 2.0)
+3. Preferring resource manager devices (`/dev/tpmrm*`) over direct devices (`/dev/tpm*`)
+4. Using the first valid TPM 2.0 device found
+
+### TPM Requirements
+
+* **Hardware**: TPM 2.0 compliant module (TPM 1.2 is not supported)
+* **Kernel**: Linux kernel with TPM 2.0 support
+* **Permissions**: Agent must have read/write access to TPM device
+* **CA Certificates**: TPM manufacturer CA certificates must be installed on the Flight Control service
+
+For detailed information about TPM authentication architecture and certificate requirements, see [TPM Device Authentication](configuring-device-attestation.md).
+
+### TPM Troubleshooting
+
+#### TPM Not Detected
+
+If the agent cannot detect the TPM device:
+
+```bash
+# Check if TPM device exists
+ls -la /dev/tpm* /dev/tpmrm*
+
+# Verify TPM version (should output: 2)
+cat /sys/class/tpm/tpm0/tpm_version_major
+
+# Check device permissions
+ls -l /dev/tpm0
+# Agent user should have read/write access
+```
+
+#### TPM Initialization Errors
+
+Check agent logs for TPM-related errors:
+
+```bash
+# View agent logs
+journalctl -u flightctl-agent -f
+
+# Filter for TPM messages
+journalctl -u flightctl-agent | grep -i tpm
+```
+
+Enable debug logging for detailed TPM information:
+
+```yaml
+# /etc/flightctl/config.yaml
+log-level: debug  # or trace for maximum detail
+```
+
+#### TPM Owner Password
+
+If the TPM requires owner hierarchy authentication:
+
+```yaml
+tpm:
+  enabled: true
+  auth-enabled: true  # Generates random password for TPM ownership
+```
+
+> [!WARNING]
+> Setting `auth-enabled: true` generates a random password for TPM ownership that is stored in the storage file. This password survives reboots, but if the storage file is lost, the ability to use the ownership hierarchy is lost and a `tpm2_clear` command must be issued to reset the TPM. Only use this in ephemeral development environments.
+
+#### Enrollment Failures
+
+If enrollment fails with TPM-related errors:
+
+1. Check that TPM CA certificates are installed on the server (see [TPM Device Authentication](configuring-device-attestation.md#configuring-tpm-ca-certificates-in-flight-control-service))
+
+2. Verify the agent can generate CSR:
+
+   ```bash
+   sudo flightctl-agent --log-level=trace
+   # Look for CSR generation messages
+   ```
+
+## flightctl-agent system-info
+
+You can run this command on a device to inspect the full system information collected by the agent:
+
+```bash
+flightctl-agent system-info
+```
+
+It prints a JSON summary of the device's hardware and OS, including:
+
+* Architecture, OS, kernel, hostname
+* CPU, memory, disks, network interfaces
+* GPU (if available)
+* BIOS/system identifiers
+* Custom info (from user-defined collectors)
+* Boot ID and time
+
+> [!NOTE]
+> This command is local-only and does not affect device state or communicate with the Flight Control service.
+
+## flightctl-agent helm-render
+
+This subcommand acts as a Helm post-renderer that injects application labels into Kubernetes manifests. It reads YAML from standard input, adds the `agent.flightctl.io/app` label to all resources, and outputs the modified YAML to standard output.
+
+This enables tracking which resources belong to which application, supporting resource cleanup, health monitoring, and troubleshooting.
+
+### Usage
+
+```bash
+flightctl-agent helm-render --app=<app-name>
+```
+
+### Flags
+
+| Flag | Required | Description |
+| ---- | :------: | ----------- |
+| `--app` | Y | The application name to inject as a label value |
+
+### Labels Injected
+
+Labels are injected into:
+
+* `metadata.labels` - All resources
+* `spec.template.metadata.labels` - Deployments, StatefulSets, DaemonSets, Jobs (so pods inherit the label)
+* `spec.jobTemplate.spec.template.metadata.labels` - CronJobs
+
+### Example Usage with Helm
+
+```bash
+helm upgrade --install my-app ./chart \
+  --post-renderer /usr/bin/flightctl-agent \
+  --post-renderer-args helm-render \
+  --post-renderer-args --app=my-app
+```
+
+> [!NOTE]
+> This command requires `kubectl` or `oc` to be available in the PATH, as it uses `kubectl kustomize` internally to inject labels.

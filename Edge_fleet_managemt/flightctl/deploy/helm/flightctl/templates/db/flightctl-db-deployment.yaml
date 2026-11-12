@@ -1,0 +1,81 @@
+{{- if eq .Values.db.type "builtin" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    flightctl.service: flightctl-db
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+  name: flightctl-db
+  namespace: {{ default .Release.Namespace .Values.global.internalNamespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      flightctl.service: flightctl-db
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        flightctl.service: flightctl-db
+        {{- include "flightctl.standardLabels" . | nindent 8 }}
+    spec:
+      {{- if .Values.global.imagePullSecretName }}
+      imagePullSecrets:
+        - name: {{ .Values.global.imagePullSecretName }}
+      {{- end }}
+      {{- if .Values.db.builtin.fsGroup }}
+      securityContext:
+        fsGroup: {{ .Values.db.builtin.fsGroup }}
+      {{- end }}
+      containers:
+        - env:
+            - name: POSTGRESQL_DATABASE
+              value: {{ required "Values.db.name is required" $.Values.db.name }}
+            - name: POSTGRESQL_MASTER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default "flightctl-db-admin-secret" .Values.db.builtin.masterUserSecretName }}
+                  key: masterPassword
+            - name: POSTGRESQL_MASTER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default "flightctl-db-admin-secret" .Values.db.builtin.masterUserSecretName }}
+                  key: masterUser
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "flightctl.dbAppUserSecret" . }}
+                  key: userPassword
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "flightctl.dbAppUserSecret" . }}
+                  key: user
+            - name: POSTGRESQL_MAX_CONNECTIONS
+              value: {{ .Values.db.builtin.maxConnections | quote }}
+          image: {{ .Values.db.builtin.image.image }}:{{ .Values.db.builtin.image.tag }}
+          imagePullPolicy: {{ default .Values.global.imagePullPolicy .Values.db.builtin.image.pullPolicy }}
+          name: flightctl-db
+          ports:
+            - containerPort: 5432
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /var/lib/pgsql/data
+              name: flightctl-db
+            - mountPath: /usr/share/container-scripts/postgresql/start/enable-superuser.sh
+              subPath: enable-superuser.sh
+              name: init-scripts
+          resources:
+            requests:
+              cpu: {{ .Values.db.builtin.resources.requests.cpu}}
+              memory: {{ .Values.db.builtin.resources.requests.memory}}
+      restartPolicy: Always
+      volumes:
+        - name: flightctl-db
+          persistentVolumeClaim:
+            claimName: flightctl-db
+        - name: init-scripts
+          configMap:
+            name: flightctl-db
+{{- end }}

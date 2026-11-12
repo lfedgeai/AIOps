@@ -1,0 +1,65 @@
+//go:build linux
+
+package executer
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"syscall"
+)
+
+func (e *commonExecuter) CommandContext(ctx context.Context, command string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, command, args...)
+
+	// Setpgid ensures that all child processes are in the same process group.
+	// Pdeathsig ensures cleanup if the parent Go process dies unexpectedly.
+	// ref. https://pkg.go.dev/syscall#SysProcAttr
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid:   true,
+		Pdeathsig: syscall.SIGTERM,
+	}
+
+	if e.uid >= 0 {
+		// When running as a different user, make sure the env is not inherited (except for PATH).
+		if cmd.Env == nil {
+			cmd.Env = []string{}
+			// Preserve path if it exists for convenience when running commands that expect it set.
+			if path, ok := os.LookupEnv("PATH"); ok {
+				cmd.Env = append(cmd.Env, "PATH="+path)
+			}
+		}
+		if e.homeDir != "" {
+			// Forcefully override any existing HOME envvar if homeDir is set.
+			cmd.Env = append(cmd.Env, "HOME="+e.homeDir)
+		}
+		// Set XDG_RUNTIME_DIR so that applications that depend on it will work properly.
+		cmd.Env = append(cmd.Env, fmt.Sprintf("XDG_RUNTIME_DIR=/run/user/%d", e.uid))
+
+		cmd.SysProcAttr.Credential = &syscall.Credential{
+			Uid: uint32(e.uid), //nolint:gosec
+			Gid: uint32(e.gid), //nolint:gosec
+		}
+	}
+
+	// if context is canceled, kill the entire process group
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			if cmd.SysProcAttr.Setpgid {
+				// negative PID kills the process group
+				// ref. https://man7.org/linux/man-pages/man2/kill.2.html
+				return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			} else {
+				return cmd.Process.Kill()
+			}
+		}
+		return nil
+	}
+
+	return cmd
+}
+
+func (e *commonExecuter) execute(ctx context.Context, cmd *exec.Cmd) (stdout string, stderr string, exitCode int) {
+	return e.runCmd(ctx, cmd, 0)
+}

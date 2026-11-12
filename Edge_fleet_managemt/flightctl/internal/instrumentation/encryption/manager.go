@@ -1,0 +1,429 @@
+package encryption
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/stoewer/go-strcase"
+)
+
+// NewManager creates a new encryption manager with no strategies registered.
+func NewManager() *Manager {
+	return &Manager{
+		strategies: make(map[string]Strategy),
+	}
+}
+
+// SetMetricsRecorder sets the metrics recorder for this manager.
+// This is optional - if not set, no metrics will be recorded.
+func (m *Manager) SetMetricsRecorder(metrics MetricsRecorder) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.metrics = metrics
+}
+
+// MetricsRecorder returns the current metrics recorder, or nil if not set.
+func (m *Manager) MetricsRecorder() MetricsRecorder {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.metrics
+}
+
+// SetCanaryStore sets the canary store for this manager.
+// This is optional - if not set, no canary verification will be performed.
+func (m *Manager) SetCanaryStore(store CanaryStore) {
+	var cm *CanaryManager
+	if store != nil {
+		cm = NewCanaryManager(m, store)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.canaryManager = cm
+}
+
+// EnsureActiveCanary creates a canary for the active encryption key if one doesn't exist.
+// Called at startup to surface canary-creation failures immediately rather than on first encrypt.
+func (m *Manager) EnsureActiveCanary(ctx context.Context) error {
+	cm := m.CanaryManager()
+	if cm == nil {
+		return nil
+	}
+
+	activeVersion, strategy := m.GetActiveStrategy()
+	if activeVersion == "" || strategy == nil {
+		return nil
+	}
+
+	return cm.EnsureCanary(ctx, activeVersion, strategy.ActiveKeyID())
+}
+
+// ValidateCanaries validates all stored canaries can be decrypted.
+// Returns error if any canary fails.
+func (m *Manager) ValidateCanaries(ctx context.Context) error {
+	cm := m.CanaryManager()
+	if cm == nil {
+		return nil
+	}
+
+	results, err := cm.ValidateAll(ctx)
+	if err != nil {
+		return fmt.Errorf("validate canaries: %w", err)
+	}
+
+	for _, result := range results {
+		if result.Status != "ok" {
+			return fmt.Errorf("encryption key %s/%s canary validation failed (%s)",
+				result.Strategy, result.KeyID, result.Status)
+		}
+	}
+
+	return nil
+}
+
+// CanaryManager returns the canary manager, or nil if no canary store is set.
+func (m *Manager) CanaryManager() *CanaryManager {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.canaryManager
+}
+
+// GetActiveStrategy returns the active strategy version and the strategy itself.
+// Returns ("", nil) if no active strategy is set.
+func (m *Manager) GetActiveStrategy() (version string, strategy Strategy) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	version = m.activeStrategy
+	if version != "" {
+		strategy = m.strategies[version]
+	}
+	return version, strategy
+}
+
+// ActiveStrategyVersion returns just the active strategy version string.
+// Returns empty string if no active strategy is set.
+func (m *Manager) ActiveStrategyVersion() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.activeStrategy
+}
+
+// GetStrategy returns the strategy for the given version.
+// The version is automatically normalized to kebab-case.
+// Returns (nil, false) if the strategy is not registered.
+func (m *Manager) GetStrategy(version string) (Strategy, bool) {
+	normalized := strcase.KebabCase(version)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	strategy, exists := m.strategies[normalized]
+	return strategy, exists
+}
+
+// StrategyCount returns the number of registered strategies.
+func (m *Manager) StrategyCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.strategies)
+}
+
+// RegisterStrategy adds an encryption strategy to the manager.
+// The version identifier is automatically normalized to kebab-case.
+// If setActive is true, this strategy becomes the active strategy for new encryptions.
+func (m *Manager) RegisterStrategy(s Strategy, setActive bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	version := strcase.KebabCase(s.Version())
+	m.strategies[version] = s
+	if setActive {
+		m.activeStrategy = version
+	}
+}
+
+// SetActiveStrategy selects which strategy will be used for new encryptions.
+// The version is automatically normalized to kebab-case.
+func (m *Manager) SetActiveStrategy(version string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	normalized := strcase.KebabCase(version)
+	if _, exists := m.strategies[normalized]; !exists {
+		return fmt.Errorf("%w: strategy version %q", ErrStrategyNotFound, normalized)
+	}
+	m.activeStrategy = normalized
+	return nil
+}
+
+// Encrypt encrypts plaintext using the active strategy.
+// Returns encrypted data with format: enc:<version>:<strategy-specific-data>
+// Returns error if input is already encrypted (use ProcessEncryption for that).
+func (m *Manager) Encrypt(ctx context.Context, plaintext []byte) ([]byte, error) {
+	if IsEncrypted(plaintext) {
+		return nil, fmt.Errorf("Encrypt expects plaintext, got already-encrypted data (use ProcessEncryption instead)")
+	}
+
+	m.mu.RLock()
+	activeStrategy := m.activeStrategy
+	strategy, exists := m.strategies[activeStrategy]
+	m.mu.RUnlock()
+
+	if activeStrategy == "" {
+		if metrics := m.MetricsRecorder(); metrics != nil {
+			metrics.RecordOperation(OpEncrypt, "", "", "error", 0)
+			metrics.RecordError(OpEncrypt, "", "", CategorizeError(ErrNoActiveStrategy))
+		}
+		return nil, ErrNoActiveStrategy
+	}
+	if !exists {
+		wrappedErr := fmt.Errorf("%w: %s", ErrStrategyNotFound, activeStrategy)
+		if metrics := m.MetricsRecorder(); metrics != nil {
+			metrics.RecordOperation(OpEncrypt, activeStrategy, "", "error", 0)
+			metrics.RecordError(OpEncrypt, activeStrategy, "", CategorizeError(wrappedErr))
+		}
+		return nil, wrappedErr
+	}
+
+	activeKeyID := strategy.ActiveKeyID()
+
+	if canaryMgr := m.CanaryManager(); canaryMgr != nil {
+		if err := canaryMgr.EnsureCanary(ctx, activeStrategy, activeKeyID); err != nil {
+			wrappedErr := fmt.Errorf("ensure canary for %s/%s: %w", activeStrategy, activeKeyID, err)
+			if metrics := m.MetricsRecorder(); metrics != nil {
+				metrics.RecordOperation(OpEncrypt, activeStrategy, activeKeyID, "error", 0)
+				metrics.RecordError(OpEncrypt, activeStrategy, activeKeyID, CategorizeError(wrappedErr))
+			}
+			return nil, wrappedErr
+		}
+	}
+
+	ctx, span := startEncryptSpan(ctx, activeStrategy, activeKeyID)
+	defer span.End()
+
+	start := time.Now()
+	body, err := strategy.EncryptPlaintext(ctx, plaintext)
+	duration := time.Since(start)
+
+	metrics := m.MetricsRecorder()
+	if err != nil {
+		wrappedErr := fmt.Errorf("%w: %v", ErrEncryptionFailed, err)
+		recordError(span, wrappedErr)
+		if metrics != nil {
+			metrics.RecordOperation(OpEncrypt, activeStrategy, activeKeyID, "error", duration)
+			metrics.RecordError(OpEncrypt, activeStrategy, activeKeyID, CategorizeError(wrappedErr))
+		}
+		return nil, wrappedErr
+	}
+
+	// Prefix format: enc:<version>:<encrypted-payload>
+	prefixed := fmt.Sprintf("enc:%s:%s", strategy.Version(), string(body))
+	recordSuccess(span)
+	if metrics != nil {
+		metrics.RecordOperation(OpEncrypt, activeStrategy, activeKeyID, "success", duration)
+	}
+	return []byte(prefixed), nil
+}
+
+// InspectEncrypted returns the strategy version and key ID when data uses the
+// enc:<version>:<body> envelope. Plaintext returns encrypted=false with empty
+// version/keyID and a nil error. Malformed encrypted envelopes return an error
+// (fail closed — never treated as plaintext).
+func (m *Manager) InspectEncrypted(data []byte) (version, keyID string, encrypted bool, err error) {
+	inspected, ok, err := m.inspectEncrypted(data)
+	if err != nil || !ok {
+		return "", "", false, err
+	}
+	return inspected.version, inspected.keyID, true, nil
+}
+
+type encryptedInspection struct {
+	version  string
+	keyID    string
+	strategy Strategy
+	parsed   *ParsedEncrypted
+}
+
+// inspectEncrypted is shared by InspectEncrypted and ProcessEncryption.
+func (m *Manager) inspectEncrypted(data []byte) (encryptedInspection, bool, error) {
+	ver, body, ok := parseEncryptedFormat(data)
+	if !ok {
+		if bytes.HasPrefix(data, []byte("enc:")) {
+			return encryptedInspection{}, false, fmt.Errorf("%w: incomplete encryption envelope", ErrInvalidFormat)
+		}
+		return encryptedInspection{}, false, nil
+	}
+
+	strategy, exists := m.GetStrategy(ver)
+	if !exists {
+		return encryptedInspection{}, false, fmt.Errorf("%w: %s", ErrStrategyNotFound, ver)
+	}
+
+	parsed, err := strategy.ParseBody(body)
+	if err != nil {
+		return encryptedInspection{}, false, fmt.Errorf("%w: %w", ErrParseFailed, err)
+	}
+
+	return encryptedInspection{
+		version:  ver,
+		keyID:    parsed.KeyID,
+		strategy: strategy,
+		parsed:   parsed,
+	}, true, nil
+}
+
+// ProcessEncryption intelligently handles data that may be plaintext, encrypted with current
+// version/key, or encrypted with old version/key. Behavior:
+// 1. Plaintext: encrypts with active strategy
+// 2. Same version/key: returns unchanged (avoids wasteful re-encryption)
+// 3. Different version: migrates to active version
+// 4. Same version, different key: re-encrypts with active key
+func (m *Manager) ProcessEncryption(ctx context.Context, data []byte) ([]byte, error) {
+	ctx, span := startProcessSpan(ctx)
+	defer span.End()
+
+	inspected, encrypted, err := m.inspectEncrypted(data)
+	if err != nil {
+		recordError(span, err)
+		return nil, err
+	}
+	if !encrypted {
+		recordProcessAction(span, actionEncryptPlaintext)
+		result, err := m.Encrypt(ctx, data)
+		if err != nil {
+			recordError(span, err)
+			return nil, err
+		}
+		recordSuccess(span)
+		return result, nil
+	}
+
+	m.mu.RLock()
+	activeStrategyVersion := m.activeStrategy
+	activeStrategy, activeExists := m.strategies[activeStrategyVersion]
+	m.mu.RUnlock()
+	if !activeExists {
+		err := fmt.Errorf("%w: %s", ErrStrategyNotFound, activeStrategyVersion)
+		recordError(span, err)
+		return nil, err
+	}
+
+	currentVersion := inspected.version
+	currentStrategy := inspected.strategy
+	parsed := inspected.parsed
+
+	// Different version - decrypt and migrate
+	if currentVersion != activeStrategyVersion {
+		recordProcessAction(span, actionReencrypt)
+		plaintext, err := currentStrategy.DecryptParsed(ctx, parsed)
+		if err != nil {
+			wrappedErr := fmt.Errorf("%w: decrypt for version migration %s to %s: %w", ErrDecryptionFailed, currentVersion, activeStrategyVersion, err)
+			recordError(span, wrappedErr)
+			return nil, wrappedErr
+		}
+		result, err := m.Encrypt(ctx, plaintext)
+		if err != nil {
+			recordError(span, err)
+			return nil, err
+		}
+		recordSuccess(span)
+		return result, nil
+	}
+
+	// Same version/key - return unchanged
+	if parsed.KeyID == activeStrategy.ActiveKeyID() {
+		recordProcessAction(span, actionUnchanged)
+		recordSuccess(span)
+		return data, nil
+	}
+
+	// Same version, different key - decrypt and re-encrypt
+	recordProcessAction(span, actionReencrypt)
+	plaintext, err := currentStrategy.DecryptParsed(ctx, parsed)
+	if err != nil {
+		wrappedErr := fmt.Errorf("%w: decrypt for key rotation %s to %s: %w", ErrDecryptionFailed, parsed.KeyID, activeStrategy.ActiveKeyID(), err)
+		recordError(span, wrappedErr)
+		return nil, wrappedErr
+	}
+
+	result, err := m.Encrypt(ctx, plaintext)
+	if err != nil {
+		recordError(span, err)
+		return nil, err
+	}
+	recordSuccess(span)
+	return result, nil
+}
+
+// Decrypt decrypts data by detecting the version prefix and routing to the appropriate strategy.
+// Supports plaintext passthrough (no prefix) for backward compatibility during migration.
+func (m *Manager) Decrypt(ctx context.Context, data []byte) ([]byte, error) {
+	str := string(data)
+
+	// Backward compatibility: if no "enc:" prefix, assume plaintext
+	if !strings.HasPrefix(str, "enc:") {
+		return data, nil
+	}
+
+	// Has "enc:" prefix - must be valid encrypted format
+	version, body, ok := parseEncryptedFormat(data)
+	if !ok {
+		wrappedErr := fmt.Errorf("%w: expected enc:<version>:<data>", ErrInvalidFormat)
+		if metrics := m.MetricsRecorder(); metrics != nil {
+			metrics.RecordOperation(OpDecrypt, "", "", "error", 0)
+			metrics.RecordError(OpDecrypt, "", "", CategorizeError(wrappedErr))
+		}
+		return nil, wrappedErr
+	}
+
+	// Route to the correct strategy based on version
+	m.mu.RLock()
+	strategy, exists := m.strategies[version]
+	m.mu.RUnlock()
+
+	if !exists {
+		wrappedErr := fmt.Errorf("%w: %s", ErrStrategyNotFound, version)
+		if metrics := m.MetricsRecorder(); metrics != nil {
+			metrics.RecordOperation(OpDecrypt, version, "", "error", 0)
+			metrics.RecordError(OpDecrypt, version, "", CategorizeError(wrappedErr))
+		}
+		return nil, wrappedErr
+	}
+
+	// Parse and decrypt
+	parsed, err := strategy.ParseBody(body)
+	if err != nil {
+		wrappedErr := fmt.Errorf("%w: %v", ErrParseFailed, err)
+		if metrics := m.MetricsRecorder(); metrics != nil {
+			metrics.RecordOperation(OpDecrypt, version, "", "error", 0)
+			metrics.RecordError(OpDecrypt, version, "", CategorizeError(wrappedErr))
+		}
+		return nil, wrappedErr
+	}
+
+	ctx, span := startDecryptSpan(ctx, version, parsed.KeyID)
+	defer span.End()
+
+	start := time.Now()
+	plaintext, err := strategy.DecryptParsed(ctx, parsed)
+	duration := time.Since(start)
+
+	metrics := m.MetricsRecorder()
+	if err != nil {
+		wrappedErr := fmt.Errorf("%w: %v", ErrDecryptionFailed, err)
+		recordError(span, wrappedErr)
+		if metrics != nil {
+			metrics.RecordOperation(OpDecrypt, version, parsed.KeyID, "error", duration)
+			metrics.RecordError(OpDecrypt, version, parsed.KeyID, CategorizeError(wrappedErr))
+		}
+		return nil, wrappedErr
+	}
+
+	recordSuccess(span)
+	if metrics != nil {
+		metrics.RecordOperation(OpDecrypt, version, parsed.KeyID, "success", duration)
+	}
+	return plaintext, nil
+}

@@ -1,0 +1,518 @@
+package catalog
+
+import (
+	"context"
+	"errors"
+
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/flterrors"
+	"github.com/flightctl/flightctl/internal/store"
+	"github.com/flightctl/flightctl/internal/store/model"
+	"github.com/flightctl/flightctl/internal/store/selector"
+	"github.com/google/uuid"
+	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
+)
+
+type Store interface {
+	InitialMigration(ctx context.Context) error
+
+	Create(ctx context.Context, orgId uuid.UUID, catalog *domain.Catalog) (*domain.Catalog, error)
+	Update(ctx context.Context, orgId uuid.UUID, catalog *domain.Catalog) (*domain.Catalog, *domain.Catalog, error)
+	CreateOrUpdate(ctx context.Context, orgId uuid.UUID, catalog *domain.Catalog) (*domain.Catalog, *domain.Catalog, bool, error)
+	Get(ctx context.Context, orgId uuid.UUID, name string) (*domain.Catalog, error)
+	List(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (*domain.CatalogList, error)
+	Delete(ctx context.Context, orgId uuid.UUID, name string) (bool, error)
+	UpdateStatus(ctx context.Context, orgId uuid.UUID, resource *domain.Catalog) (*domain.Catalog, *domain.Catalog, error)
+	Count(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (int64, error)
+	UnsetOwner(ctx context.Context, tx *gorm.DB, orgId uuid.UUID, owner string) error
+	UnsetItemOwner(ctx context.Context, tx *gorm.DB, orgId uuid.UUID, owner string) error
+
+	// CatalogItem operations
+	ListAllItems(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (*domain.CatalogItemList, error)
+	ListItems(ctx context.Context, orgId uuid.UUID, catalogName string, listParams store.ListParams) (*domain.CatalogItemList, error)
+	GetItem(ctx context.Context, orgId uuid.UUID, catalogName string, itemName string) (*domain.CatalogItem, error)
+	CreateItem(ctx context.Context, orgId uuid.UUID, catalogName string, item *domain.CatalogItem) (*domain.CatalogItem, error)
+	UpdateItem(ctx context.Context, orgId uuid.UUID, catalogName string, item *domain.CatalogItem) (*domain.CatalogItem, error)
+	CreateOrUpdateItem(ctx context.Context, orgId uuid.UUID, catalogName string, item *domain.CatalogItem) (*domain.CatalogItem, bool, error)
+	DeleteItem(ctx context.Context, orgId uuid.UUID, catalogName string, itemName string) error
+}
+
+type CatalogStore struct {
+	dbHandler    *gorm.DB
+	log          logrus.FieldLogger
+	genericStore *store.GenericStore[*model.Catalog, model.Catalog, domain.Catalog, domain.CatalogList]
+}
+
+// Make sure we conform to the Store interface
+var _ Store = (*CatalogStore)(nil)
+
+func NewCatalogStore(db *gorm.DB, log logrus.FieldLogger) Store {
+	genericStore := store.NewGenericStore[*model.Catalog, model.Catalog, domain.Catalog, domain.CatalogList](
+		db,
+		log,
+		model.NewCatalogFromApiResource,
+		(*model.Catalog).ToApiResource,
+		model.CatalogsToApiResource,
+	)
+	return &CatalogStore{dbHandler: db, log: log, genericStore: genericStore}
+}
+
+func (s *CatalogStore) getDB(ctx context.Context) *gorm.DB {
+	return s.dbHandler.WithContext(ctx)
+}
+
+func (s *CatalogStore) InitialMigration(ctx context.Context) error {
+	db := s.getDB(ctx)
+
+	if err := db.AutoMigrate(&model.Catalog{}); err != nil {
+		return err
+	}
+
+	// Create GIN index for Catalog labels
+	if !db.Migrator().HasIndex(&model.Catalog{}, "idx_catalogs_labels") {
+		if db.Dialector.Name() == "postgres" {
+			if err := db.Exec("CREATE INDEX idx_catalogs_labels ON catalogs USING GIN (labels)").Error; err != nil {
+				return err
+			}
+		} else {
+			if err := db.Migrator().CreateIndex(&model.Catalog{}, "Labels"); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Create GIN index for Catalog annotations
+	if !db.Migrator().HasIndex(&model.Catalog{}, "idx_catalogs_annotations") {
+		if db.Dialector.Name() == "postgres" {
+			if err := db.Exec("CREATE INDEX idx_catalogs_annotations ON catalogs USING GIN (annotations)").Error; err != nil {
+				return err
+			}
+		} else {
+			if err := db.Migrator().CreateIndex(&model.Catalog{}, "Annotations"); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Migrate CatalogItem table
+	if err := db.AutoMigrate(&model.CatalogItem{}); err != nil {
+		return err
+	}
+
+	// Create GIN index for CatalogItem labels
+	if !db.Migrator().HasIndex(&model.CatalogItem{}, "idx_catalog_items_labels") {
+		if db.Dialector.Name() == "postgres" {
+			if err := db.Exec("CREATE INDEX idx_catalog_items_labels ON catalog_items USING GIN (labels)").Error; err != nil {
+				return err
+			}
+		} else {
+			if err := db.Migrator().CreateIndex(&model.CatalogItem{}, "Labels"); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *CatalogStore) Create(ctx context.Context, orgId uuid.UUID, resource *domain.Catalog) (*domain.Catalog, error) {
+	return s.genericStore.Create(ctx, orgId, resource)
+}
+
+func (s *CatalogStore) Update(ctx context.Context, orgId uuid.UUID, resource *domain.Catalog) (*domain.Catalog, *domain.Catalog, error) {
+	return s.genericStore.Update(ctx, orgId, resource, nil, nil)
+}
+
+func (s *CatalogStore) CreateOrUpdate(ctx context.Context, orgId uuid.UUID, resource *domain.Catalog) (*domain.Catalog, *domain.Catalog, bool, error) {
+	return s.genericStore.CreateOrUpdate(ctx, orgId, resource, nil, nil)
+}
+
+func (s *CatalogStore) Get(ctx context.Context, orgId uuid.UUID, name string) (*domain.Catalog, error) {
+	return s.genericStore.Get(ctx, orgId, name)
+}
+
+func (s *CatalogStore) List(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (*domain.CatalogList, error) {
+	return s.genericStore.List(ctx, orgId, listParams)
+}
+
+func (s *CatalogStore) Delete(ctx context.Context, orgId uuid.UUID, name string) (bool, error) {
+	existingRecord := model.Catalog{Resource: model.Resource{OrgID: orgId, Name: name}}
+	// Join caller TX when present so multi-store cascades stay atomic.
+	err := store.RunInTransaction(ctx, s.dbHandler, func(tx *gorm.DB) error {
+		result := tx.Take(&existingRecord)
+		if result.Error != nil {
+			return store.ErrorFromGormError(result.Error)
+		}
+
+		// Check if catalog has any items - cannot delete non-empty catalogs
+		var itemCount int64
+		if err := tx.Model(&model.CatalogItem{}).Where("org_id = ? AND catalog_name = ?", orgId, name).Count(&itemCount).Error; err != nil {
+			return store.ErrorFromGormError(err)
+		}
+		if itemCount > 0 {
+			return flterrors.ErrResourceNotEmpty
+		}
+
+		result = tx.Unscoped().Delete(&existingRecord)
+		if result.Error != nil {
+			return store.ErrorFromGormError(result.Error)
+		}
+		return nil
+	})
+
+	if err != nil {
+		if errors.Is(err, flterrors.ErrResourceNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	return true, nil
+}
+
+func (s *CatalogStore) UpdateStatus(ctx context.Context, orgId uuid.UUID, resource *domain.Catalog) (*domain.Catalog, *domain.Catalog, error) {
+	var oldCatalog *domain.Catalog
+	existingResource, err := s.Get(ctx, orgId, lo.FromPtr(resource.Metadata.Name))
+	if err == nil && existingResource != nil {
+		oldCatalog = existingResource
+	}
+
+	newCatalog, err := s.genericStore.UpdateStatus(ctx, orgId, resource)
+	if err != nil {
+		return nil, oldCatalog, err
+	}
+	return newCatalog, oldCatalog, nil
+}
+
+func (s *CatalogStore) Count(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (int64, error) {
+	query, err := store.ListQuery(&model.Catalog{}).Build(ctx, s.getDB(ctx), orgId, listParams)
+	if err != nil {
+		return 0, err
+	}
+	var catalogsCount int64
+	if err := query.Count(&catalogsCount).Error; err != nil {
+		return 0, store.ErrorFromGormError(err)
+	}
+	return catalogsCount, nil
+}
+
+func (s *CatalogStore) catalogItemLabelResolver(orgId uuid.UUID) selector.Resolver {
+	resolver, err := selector.SelectorFieldResolver(&model.CatalogItem{OrgID: orgId})
+	if err != nil {
+		return selector.EmptyResolver{}
+	}
+	return resolver
+}
+
+func (s *CatalogStore) ListAllItems(ctx context.Context, orgId uuid.UUID, listParams store.ListParams) (*domain.CatalogItemList, error) {
+	db := s.getDB(ctx)
+
+	var items []model.CatalogItem
+	var nextContinue *string
+	var numRemaining *int64
+
+	query := db.Model(&model.CatalogItem{}).Where("org_id = ?", orgId)
+
+	// Cache the parsed selector clauses so the remaining-items count query can
+	// reuse them instead of re-parsing (which would silently drop the filters
+	// if the second parse failed).
+	var fieldSelectorQuery, labelSelectorQuery string
+	var fieldSelectorArgs, labelSelectorArgs []any
+
+	if listParams.FieldSelector != nil {
+		q, p, err := listParams.FieldSelector.Parse(ctx, s.catalogItemLabelResolver(orgId))
+		if err != nil {
+			return nil, err
+		}
+		fieldSelectorQuery, fieldSelectorArgs = q, p
+		query = query.Where(q, p...)
+	}
+
+	if listParams.LabelSelector != nil {
+		q, p, err := listParams.LabelSelector.Parse(ctx, selector.NewHiddenSelectorName("metadata.labels"), s.catalogItemLabelResolver(orgId))
+		if err != nil {
+			return nil, err
+		}
+		labelSelectorQuery, labelSelectorArgs = q, p
+		query = query.Where(q, p...)
+	}
+
+	query = query.Order("catalog_name ASC, app_name ASC")
+
+	if listParams.Limit > 0 {
+		if listParams.Continue != nil && len(listParams.Continue.Names) == 2 {
+			query = query.Where("(catalog_name, app_name) >= (?, ?)", listParams.Continue.Names[0], listParams.Continue.Names[1])
+		}
+		query = query.Limit(listParams.Limit + 1)
+	}
+
+	if err := query.Find(&items).Error; err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	if listParams.Limit > 0 && len(items) > listParams.Limit {
+		lastItem := items[listParams.Limit]
+		items = items[:listParams.Limit]
+
+		var numRemainingVal int64
+		if listParams.Continue != nil {
+			numRemainingVal = listParams.Continue.Count - int64(listParams.Limit)
+			if numRemainingVal < 1 {
+				numRemainingVal = 1
+			}
+		} else {
+			countQuery := db.Model(&model.CatalogItem{}).Where("org_id = ? AND (catalog_name, app_name) >= (?, ?)", orgId, lastItem.CatalogName, lastItem.AppName)
+			if listParams.FieldSelector != nil {
+				countQuery = countQuery.Where(fieldSelectorQuery, fieldSelectorArgs...)
+			}
+			if listParams.LabelSelector != nil {
+				countQuery = countQuery.Where(labelSelectorQuery, labelSelectorArgs...)
+			}
+			if err := countQuery.Count(&numRemainingVal).Error; err != nil {
+				return nil, store.ErrorFromGormError(err)
+			}
+		}
+
+		nextContinue = store.BuildContinueString([]string{lastItem.CatalogName, lastItem.AppName}, numRemainingVal)
+		numRemaining = &numRemainingVal
+	}
+
+	result := model.CatalogItemsToApiResource(items, nextContinue, numRemaining)
+	return &result, nil
+}
+
+func (s *CatalogStore) ListItems(ctx context.Context, orgId uuid.UUID, catalogName string, listParams store.ListParams) (*domain.CatalogItemList, error) {
+	db := s.getDB(ctx)
+
+	var catalog model.Catalog
+	if err := db.Where("org_id = ? AND name = ?", orgId, catalogName).Take(&catalog).Error; err != nil {
+		if errors.Is(store.ErrorFromGormError(err), flterrors.ErrResourceNotFound) {
+			return nil, flterrors.ErrParentResourceNotFound
+		}
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	var items []model.CatalogItem
+	var nextContinue *string
+	var numRemaining *int64
+
+	// Build base query scoped to org and catalog
+	query := db.Model(&model.CatalogItem{}).Where("org_id = ? AND catalog_name = ?", orgId, catalogName)
+
+	// Cache the parsed label selector clause so the remaining-items count query
+	// can reuse it instead of re-parsing.
+	var labelSelectorQuery string
+	var labelSelectorArgs []any
+
+	// Apply label selector if provided
+	if listParams.LabelSelector != nil {
+		q, p, err := listParams.LabelSelector.Parse(ctx, selector.NewHiddenSelectorName("metadata.labels"), s.catalogItemLabelResolver(orgId))
+		if err != nil {
+			return nil, err
+		}
+		labelSelectorQuery, labelSelectorArgs = q, p
+		query = query.Where(q, p...)
+	}
+
+	// Order by app_name for consistent pagination
+	query = query.Order("app_name ASC")
+
+	// Apply pagination
+	if listParams.Limit > 0 {
+		if listParams.Continue != nil && len(listParams.Continue.Names) == 1 {
+			query = query.Where("app_name >= ?", listParams.Continue.Names[0])
+		}
+		query = query.Limit(listParams.Limit + 1)
+	}
+
+	if err := query.Find(&items).Error; err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	// Handle pagination - if we got more than requested, there are more items
+	if listParams.Limit > 0 && len(items) > listParams.Limit {
+		lastItem := items[listParams.Limit]
+		items = items[:listParams.Limit]
+
+		var numRemainingVal int64
+		if listParams.Continue != nil {
+			numRemainingVal = listParams.Continue.Count - int64(listParams.Limit)
+			if numRemainingVal < 1 {
+				numRemainingVal = 1
+			}
+		} else {
+			// Count remaining items
+			countQuery := db.Model(&model.CatalogItem{}).Where("org_id = ? AND catalog_name = ? AND app_name >= ?", orgId, catalogName, lastItem.AppName)
+			if listParams.LabelSelector != nil {
+				countQuery = countQuery.Where(labelSelectorQuery, labelSelectorArgs...)
+			}
+			if err := countQuery.Count(&numRemainingVal).Error; err != nil {
+				return nil, store.ErrorFromGormError(err)
+			}
+		}
+
+		nextContinue = store.BuildContinueString([]string{lastItem.AppName}, numRemainingVal)
+		numRemaining = &numRemainingVal
+	}
+
+	result := model.CatalogItemsToApiResource(items, nextContinue, numRemaining)
+	return &result, nil
+}
+
+func (s *CatalogStore) GetItem(ctx context.Context, orgId uuid.UUID, catalogName string, itemName string) (*domain.CatalogItem, error) {
+	db := s.getDB(ctx)
+
+	var catalog model.Catalog
+	if err := db.Where("org_id = ? AND name = ?", orgId, catalogName).Take(&catalog).Error; err != nil {
+		if errors.Is(store.ErrorFromGormError(err), flterrors.ErrResourceNotFound) {
+			return nil, flterrors.ErrParentResourceNotFound
+		}
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	var item model.CatalogItem
+	if err := db.Where("org_id = ? AND catalog_name = ? AND app_name = ?", orgId, catalogName, itemName).Take(&item).Error; err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	return item.ToApiResource(), nil
+}
+
+func (s *CatalogStore) CreateItem(ctx context.Context, orgId uuid.UUID, catalogName string, item *domain.CatalogItem) (*domain.CatalogItem, error) {
+	db := s.getDB(ctx)
+
+	var catalog model.Catalog
+	if err := db.Where("org_id = ? AND name = ?", orgId, catalogName).Take(&catalog).Error; err != nil {
+		if errors.Is(store.ErrorFromGormError(err), flterrors.ErrResourceNotFound) {
+			return nil, flterrors.ErrParentResourceNotFound
+		}
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	modelItem, err := model.NewCatalogItemFromApiResource(orgId, catalogName, item)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := db.Create(modelItem).Error; err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	return modelItem.ToApiResource(), nil
+}
+
+func (s *CatalogStore) UpdateItem(ctx context.Context, orgId uuid.UUID, catalogName string, item *domain.CatalogItem) (*domain.CatalogItem, error) {
+	db := s.getDB(ctx)
+
+	var catalog model.Catalog
+	if err := db.Where("org_id = ? AND name = ?", orgId, catalogName).Take(&catalog).Error; err != nil {
+		if errors.Is(store.ErrorFromGormError(err), flterrors.ErrResourceNotFound) {
+			return nil, flterrors.ErrParentResourceNotFound
+		}
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	// Verify the item exists
+	var existingItem model.CatalogItem
+	if err := db.Where("org_id = ? AND catalog_name = ? AND app_name = ?", orgId, catalogName, *item.Metadata.Name).Take(&existingItem).Error; err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	modelItem, err := model.NewCatalogItemFromApiResource(orgId, catalogName, item)
+	if err != nil {
+		return nil, err
+	}
+
+	updates := map[string]interface{}{
+		"spec":        modelItem.Spec,
+		"labels":      modelItem.Labels,
+		"annotations": modelItem.Annotations,
+	}
+	if modelItem.Owner != nil {
+		updates["owner"] = modelItem.Owner
+	}
+	if err := db.Model(&existingItem).Updates(updates).Error; err != nil {
+		return nil, store.ErrorFromGormError(err)
+	}
+
+	// Fetch the updated item
+	return s.GetItem(ctx, orgId, catalogName, *item.Metadata.Name)
+}
+
+func (s *CatalogStore) CreateOrUpdateItem(ctx context.Context, orgId uuid.UUID, catalogName string, item *domain.CatalogItem) (*domain.CatalogItem, bool, error) {
+	db := s.getDB(ctx)
+
+	var catalog model.Catalog
+	if err := db.Where("org_id = ? AND name = ?", orgId, catalogName).Take(&catalog).Error; err != nil {
+		if errors.Is(store.ErrorFromGormError(err), flterrors.ErrResourceNotFound) {
+			return nil, false, flterrors.ErrParentResourceNotFound
+		}
+		return nil, false, store.ErrorFromGormError(err)
+	}
+
+	// Check if item exists
+	var existingItem model.CatalogItem
+	err := db.Where("org_id = ? AND catalog_name = ? AND app_name = ?", orgId, catalogName, *item.Metadata.Name).Take(&existingItem).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Create new item
+			result, err := s.CreateItem(ctx, orgId, catalogName, item)
+			return result, true, err
+		}
+		return nil, false, store.ErrorFromGormError(err)
+	}
+
+	// Update existing item
+	result, err := s.UpdateItem(ctx, orgId, catalogName, item)
+	return result, false, err
+}
+
+func (s *CatalogStore) DeleteItem(ctx context.Context, orgId uuid.UUID, catalogName string, itemName string) error {
+	db := s.getDB(ctx)
+
+	var catalog model.Catalog
+	if err := db.Where("org_id = ? AND name = ?", orgId, catalogName).Take(&catalog).Error; err != nil {
+		if errors.Is(store.ErrorFromGormError(err), flterrors.ErrResourceNotFound) {
+			return flterrors.ErrParentResourceNotFound
+		}
+		return store.ErrorFromGormError(err)
+	}
+
+	result := db.Where("org_id = ? AND catalog_name = ? AND app_name = ?", orgId, catalogName, itemName).Delete(&model.CatalogItem{})
+	if result.Error != nil {
+		return store.ErrorFromGormError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return flterrors.ErrResourceNotFound
+	}
+
+	return nil
+}
+
+func (s *CatalogStore) UnsetOwner(ctx context.Context, tx *gorm.DB, orgId uuid.UUID, owner string) error {
+	db := s.getDB(ctx)
+	if tx != nil {
+		db = tx
+	}
+	catalogCondition := model.Catalog{
+		Resource: model.Resource{OrgID: orgId, Owner: &owner},
+	}
+	result := db.Model(catalogCondition).Where("org_id = ? AND owner = ?", orgId, owner).Updates(map[string]interface{}{
+		"owner":            nil,
+		"resource_version": gorm.Expr("resource_version + 1"),
+	})
+	return store.ErrorFromGormError(result.Error)
+}
+
+func (s *CatalogStore) UnsetItemOwner(ctx context.Context, tx *gorm.DB, orgId uuid.UUID, owner string) error {
+	db := s.getDB(ctx)
+	if tx != nil {
+		db = tx
+	}
+	result := db.Model(&model.CatalogItem{}).Where("org_id = ? AND owner = ?", orgId, owner).Updates(map[string]interface{}{
+		"owner": nil,
+	})
+	return store.ErrorFromGormError(result.Error)
+}

@@ -1,0 +1,331 @@
+package tasks
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/flightctl/flightctl/internal/config"
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/instrumentation/metrics/periodic"
+	"github.com/flightctl/flightctl/internal/service/common"
+	dependencyrefservice "github.com/flightctl/flightctl/internal/service/dependencyref"
+	eventservice "github.com/flightctl/flightctl/internal/service/event"
+	syncstateservice "github.com/flightctl/flightctl/internal/service/syncstate"
+	"github.com/flightctl/flightctl/internal/store/model"
+	"github.com/go-git/go-git/v5"
+	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
+)
+
+type gitLsRemoteFunc func(ctx context.Context, repoURL string, refs []string,
+	options *git.ListOptions) (map[string]string, error)
+
+type DependencySyncGit struct {
+	log              logrus.FieldLogger
+	dependencyrefSvc dependencyrefservice.Service
+	eventSvc         eventservice.Service
+	syncstateSvc     syncstateservice.Service
+	cfg              *config.Config
+	lsRemote         gitLsRemoteFunc
+	maxConcurrent    int
+	metrics          *periodic.DependencySyncCollector
+}
+
+func NewDependencySyncGit(log logrus.FieldLogger, dependencyrefSvc dependencyrefservice.Service, eventSvc eventservice.Service, syncstateSvc syncstateservice.Service,
+	cfg *config.Config, metrics *periodic.DependencySyncCollector) *DependencySyncGit {
+	return &DependencySyncGit{
+		log:              log,
+		dependencyrefSvc: dependencyrefSvc,
+		eventSvc:         eventSvc,
+		syncstateSvc:     syncstateSvc,
+		cfg:              cfg,
+		lsRemote:         GitLsRemote,
+		maxConcurrent:    10,
+		metrics:          metrics,
+	}
+}
+
+// probeResult holds the outcome of a single (repo, revision) probe.
+type probeResult struct {
+	probe                *model.GitDependencyProbe
+	resourceKey          string
+	newSHA               string
+	changed              bool
+	firstSeen            bool
+	firstSeenFleetNames  model.StringArray
+	firstSeenDeviceNames model.StringArray
+	probeErr             string // non-empty when the probe failed
+}
+
+func (d *DependencySyncGit) Poll(ctx context.Context, orgId uuid.UUID) {
+	if d.metrics != nil {
+		d.metrics.ObserveProbeCycle(periodic.RefTypeGit)
+	}
+
+	pollInterval := d.cfg.GetDependenciesSyncPollInterval()
+	probeStart := time.Now()
+
+	probes, status := d.dependencyrefSvc.ListDueGitDependencies(ctx, orgId, pollInterval)
+	if status.Code != http.StatusOK {
+		d.log.Errorf("failed listing due git dependencies: %s", status.Message)
+		return
+	}
+	if len(probes) == 0 {
+		return
+	}
+
+	repoGroups := make(map[string][]*model.GitDependencyProbe)
+	for i := range probes {
+		repoGroups[probes[i].RepositoryName] = append(repoGroups[probes[i].RepositoryName], &probes[i])
+	}
+
+	var (
+		mu      sync.Mutex
+		results []probeResult
+	)
+
+	sem := make(chan struct{}, d.maxConcurrent)
+	var wg sync.WaitGroup
+
+	for repoName, group := range repoGroups {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			res := d.probeRepo(probeCtx, repoName, group)
+			mu.Lock()
+			results = append(results, res...)
+			mu.Unlock()
+		}()
+	}
+
+	wg.Wait()
+
+	if d.metrics != nil {
+		d.metrics.ObserveProbeLatency(periodic.RefTypeGit, time.Since(probeStart))
+	}
+
+	d.reconcile(ctx, orgId, results)
+}
+
+// probeRepo uses the repository spec carried by the probes (from the SQL JOIN)
+// to extract the URL and connection options, calls ls-remote for all revisions in the group,
+// and returns a probeResult per revision.
+func (d *DependencySyncGit) probeRepo(ctx context.Context,
+	repoName string, group []*model.GitDependencyProbe) []probeResult {
+
+	if group[0].RepoSpec == nil {
+		d.log.Warnf("repository %s not found (no spec in JOIN result)", repoName)
+		return nil
+	}
+
+	spec := group[0].RepoSpec.Data
+	repoURL, err := spec.GetRepoURL()
+	if err != nil {
+		d.log.WithError(err).Warnf("failed getting URL for repository %s", repoName)
+		return nil
+	}
+
+	revisions := make([]string, len(group))
+	for i, p := range group {
+		revisions[i] = p.Revision
+	}
+
+	var resolved map[string]string
+	repo := &domain.Repository{Spec: spec}
+	options, err := getGitOptions(ctx, repo, d.cfg)
+	if err != nil {
+		d.log.WithError(err).Warnf("failed getting Git options for repository %s", repoName)
+	} else {
+		resolved, err = d.lsRemote(ctx, repoURL, revisions, options)
+		if err != nil {
+			d.log.WithError(err).Warnf("git ls-remote failed for %s", repoName)
+		}
+	}
+	if err != nil {
+		if d.metrics != nil {
+			d.metrics.ObserveProbeError(periodic.RefTypeGit)
+		}
+		var failResults []probeResult
+		for _, p := range group {
+			rk := fmt.Sprintf("git:%s/%s", repoName, p.Revision)
+			failResults = append(failResults, probeResult{
+				probe:       p,
+				resourceKey: rk,
+				probeErr:    sanitizeError(err),
+			})
+		}
+		return failResults
+	}
+
+	var results []probeResult
+	for _, p := range group {
+		newSHA, found := resolved[p.Revision]
+		if !found {
+			d.log.Warnf("ref %s not found in repository %s", p.Revision, repoName)
+			continue
+		}
+
+		rk := fmt.Sprintf("git:%s/%s", repoName, p.Revision)
+		r := probeResult{
+			probe:       p,
+			resourceKey: rk,
+			newSHA:      newSHA,
+		}
+
+		// A failed initial probe creates a state row without observing a SHA.
+		if p.Fingerprint == nil || *p.Fingerprint == "" {
+			r.firstSeen = true
+			r.changed, r.firstSeenFleetNames, r.firstSeenDeviceNames = renderedDependencyChanged(p.RenderedTargets, newSHA)
+		} else if newSHA != *p.Fingerprint {
+			r.changed = true
+		}
+
+		results = append(results, r)
+	}
+	return results
+}
+
+// renderedDependencyChanged reports whether a dependency already rendered on
+// any target differs from the SHA observed by the first successful probe. It
+// preserves the target kind and fleet association so first-seen events are
+// limited to stale targets. An empty list remains a no-op.
+func renderedDependencyChanged(renderedTargets *model.JSONField[[]model.GitDependencyRenderedTarget], newSHA string) (bool, model.StringArray, model.StringArray) {
+	if renderedTargets == nil {
+		return false, nil, nil
+	}
+
+	changed := false
+	fleetNames := model.StringArray{}
+	deviceNames := model.StringArray{}
+	seenFleets := make(map[string]struct{})
+	seenDevices := make(map[string]struct{})
+	for _, target := range renderedTargets.Data {
+		if target.Fingerprint == "" || target.Fingerprint == newSHA {
+			continue
+		}
+
+		changed = true
+		if !target.DeviceLevel {
+			if target.FleetName != "" {
+				if _, seen := seenFleets[target.FleetName]; !seen {
+					seenFleets[target.FleetName] = struct{}{}
+					fleetNames = append(fleetNames, target.FleetName)
+				}
+			}
+			continue
+		}
+		if _, seen := seenDevices[target.DeviceName]; seen {
+			continue
+		}
+		seenDevices[target.DeviceName] = struct{}{}
+		deviceNames = append(deviceNames, target.DeviceName)
+	}
+	return changed, fleetNames, deviceNames
+}
+
+// reconcile emits events for changed probes, then updates sync states.
+// Events are emitted before updating the fingerprint so that ordering is
+// correct for consumers: by the time sync state shows the new SHA, all
+// downstream consumers have already been notified.
+func (d *DependencySyncGit) reconcile(ctx context.Context, orgId uuid.UUID, results []probeResult) {
+	now := time.Now().UTC()
+
+	for _, r := range results {
+		if r.probeErr != "" {
+			for _, fleetName := range r.probe.FleetNames {
+				event := common.GetDependencySyncProbeFailedEvent(ctx, domain.FleetKind, fleetName, r.resourceKey, r.probeErr)
+				if event != nil {
+					d.eventSvc.CreateEvent(ctx, orgId, event)
+				}
+			}
+			for _, deviceName := range r.probe.DeviceNames {
+				event := common.GetDependencySyncProbeFailedEvent(ctx, domain.DeviceKind, deviceName, r.resourceKey, r.probeErr)
+				if event != nil {
+					d.eventSvc.CreateEvent(ctx, orgId, event)
+				}
+			}
+			continue
+		}
+		if !r.changed {
+			continue
+		}
+		if d.metrics != nil {
+			d.metrics.ObserveProbeChange(periodic.RefTypeGit)
+		}
+		if r.firstSeen {
+			for _, fleetName := range r.firstSeenFleetNames {
+				event := common.GetDependencyChangeDetectedEvent(ctx, domain.FleetKind, fleetName, r.resourceKey, r.newSHA)
+				if event != nil {
+					d.eventSvc.CreateEvent(ctx, orgId, event)
+				}
+			}
+			for _, deviceName := range r.firstSeenDeviceNames {
+				event := common.GetDependencyChangeDetectedEvent(ctx, domain.DeviceKind, deviceName, r.resourceKey, r.newSHA)
+				if event != nil {
+					d.eventSvc.CreateEvent(ctx, orgId, event)
+				}
+			}
+			continue
+		}
+		for _, fleetName := range r.probe.FleetNames {
+			event := common.GetDependencyChangeDetectedEvent(ctx, domain.FleetKind, fleetName, r.resourceKey, r.newSHA)
+			if event != nil {
+				d.eventSvc.CreateEvent(ctx, orgId, event)
+			}
+		}
+		for _, deviceName := range r.probe.DeviceNames {
+			event := common.GetDependencyChangeDetectedEvent(ctx, domain.DeviceKind, deviceName, r.resourceKey, r.newSHA)
+			if event != nil {
+				d.eventSvc.CreateEvent(ctx, orgId, event)
+			}
+		}
+	}
+
+	var upsertStates []model.SyncState
+	var unchangedKeys []string
+
+	for _, r := range results {
+		if r.probeErr != "" {
+			upsertStates = append(upsertStates, model.SyncState{
+				OrgID:         orgId,
+				ResourceKey:   r.resourceKey,
+				ProbeStatus:   "ProbeFailed",
+				ProbeMessage:  r.probeErr,
+				LastCheckedAt: now,
+			})
+			continue
+		}
+		if r.firstSeen || r.changed {
+			upsertStates = append(upsertStates, model.SyncState{
+				OrgID:         orgId,
+				ResourceKey:   r.resourceKey,
+				Fingerprint:   r.newSHA,
+				ProbeStatus:   "Synced",
+				LastCheckedAt: now,
+				LastChangeAt:  &now,
+			})
+		} else {
+			unchangedKeys = append(unchangedKeys, r.resourceKey)
+		}
+	}
+
+	if len(upsertStates) > 0 {
+		if st := d.syncstateSvc.BulkUpsertSyncState(ctx, orgId, upsertStates); st.Code != http.StatusOK {
+			d.log.Errorf("failed bulk upserting sync states: %s", st.Message)
+			return
+		}
+	}
+
+	if len(unchangedKeys) > 0 {
+		if st := d.syncstateSvc.BulkUpdateSyncStateLastCheckedAt(ctx, orgId, unchangedKeys, now); st.Code != http.StatusOK {
+			d.log.Errorf("failed bulk updating last_checked_at: %s", st.Message)
+		}
+	}
+}

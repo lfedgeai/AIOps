@@ -1,0 +1,618 @@
+name: "E2E testing (Parallel Build)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      label_filter:
+        description: 'Ginkgo label filter expression to filter e2e tests'
+        required: false
+        default: 'sanity'
+        type: string
+  push:
+    branches:
+      - main
+      - 'release-*'
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  # labeled events get their own group so adding the run-e2e label never
+  # cancels an in-progress push run (and vice-versa).
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'labeled' && 'labeled' || 'push' }}
+  cancel-in-progress: true
+
+
+env:
+  DOCKER_BUILDKIT: 1
+  BUILDKIT_PROGRESS: plain
+  QUAY_ORG: quay.io/flightctl
+  QUAY_TESTS_ORG: quay.io/flightctl-tests
+  REGISTRY: quay.io
+  REGISTRY_OWNER: flightctl
+  REGISTRY_OWNER_TESTS: flightctl-tests
+  GITHUB_ACTIONS: true
+
+jobs:
+  compute-tag:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.compute-tag.outputs.git_tag }}
+      any_changed: ${{ steps.changed-files.outputs.any_changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v46
+        with:
+          since_last_remote_commit: 'true'
+          files_ignore: |
+            .spelling
+            README.md
+            docs/**
+            examples/**
+
+      - name: Compute tag
+        id: compute-tag
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        uses: ./.github/actions/compute-tag
+
+  select-e2e:
+    runs-on: ubuntu-24.04
+    outputs:
+      enabled: ${{ steps.selection.outputs.enabled }}
+      includes_sanity: ${{ steps.selection.outputs.includes_sanity }}
+      label_filter: ${{ steps.selection.outputs.label_filter }}
+      cs10_label_filter: ${{ steps.selection.outputs.cs10_label_filter }}
+      collector_selected: ${{ steps.selection.outputs.collector_selected }}
+    steps:
+      - name: Resolve E2E labels
+        id: selection
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+
+          enabled=false
+          includes_sanity=false
+          declare -A seen_labels=()
+          selected_labels=()
+
+          add_label() {
+            local label="$1"
+            if [[ -z "${seen_labels[$label]+x}" ]]; then
+              selected_labels+=("${label}")
+              seen_labels["${label}"]=1
+            fi
+          }
+
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            while IFS= read -r pr_label; do
+              case "${pr_label}" in
+                run-e2e)
+                  enabled=true
+                  add_label sanity
+                  ;;
+                run-e2e:*)
+                  enabled=true
+                  suffix="${pr_label#run-e2e:}"
+                  if [[ "${suffix}" =~ (^|\+)[[:space:]]*(\+|$) ]]; then
+                    echo "::error::Invalid run-e2e label suffix. Use a non-empty plus-separated list of Ginkgo labels."
+                    exit 1
+                  fi
+                  IFS='+' read -r -a requested_labels <<< "${suffix}"
+                  for label in "${requested_labels[@]}"; do
+                    label="${label#"${label%%[![:space:]]*}"}"
+                    label="${label%"${label##*[![:space:]]}"}"
+                    if [[ ! "${label}" =~ ^[[:alnum:]_-]+$ ]]; then
+                      echo "::error::Invalid run-e2e label suffix. Use plus-separated Ginkgo labels containing letters, numbers, hyphens, or underscores."
+                      exit 1
+                    fi
+                    add_label "${label}"
+                  done
+                  ;;
+              esac
+            done < <(jq -r '.[]?' <<< "${PR_LABELS_JSON}")
+          else
+            enabled=true
+            add_label sanity
+          fi
+
+          for label in "${selected_labels[@]}"; do
+            if [[ "${label}" == "sanity" ]]; then
+              includes_sanity=true
+              break
+            fi
+          done
+
+          # The catalog collector suite is opt-in: it is no longer part of
+          # sanity, and it is the only suite that needs the collector image
+          # built and a collector-specific environment. One flag drives both,
+          # so the image is built exactly when the suite can be selected.
+          # Matches the whole-suite label "catalogcollector" and every
+          # per-scenario label ("catalogcollector-smoke", "-update",
+          # "-removal", "-failure-safety"), including when they are combined
+          # with sanity in one run-e2e:<a>+<b> label. The prefix match is
+          # deliberate: a new scenario label keeps working, and selecting an
+          # image build the run does not use is harmless, whereas missing one
+          # breaks the run.
+          collector_selected=false
+          for label in "${selected_labels[@]}"; do
+            case "${label}" in
+              catalogcollector|catalogcollector-*)
+                collector_selected=true
+                break
+                ;;
+            esac
+          done
+
+          label_filter=""
+          cs10_label_filter="sanity && agent && !microshift"
+          if [[ "${enabled}" == "true" ]]; then
+            label_filter="${selected_labels[0]}"
+            for label in "${selected_labels[@]:1}"; do
+              label_filter+=" || ${label}"
+            done
+
+            for label in "${selected_labels[@]}"; do
+              if [[ "${label}" == "sanity" ]]; then
+                continue
+              fi
+              cs10_label_filter+=" || ${label} && !microshift"
+            done
+          fi
+
+          {
+            echo "enabled=${enabled}"
+            echo "includes_sanity=${includes_sanity}"
+            echo "label_filter=${label_filter}"
+            echo "cs10_label_filter=${cs10_label_filter}"
+            echo "collector_selected=${collector_selected}"
+          } >> "$GITHUB_OUTPUT"
+
+  reuse-e2e:
+    runs-on: ubuntu-24.04
+    # Reuse is an optimization; failures must fall back to running E2E.
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      reused: ${{ steps.find-run.outputs.reused || 'false' }}
+      source_run: ${{ steps.find-run.outputs.source_run || '' }}
+      source_pr: ${{ steps.find-run.outputs.source_pr || '' }}
+    steps:
+      - name: Checkout merge group
+        if: github.event_name == 'merge_group'
+        continue-on-error: true
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Find a successful E2E run for the same tree
+        id: find-run
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          reused=false
+          source_run=
+          source_pr=
+
+          if [[ "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
+            tree=$(git rev-parse 'HEAD^{tree}')
+            artifact_name="e2e-proof-tree-v2-${tree}"
+            echo "Looking for trusted E2E proof for tree ${tree}"
+
+            find_proof() {
+              local run_ids run run_id proof_dir proof_file proof
+              if ! run_ids=$(gh api --paginate --jq '.artifacts[] | select(.expired == false) | .workflow_run.id' \
+                "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100"); then
+                echo "::warning::Could not query E2E proof artifacts"
+                return 0
+              fi
+
+              while IFS= read -r run_id; do
+                [[ -n "${run_id}" ]] || continue
+                if ! run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"); then
+                  echo "::warning::Could not inspect E2E attestation run ${run_id}; trying another run"
+                  continue
+                fi
+
+                if ! jq -e --arg repo "${GITHUB_REPOSITORY}" '
+                  .event == "workflow_run" and
+                  .status == "completed" and
+                  .conclusion == "success" and
+                  .repository.full_name == $repo and
+                  (.path == ".github/workflows/e2e-success-attestation.yaml" or
+                   (.path | startswith(".github/workflows/e2e-success-attestation.yaml@")))
+                ' <<< "$run" > /dev/null; then
+                  continue
+                fi
+
+                proof_dir="${RUNNER_TEMP}/e2e-proof-${run_id}"
+                mkdir -p "${proof_dir}"
+                if ! gh run download "${run_id}" --repo "${GITHUB_REPOSITORY}" \
+                  --name "${artifact_name}" --dir "${proof_dir}"; then
+                  echo "::warning::Could not download E2E proof from attestation run ${run_id}; trying another run"
+                  continue
+                fi
+                proof_file=$(find "${proof_dir}" -type f -name e2e-proof.json -print -quit)
+                [[ -n "${proof_file}" ]] || continue
+                if ! jq -e --arg tree "${tree}" --arg attestor_run_id "${run_id}" '
+                  .version == 2 and
+                  .tree == $tree and
+                  .e2e_result == "success" and
+                  .api_result == "success" and
+                  (.source_run_id | type) == "string" and
+                  (.source_run_id | test("^[0-9]+$")) and
+                  (.source_run_attempt | type) == "string" and
+                  (.source_pr_number | type) == "number" and
+                  .attestor_run_id == $attestor_run_id
+                ' "${proof_file}" > /dev/null; then
+                  echo "::warning::Attestation run ${run_id} did not contain valid proof for tree ${tree}"
+                  continue
+                fi
+
+                proof=$(cat "${proof_file}")
+                source_run=$(jq -r '.source_run_id' <<< "${proof}")
+                source_pr=$(jq -r '.source_pr_number' <<< "${proof}")
+                reused=true
+                return 0
+              done <<< "${run_ids}"
+            }
+
+            # The trusted workflow_run attestor starts just after the PR workflow
+            # completes. Wait briefly only when a candidate exists; an untrusted
+            # candidate can delay this job, but can never authorize reuse.
+            candidate_name="e2e-candidate-tree-v2-${tree}"
+            if gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${candidate_name}&per_page=1" \
+              --jq '.total_count > 0' | grep -qx true; then
+              for attempt in {1..12}; do
+                find_proof
+                [[ "${reused}" == "true" ]] && break
+                [[ "${attempt}" -eq 12 ]] || sleep 5
+              done
+            else
+              find_proof
+            fi
+
+            if [[ "${reused}" == "true" ]]; then
+              echo "Reusing E2E results from PR #${source_pr}: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${source_run}"
+            else
+              echo "No trusted successful PR E2E proof matched this merge group's tree"
+            fi
+          fi
+
+          {
+            echo "reused=${reused}"
+            echo "source_run=${source_run}"
+            echo "source_pr=${source_pr}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Report reuse lookup failure
+        if: ${{ always() && steps.find-run.outcome == 'failure' }}
+        run: |
+          echo "::warning::E2E proof lookup failed; the merge-group E2E job will run instead"
+          {
+            echo "## E2E proof lookup"
+            echo
+            echo "The proof lookup failed. The merge-group E2E job will run as a fallback."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-images-and-charts:
+    needs: [compute-tag, reuse-e2e, select-e2e]
+    if: |
+      !cancelled() &&
+      needs.compute-tag.result == 'success' &&
+      needs.compute-tag.outputs.any_changed == 'true' &&
+      needs.reuse-e2e.outputs.reused != 'true' &&
+      needs.select-e2e.outputs.enabled == 'true'
+    uses: ./.github/workflows/build-images-and-charts.yaml
+    with:
+      # The collector image is not in the default backend build; build it
+      # only for the runs whose label filter can select the collector suite.
+      build_catalog_collector: ${{ needs.select-e2e.outputs.collector_selected == 'true' }}
+
+  build-flightctl-cli:
+    needs: [build-images-and-charts, compute-tag, select-e2e]
+    if: |
+      needs.compute-tag.outputs.any_changed == 'true' &&
+      needs.select-e2e.outputs.enabled == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ needs.compute-tag.outputs.tag }}
+    steps:
+      - name: CLI built with backend job
+        run: echo "CLI artifact produced by build-images-and-charts"
+
+  build-rpms:
+    needs: [compute-tag, reuse-e2e, select-e2e]
+    if: |
+      !cancelled() &&
+      needs.compute-tag.result == 'success' &&
+      needs.compute-tag.outputs.any_changed == 'true' &&
+      needs.reuse-e2e.outputs.reused != 'true' &&
+      needs.select-e2e.outputs.enabled == 'true'
+    strategy:
+      matrix:
+        include:
+          - root: centos-stream+epel-next-9-x86_64
+          - root: epel-10-x86_64
+    uses: ./.github/workflows/build-rpms.yaml
+    with:
+      root: ${{ matrix.root }}
+
+  build-agent-images-unified:
+    needs: [compute-tag, build-rpms, select-e2e]
+    if: |
+      needs.compute-tag.outputs.any_changed == 'true' &&
+      needs.select-e2e.outputs.enabled == 'true'
+    strategy:
+      matrix:
+        include:
+          - os_id: cs9-bootc
+            rpm_suffix: centos-stream+epel-next-9-x86_64
+          - os_id: cs10-bootc
+            rpm_suffix: epel-10-x86_64
+    uses: ./.github/workflows/build-agent-images.yaml
+    with:
+      rpm_suffix: ${{ matrix.rpm_suffix }}
+      os_id: ${{ matrix.os_id }}
+      tag: ${{ needs.compute-tag.outputs.tag }}
+
+  discover-e2e-tests:
+    needs: [compute-tag, reuse-e2e, select-e2e]
+    if: |
+      !cancelled() &&
+      needs.compute-tag.result == 'success' &&
+      needs.compute-tag.outputs.any_changed == 'true' &&
+      needs.reuse-e2e.outputs.reused != 'true' &&
+      needs.select-e2e.outputs.enabled == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - label_filter: 'sanity'
+            ginkgo_total_nodes: 10
+          # Explicitly selected labels also run on CS10, except microshift tests.
+          - label_filter: 'sanity && agent && !microshift'
+            ginkgo_total_nodes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-dependencies
+
+      - name: Compute label filter hash
+        id: compute-hash
+        env:
+          GINKGO_LABEL_FILTER: ${{ matrix.label_filter == 'sanity' && needs.select-e2e.outputs.label_filter || needs.select-e2e.outputs.cs10_label_filter }}
+        run: |
+          HASH=$(printf '%s' "${GINKGO_LABEL_FILTER}" | sha256sum | cut -c1-8)
+          echo "hash=${HASH}" >> "$GITHUB_OUTPUT"
+          echo "Label filter: ${GINKGO_LABEL_FILTER}"
+          echo "Hash: ${HASH}"
+
+      - name: Run test discovery
+        env:
+          GINKGO_LABEL_FILTER: ${{ matrix.label_filter == 'sanity' && needs.select-e2e.outputs.label_filter || needs.select-e2e.outputs.cs10_label_filter }}
+          DISCOVERY_ONLY: "true"
+          DISCOVERY_PATH: discovery.json
+        run: |
+          mkdir -p reports
+          test/scripts/run_e2e_tests.sh reports ./test/e2e/...
+
+      - name: Validate discovery results
+        env:
+          GINKGO_LABEL_FILTER: ${{ matrix.label_filter == 'sanity' && needs.select-e2e.outputs.label_filter || needs.select-e2e.outputs.cs10_label_filter }}
+        run: |
+          echo "=== Discovery file info ==="
+          ls -la discovery.json
+
+          echo ""
+          echo "=== Discovery content (formatted) ==="
+          jq '.' discovery.json
+
+          echo ""
+          echo "=== Tests found ==="
+          TEST_COUNT=$(jq -r '[.[] | .SpecReports[]? | select(.LeafNodeLabels != null)] | length' discovery.json)
+          echo "Total tests found with filter '${GINKGO_LABEL_FILTER}': ${TEST_COUNT}"
+
+          if [[ "${TEST_COUNT}" -eq 0 ]]; then
+            echo "ERROR: No tests found in discovery! Check for compilation errors above."
+            exit 1
+          fi
+
+      - name: Restore test timings cache
+        uses: actions/cache/restore@v4
+        with:
+          path: test/scripts/test-timings.json
+          key: e2e-test-timings-${{ github.run_id }}
+          restore-keys: e2e-test-timings-
+
+      - name: Compute test assignments
+        working-directory: test/scripts
+        run: |
+          go run ./compute_test_assignments \
+            --discovery ../../discovery.json \
+            --timings test-timings.json \
+            --nodes ${{ matrix.ginkgo_total_nodes }} \
+            --output ../../assignments.json
+
+      - name: Upload discovery artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-discovery-${{ steps.compute-hash.outputs.hash }}-${{ needs.compute-tag.outputs.tag }}
+          path: |
+            discovery.json
+            assignments.json
+          retention-days: 1
+
+  e2e-tests:
+    needs:
+      - compute-tag
+      - select-e2e
+      - build-images-and-charts
+      - build-flightctl-cli
+      - build-agent-images-unified
+      - discover-e2e-tests
+    if: |
+      needs.compute-tag.outputs.any_changed == 'true' &&
+      needs.select-e2e.outputs.enabled == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          ## CS9: all sanity tests (LPT balances agent + non-agent + slow together)
+          - os_id: cs9-bootc
+            backend_type: helm
+            label_filter: 'sanity'
+            ginkgo_total_nodes: 10
+          ## CS10: sanity agent tests plus explicitly selected labels; microshift tests are
+          ## excluded until its kernel includes xt_conntrack/xt_comment modules required by
+          ## kube-proxy. CS9 provides full microshift coverage via the v12 OKD SCOS variant.
+          - os_id: cs10-bootc
+            backend_type: helm
+            label_filter: 'sanity && agent && !microshift'
+            ginkgo_total_nodes: 5
+    uses: ./.github/workflows/run-e2e-tests.yaml
+    with:
+      os_id: ${{ matrix.os_id }}
+      backend_type: ${{ matrix.backend_type }}
+      ginkgo_total_nodes: ${{ matrix.ginkgo_total_nodes }}
+      ginkgo_label_filter: ${{ matrix.label_filter == 'sanity' && needs.select-e2e.outputs.label_filter || needs.select-e2e.outputs.cs10_label_filter }}
+      tag: ${{ needs.compute-tag.outputs.tag }}
+      # Same flag that decided whether the collector image was built: the
+      # suite's environment is only exported for runs that can select it.
+      catalog_collector_selected: ${{ needs.select-e2e.outputs.collector_selected == 'true' }}
+
+  api-tests:
+    needs:
+      - compute-tag
+      - select-e2e
+      - build-images-and-charts
+    if: |
+      needs.compute-tag.outputs.any_changed == 'true' &&
+      needs.select-e2e.outputs.enabled == 'true'
+    uses: ./.github/workflows/run-api-tests.yaml
+    with:
+      tag: ${{ needs.compute-tag.outputs.tag }}
+
+  e2e:
+    runs-on: ubuntu-24.04
+    needs: [ compute-tag, select-e2e, reuse-e2e, e2e-tests, api-tests ]
+    if: always()
+    steps:
+      - name: Check E2E Test Results
+        env:
+          E2E_SELECTION_RESULT: ${{ needs.select-e2e.result }}
+          RUN_E2E: ${{ needs.select-e2e.outputs.enabled }}
+          E2E_INCLUDES_SANITY: ${{ needs.select-e2e.outputs.includes_sanity }}
+        run: |
+          if [[ "${{ needs.compute-tag.outputs.any_changed }}" != "true" ]]; then
+            echo "E2E tests were skipped (docs-only or ignored paths)"
+            exit 0
+          fi
+          if [[ "${E2E_SELECTION_RESULT}" != "success" ]]; then
+            echo "E2E label selection failed; check the Resolve E2E labels job"
+            exit 1
+          fi
+          # PRs skip e2e unless a run-e2e label was selected; other events run by default.
+          if [[ "${RUN_E2E}" != "true" ]]; then
+            echo "E2E tests skipped for this PR (add 'run-e2e' or a suffixed label such as 'run-e2e:sanity+delta')"
+            exit 0
+          fi
+          if [[ "${{ needs.reuse-e2e.outputs.reused }}" == "true" ]]; then
+            SOURCE_RUN="${{ needs.reuse-e2e.outputs.source_run }}"
+            SOURCE_PR="${{ needs.reuse-e2e.outputs.source_pr }}"
+            SOURCE_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN}"
+            echo "E2E tests reused from ${SOURCE_URL}"
+            echo "E2E and API results reused from [PR #${SOURCE_PR}'s successful run](${SOURCE_URL}) for the exact same Git tree." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          E2E_RESULT="${{ needs.e2e-tests.result }}"
+          API_RESULT="${{ needs.api-tests.result }}"
+          # At this point we are past the early-exit guards, so tests were expected to run.
+          # "skipped" here means an upstream dependency (e.g. image build) failed and caused
+          # e2e-tests to be skipped by GitHub Actions — that must be treated as a failure.
+          if [[ "$E2E_RESULT" == "success" ]] && \
+             [[ "$API_RESULT" == "success" || "$API_RESULT" == "skipped" ]]; then
+            echo "All tests passed (e2e: $E2E_RESULT, api: $API_RESULT)"
+            if [[ "${E2E_INCLUDES_SANITY}" != "true" && "${{ github.event_name }}" == "pull_request" ]]; then
+              echo "This run did not include sanity, so it is not eligible for merge-queue E2E result reuse." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          else
+            echo "Tests failed, were cancelled, or were skipped due to a dependency failure (e2e: $E2E_RESULT, api: $API_RESULT)"
+            exit 1
+          fi
+
+      # This candidate is not trusted directly by merge-group runs. A workflow_run
+      # attestor on the default branch validates the source jobs and PR workflow diff
+      # before publishing reusable proof.
+      - name: Checkout tested tree
+        if: |
+          github.event_name == 'pull_request' &&
+          needs.select-e2e.outputs.enabled == 'true' &&
+          needs.select-e2e.outputs.includes_sanity == 'true' &&
+          needs.e2e-tests.result == 'success' &&
+          needs.api-tests.result == 'success'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Record E2E proof candidate
+        id: tested-tree
+        if: |
+          github.event_name == 'pull_request' &&
+          needs.select-e2e.outputs.enabled == 'true' &&
+          needs.select-e2e.outputs.includes_sanity == 'true' &&
+          needs.e2e-tests.result == 'success' &&
+          needs.api-tests.result == 'success'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          echo "tree=${tree}" >> "$GITHUB_OUTPUT"
+          candidate_dir="${RUNNER_TEMP}/e2e-candidate"
+          mkdir -p "$candidate_dir"
+          candidate_file="${candidate_dir}/e2e-candidate.json"
+          rm -f "$candidate_file"
+          jq -n \
+            --arg tree "${tree}" \
+            --arg tested_sha "${GITHUB_SHA}" \
+            --arg base_sha "${PR_BASE_SHA}" \
+            --arg head_sha "${PR_HEAD_SHA}" \
+            --arg source_run_id "${GITHUB_RUN_ID}" \
+            --arg source_run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            '{version: 2, tree: $tree, tested_sha: $tested_sha, base_sha: $base_sha,
+              head_sha: $head_sha, source_run_id: $source_run_id,
+              source_run_attempt: $source_run_attempt}' > "$candidate_file"
+
+      - name: Upload E2E proof candidate
+        if: |
+          github.event_name == 'pull_request' &&
+          needs.select-e2e.outputs.enabled == 'true' &&
+          needs.select-e2e.outputs.includes_sanity == 'true' &&
+          needs.e2e-tests.result == 'success' &&
+          needs.api-tests.result == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-candidate-tree-v2-${{ steps.tested-tree.outputs.tree }}
+          path: ${{ runner.temp }}/e2e-candidate/e2e-candidate.json
+          retention-days: 7
+          overwrite: true

@@ -1,0 +1,89 @@
+package service
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/flightctl/flightctl/internal/auth/common"
+	"github.com/flightctl/flightctl/internal/consts"
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/identity"
+	orgmodel "github.com/flightctl/flightctl/internal/org/model"
+)
+
+// AuthUserInfoProxy handles OIDC UserInfo requests by extracting identity from context
+type AuthUserInfoProxy struct {
+	authN common.AuthNMiddleware
+}
+
+var organizationApiVersion = fmt.Sprintf("%s/%s", domain.APIGroup, domain.OrganizationAPIVersion)
+
+// organizationModelToAPI converts a model.Organization to domain.Organization
+func organizationModelToAPI(org *orgmodel.Organization) domain.Organization {
+	name := org.ID.String()
+	return domain.Organization{
+		ApiVersion: organizationApiVersion,
+		Kind:       domain.OrganizationKind,
+		Metadata:   domain.ObjectMeta{Name: &name},
+		Spec: &domain.OrganizationSpec{
+			ExternalId:  &org.ExternalID,
+			DisplayName: &org.DisplayName,
+		},
+	}
+}
+
+// NewAuthUserInfoProxy creates a new auth userinfo proxy
+func NewAuthUserInfoProxy(authN common.AuthNMiddleware) *AuthUserInfoProxy {
+	return &AuthUserInfoProxy{
+		authN: authN,
+	}
+}
+
+// ProxyUserInfoRequest handles OIDC UserInfo requests by extracting the authenticated identity from context
+func (p *AuthUserInfoProxy) ProxyUserInfoRequest(ctx context.Context) (*domain.UserInfoResponse, domain.Status) {
+	// Extract mapped identity from context (set by auth middleware)
+	mappedIdentity, ok := ctx.Value(consts.MappedIdentityCtxKey).(*identity.MappedIdentity)
+	if !ok || mappedIdentity == nil {
+		return createErrorUserInfoResponse("invalid_token"), domain.StatusUnauthorized("No authenticated identity found")
+	}
+
+	// Convert mapped identity to UserInfoResponse
+	return mappedIdentityToUserInfoResponse(mappedIdentity), domain.StatusOK()
+}
+
+// mappedIdentityToUserInfoResponse converts a MappedIdentity to an domain.UserInfoResponse
+func mappedIdentityToUserInfoResponse(mappedIdentity *identity.MappedIdentity) *domain.UserInfoResponse {
+	response := &domain.UserInfoResponse{}
+
+	// Set subject (UID)
+	if mappedIdentity.UID != "" {
+		response.Sub = &mappedIdentity.UID
+	}
+
+	// Set preferred username
+	if mappedIdentity.Username != "" {
+		response.PreferredUsername = &mappedIdentity.Username
+		// Also use as name if nothing else is available
+		if response.Name == nil {
+			response.Name = &mappedIdentity.Username
+		}
+	}
+
+	// Set organizations (full objects, not just names)
+	if len(mappedIdentity.Organizations) > 0 {
+		orgs := make([]domain.Organization, 0, len(mappedIdentity.Organizations))
+		for _, org := range mappedIdentity.Organizations {
+			orgs = append(orgs, organizationModelToAPI(org))
+		}
+		response.Organizations = &orgs
+	}
+
+	return response
+}
+
+// createErrorUserInfoResponse creates an error UserInfo response
+func createErrorUserInfoResponse(errorCode string) *domain.UserInfoResponse {
+	return &domain.UserInfoResponse{
+		Error: &errorCode,
+	}
+}

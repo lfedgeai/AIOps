@@ -1,0 +1,238 @@
+// Package migration provides database migration functionality for Flight Control.
+// It runs schema migrations for both the main store and the imagebuilder store
+// within a single transaction to ensure atomicity.
+package migration
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	deltagenerationstore "github.com/flightctl/flightctl/internal/delta_worker/store/deltageneration"
+	deltapreparestore "github.com/flightctl/flightctl/internal/delta_worker/store/deltaprepare"
+	deltapreparegenerationstore "github.com/flightctl/flightctl/internal/delta_worker/store/deltapreparegeneration"
+	"github.com/flightctl/flightctl/internal/domain"
+	imagebuilderstore "github.com/flightctl/flightctl/internal/imagebuilder_api/store"
+	"github.com/flightctl/flightctl/internal/store"
+	authproviderstore "github.com/flightctl/flightctl/internal/store/authprovider"
+	canarystore "github.com/flightctl/flightctl/internal/store/canary"
+	catalogstore "github.com/flightctl/flightctl/internal/store/catalog"
+	certificatesigningrequeststore "github.com/flightctl/flightctl/internal/store/certificatesigningrequest"
+	checkpointstore "github.com/flightctl/flightctl/internal/store/checkpoint"
+	dependencyrefstore "github.com/flightctl/flightctl/internal/store/dependencyref"
+	devicestore "github.com/flightctl/flightctl/internal/store/device"
+	enrollmenthooknotifysecretsstore "github.com/flightctl/flightctl/internal/store/enrollmenthooknotifysecrets"
+	enrollmenthookpolicystore "github.com/flightctl/flightctl/internal/store/enrollmenthookpolicy"
+	enrollmentrequeststore "github.com/flightctl/flightctl/internal/store/enrollmentrequest"
+	eventstore "github.com/flightctl/flightctl/internal/store/event"
+	fleetstore "github.com/flightctl/flightctl/internal/store/fleet"
+	labelsyncmappingstore "github.com/flightctl/flightctl/internal/store/labelsyncmapping"
+	"github.com/flightctl/flightctl/internal/store/model"
+	organizationstore "github.com/flightctl/flightctl/internal/store/organization"
+	repositorystore "github.com/flightctl/flightctl/internal/store/repository"
+	resourcesyncstore "github.com/flightctl/flightctl/internal/store/resourcesync"
+	syncstatestore "github.com/flightctl/flightctl/internal/store/syncstate"
+	templateversionstore "github.com/flightctl/flightctl/internal/store/templateversion"
+	vulnerabilityfindingstore "github.com/flightctl/flightctl/internal/store/vulnerabilityfinding"
+	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+// ErrDryRunComplete signals that migrations validated successfully in dry-run mode.
+var ErrDryRunComplete = errors.New("dry-run complete")
+
+// Run executes schema migrations within a single transaction, then runs the
+// vulnerability-source data backfill in bounded transactions. If dryRun is
+// true, the schema migration transaction is rolled back after validation and
+// the data backfill is skipped.
+// The provided db must be connected as a user with migration privileges.
+func Run(ctx context.Context, db *gorm.DB, log logrus.FieldLogger, dryRun bool, enrollmentSignerName string) error {
+	return run(ctx, db, log, dryRun, enrollmentSignerName, "", false)
+}
+
+// RunWithInitialLabelSyncMappings runs migrations and attempts to seed the configured
+// mappings for organizations that already exist.
+func RunWithInitialLabelSyncMappings(ctx context.Context, db *gorm.DB, log logrus.FieldLogger, dryRun bool, filePath string, enrollmentSignerName string) error {
+	return run(ctx, db, log, dryRun, enrollmentSignerName, filePath, true)
+}
+
+func run(ctx context.Context, db *gorm.DB, log logrus.FieldLogger, dryRun bool, enrollmentSignerName string, initialMappingsFilePath string, seedInitialMappings bool) error {
+	if enrollmentSignerName == "" {
+		return fmt.Errorf("enrollment signer name is required")
+	}
+	ctx = store.WithBypassSpanCheck(ctx)
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		txLog := log.WithFields(logrus.Fields{
+			"pkg":     "migration-store-tx",
+			"dry_run": dryRun,
+		})
+		if err := runMainStoreMigrations(ctx, tx, txLog, enrollmentSignerName); err != nil {
+			return err
+		}
+
+		if err := imagebuilderstore.NewStore(tx, log.WithFields(logrus.Fields{
+			"pkg":     "imagebuild-migration-tx",
+			"dry_run": dryRun,
+		})).RunMigrations(ctx); err != nil {
+			return err
+		}
+
+		if dryRun {
+			return ErrDryRunComplete
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if seedInitialMappings {
+		if err := seedInitialLabelSyncMappings(ctx, db, initialMappingsFilePath, log); err != nil {
+			return err
+		}
+	}
+
+	return backfillVulnerabilitySource(ctx, db)
+}
+
+// runMainStoreMigrations runs schema migrations for every resource's own store, in the same
+// order the former monolithic DataStore.RunMigrations used, then applies the same
+// post-migration customizations (FK-constraint drop, default-catalog backfill).
+func runMainStoreMigrations(ctx context.Context, tx *gorm.DB, log logrus.FieldLogger, enrollmentSignerName string) error {
+	if err := tx.WithContext(ctx).AutoMigrate(&model.SchemaMigration{}); err != nil {
+		return err
+	}
+
+	if err := devicestore.NewDeviceStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := enrollmentrequeststore.NewEnrollmentRequestStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := certificatesigningrequeststore.NewCertificateSigningRequestStore(tx, log, enrollmentSignerName).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := fleetstore.NewFleetStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := templateversionstore.NewTemplateVersionStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := repositorystore.NewRepositoryStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := enrollmenthookpolicystore.NewStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := enrollmenthooknotifysecretsstore.NewStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := labelsyncmappingstore.NewStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := resourcesyncstore.NewResourceSyncStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := catalogstore.NewCatalogStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := eventstore.NewEventStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := checkpointstore.NewCheckpointStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := organizationstore.NewOrganizationStore(tx).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := authproviderstore.NewAuthProviderStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := vulnerabilityfindingstore.NewVulnerabilityFindingStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := syncstatestore.NewSyncStateStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := dependencyrefstore.NewDependencyRefStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := canarystore.NewCanaryStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := deltagenerationstore.NewStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := deltapreparestore.NewStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+	if err := deltapreparegenerationstore.NewStore(tx, log).InitialMigration(ctx); err != nil {
+		return err
+	}
+
+	return customizeMigration(ctx, tx, log, enrollmentSignerName)
+}
+
+// customizeMigration applies one-off schema fixups that don't belong to any single resource's
+// own InitialMigration, ported verbatim from the former monolithic DataStore.customizeMigration.
+func customizeMigration(ctx context.Context, tx *gorm.DB, log logrus.FieldLogger, enrollmentSignerName string) error {
+	db := tx.WithContext(ctx)
+
+	if db.Migrator().HasConstraint("fleet_repos", "fk_fleet_repos_repository") {
+		if err := db.Migrator().DropConstraint("fleet_repos", "fk_fleet_repos_repository"); err != nil {
+			return err
+		}
+	}
+	if db.Migrator().HasConstraint("device_repos", "fk_device_repos_repository") {
+		if err := db.Migrator().DropConstraint("device_repos", "fk_device_repos_repository"); err != nil {
+			return err
+		}
+	}
+
+	if err := backfillDefaultCatalogs(ctx, tx); err != nil {
+		return err
+	}
+	if err := normalizeAuthProviderURLs(ctx, tx); err != nil {
+		return err
+	}
+	if err := migrateCSRCertificateDigests(ctx, tx, enrollmentSignerName); err != nil {
+		return err
+	}
+	return migrateCatalogItemLabels(ctx, tx, log)
+}
+
+// backfillDefaultCatalogs creates a default catalog for every organization that has no
+// catalogs at all. This covers existing installations that pre-date catalog support.
+// The migration key acts as a distributed once-only guard: concurrent replicas race on
+// the unique primary key; the loser sees 0 RowsAffected and skips the backfill. Ported
+// verbatim from the former monolithic DataStore.backfillDefaultCatalogs.
+func backfillDefaultCatalogs(ctx context.Context, tx *gorm.DB) error {
+	const migrationKey = "backfill_default_catalogs_v1"
+
+	return tx.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&model.SchemaMigration{Key: migrationKey, AppliedAt: time.Now()})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			// Another replica already ran this migration.
+			return nil
+		}
+
+		displayName := domain.DefaultCatalogDisplayName
+		name := domain.DefaultCatalogName
+		return tx.Exec(`
+			INSERT INTO catalogs (org_id, name, spec, labels, annotations, created_at, updated_at)
+			SELECT o.id, ?, ?, '{}'::jsonb, '{}'::jsonb, NOW(), NOW()
+			FROM organizations o
+			WHERE NOT EXISTS (
+				SELECT 1 FROM catalogs c WHERE c.org_id = o.id AND c.owner IS NULL
+			)`,
+			name,
+			model.MakeJSONField(domain.CatalogSpec{DisplayName: &displayName}),
+		).Error
+	})
+}

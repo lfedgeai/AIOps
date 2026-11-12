@@ -1,0 +1,464 @@
+package agentserver
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"time"
+
+	agentv1beta1 "github.com/flightctl/flightctl/api/agent/v1beta1"
+	convertv1beta1 "github.com/flightctl/flightctl/internal/api/convert/v1beta1"
+	apimetaserver "github.com/flightctl/flightctl/internal/api/server"
+	agentserver "github.com/flightctl/flightctl/internal/api/server/agent"
+	apiserver "github.com/flightctl/flightctl/internal/api_server"
+	fcmiddleware "github.com/flightctl/flightctl/internal/api_server/middleware"
+	"github.com/flightctl/flightctl/internal/api_server/versioning"
+	"github.com/flightctl/flightctl/internal/config"
+	"github.com/flightctl/flightctl/internal/consts"
+	"github.com/flightctl/flightctl/internal/crypto"
+	"github.com/flightctl/flightctl/internal/healthchecker"
+	"github.com/flightctl/flightctl/internal/kvstore"
+	"github.com/flightctl/flightctl/internal/service"
+	catalogservice "github.com/flightctl/flightctl/internal/service/catalog"
+	certificatesigningrequestservice "github.com/flightctl/flightctl/internal/service/certificatesigningrequest"
+	deviceservice "github.com/flightctl/flightctl/internal/service/device"
+	enrollmenthookpolicyservice "github.com/flightctl/flightctl/internal/service/enrollmenthookpolicy"
+	enrollmentrequestservice "github.com/flightctl/flightctl/internal/service/enrollmentrequest"
+	"github.com/flightctl/flightctl/internal/service/events"
+	labelsyncmappingservice "github.com/flightctl/flightctl/internal/service/labelsyncmapping"
+	organizationservice "github.com/flightctl/flightctl/internal/service/organization"
+	"github.com/flightctl/flightctl/internal/service/tpmcsr"
+	catalogstore "github.com/flightctl/flightctl/internal/store/catalog"
+	certificatesigningrequeststore "github.com/flightctl/flightctl/internal/store/certificatesigningrequest"
+	devicestore "github.com/flightctl/flightctl/internal/store/device"
+	enrollmenthooknotifysecretsstore "github.com/flightctl/flightctl/internal/store/enrollmenthooknotifysecrets"
+	enrollmenthookpolicystore "github.com/flightctl/flightctl/internal/store/enrollmenthookpolicy"
+	enrollmentrequeststore "github.com/flightctl/flightctl/internal/store/enrollmentrequest"
+	eventstore "github.com/flightctl/flightctl/internal/store/event"
+	fleetstore "github.com/flightctl/flightctl/internal/store/fleet"
+	labelsyncmappingstore "github.com/flightctl/flightctl/internal/store/labelsyncmapping"
+	organizationstore "github.com/flightctl/flightctl/internal/store/organization"
+	agenttransportv1beta1 "github.com/flightctl/flightctl/internal/transport/agent/v1beta1"
+	"github.com/flightctl/flightctl/internal/worker_client"
+	"github.com/flightctl/flightctl/pkg/queues"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	oapimiddleware "github.com/oapi-codegen/nethttp-middleware"
+	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"google.golang.org/grpc"
+	"gorm.io/gorm"
+)
+
+type AgentServer struct {
+	log                      logrus.FieldLogger
+	cfg                      *config.Config
+	db                       *gorm.DB
+	ca                       *crypto.CAClient
+	listener                 net.Listener
+	queuesProvider           queues.Provider
+	tlsConfig                *tls.Config
+	agentGrpcServer          *AgentGrpcServer
+	deviceSvc                deviceservice.Service
+	enrollmentRequestSvc     enrollmentrequestservice.Service
+	csrSvc                   certificatesigningrequestservice.Service
+	catalogSvc               catalogservice.Service
+	organizationSvc          organizationservice.Service
+	orgProvisioner           *service.OrgProvisioner
+	kvStore                  kvstore.KVStore
+	identityMapper           *service.IdentityMapper
+	agentAuthMiddleware      *fcmiddleware.AgentAuthMiddleware
+	enrollmentAuthMiddleware *fcmiddleware.EnrollmentAuthMiddleware
+}
+
+// New returns a new instance of a flightctl server.
+func New(
+	ctx context.Context,
+	log logrus.FieldLogger,
+	cfg *config.Config,
+	db *gorm.DB,
+	ca *crypto.CAClient,
+	listener net.Listener,
+	queuesProvider queues.Provider,
+	tlsConfig *tls.Config,
+) (*AgentServer, error) {
+	s := &AgentServer{
+		log:            log,
+		cfg:            cfg,
+		db:             db,
+		ca:             ca,
+		listener:       listener,
+		queuesProvider: queuesProvider,
+		tlsConfig:      tlsConfig,
+	}
+
+	if err := s.init(ctx); err != nil {
+		s.Stop()
+		return nil, fmt.Errorf("initializing: %w", err)
+	}
+
+	return s, nil
+}
+
+// init initializes the agent server services including gRPC server
+func (s *AgentServer) init(ctx context.Context) error {
+	s.log.Println("Initializing Agent-side API server")
+
+	deviceStore := devicestore.NewDeviceStore(s.db, s.log.WithField("pkg", "device-store"))
+	fleetStore := fleetstore.NewFleetStore(s.db, s.log.WithField("pkg", "fleet-store"))
+	enrollmentRequestStore := enrollmentrequeststore.NewEnrollmentRequestStore(s.db, s.log.WithField("pkg", "enrollmentrequest-store"))
+	csrStore := certificatesigningrequeststore.NewCertificateSigningRequestStore(s.db, s.log.WithField("pkg", "csr-store"), s.cfg.CA.DeviceEnrollmentSignerName)
+	eventStore := eventstore.NewEventStore(s.db, s.log.WithField("pkg", "event-store"))
+	catalogStore := catalogstore.NewCatalogStore(s.db, s.log.WithField("pkg", "catalog-store"))
+	organizationStore := organizationstore.NewOrganizationStore(s.db)
+
+	publisher, err := worker_client.QueuePublisher(ctx, s.queuesProvider)
+	if err != nil {
+		return err
+	}
+	labelSyncPublisher, err := worker_client.LabelSyncQueuePublisher(ctx, s.queuesProvider)
+	if err != nil {
+		return err
+	}
+	s.kvStore, err = kvstore.NewKVStore(ctx, s.log, s.cfg.KV.Hostname, s.cfg.KV.Port, s.cfg.KV.Password)
+	if err != nil {
+		return err
+	}
+	workerClient := worker_client.NewWorkerClient(publisher, s.log, worker_client.WithLabelSyncPublisher(labelSyncPublisher))
+
+	eventsSvc := events.NewServiceHandler(eventStore, workerClient, s.log)
+	labelSyncMappingStore := labelsyncmappingstore.NewStore(s.db, s.log.WithField("pkg", "labelsyncmapping-store"))
+	labelSyncMappingSvc, err := labelsyncmappingservice.NewService(labelSyncMappingStore, deviceStore, eventsSvc, s.log)
+	if err != nil {
+		return fmt.Errorf("failed initializing LabelSyncMapping service: %w", err)
+	}
+
+	s.deviceSvc = deviceservice.WrapWithTracing(
+		deviceservice.NewDeviceServiceHandler(deviceStore, nil, fleetStore, eventsSvc, s.kvStore, s.cfg.Service.AgentEndpointAddress, s.log))
+	healthchecker.HealthChecks.Initialize(ctx, s.deviceSvc, s.log)
+	ehPolicyStore := enrollmenthookpolicystore.NewStore(s.db, s.log.WithField("pkg", "enrollmenthookpolicy-store"))
+	ehPolicySvc := enrollmenthookpolicyservice.WrapWithTracing(
+		enrollmenthookpolicyservice.NewServiceHandler(ehPolicyStore, eventsSvc, s.log))
+	notifySecretsStore := enrollmenthooknotifysecretsstore.NewStore(s.db, s.log.WithField("pkg", "enrollmenthooknotifysecrets-store"))
+
+	var tpmVerifier tpmcsr.Verifier
+	s.csrSvc = certificatesigningrequestservice.WrapWithTracing(
+		certificatesigningrequestservice.NewServiceHandler(csrStore, &tpmVerifier, s.ca, eventsSvc, s.log, s.cfg.Service.AgentEndpointAddress, s.cfg.Service.BaseUIUrl))
+	s.enrollmentRequestSvc = enrollmentrequestservice.WrapWithTracing(
+		enrollmentrequestservice.NewServiceHandler(enrollmentRequestStore, deviceStore, s.csrSvc, s.ca, s.kvStore, eventsSvc, s.log, s.cfg.Service.TPMCAPaths, s.cfg.Service.AgentEndpointAddress, s.cfg.Service.BaseUIUrl, ehPolicySvc, notifySecretsStore))
+	tpmVerifier = *tpmcsr.NewVerifier(s.enrollmentRequestSvc)
+	s.catalogSvc = catalogservice.WrapWithTracing(
+		catalogservice.NewServiceHandler(catalogStore, deviceStore, fleetStore, eventsSvc, s.log))
+	s.organizationSvc = organizationservice.WrapWithTracing(
+		organizationservice.NewServiceHandler(organizationStore))
+	s.orgProvisioner, err = service.NewOrgProvisionerWithInitialMappings(
+		s.catalogSvc,
+		labelSyncMappingSvc,
+		s.cfg.Organizations.InitialLabelSyncMappingsFile,
+		s.log,
+	)
+	if err != nil {
+		return fmt.Errorf("creating organization provisioner: %w", err)
+	}
+
+	statusCache, err := fcmiddleware.NewRedisEnrollmentCSRStatusCache(s.kvStore, fcmiddleware.DefaultEnrollmentCSRStatusCacheTTL)
+	if err != nil {
+		return err
+	}
+	s.enrollmentAuthMiddleware, err = fcmiddleware.NewEnrollmentAuthMiddleware(
+		s.ca,
+		s.csrSvc,
+		statusCache,
+		s.log,
+	)
+	if err != nil {
+		return err
+	}
+	s.agentGrpcServer, err = NewAgentGrpcServer(s.log, s.cfg, s.ca, s.enrollmentRequestSvc, s.deviceSvc, s.enrollmentAuthMiddleware)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// Stop cleans up all resources
+func (s *AgentServer) Stop() {
+	if s.agentGrpcServer != nil {
+		s.agentGrpcServer.Close()
+	}
+	if s.identityMapper != nil {
+		s.identityMapper.Stop()
+	}
+	if s.agentAuthMiddleware != nil {
+		s.agentAuthMiddleware.Stop()
+	}
+	if s.enrollmentAuthMiddleware != nil {
+		s.enrollmentAuthMiddleware.Stop()
+	}
+	if s.kvStore != nil {
+		s.kvStore.Close()
+	}
+	if s.queuesProvider != nil {
+		s.queuesProvider.Stop()
+		s.queuesProvider.Wait()
+	}
+	if s.listener != nil {
+		_ = s.listener.Close()
+	}
+}
+
+func (s *AgentServer) GetGRPCServer() *AgentGrpcServer {
+	return s.agentGrpcServer
+}
+
+func (s *AgentServer) Run(ctx context.Context) error {
+	s.log.Println("Starting Agent-side API server")
+
+	httpAPIHandler, err := s.prepareHTTPHandler(ctx)
+	if err != nil {
+		return err
+	}
+
+	handler := grpcMuxHandlerFunc(s.agentGrpcServer.server, httpAPIHandler, s.log)
+	srv := fcmiddleware.NewHTTPServerWithTLSContext(handler, s.log, s.cfg.Service.AgentEndpointAddress, s.cfg)
+
+	go func() {
+		<-ctx.Done()
+		s.log.Println("Shutdown signal received:", ctx.Err())
+		ctxTimeout, cancel := context.WithTimeout(context.Background(), apiserver.GracefulShutdownTimeout)
+		defer cancel()
+
+		srv.SetKeepAlivesEnabled(false)
+		_ = srv.Shutdown(ctxTimeout)
+		s.Stop()
+	}()
+
+	s.log.Printf("Listening on %s...", s.listener.Addr().String())
+	srv.TLSConfig = s.tlsConfig
+	if err := srv.ServeTLS(s.listener, "", ""); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+
+	return nil
+}
+
+// Custom logger that logs only responses with status >= 400
+func filteredLogger(log logrus.FieldLogger) func(next http.Handler) http.Handler {
+	formatter := fcmiddleware.ChiLogFormatterWithAPIVersionTag(log)
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			start := time.Now()
+
+			defer func() {
+				latency := time.Since(start)
+				status := ww.Status()
+
+				if status >= 400 {
+					entry := formatter.NewLogEntry(r)
+					entry.Write(status, ww.BytesWritten(), nil, latency, nil)
+				}
+			}()
+
+			next.ServeHTTP(ww, r)
+		})
+	}
+}
+
+func addAgentContext(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Add userID into the context
+		ctx := context.WithValue(r.Context(), consts.AgentCtxKey, "true")
+
+		// Create a new request with the updated context
+		r = r.WithContext(ctx)
+
+		// Call next handler
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isEnrollmentRequest checks if the request is for enrollment-related operations
+func isEnrollmentRequest(r *http.Request) bool {
+	metadata := apimetaserver.MetadataResolver.Resolve(r)
+	if metadata == nil {
+		return false
+	}
+
+	// Enrollment requests are create/get on the enrollmentrequests resource.
+	if metadata.Resource == apimetaserver.API_RESOURCE_ENROLLMENTREQUESTS &&
+		(metadata.Action == apimetaserver.API_ACTION_CREATE || metadata.Action == apimetaserver.API_ACTION_GET) {
+		return true
+	}
+
+	return false
+}
+
+func (s *AgentServer) prepareHTTPHandler(ctx context.Context) (http.Handler, error) {
+	// Create agent authentication middleware for device operations
+	s.agentAuthMiddleware = fcmiddleware.NewAgentAuthMiddleware(s.ca, s.log)
+	go s.agentAuthMiddleware.Start()
+
+	// Create identity mapping middleware (handles both user and agent identities)
+	s.identityMapper = service.NewIdentityMapper(s.organizationSvc, s.orgProvisioner, s.log)
+	s.identityMapper.Start()
+	identityMappingMiddleware := fcmiddleware.NewIdentityMappingMiddleware(s.identityMapper, s.log)
+
+	// Create organization extraction and validation middleware once
+	orgMiddleware := fcmiddleware.ExtractAndValidateOrg(fcmiddleware.CertOrgIDExtractor, s.log)
+
+	// Create authentication routing middleware once
+	authRoutingMiddleware := func(next http.Handler) http.Handler {
+		// --- Create these handlers ONCE ---
+		// These are created when authRoutingMiddleware is called (at server setup),
+		// not when a request comes in.
+		enrollmentAuthHandler := s.enrollmentAuthMiddleware.AuthenticateEnrollment(next)
+		agentAuthHandler := s.agentAuthMiddleware.AuthenticateAgent(next)
+		// ------------------------------------
+
+		// Return the handler that will run on every request
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// This closure "captures" the handlers created above.
+
+			// Check if this is an enrollment request
+			if isEnrollmentRequest(r) {
+				// Route to the pre-built enrollment handler
+				enrollmentAuthHandler.ServeHTTP(w, r)
+				return
+			}
+
+			// For all other requests, route to the pre-built agent handler
+			agentAuthHandler.ServeHTTP(w, r)
+		})
+	}
+
+	// Create auth middlewares chain - flat and simple
+	authMiddlewares := []func(http.Handler) http.Handler{
+		authRoutingMiddleware,
+		identityMappingMiddleware.MapIdentityToDB,
+		orgMiddleware,
+	}
+
+	// request size limits should come before logging to prevent DoS attacks from filling logs
+	middlewares := [](func(http.Handler) http.Handler){
+		middleware.RequestSize(int64(s.cfg.Service.HttpMaxRequestSize)),
+		fcmiddleware.RequestSizeLimiter(s.cfg.Service.HttpMaxUrlLength, s.cfg.Service.HttpMaxNumHeaders),
+		fcmiddleware.SecurityHeaders,
+		fcmiddleware.ContentSecurityPolicy(fcmiddleware.StrictCSP),
+		fcmiddleware.RequestID,
+	}
+
+	// Add auth middlewares
+	middlewares = append(middlewares, authMiddlewares...)
+
+	// Add remaining middlewares
+	middlewares = append(middlewares, []func(http.Handler) http.Handler{
+		filteredLogger(s.log),
+		addAgentContext,
+		middleware.Recoverer,
+	}...)
+
+	router := chi.NewRouter()
+	router.Use(middlewares...)
+
+	// Create versioning infrastructure
+	negotiator := versioning.NewNegotiator(versioning.V1Beta1, apimetaserver.MetadataResolver)
+
+	handlerV1Beta1 := agenttransportv1beta1.NewAgentTransportHandler(s.deviceSvc, s.enrollmentRequestSvc, s.csrSvc, convertv1beta1.NewConverter(), s.ca, s.log)
+
+	// Create version-specific router with OpenAPI validation
+	agentV1Beta1Swagger, err := agentv1beta1.GetSpec()
+	if err != nil {
+		return nil, fmt.Errorf("failed loading agent v1beta1 swagger spec: %w", err)
+	}
+	routerV1Beta1 := versioning.NewRouter(versioning.RouterConfig{
+		Middlewares: []versioning.Middleware{
+			oapimiddleware.OapiRequestValidatorWithOptions(agentV1Beta1Swagger, &oapimiddleware.Options{
+				ErrorHandler:          apiserver.OapiErrorHandler,
+				SilenceServersWarning: true,
+			}),
+		},
+		RegisterRoutes: func(r chi.Router) {
+			agentserver.HandlerWithOptions(handlerV1Beta1, agentserver.ChiServerOptions{
+				BaseRouter: r,
+				ErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
+					apiserver.OapiErrorHandler(w, err.Error(), http.StatusBadRequest)
+				},
+			})
+		},
+	})
+
+	// Create negotiated router for version routing
+	// Future versions (v1, v2, etc.) would add more entries here
+	negotiatedRouter, err := versioning.NewNegotiatedRouter(
+		negotiator.NegotiateMiddleware,
+		map[versioning.Version]chi.Router{
+			versioning.V1Beta1: routerV1Beta1,
+		},
+		versioning.V1Beta1,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create negotiated router: %w", err)
+	}
+
+	// Rate limiting middleware - applied before validation (only if configured and enabled)
+	rateLimit := func(r chi.Router) {
+		apiserver.ConfigureRateLimiterFromConfig(
+			r,
+			s.cfg.Service.RateLimit,
+			apiserver.RateLimitScopeGeneral,
+			// Agent server doesn't need trusted proxy validation since it's mTLS.
+			apiserver.WithNoTrustedProxies(),
+		)
+	}
+
+	// Versioned API endpoints at /api/v1
+	router.Route(agentserver.ServerUrlApiv1, func(r chi.Router) {
+		rateLimit(r)
+
+		// Negotiated API endpoints
+		r.Mount("/", negotiatedRouter)
+	})
+
+	if err := s.enrollmentAuthMiddleware.Start(ctx); err != nil {
+		return nil, err
+	}
+
+	return otelhttp.NewHandler(router, "agent-http-server", otelhttp.WithServerName(s.cfg.Service.AgentEndpointAddress)), nil
+}
+
+// grpcMuxHandlerFunc dispatches requests to the gRPC server or the HTTP handler based on the request headers
+func grpcMuxHandlerFunc(grpcServer *grpc.Server, otherHandler http.Handler, log logrus.FieldLogger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor == 2 && r.Header.Get("Content-Type") == "application/grpc" {
+
+			// Since gRPC is used for streaming, keeping the read and write timeouts, will
+			// cause streaming connection to disconnected upon timeout expiration.  Therefore,
+			// these timeouts are set to infinity for gRPC connections
+			type readWriteTimeoutSetter interface {
+				SetReadDeadline(deadline time.Time) error
+				SetWriteDeadline(deadline time.Time) error
+			}
+			if rtw, ok := w.(readWriteTimeoutSetter); ok {
+				// Set infinite read timeout
+				if err := rtw.SetReadDeadline(time.Time{}); err != nil {
+					log.Errorf("Couldn't set gRPC read timeout: %v", err)
+				}
+
+				// Set infinite write timeout
+				if err := rtw.SetWriteDeadline(time.Time{}); err != nil {
+					log.Errorf("Couldn't set gRPC write timeout: %v", err)
+				}
+			} else {
+				log.Error("Cannot set gRPC timeout")
+			}
+			grpcServer.ServeHTTP(w, r)
+		} else {
+			otherHandler.ServeHTTP(w, r)
+		}
+	})
+}

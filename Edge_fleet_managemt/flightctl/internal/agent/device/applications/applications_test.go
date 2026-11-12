@@ -1,0 +1,607 @@
+package applications
+
+import (
+	"context"
+	"testing"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/agent/client"
+	"github.com/flightctl/flightctl/internal/agent/device/applications/provider"
+	"github.com/flightctl/flightctl/internal/agent/device/fileio"
+	"github.com/flightctl/flightctl/pkg/executer"
+	"github.com/flightctl/flightctl/pkg/log"
+	"github.com/flightctl/flightctl/test/util"
+	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+)
+
+func TestApplicationStatus(t *testing.T) {
+	require := require.New(t)
+
+	tests := []struct {
+		name                  string
+		workloads             []Workload
+		expectedReady         string
+		expectedRestarts      int
+		expectedStatus        v1beta1.ApplicationStatusType
+		expectedSummaryStatus v1beta1.ApplicationsSummaryStatusType
+		expected              v1beta1.AppType
+	}{
+		{
+			name:                  "app created no workloads",
+			expectedReady:         "0/0",
+			expectedStatus:        v1beta1.ApplicationStatusUnknown,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusUnknown,
+			expected:              v1beta1.AppTypeCompose,
+		},
+		{
+			name: "app single container preparing to start init",
+			workloads: []Workload{
+				{
+					Status: StatusInit,
+				},
+			},
+			expectedReady:         "0/1",
+			expectedStatus:        v1beta1.ApplicationStatusPreparing,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusUnknown,
+			expected:              v1beta1.AppTypeCompose,
+		},
+		{
+			name: "app single container preparing to start created",
+			workloads: []Workload{
+				{
+					Status: StatusCreate,
+				},
+			},
+			expectedReady:         "0/1",
+			expectedStatus:        v1beta1.ApplicationStatusPreparing,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusUnknown,
+			expected:              v1beta1.AppTypeCompose,
+		},
+		{
+			name: "app multiple workloads starting init",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusInit,
+				},
+				{
+					Name:   "container2",
+					Status: StatusRunning,
+				},
+			},
+			expectedReady:         "1/2",
+			expectedStatus:        v1beta1.ApplicationStatusStarting,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+			expected:              v1beta1.AppTypeCompose,
+		},
+		{
+			name: "app multiple workloads starting created",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusCreate,
+				},
+				{
+					Name:   "container2",
+					Status: StatusRunning,
+				},
+			},
+			expectedReady:         "1/2",
+			expectedStatus:        v1beta1.ApplicationStatusStarting,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+			expected:              v1beta1.AppTypeCompose,
+		},
+		{
+			name: "app errored",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusDie,
+				},
+				{
+					Name:   "container2",
+					Status: StatusDie,
+				},
+			},
+			expectedReady:         "0/2",
+			expectedStatus:        v1beta1.ApplicationStatusError,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusError,
+			expected:              v1beta1.AppTypeCompose,
+		},
+		{
+			name: "app starting degraded after workload died",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusDie,
+				},
+				{
+					Name:   "container2",
+					Status: StatusRunning,
+				},
+			},
+			expectedReady:         "1/2",
+			expectedStatus:        v1beta1.ApplicationStatusStarting,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+			expected:              v1beta1.AppTypeCompose,
+		},
+		{
+			name: "app starting degraded after workload exited",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusDied,
+				},
+				{
+					Name:   "container2",
+					Status: StatusRunning,
+				},
+			},
+			expectedReady:         "1/2",
+			expectedStatus:        v1beta1.ApplicationStatusStarting,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+			expected:              v1beta1.AppTypeCompose,
+		},
+		{
+			name: "app running healthy",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusRunning,
+				},
+				{
+					Name:   "container2",
+					Status: StatusRunning,
+				},
+			},
+			expectedReady:         "2/2",
+			expectedStatus:        v1beta1.ApplicationStatusRunning,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusHealthy,
+		},
+		{
+			name: "app running healthy with restarts",
+			workloads: []Workload{
+				{
+					Name:     "container1",
+					Status:   StatusRunning,
+					Restarts: 1,
+				},
+				{
+					Name:     "container2",
+					Status:   StatusRunning,
+					Restarts: 2,
+				},
+			},
+			expectedReady:         "2/2",
+			expectedStatus:        v1beta1.ApplicationStatusRunning,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusHealthy,
+			expectedRestarts:      3,
+		},
+		{
+			name: "app has all workloads exited",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusExited,
+				},
+				{
+					Name:   "container2",
+					Status: StatusExited,
+				},
+			},
+			expectedReady:         "0/2",
+			expectedStatus:        v1beta1.ApplicationStatusCompleted,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusHealthy,
+		},
+		{
+			name: "app has one workloads exited",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusRunning,
+				},
+				{
+					Name:   "container2",
+					Status: StatusExited,
+				},
+			},
+			expectedReady:         "1/2",
+			expectedStatus:        v1beta1.ApplicationStatusRunning,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusHealthy,
+		},
+		{
+			name: "app with single container has exited",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusExited,
+				},
+			},
+			expectedReady:         "0/1",
+			expectedStatus:        v1beta1.ApplicationStatusCompleted,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusHealthy,
+		},
+		{
+			name: "When single workload is unhealthy it should report Starting degraded",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusUnhealthy,
+				},
+			},
+			expectedReady:         "0/1",
+			expectedStatus:        v1beta1.ApplicationStatusStarting,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+		},
+		{
+			name: "When one workload is unhealthy and one is healthy it should report Starting degraded",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusRunning,
+				},
+				{
+					Name:   "container2",
+					Status: StatusUnhealthy,
+				},
+			},
+			expectedReady:         "1/2",
+			expectedStatus:        v1beta1.ApplicationStatusStarting,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+		},
+		{
+			name: "When all workloads are unhealthy it should report Starting degraded",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusUnhealthy,
+				},
+				{
+					Name:   "container2",
+					Status: StatusUnhealthy,
+				},
+			},
+			expectedReady:         "0/2",
+			expectedStatus:        v1beta1.ApplicationStatusStarting,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+		},
+		{
+			name: "When one workload is unhealthy and one is exited it should report Starting degraded",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusUnhealthy,
+				},
+				{
+					Name:   "container2",
+					Status: StatusExited,
+				},
+			},
+			expectedReady:         "0/2",
+			expectedStatus:        v1beta1.ApplicationStatusStarting,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+		},
+		{
+			name: "When one workload is unhealthy and one has died it should report Starting degraded",
+			workloads: []Workload{
+				{
+					Name:   "container1",
+					Status: StatusUnhealthy,
+				},
+				{
+					Name:   "container2",
+					Status: StatusDied,
+				},
+			},
+			expectedReady:         "0/2",
+			expectedStatus:        v1beta1.ApplicationStatusStarting,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+		},
+		{
+			name: "When one workload is unhealthy and one is stopping it should report Starting degraded",
+			workloads: []Workload{
+				{Name: "container1", Status: StatusUnhealthy},
+				{Name: "container2", Status: StatusStop},
+			},
+			expectedReady:         "0/2",
+			expectedStatus:        v1beta1.ApplicationStatusStarting,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+		},
+		{
+			name: "When running workloads are healthy and init containers have exited it should report Running healthy",
+			workloads: []Workload{
+				{Name: "compute", Status: StatusRunning},
+				{Name: "virt-launcher", Status: StatusRunning},
+				{Name: "init-volume", Status: StatusExited},
+				{Name: "init-config", Status: StatusExited},
+			},
+			expectedReady:         "2/4",
+			expectedStatus:        v1beta1.ApplicationStatusRunning,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusHealthy,
+		},
+		{
+			name: "When a running workload is unhealthy and init containers have exited it should report Starting degraded",
+			workloads: []Workload{
+				{Name: "compute", Status: StatusUnhealthy},
+				{Name: "virt-launcher", Status: StatusRunning},
+				{Name: "init-volume", Status: StatusExited},
+				{Name: "init-config", Status: StatusExited},
+			},
+			expectedReady:         "1/4",
+			expectedStatus:        v1beta1.ApplicationStatusStarting,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := log.NewPrefixLogger("test")
+			log.SetLevel(logrus.DebugLevel)
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			tempDir := t.TempDir()
+			readWriter := fileio.NewReadWriter(
+				fileio.NewReader(fileio.WithReaderRootDir(tempDir)),
+				fileio.NewWriter(fileio.WithWriterRootDir(tempDir)),
+			)
+
+			mockExec := executer.NewMockExecuter(ctrl)
+			podman := client.NewPodman(log, mockExec, readWriter, util.NewPollConfig())
+
+			inlineSpec := v1beta1.InlineApplicationProviderSpec{
+				Inline: []v1beta1.ApplicationContent{
+					{
+						Content: lo.ToPtr(util.NewComposeSpec()),
+						Path:    "docker-compose.yml",
+					},
+				},
+			}
+
+			composeApp := v1beta1.ComposeApplication{
+				Name:    lo.ToPtr("app"),
+				AppType: v1beta1.AppTypeCompose,
+			}
+			err := composeApp.FromInlineApplicationProviderSpec(inlineSpec)
+			require.NoError(err)
+
+			var providerSpec v1beta1.ApplicationProviderSpec
+			err = providerSpec.FromComposeApplication(composeApp)
+			require.NoError(err)
+			desired := v1beta1.DeviceSpec{
+				Applications: &[]v1beta1.ApplicationProviderSpec{
+					providerSpec,
+				},
+			}
+			var podmanFactory client.PodmanFactory = func(user v1beta1.Username) (*client.Podman, error) {
+				return podman, nil
+			}
+			var rwFactory fileio.ReadWriterFactory = func(username v1beta1.Username) (fileio.ReadWriter, error) {
+				return readWriter, nil
+			}
+			providers, err := provider.FromDeviceSpec(context.Background(), log, podmanFactory, nil, rwFactory, &desired)
+			require.NoError(err)
+			require.Len(providers, 1)
+			application := NewApplication(providers[0])
+			if len(tt.workloads) > 0 {
+				application.workloads = tt.workloads
+			}
+			status, summary, err := application.Status()
+			require.NoError(err)
+
+			require.Equal(tt.expectedReady, status.Ready)
+			require.Equal(tt.expectedRestarts, status.Restarts)
+			require.Equal(tt.expectedStatus, status.Status)
+			require.Equal(tt.expectedSummaryStatus, summary.Status)
+		})
+	}
+}
+
+func TestCollectImageDigests(t *testing.T) {
+	t.Run("When the collected image set is empty it should clear stale status", func(t *testing.T) {
+		previous := []v1beta1.ApplicationImageDigest{{
+			Image:  "quay.io/acme/nginx:v1",
+			Digest: "sha256:old",
+		}}
+		app := &application{
+			status: &v1beta1.DeviceApplicationStatus{ImageDigests: &previous},
+		}
+
+		app.collectImageDigests()
+
+		require.Nil(t, app.status.ImageDigests)
+	})
+
+	t.Run("When parent and workloads report image pairs it should deduplicate and sort them", func(t *testing.T) {
+		const nginx = "quay.io/acme/nginx:latest"
+		app := &application{
+			imageRef:              nginx,
+			imageDigest:           "sha256:parent",
+			parentOutcomeRequired: true,
+			workloads: []Workload{
+				{Images: []WorkloadImage{
+					{Image: nginx},
+					{Image: nginx, Digest: "sha256:old"},
+					{Image: nginx, Digest: "sha256:old"},
+					{Image: "quay.io/acme/redis:latest"},
+				}},
+			},
+			status: &v1beta1.DeviceApplicationStatus{},
+		}
+
+		app.collectImageDigests()
+
+		require.NotNil(t, app.status.ImageDigests)
+		require.Equal(t, []v1beta1.ApplicationImageDigest{
+			{Image: nginx},
+			{Image: nginx, Digest: "sha256:old"},
+			{Image: nginx, Digest: "sha256:parent"},
+			{Image: "quay.io/acme/redis:latest"},
+		}, *app.status.ImageDigests)
+	})
+}
+
+func TestWorkloadImageSnapshotsAreCopied(t *testing.T) {
+	images := []WorkloadImage{{Image: "quay.io/acme/app:v1", Digest: "sha256:one"}}
+	app := &application{}
+	app.AddWorkload(&Workload{Name: "container", Images: images})
+
+	images[0].Digest = "sha256:input-mutated"
+	workloads := app.Workloads()
+	require.Equal(t, "sha256:one", workloads[0].Images[0].Digest)
+
+	workloads[0].Images[0].Digest = "sha256:copy-mutated"
+	stored, ok := app.Workload("container")
+	require.True(t, ok)
+	require.Equal(t, "sha256:one", stored.Images[0].Digest)
+}
+
+func TestImageSnapshotKeepsUnidentifiedImageVolumesIncomplete(t *testing.T) {
+	volumeManager := mustNewVolumeManager(t)
+	volumeManager.Add(&provider.Volume{Name: "data", ID: "app-data", Available: true})
+	app := &application{
+		id:                      "app-id",
+		imageCollectionComplete: true,
+		volume:                  volumeManager,
+		status:                  &v1beta1.DeviceApplicationStatus{Name: "app", RunAs: v1beta1.RootUsername, AppType: v1beta1.AppTypeCompose},
+		workloads:               []Workload{{Name: "web", Status: StatusRunning, Images: []WorkloadImage{{Image: "quay.io/acme/web:v1", Digest: "sha256:web"}}}},
+	}
+
+	snapshot := app.ImageSnapshot()
+
+	require.False(t, snapshot.Complete)
+	require.Len(t, snapshot.Volumes, 1)
+	require.Equal(t, ImageVolumeSnapshot{ID: "app-data", Available: true}, snapshot.Volumes[0])
+}
+
+func TestNewAppFromProvider(t *testing.T) {
+	require := require.New(t)
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	vol, err := provider.NewVolumeManager(nil, "app", v1beta1.AppTypeQuadlet, v1beta1.CurrentProcessUsername, nil)
+	require.NoError(err)
+	spec := &provider.ApplicationSpec{
+		Name:    "app",
+		ID:      "app",
+		AppType: v1beta1.AppTypeQuadlet,
+		User:    v1beta1.CurrentProcessUsername,
+		Volume:  vol,
+	}
+	mock := provider.NewMockProvider(ctrl)
+	mock.EXPECT().Spec().Return(spec).AnyTimes()
+
+	m := &manager{log: log.NewPrefixLogger("")}
+	app := m.newAppFromProvider(mock)
+	require.NotNil(app)
+}
+
+func mustNewVolumeManager(t *testing.T) provider.VolumeManager {
+	t.Helper()
+	vm, err := provider.NewVolumeManager(log.NewPrefixLogger("test"), "test-app", v1beta1.AppTypeCompose, v1beta1.CurrentProcessUsername, nil)
+	require.NoError(t, err)
+	return vm
+}
+
+func TestApplicationStatusWithDesiredStateStopped(t *testing.T) {
+	tests := []struct {
+		name                  string
+		workloads             []Workload
+		desiredState          v1beta1.ApplicationDesiredState
+		expectedStatus        v1beta1.ApplicationStatusType
+		expectedSummaryStatus v1beta1.ApplicationsSummaryStatusType
+	}{
+		{
+			name: "When desiredState is stopped and all containers exited it should report Stopped",
+			workloads: []Workload{
+				{Name: "container1", Status: StatusExited},
+				{Name: "container2", Status: StatusExited},
+			},
+			desiredState:          v1beta1.ApplicationDesiredStateStopped,
+			expectedStatus:        v1beta1.ApplicationStatusStopped,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusHealthy,
+		},
+		{
+			name: "When desiredState is running and all containers exited it should report Completed",
+			workloads: []Workload{
+				{Name: "container1", Status: StatusExited},
+			},
+			desiredState:          v1beta1.ApplicationDesiredStateRunning,
+			expectedStatus:        v1beta1.ApplicationStatusCompleted,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusHealthy,
+		},
+		{
+			name: "When desiredState is stopped but containers are still running it should report Stopping",
+			workloads: []Workload{
+				{Name: "container1", Status: StatusRunning},
+			},
+			desiredState:          v1beta1.ApplicationDesiredStateStopped,
+			expectedStatus:        v1beta1.ApplicationStatusStopping,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+		},
+		{
+			name:                  "When desiredState is stopped and no workloads exist it should report Stopped",
+			workloads:             []Workload{},
+			desiredState:          v1beta1.ApplicationDesiredStateStopped,
+			expectedStatus:        v1beta1.ApplicationStatusStopped,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusHealthy,
+		},
+		{
+			name: "When desiredState is stopped and containers are initializing it should report Stopping",
+			workloads: []Workload{
+				{Name: "container1", Status: StatusInit},
+			},
+			desiredState:          v1beta1.ApplicationDesiredStateStopped,
+			expectedStatus:        v1beta1.ApplicationStatusStopping,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+		},
+		{
+			name: "When desiredState is stopped and a workload is still unhealthy it should report Stopping not Running",
+			workloads: []Workload{
+				{Name: "compute", Status: StatusUnhealthy},
+				{Name: "init-volume", Status: StatusExited},
+			},
+			desiredState:          v1beta1.ApplicationDesiredStateStopped,
+			expectedStatus:        v1beta1.ApplicationStatusStopping,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusDegraded,
+		},
+		{
+			name: "When desiredState is stopped and all workloads including previously unhealthy are terminal it should report Stopped healthy",
+			workloads: []Workload{
+				{Name: "compute", Status: StatusDied},
+				{Name: "virt-launcher", Status: StatusExited},
+				{Name: "init-volume", Status: StatusExited},
+				{Name: "init-config", Status: StatusExited},
+			},
+			desiredState:          v1beta1.ApplicationDesiredStateStopped,
+			expectedStatus:        v1beta1.ApplicationStatusStopped,
+			expectedSummaryStatus: v1beta1.ApplicationsSummaryStatusHealthy,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require := require.New(t)
+			app := &application{
+				id:           "test-id",
+				desiredState: tt.desiredState,
+				status: &v1beta1.DeviceApplicationStatus{
+					Name:    "test-app",
+					Status:  v1beta1.ApplicationStatusUnknown,
+					AppType: v1beta1.AppTypeCompose,
+				},
+				volume: mustNewVolumeManager(t),
+			}
+			app.workloads = tt.workloads
+
+			status, summary, err := app.Status()
+			require.NoError(err)
+			require.Equal(tt.expectedStatus, status.Status)
+			require.Equal(tt.expectedSummaryStatus, summary.Status)
+		})
+	}
+}

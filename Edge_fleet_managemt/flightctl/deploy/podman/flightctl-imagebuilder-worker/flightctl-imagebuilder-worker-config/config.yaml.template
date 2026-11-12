@@ -1,0 +1,176 @@
+database:
+{{- if eq .db.type "external"}}
+  hostname: {{.db.external.hostname}}
+  type: pgsql
+  port: {{.db.external.port}}
+  name: {{.db.external.name}}
+  {{- if .db.external.sslmode}}
+  sslmode: {{.db.external.sslmode}}
+  {{- end}}
+  {{- if or (eq .db.external.sslmode "verify-full") (eq .db.external.sslmode "verify-ca") }}
+  sslrootcert: /root/.flightctl/certs/db/ca.crt
+  {{- end }}
+  {{- if .db.external.useClientCertAuth }}
+  sslcert: /root/.flightctl/certs/db/client.crt
+  sslkey: /root/.flightctl/certs/db/client.key
+  {{- end }}
+{{- else}}
+  hostname: flightctl-db
+  type: pgsql
+  port: 5432
+  name: flightctl
+{{- end}}
+kv:
+  hostname: flightctl-kv
+  port: 6379
+service:
+  baseAgentEndpointUrl: https://{{.global.baseDomain}}:7443/
+  baseUIUrl: https://{{.global.baseDomain}}:443
+imageBuilderWorker:
+  logLevel: {{if .imagebuilderWorker.logLevel}}{{.imagebuilderWorker.logLevel}}{{else}}info{{end}}
+  maxConcurrentBuilds: {{if .imagebuilderWorker.maxConcurrentBuilds}}{{.imagebuilderWorker.maxConcurrentBuilds}}{{else}}2{{end}}
+  defaultTTL: {{if .imagebuilderWorker.defaultTTL}}{{.imagebuilderWorker.defaultTTL}}{{else}}168h{{end}}
+  imageBuilderTimeout: {{if .imagebuilderWorker.imageBuilderTimeout}}{{.imagebuilderWorker.imageBuilderTimeout}}{{else}}3m{{end}}
+  timeoutCheckTaskInterval: {{if .imagebuilderWorker.timeoutCheckTaskInterval}}{{.imagebuilderWorker.timeoutCheckTaskInterval}}{{else}}1m{{end}}
+  {{- if .imagebuilderWorker.rpmRepoUrl}}
+  rpmRepoUrl: {{.imagebuilderWorker.rpmRepoUrl}}
+  {{- end}}
+  {{- if or (eq (printf "%v" .imagebuilderWorker.rpmRepoAdd) "true") (eq (printf "%v" .imagebuilderWorker.rpmRepoAdd) "false")}}
+  rpmRepoAdd: {{.imagebuilderWorker.rpmRepoAdd}}
+  {{- end}}
+  {{- if .imagebuilderWorker.rpmRepoEnable}}
+  rpmRepoEnable: {{.imagebuilderWorker.rpmRepoEnable}}
+  {{- end}}
+  {{- if or (eq (printf "%v" .imagebuilderWorker.dnfTimeout) "0") .imagebuilderWorker.dnfTimeout}}
+  dnfTimeout: {{.imagebuilderWorker.dnfTimeout}}
+  {{- end}}
+  {{- if or (eq (printf "%v" .imagebuilderWorker.dnfRetries) "0") .imagebuilderWorker.dnfRetries}}
+  dnfRetries: {{.imagebuilderWorker.dnfRetries}}
+  {{- end}}
+  {{- if or (eq (printf "%v" .imagebuilderWorker.dnfSkipUnavailable) "true") (eq (printf "%v" .imagebuilderWorker.dnfSkipUnavailable) "false")}}
+  dnfSkipUnavailable: {{.imagebuilderWorker.dnfSkipUnavailable}}
+  {{- end}}
+  {{- if .imagebuilderWorker.serviceImages}}
+  serviceImages:
+  {{- if .imagebuilderWorker.serviceImages.podman}}
+    podman:
+      image: {{.imagebuilderWorker.serviceImages.podman.image}}
+      skipTlsVerify: {{.imagebuilderWorker.serviceImages.podman.skipTlsVerify}}
+  {{- end}}
+  {{- if .imagebuilderWorker.serviceImages.bootcImageBuilder}}
+    bootcImageBuilder:
+      image: {{.imagebuilderWorker.serviceImages.bootcImageBuilder.image}}
+      skipTlsVerify: {{.imagebuilderWorker.serviceImages.bootcImageBuilder.skipTlsVerify}}
+  {{- end}}
+  {{- if .imagebuilderWorker.serviceImages.syft}}
+    syft:
+      image: {{.imagebuilderWorker.serviceImages.syft.image}}
+      skipTlsVerify: {{.imagebuilderWorker.serviceImages.syft.skipTlsVerify}}
+  {{- end}}
+  {{- end}}
+  {{- if .imagebuilderWorker.sbom}}
+  sbom:
+    enabled: {{if eq (printf "%v" .imagebuilderWorker.sbom.enabled) "false"}}false{{else}}true{{end}}
+    pushToRegistry: {{if eq (printf "%v" .imagebuilderWorker.sbom.pushToRegistry) "false"}}false{{else}}true{{end}}
+    uploadToTrustify: {{if eq (printf "%v" .imagebuilderWorker.sbom.uploadToTrustify) "false"}}false{{else}}true{{end}}
+    {{- if .imagebuilderWorker.sbom.purlTransform}}
+    purlTransform:
+      {{- if or (eq (printf "%v" .imagebuilderWorker.sbom.purlTransform.enabled) "true") (eq (printf "%v" .imagebuilderWorker.sbom.purlTransform.enabled) "false")}}
+      enabled: {{.imagebuilderWorker.sbom.purlTransform.enabled}}
+      {{- end}}
+      {{- if .imagebuilderWorker.sbom.purlTransform.byType}}
+      byType:
+        {{- range $type, $rules := .imagebuilderWorker.sbom.purlTransform.byType}}
+        {{$type}}:
+          {{- if $rules.namespaceMapping}}
+          namespaceMapping:
+            {{- range $k, $v := $rules.namespaceMapping}}
+            {{$k}}: {{$v}}
+            {{- end}}
+          {{- end}}
+          {{- if $rules.distroMapping}}
+          distroMapping:
+            {{- range $k, $v := $rules.distroMapping}}
+            {{$k}}: {{$v}}
+            {{- end}}
+          {{- end}}
+          {{- if $rules.allowedQualifiers}}
+          allowedQualifiers:
+            {{- range $rules.allowedQualifiers}}
+            - {{.}}
+            {{- end}}
+          {{- end}}
+        {{- end}}
+      {{- end}}
+    {{- end}}
+  {{- end}}
+{{- if eq .vulnerabilityReporting.enabled true}}
+vulnerabilityReporting:
+  enabled: true
+  syncInterval: {{if .vulnerabilityReporting.syncInterval}}{{.vulnerabilityReporting.syncInterval}}{{else}}15m{{end}}
+  {{- if .vulnerabilityReporting.backend}}
+  backend: {{.vulnerabilityReporting.backend}}
+  {{- end}}
+  {{- if .vulnerabilityReporting.trustify}}
+  trustify:
+    endpoint: {{.vulnerabilityReporting.trustify.endpoint}}
+    {{- if .vulnerabilityReporting.trustify.auth}}
+    auth:
+      mode: {{if .vulnerabilityReporting.trustify.auth.mode}}{{.vulnerabilityReporting.trustify.auth.mode}}{{else}}none{{end}}
+      {{- if .vulnerabilityReporting.trustify.auth.oidcIssuerUrl}}
+      oidcIssuerUrl: {{.vulnerabilityReporting.trustify.auth.oidcIssuerUrl}}
+      {{- end}}
+    {{- end}}
+    {{- if .vulnerabilityReporting.trustify.caFile}}
+    caFile: {{.vulnerabilityReporting.trustify.caFile}}
+    {{- end}}
+    {{- if .vulnerabilityReporting.trustify.skipTlsVerify}}
+    skipTlsVerify: true
+    {{- end}}
+  {{- end}}
+{{- end}}
+
+{{- with .profiling }}
+{{- $pprof := .pprof }}
+{{- $pyroscope := .pyroscope }}
+{{- $pprofOn := false }}
+{{- $pyroscopeOn := false }}
+{{- if $pprof }}{{ if $pprof.enabled }}{{ $pprofOn = true }}{{ end }}{{ end }}
+{{- if $pyroscope }}{{ if $pyroscope.enabled }}{{ $pyroscopeOn = true }}{{ end }}{{ end }}
+{{- if or $pprofOn $pyroscopeOn }}
+profiling:
+{{- if $pprofOn }}
+  pprof:
+    enabled: true
+{{- if $pprof.port }}
+    port: {{ $pprof.port }}
+{{- end }}
+{{- end }}
+{{- if $pyroscopeOn }}
+  pyroscope:
+    enabled: true
+    serverAddress: {{ $pyroscope.serverAddress }}
+{{- if $pyroscope.applicationName }}
+    applicationName: {{ $pyroscope.applicationName }}
+{{- end }}
+{{- if $pyroscope.basicAuthUser }}
+    basicAuthUser: {{ $pyroscope.basicAuthUser }}
+{{- end }}
+{{- if $pyroscope.basicAuthPassword }}
+    basicAuthPassword: {{ $pyroscope.basicAuthPassword }}
+{{- end }}
+{{- if $pyroscope.tenantID }}
+    tenantID: {{ $pyroscope.tenantID }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- with .encryption }}
+encryption:
+  activeKeyID: {{ .activeKeyID }}
+  keys:
+  {{- range .keys }}
+    - id: {{ .id }}
+      path: {{ .path }}
+  {{- end }}
+{{- end }}

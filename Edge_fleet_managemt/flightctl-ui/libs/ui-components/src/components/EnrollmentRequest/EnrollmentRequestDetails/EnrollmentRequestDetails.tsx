@@ -1,0 +1,250 @@
+import * as React from 'react';
+import {
+  Bullseye,
+  CardBody,
+  CardTitle,
+  DescriptionList,
+  DescriptionListDescription,
+  DescriptionListGroup,
+  DescriptionListTerm,
+  DropdownItem,
+  Grid,
+  GridItem,
+  TextArea,
+} from '@patternfly/react-core';
+import { type EnrollmentRequest, ResourceKind } from '@flightctl/types';
+
+import ConditionsTable from '../../DetailsPage/Tables/ConditionsTable';
+import DetailsPage from '../../DetailsPage/DetailsPage';
+import LabelsView from '../../common/LabelsView';
+import { useFetchPeriodically } from '../../../hooks/useFetchPeriodically';
+import { timeSinceText } from '../../../utils/dates';
+import {
+  EnrollmentRequestStatus as EnrollmentRequestStatusType,
+  getApprovalStatus,
+} from '../../../utils/status/enrollmentRequest';
+import { useFetch } from '../../../hooks/useFetch';
+import ApproveDeviceModal from '../../modals/ApproveDeviceModal/ApproveDeviceModal';
+import DetailsPageCard from '../../DetailsPage/DetailsPageCard';
+import DeviceCustomDataCard from '../../Device/DeviceDetails/DeviceCustomDataCard';
+import SystemInfoDescriptionGroup from '../../Device/DeviceDetails/SystemInfoDescriptionGroup';
+import DetailsPageActions, { useDeleteAction } from '../../DetailsPage/DetailsPageActions';
+import EnrollmentRequestStatus from '../../Status/EnrollmentRequestStatus';
+import EnrollmentRequestTpmStatus from '../../Status/EnrollmentRequestTpmStatus';
+import LabelWithHelperText from '../../common/WithHelperText';
+import { useTranslation } from '../../../hooks/useTranslation';
+import { ROUTE, useNavigate } from '../../../hooks/useNavigate';
+import { useDeviceSystemInfo } from '../../../hooks/useDeviceSystemInfo';
+import { useAppContext } from '../../../hooks/useAppContext';
+import { usePermissionsContext } from '../../common/PermissionsContext';
+import { RESOURCE, VERB } from '../../../types/rbac';
+import PageWithPermissions from '../../common/PageWithPermissions';
+import ActionsDropdownList from '../../common/ActionsDropdownList';
+
+import './EnrollmentRequestDetails.css';
+
+const enrollmentRequestDetailsPermissions = [
+  { kind: RESOURCE.ENROLLMENT_REQUEST_APPROVAL, verb: VERB.UPDATE },
+  { kind: RESOURCE.ENROLLMENT_REQUEST, verb: VERB.DELETE },
+];
+
+const EnrollmentRequestDetails = () => {
+  const { t } = useTranslation();
+  const {
+    router: { useParams },
+  } = useAppContext();
+  const { enrollmentRequestId } = useParams() as { enrollmentRequestId: string };
+  const [er, loading, error] = useFetchPeriodically<EnrollmentRequest>({
+    endpoint: `enrollmentrequests/${enrollmentRequestId}`,
+  });
+  const { remove } = useFetch();
+  const navigate = useNavigate();
+  const { checkPermissions } = usePermissionsContext();
+  const [canApprove, canDelete] = checkPermissions(enrollmentRequestDetailsPermissions);
+
+  const [isApprovalModalOpen, setIsApprovalModalOpen] = React.useState(false);
+  const deviceStatus = er?.spec.deviceStatus;
+  const { systemInfo: systemInfoResult, customInfo: customInfoResult } = useDeviceSystemInfo(
+    t,
+    deviceStatus?.systemInfo,
+    deviceStatus?.systemInfoStatus?.statuses,
+  );
+
+  const hasDefaultLabels = Object.keys(er?.spec.labels || {}).length > 0;
+  const deviceId = er?.metadata.name as string;
+
+  const { deleteAction, deleteModal } = useDeleteAction({
+    resourceName: enrollmentRequestId,
+    resourceType: ResourceKind.ENROLLMENT_REQUEST,
+    onDelete: async () => {
+      await remove(`enrollmentrequests/${enrollmentRequestId}`);
+      navigate(ROUTE.DEVICES);
+    },
+  });
+
+  const approvalStatus = er ? getApprovalStatus(er) : '-';
+  const isPendingApproval = approvalStatus === EnrollmentRequestStatusType.Pending;
+  return (
+    <DetailsPage
+      loading={loading}
+      error={error}
+      id={deviceId}
+      resourceLink={ROUTE.DEVICES}
+      resourceType="Devices"
+      resourceTypeLabel={t('Devices')}
+      actions={
+        (canApprove || canDelete) && (
+          <DetailsPageActions>
+            <ActionsDropdownList>
+              {canApprove && (
+                <ActionsDropdownList.Item>
+                  <DropdownItem onClick={() => setIsApprovalModalOpen(true)} isDisabled={!isPendingApproval}>
+                    {t('Approve')}
+                  </DropdownItem>
+                </ActionsDropdownList.Item>
+              )}
+              {canDelete && <ActionsDropdownList.Item isDanger>{deleteAction}</ActionsDropdownList.Item>}
+            </ActionsDropdownList>
+          </DetailsPageActions>
+        )
+      }
+    >
+      <Grid hasGutter>
+        <GridItem md={12}>
+          <DetailsPageCard>
+            <CardTitle>{t('Details')}</CardTitle>
+            <CardBody>
+              <DescriptionList columnModifier={{ lg: '3Col' }}>
+                <DescriptionListGroup>
+                  <DescriptionListTerm>{t('Name')}</DescriptionListTerm>
+                  <DescriptionListDescription>{deviceId}</DescriptionListDescription>
+                </DescriptionListGroup>
+                <DescriptionListGroup>
+                  <DescriptionListTerm>{t('Last seen')}</DescriptionListTerm>
+                  <DescriptionListDescription>
+                    {timeSinceText(t, er?.metadata.creationTimestamp)}
+                  </DescriptionListDescription>
+                </DescriptionListGroup>
+                {hasDefaultLabels && (
+                  <DescriptionListGroup>
+                    <DescriptionListTerm>{t('Labels')}</DescriptionListTerm>
+                    <DescriptionListDescription>
+                      <LabelsView prefix="er" labels={er?.spec.labels} />
+                    </DescriptionListDescription>
+                  </DescriptionListGroup>
+                )}
+                <DescriptionListGroup>
+                  <DescriptionListTerm>{t('Status')}</DescriptionListTerm>
+                  <DescriptionListDescription>
+                    <EnrollmentRequestStatus er={er} />
+                  </DescriptionListDescription>
+                </DescriptionListGroup>
+                <DescriptionListGroup>
+                  <DescriptionListTerm>
+                    <LabelWithHelperText
+                      label={t('TPM verification status')}
+                      content={t(
+                        'Indicates whether this enrollment request used a TPM-backed identity and whether verification succeeded.',
+                      )}
+                      isInline
+                    />
+                  </DescriptionListTerm>
+                  <DescriptionListDescription>
+                    <EnrollmentRequestTpmStatus er={er} />
+                  </DescriptionListDescription>
+                </DescriptionListGroup>
+                {systemInfoResult.mainEntries.map((entry) => (
+                  <SystemInfoDescriptionGroup key={entry.key} entry={entry} />
+                ))}
+              </DescriptionList>
+            </CardBody>
+          </DetailsPageCard>
+        </GridItem>
+        {customInfoResult.entries.length > 0 && (
+          <GridItem md={6}>
+            <DeviceCustomDataCard customInfoResult={customInfoResult} />
+          </GridItem>
+        )}
+        <GridItem md={6}>
+          <DetailsPageCard>
+            <CardTitle>
+              <LabelWithHelperText
+                label={t('Certificate signing request')}
+                content={t('A PEM-encoded PKCS#10 certificate signing request.')}
+              />
+            </CardTitle>
+            <CardBody>
+              {er?.spec.csr ? (
+                <TextArea
+                  aria-label={t('Certificate Signing Request')}
+                  value={er.spec.csr}
+                  readOnlyVariant="plain"
+                  autoResize
+                  className="fctl-enrollment-details__text-area"
+                />
+              ) : (
+                <Bullseye>{t('Not available')}</Bullseye>
+              )}
+            </CardBody>
+          </DetailsPageCard>
+        </GridItem>
+        {er?.status?.certificate && (
+          <GridItem md={6}>
+            <DetailsPageCard>
+              <CardTitle>
+                <LabelWithHelperText label={t('Certificate')} content={t('A PEM-encoded signed certificate.')} />
+              </CardTitle>
+              <CardBody>
+                <TextArea
+                  aria-label={t('Certificate')}
+                  value={er.status.certificate}
+                  readOnlyVariant="plain"
+                  autoResize
+                  className="fctl-enrollment-details__text-area"
+                />
+              </CardBody>
+            </DetailsPageCard>
+          </GridItem>
+        )}
+
+        <GridItem md={6}>
+          <DetailsPageCard>
+            <CardTitle>{t('Conditions')}</CardTitle>
+            <CardBody>
+              {er && (
+                <ConditionsTable
+                  ariaLabel={t('Enrollment request conditions table')}
+                  conditions={er.status?.conditions}
+                />
+              )}
+            </CardBody>
+          </DetailsPageCard>
+        </GridItem>
+      </Grid>
+      {er && isApprovalModalOpen && (
+        <ApproveDeviceModal
+          enrollmentRequest={er}
+          onClose={(isApproved) => {
+            setIsApprovalModalOpen(false);
+            if (isApproved) {
+              navigate({ route: ROUTE.DEVICE_DETAILS, postfix: deviceId });
+            }
+          }}
+        />
+      )}
+      {deleteModal}
+    </DetailsPage>
+  );
+};
+
+const EnrollmentRequestDetailsWithPermissions = () => {
+  const { checkPermissions, loading } = usePermissionsContext();
+  const [allowed] = checkPermissions([{ kind: RESOURCE.ENROLLMENT_REQUEST, verb: VERB.GET }]);
+  return (
+    <PageWithPermissions allowed={allowed} loading={loading}>
+      <EnrollmentRequestDetails />
+    </PageWithPermissions>
+  );
+};
+
+export default EnrollmentRequestDetailsWithPermissions;

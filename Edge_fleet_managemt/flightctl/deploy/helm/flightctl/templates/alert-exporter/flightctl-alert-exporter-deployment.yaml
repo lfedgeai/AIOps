@@ -1,0 +1,114 @@
+{{- if .Values.alertExporter.enabled -}}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+    flightctl.service: flightctl-alert-exporter
+  name: flightctl-alert-exporter
+  namespace: {{ default .Release.Namespace .Values.global.internalNamespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      flightctl.service: flightctl-alert-exporter
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        flightctl.service: flightctl-alert-exporter
+    spec:
+      serviceAccountName: flightctl-alert-exporter
+      {{- if .Values.global.imagePullSecretName }}
+      imagePullSecrets:
+        - name: {{ .Values.global.imagePullSecretName }}
+      {{- end }}
+      initContainers:
+      {{- include "flightctl.databaseWaitInitContainer" (dict "context" . "userType" "app") | nindent 6 }}
+      {{- include "flightctl.migrationWaitInitContainer" (dict "context" . "timeout" 600) | nindent 6 }}
+      containers:
+        - name: alert-exporter
+          image: "{{ include "flightctl.ensureOsQualifiedImage" (dict "root" . "imageName" .Values.alertExporter.image.image) }}:{{ default .Chart.AppVersion .Values.alertExporter.image.tag }}"
+          imagePullPolicy: "{{ default .Values.global.imagePullPolicy .Values.alertExporter.image.pullPolicy }}"
+          ports:
+            - containerPort: 8081
+              name: metrics
+              protocol: TCP
+          env:
+            - name: HOME
+              value: "/root"
+            - name: KV_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default "flightctl-kv-secret" .Values.kv.passwordSecretName }}
+                  key: password
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "flightctl.dbAppUserSecret" . }}
+                  key: userPassword
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "flightctl.dbAppUserSecret" . }}
+                  key: user
+            {{- if eq .Values.db.type "external" }}
+            {{- if .Values.db.external.sslmode }}
+            - name: DB_SSL_MODE
+              value: "{{ .Values.db.external.sslmode }}"
+            {{- end }}
+            {{- if .Values.db.external.tlsSecretName }}
+            - name: DB_SSL_CERT
+              value: /etc/ssl/postgres/client-cert.pem
+            - name: DB_SSL_KEY
+              value: /etc/ssl/postgres/client-key.pem
+            {{- end }}
+            {{- if .Values.db.external.tlsConfigMapName }}
+            - name: DB_SSL_ROOT_CERT
+              value: /etc/ssl/postgres/ca-cert.pem
+            {{- end }}
+            {{- end }}
+            {{- if .Values.alertExporter.env }}
+            {{- range $key, $value := .Values.alertExporter.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
+          volumeMounts:
+            - mountPath: /root/.flightctl
+              name: flightctl-alert-exporter-config
+              readOnly: true
+            - mountPath: /root/.flightctl/encryption
+              name: flightctl-encryption-key
+              readOnly: true
+            {{- include "flightctl.dbSslVolumeMounts" . | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+      restartPolicy: Always
+      volumes:
+        - name: flightctl-alert-exporter-config
+          configMap:
+            name: flightctl-alert-exporter-config
+        - name: flightctl-encryption-key
+          secret:
+            secretName: flightctl-encryption-key
+            defaultMode: 0400
+        {{- include "flightctl.dbSslVolumes" . | nindent 8 }}
+{{- end }}

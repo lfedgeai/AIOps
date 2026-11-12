@@ -1,0 +1,57 @@
+/* generated using openapi-typescript-codegen -- do no edit */
+/* istanbul ignore file */
+/* tslint:disable */
+/* eslint-disable */
+import type { Condition } from './Condition';
+import type { DeltaGenerationStatus } from './DeltaGenerationStatus';
+import type { DependencySyncStatus } from './DependencySyncStatus';
+import type { DeviceApplicationsSummaryStatus } from './DeviceApplicationsSummaryStatus';
+import type { DeviceApplicationStatus } from './DeviceApplicationStatus';
+import type { DeviceCapabilities } from './DeviceCapabilities';
+import type { DeviceConfigStatus } from './DeviceConfigStatus';
+import type { DeviceEnrollmentHooksStatus } from './DeviceEnrollmentHooksStatus';
+import type { DeviceIntegrityStatus } from './DeviceIntegrityStatus';
+import type { DeviceLifecycleStatus } from './DeviceLifecycleStatus';
+import type { DeviceOsStatus } from './DeviceOsStatus';
+import type { DeviceResourceStatus } from './DeviceResourceStatus';
+import type { DeviceSummaryStatus } from './DeviceSummaryStatus';
+import type { DeviceSystemInfo } from './DeviceSystemInfo';
+import type { DeviceSystemInfoStatus } from './DeviceSystemInfoStatus';
+import type { DeviceUpdatedStatus } from './DeviceUpdatedStatus';
+import type { SystemdUnitStatus } from './SystemdUnitStatus';
+/**
+ * DeviceStatus represents information about the status of a device. Status may trail the actual state of a device.
+ */
+export type DeviceStatus = {
+  /**
+   * Conditions represent the observations of a the current state of a device.
+   */
+  conditions: Array<Condition>;
+  systemInfo: DeviceSystemInfo;
+  /**
+   * List of systemd unit statuses.
+   */
+  systemd?: Array<SystemdUnitStatus>;
+  /**
+   * List of device application statuses.
+   */
+  applications: Array<DeviceApplicationStatus>;
+  applicationsSummary: DeviceApplicationsSummaryStatus;
+  resources: DeviceResourceStatus;
+  integrity: DeviceIntegrityStatus;
+  config: DeviceConfigStatus;
+  os: DeviceOsStatus;
+  updated: DeviceUpdatedStatus;
+  summary: DeviceSummaryStatus;
+  /**
+   * The last time the device was seen by the service (NOTE: this property is not returned by the API).
+   */
+  lastSeen?: string;
+  lifecycle: DeviceLifecycleStatus;
+  dependencySync?: DependencySyncStatus;
+  capabilities?: DeviceCapabilities;
+  deltaGeneration?: DeltaGenerationStatus;
+  enrollmentHooks?: DeviceEnrollmentHooksStatus;
+  systemInfoStatus?: DeviceSystemInfoStatus;
+};
+

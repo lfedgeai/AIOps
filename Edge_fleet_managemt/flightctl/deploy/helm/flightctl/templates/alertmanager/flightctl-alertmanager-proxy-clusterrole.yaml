@@ -1,0 +1,20 @@
+{{- $effectiveAuthType := include "flightctl.getEffectiveAuthType" . }}
+{{- if and .Values.alertmanagerProxy.enabled (or (eq $effectiveAuthType "k8s") (eq $effectiveAuthType "openshift")) }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+    flightctl.service: flightctl-alertmanager-proxy
+  name: flightctl-alertmanager-proxy-{{ .Release.Namespace }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["selfsubjectaccessreviews"]
+    verbs: ["create"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list"]
+{{ end }}

@@ -1,0 +1,209 @@
+import * as React from 'react';
+import { Gallery } from '@patternfly/react-core';
+
+import { type ExportFormatType, ImageBuildConditionReason, type ImageExport } from '@flightctl/types/imagebuilder';
+import { type ImageBuildWithExports } from '../../../types/extraTypes';
+import { getImageBuildStatusReason } from '../../../utils/imageBuilds';
+import { RESOURCE, VERB } from '../../../types/rbac';
+import { useFetch } from '../../../hooks/useFetch';
+import { usePermissionsContext } from '../../common/PermissionsContext';
+import { useOrganizationGuardContext } from '../../common/OrganizationGuard';
+import { getErrorMessage } from '../../../utils/error';
+import { getImageExportResource } from '../CreateImageBuildWizard/utils';
+import { type ImageExportAction, ViewImageBuildExportCard } from '../ImageExportCards';
+import { useOciRegistriesContext } from '../OciRegistriesContext';
+import { showSpinnerBriefly } from '../../../utils/time';
+import { getAllExportFormats, getImageReference } from '../../../utils/imageBuilds';
+import { ROUTE, useNavigate } from '../../../hooks/useNavigate';
+import { IMAGE_EXPORT_ID_PARAM } from './ImageBuildLogsTab';
+
+type ImageBuildExportsGalleryProps = {
+  imageBuild: ImageBuildWithExports;
+  refetch: VoidFunction;
+};
+
+const REFRESH_IMAGE_BUILD_DELAY = 450;
+// Delay to keep loading state while browser processes redirect
+const DOWNLOAD_REDIRECT_DELAY = 1000;
+
+const createExportAliases = ['retry', 'rebuild', 'createExport'];
+
+const createDownloadLink = (url: string) => {
+  const link = document.createElement('a');
+  link.href = url;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+};
+
+const imageBuildExportsPermissions = [
+  { kind: RESOURCE.IMAGE_EXPORT, verb: VERB.CREATE },
+  { kind: RESOURCE.IMAGE_EXPORT, verb: VERB.DELETE },
+  { kind: RESOURCE.IMAGE_EXPORT_LOG, verb: VERB.GET },
+  { kind: RESOURCE.IMAGE_EXPORT_DOWNLOAD, verb: VERB.GET },
+  { kind: RESOURCE.IMAGE_EXPORT_CANCEL, verb: VERB.CREATE },
+];
+
+const ImageBuildExportsGallery = ({ imageBuild, refetch }: ImageBuildExportsGalleryProps) => {
+  const { post, remove, apiProxy } = useFetch();
+  const { checkPermissions } = usePermissionsContext();
+  const { currentOrganization } = useOrganizationGuardContext();
+  const [canCreateExport, canDelete, canViewLogs, canDownload, canCancel] =
+    checkPermissions(imageBuildExportsPermissions);
+
+  const buildReason = getImageBuildStatusReason(imageBuild);
+
+  const actionPermissions = React.useMemo(() => {
+    const actions: ImageExportAction[] = [];
+    if (
+      buildReason === ImageBuildConditionReason.ImageBuildConditionReasonFailed ||
+      buildReason === ImageBuildConditionReason.ImageBuildConditionReasonCanceled ||
+      buildReason === ImageBuildConditionReason.ImageBuildConditionReasonCanceling
+    ) {
+      if (canDelete) {
+        actions.push('delete');
+      }
+      return actions;
+    }
+
+    if (canCreateExport) {
+      actions.push('createExport');
+      actions.push('rebuild');
+      actions.push('retry');
+    }
+    if (canDelete) {
+      actions.push('delete');
+    }
+    if (canViewLogs) {
+      actions.push('viewLogs');
+    }
+    if (canDownload) {
+      actions.push('download');
+    }
+    if (canCancel) {
+      actions.push('cancel');
+    }
+    return actions;
+  }, [buildReason, canCreateExport, canDelete, canViewLogs, canDownload, canCancel]);
+
+  const navigate = useNavigate();
+  const [error, setError] = React.useState<{
+    format: ExportFormatType;
+    action: ImageExportAction;
+    message: string;
+  }>();
+  const { ociRegistries } = useOciRegistriesContext();
+
+  const [activeFormatAction, setActiveFormatAction] = React.useState<
+    { format: ExportFormatType; action: ImageExportAction } | undefined
+  >();
+  const imageBuildId = imageBuild.metadata.name as string;
+
+  const handleCreateNewExport = async (format: ExportFormatType) => {
+    try {
+      const imageExport = getImageExportResource(imageBuildId, format);
+      await post<ImageExport>('imageexports', imageExport);
+      // The "Export image" button wouldn't be seen as spinning without this delay.
+      await showSpinnerBriefly(REFRESH_IMAGE_BUILD_DELAY);
+      refetch();
+    } catch (error) {
+      // If process failed, it was likely very fast, so we also add the delay in this case.
+      await showSpinnerBriefly(REFRESH_IMAGE_BUILD_DELAY);
+      throw error;
+    }
+  };
+  const handleDownload = async (ieName: string) => {
+    // Use direct link to API endpoint - browser will download with Content-Disposition filename
+    // The API server streams the blob with proper headers, and the browser handles the download
+    // Path goes through the UI proxy.
+    // org_id query param is required since direct links can't send the X-FlightCtl-Organization-ID header
+    createDownloadLink(
+      `${apiProxy}/imagebuilder/api/v1/imageexports/${ieName}/download?org_id=${currentOrganization?.id || ''}`,
+    );
+    await showSpinnerBriefly(DOWNLOAD_REDIRECT_DELAY);
+  };
+
+  const handleCancel = async (ieName: string) => {
+    await post(`imageexports/${ieName}/cancel`, {});
+    await showSpinnerBriefly(REFRESH_IMAGE_BUILD_DELAY);
+    refetch();
+  };
+
+  const handleDelete = async (ieName: string) => {
+    await remove(`imageexports/${ieName}`);
+    await showSpinnerBriefly(REFRESH_IMAGE_BUILD_DELAY);
+    refetch();
+  };
+
+  const handleCardAction = async ({ format, action }: { format: ExportFormatType; action: ImageExportAction }) => {
+    const imageExport = imageBuild.imageExports.find((ie) => ie?.spec.format === format);
+    if (!imageExport && !createExportAliases.includes(action)) {
+      return;
+    }
+
+    setActiveFormatAction({ format, action });
+    setError(undefined);
+
+    try {
+      const ieName = imageExport?.metadata.name as string;
+      switch (action) {
+        case 'createExport':
+        case 'retry':
+        case 'rebuild':
+          await handleCreateNewExport(format);
+          break;
+        case 'download':
+          await handleDownload(ieName);
+          break;
+        case 'cancel':
+          await handleCancel(ieName);
+          break;
+        case 'delete':
+          await handleDelete(ieName);
+          break;
+        case 'viewLogs': {
+          const searchParams = new URLSearchParams({
+            [IMAGE_EXPORT_ID_PARAM]: ieName,
+          });
+          navigate({ route: ROUTE.IMAGE_BUILD_DETAILS, postfix: `${imageBuildId}/logs?${searchParams.toString()}` });
+          break;
+        }
+      }
+    } catch (error) {
+      setError({ format, message: getErrorMessage(error), action });
+      refetch();
+    } finally {
+      setActiveFormatAction(undefined);
+    }
+  };
+
+  return (
+    <Gallery hasGutter minWidths={{ default: '350px' }}>
+      {getAllExportFormats().map((format) => {
+        const imageExport = imageBuild.imageExports.find((imageExport) => imageExport?.spec.format === format);
+        // We can only link to the generic destination for the image build.
+        // The individual export artifacts are references to this generic output image.
+        const imageReference = getImageReference(ociRegistries, imageBuild.spec.destination);
+
+        const hasError = error?.format === format;
+        const activeAction = activeFormatAction?.format === format ? activeFormatAction.action : undefined;
+        return (
+          <ViewImageBuildExportCard
+            key={format}
+            imageReference={imageReference}
+            format={format}
+            error={hasError ? error : null}
+            imageExport={imageExport}
+            activeAction={activeAction}
+            onDismissError={() => setError(undefined)}
+            onCardAction={handleCardAction}
+            actionPermissions={actionPermissions}
+          />
+        );
+      })}
+    </Gallery>
+  );
+};
+
+export default ImageBuildExportsGallery;

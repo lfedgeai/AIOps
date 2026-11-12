@@ -1,0 +1,386 @@
+package device
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/flightctl/flightctl/internal/util"
+	"github.com/stretchr/testify/require"
+)
+
+func TestEngineRun(t *testing.T) {
+	require := require.New(t)
+
+	startTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	mockClock := newMockClock(startTime)
+
+	var (
+		mu          sync.Mutex
+		specCount   int
+		statusCount int
+	)
+
+	syncSpecFn := func(ctx context.Context) {
+		mu.Lock()
+		defer mu.Unlock()
+		specCount++
+	}
+	pushStatusFn := func(ctx context.Context) {
+		mu.Lock()
+		defer mu.Unlock()
+		statusCount++
+	}
+
+	startCh := make(chan struct{})
+	statusInterval := 60 * time.Second // Status every 60s
+	engine := Engine{
+		syncSpecFn:         syncSpecFn,
+		pushStatusInterval: util.Duration(statusInterval),
+		pushStatusFn:       pushStatusFn,
+		clock:              mockClock,
+		startedCh:          startCh,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		err := engine.Run(ctx)
+		require.NoError(err)
+	}()
+	<-startCh // wait for ticker to start
+
+	//initial sync happens immediately
+	time.Sleep(10 * time.Millisecond) // give goroutine time to process tick
+	mu.Lock()
+	require.Equal(1, specCount, "initial spec sync should happen")
+	require.Equal(1, statusCount, "initial status push should happen")
+	mu.Unlock()
+
+	for i := 0; i < 5; i++ {
+		mockClock.Advance(1 * time.Second)
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	require.Equal(6, specCount, "spec should sync 5 more times (every 1s)")
+	require.Equal(1, statusCount, "status should not push yet (60s interval)")
+	mu.Unlock()
+
+	for i := 0; i < 55; i++ {
+		mockClock.Advance(1 * time.Second)
+		time.Sleep(1 * time.Millisecond)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	mu.Lock()
+	require.Equal(61, specCount, "spec should sync 55 more times")
+	require.Equal(2, statusCount, "status should push at 60s")
+	mu.Unlock()
+
+	cancel()
+}
+
+func TestEngineStatusStartupJitter(t *testing.T) {
+	require := require.New(t)
+
+	startTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	mockClock := newMockClock(startTime)
+
+	pushed := make(chan struct{}, 8)
+	engine := Engine{
+		syncSpecFn:         func(context.Context) {},
+		pushStatusInterval: util.Duration(60 * time.Second),
+		pushStatusFn: func(context.Context) {
+			pushed <- struct{}{}
+		},
+		statusStartupDelay: 30 * time.Second,
+		clock:              mockClock,
+		startedCh:          make(chan struct{}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		require.NoError(engine.Run(ctx))
+	}()
+	<-engine.startedCh
+
+	select {
+	case <-pushed:
+		t.Fatal("status should wait for startup jitter")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	mockClock.Advance(30 * time.Second)
+	select {
+	case <-pushed:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for status push after jitter")
+	}
+
+	mockClock.Advance(60 * time.Second)
+	select {
+	case <-pushed:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for status ticker push")
+	}
+}
+
+func TestEngineCriticalPushFires(t *testing.T) {
+	require := require.New(t)
+
+	startTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	mockClock := newMockClock(startTime)
+
+	var (
+		mu            sync.Mutex
+		statusCount   int
+		criticalCount int
+	)
+
+	criticalChangeCh := make(chan struct{}, 1)
+	engine := Engine{
+		syncSpecFn:         func(context.Context) {},
+		pushStatusInterval: util.Duration(60 * time.Second),
+		pushStatusFn: func(context.Context) {
+			mu.Lock()
+			defer mu.Unlock()
+			statusCount++
+		},
+		criticalChangeCh: criticalChangeCh,
+		criticalPushFn: func(context.Context) {
+			mu.Lock()
+			defer mu.Unlock()
+			criticalCount++
+		},
+		clock:     mockClock,
+		startedCh: make(chan struct{}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		require.NoError(engine.Run(ctx))
+	}()
+	<-engine.startedCh
+
+	// initial status push at t=0
+	time.Sleep(10 * time.Millisecond)
+	mu.Lock()
+	require.Equal(1, statusCount, "initial status push")
+	mu.Unlock()
+
+	// Fire critical signal — should call criticalPushFn unconditionally
+	criticalChangeCh <- struct{}{}
+	time.Sleep(10 * time.Millisecond)
+	mu.Lock()
+	require.Equal(1, criticalCount, "critical push should fire on signal")
+	mu.Unlock()
+}
+
+func TestEngineAlertPushDoesNotResetPeriodicTimer(t *testing.T) {
+	require := require.New(t)
+
+	startTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	mockClock := newMockClock(startTime)
+
+	var (
+		mu            sync.Mutex
+		statusCount   int
+		criticalCount int
+	)
+
+	criticalChangeCh := make(chan struct{}, 1)
+	engine := Engine{
+		syncSpecFn:         func(context.Context) {},
+		pushStatusInterval: util.Duration(60 * time.Second),
+		pushStatusFn: func(context.Context) {
+			mu.Lock()
+			defer mu.Unlock()
+			statusCount++
+		},
+		criticalChangeCh: criticalChangeCh,
+		criticalPushFn: func(context.Context) {
+			mu.Lock()
+			defer mu.Unlock()
+			criticalCount++
+		},
+		clock:     mockClock,
+		startedCh: make(chan struct{}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		require.NoError(engine.Run(ctx))
+	}()
+	<-engine.startedCh
+
+	// initial status push at t=0
+	time.Sleep(10 * time.Millisecond)
+	mu.Lock()
+	require.Equal(1, statusCount, "initial status push")
+	mu.Unlock()
+
+	// Advance to t=30s and fire alert — PATCH fires
+	mockClock.Advance(30 * time.Second)
+	time.Sleep(5 * time.Millisecond)
+	criticalChangeCh <- struct{}{}
+	time.Sleep(10 * time.Millisecond)
+	mu.Lock()
+	require.Equal(1, criticalCount, "alert PATCH at t=30s")
+	mu.Unlock()
+
+	// Advance to t=60s — periodic timer was NOT reset, so periodic fires
+	mockClock.Advance(30 * time.Second)
+	time.Sleep(10 * time.Millisecond)
+	mu.Lock()
+	require.Equal(2, statusCount, "periodic push at t=60s (timer was not reset by alert)")
+	mu.Unlock()
+}
+
+func TestEngineAlertPushNilChannel(t *testing.T) {
+	require := require.New(t)
+
+	startTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	mockClock := newMockClock(startTime)
+
+	var (
+		mu          sync.Mutex
+		statusCount int
+	)
+
+	// nil criticalChangeCh — engine should behave exactly as before
+	engine := Engine{
+		syncSpecFn:         func(context.Context) {},
+		pushStatusInterval: util.Duration(60 * time.Second),
+		pushStatusFn: func(context.Context) {
+			mu.Lock()
+			defer mu.Unlock()
+			statusCount++
+		},
+		clock:     mockClock,
+		startedCh: make(chan struct{}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		require.NoError(engine.Run(ctx))
+	}()
+	<-engine.startedCh
+
+	time.Sleep(10 * time.Millisecond)
+	mu.Lock()
+	require.Equal(1, statusCount, "initial status push should happen with nil alert channel")
+	mu.Unlock()
+
+	mockClock.Advance(60 * time.Second)
+	time.Sleep(10 * time.Millisecond)
+	mu.Lock()
+	require.Equal(2, statusCount, "periodic push should fire with nil alert channel")
+	mu.Unlock()
+}
+
+type mockClock struct {
+	mu     sync.Mutex
+	now    time.Time
+	ticks  map[time.Duration]*mockTicker
+	afters []mockAfter
+}
+
+type mockAfter struct {
+	at time.Time
+	ch chan time.Time
+}
+
+type mockTicker struct {
+	c          chan time.Time
+	d          time.Duration
+	nextTickAt time.Time // next time to send into c channel.
+	clock      *mockClock
+}
+
+type mockFire struct {
+	ch chan time.Time
+	t  time.Time
+}
+
+func newMockClock(start time.Time) *mockClock {
+	return &mockClock{
+		now:   start,
+		ticks: make(map[time.Duration]*mockTicker),
+	}
+}
+
+func (m *mockClock) Now() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.now
+}
+
+// NewTicker creates a a mock ticker, storing its nextTickAt as now + duration.
+func (m *mockClock) NewTicker(d time.Duration) Ticker {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := &mockTicker{
+		c:          make(chan time.Time, 1),
+		d:          d,
+		nextTickAt: m.now.Add(d),
+		clock:      m,
+	}
+	m.ticks[d] = t
+	return t
+}
+
+func (m *mockClock) After(d time.Duration) <-chan time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	at := m.now.Add(d)
+	if !at.After(m.now) {
+		ch <- m.now
+		return ch
+	}
+	m.afters = append(m.afters, mockAfter{at: at, ch: ch})
+	return ch
+}
+
+func (m *mockTicker) C() <-chan time.Time {
+	return m.c
+}
+
+func (m *mockTicker) Stop() {
+	m.clock.mu.Lock()
+	defer m.clock.mu.Unlock()
+	if m.clock.ticks[m.d] == m {
+		delete(m.clock.ticks, m.d)
+	}
+}
+
+func (m *mockClock) Advance(d time.Duration) {
+	m.mu.Lock()
+	m.now = m.now.Add(d)
+	var fires []mockFire
+	remaining := m.afters[:0]
+	for _, a := range m.afters {
+		if !a.at.After(m.now) {
+			fires = append(fires, mockFire{ch: a.ch, t: a.at})
+			continue
+		}
+		remaining = append(remaining, a)
+	}
+	m.afters = remaining
+	for dur, t := range m.ticks {
+		for !t.nextTickAt.After(m.now) {
+			fires = append(fires, mockFire{ch: t.c, t: t.nextTickAt})
+			t.nextTickAt = t.nextTickAt.Add(dur)
+		}
+	}
+	m.mu.Unlock()
+	for _, f := range fires {
+		f.ch <- f.t
+	}
+}

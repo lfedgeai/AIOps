@@ -1,0 +1,198 @@
+package lifecycle
+
+import (
+	"context"
+	"fmt"
+	"hash/crc32"
+	"iter"
+	"strings"
+	"time"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/agent/client"
+	"github.com/flightctl/flightctl/internal/agent/device/deltastatus"
+	"github.com/flightctl/flightctl/internal/util/validation"
+)
+
+// HandlerOption configures optional dependencies shared by application lifecycle handlers.
+type HandlerOption func(*handlerOptions)
+
+type handlerOptions struct {
+	deltaStatusStore *deltastatus.Store
+}
+
+// WithDeltaStatusStore supplies the store used to record application image outcomes.
+func WithDeltaStatusStore(store *deltastatus.Store) HandlerOption {
+	return func(options *handlerOptions) {
+		options.deltaStatusStore = store
+	}
+}
+
+func applyHandlerOptions(options []HandlerOption) handlerOptions {
+	var configured handlerOptions
+	for _, option := range options {
+		option(&configured)
+	}
+	return configured
+}
+
+type ActionType string
+
+const (
+	ActionAdd     ActionType = "add"
+	ActionRemove  ActionType = "remove"
+	ActionUpdate  ActionType = "update"
+	ActionStop    ActionType = "stop"
+	ActionStart   ActionType = "start"
+	ActionRestart ActionType = "restart"
+)
+
+type ActionHandlerType string
+
+const (
+	ActionHandlerCompose ActionHandlerType = "compose"
+)
+
+type ActionHandler interface {
+	Execute(ctx context.Context, actions Actions) error
+}
+
+// LifecycleHandler is implemented by action handlers that support declarative
+// stop/start/restart without uninstalling the application. Each implementation
+// constructs its own runtime client from injected factories keyed on action.User.
+type LifecycleHandler interface {
+	Stop(ctx context.Context, action Action) error
+	Start(ctx context.Context, action Action) error
+	Restart(ctx context.Context, action Action) error
+}
+
+// ActionSpec is a marker interface for type-specific action configuration.
+// Only spec types defined in this package can implement this interface.
+type ActionSpec interface {
+	actionSpec()
+}
+
+type Action struct {
+	// ID of the application
+	ID string
+	// Name of the application
+	Name string
+	// Lifetime identifies this installed application across desired updates.
+	Lifetime string
+	// Environment variables to be passed to the manifest handler at runtime
+	EnvVars map[string]string
+	// Type of the action
+	Type ActionType
+	// AppType of the application
+	AppType v1beta1.AppType
+	// Path to the application
+	Path string
+	// User that owns the app. Blank means the same user as the current process.
+	User v1beta1.Username
+	// Embedded is true if the application is embedded in the device
+	Embedded bool
+	// Volumes is a list of volume names related to this application
+	Volumes []Volume
+	// Spec holds type-specific configuration, discriminated by AppType.
+	Spec ActionSpec
+	// RestartGeneration is the target restart generation for ActionRestart, applied
+	// to the tracked application only after the restart succeeds.
+	RestartGeneration int
+	// StartServices limits a Compose start to the named services. An empty slice
+	// starts the entire application.
+	StartServices []string
+	// RecoveryGeneration identifies the recovery intent handled by ActionStart.
+	// A zero value means the action is not tied to a pending recovery intent.
+	RecoveryGeneration uint64
+}
+
+// HelmSpec contains Helm-specific action configuration.
+type HelmSpec struct {
+	// Namespace is the Kubernetes namespace for the Helm release.
+	Namespace string
+	// ValuesFiles is a list of relative paths to values files within the chart.
+	ValuesFiles []string
+	// ProviderValuesPath is the absolute path to the provider-generated values file.
+	// This is set when the application spec contains inline Values.
+	ProviderValuesPath string
+}
+
+func (HelmSpec) actionSpec() {}
+
+type Actions []Action
+
+type ActionsByType struct {
+	Adds    []Action
+	Removes []Action
+	Updates []Action
+	Unknown []Action
+}
+
+func (as Actions) ByUser() iter.Seq2[v1beta1.Username, ActionsByType] {
+	return func(yield func(v1beta1.Username, ActionsByType) bool) {
+		byUser := make(map[v1beta1.Username]ActionsByType)
+		for _, a := range as {
+			byType := byUser[a.User]
+			switch a.Type {
+			case ActionAdd:
+				byType.Adds = append(byType.Adds, a)
+			case ActionRemove:
+				byType.Removes = append(byType.Removes, a)
+			case ActionUpdate:
+				byType.Updates = append(byType.Updates, a)
+			default:
+				byType.Unknown = append(byType.Unknown, a)
+			}
+			byUser[a.User] = byType
+		}
+		for u, abt := range byUser {
+			if !yield(u, abt) {
+				return
+			}
+		}
+	}
+}
+
+type Volume struct {
+	ID            string
+	Reference     string
+	OCIType       string
+	ReclaimPolicy v1beta1.ApplicationVolumeReclaimPolicy
+}
+
+type contextKey string
+
+const batchStartTimeKey contextKey = "batchStartTime"
+
+func ContextWithBatchStartTime(ctx context.Context, t time.Time) context.Context {
+	return context.WithValue(ctx, batchStartTimeKey, t)
+}
+
+func BatchStartTimeFromContext(ctx context.Context) (time.Time, bool) {
+	t, ok := ctx.Value(batchStartTimeKey).(time.Time)
+	return t, ok
+}
+
+// GenerateAppID generates a deterministic, lowercase, DNS-compatible ID with a fixed-length hash suffix.
+func GenerateAppID(name string, user v1beta1.Username) string {
+	const suffixLen = 6
+	id := client.SanitizePodmanLabel(name)
+	if !user.IsCurrentProcessUser() && !user.IsRootUser() {
+		id += "-" + user.String()
+	}
+	hashValue := crc32.ChecksumIEEE([]byte(id))
+	suffix := fmt.Sprintf("%06d", hashValue)
+	maxLength := validation.DNS1123MaxLength - suffixLen - 1
+	if len(id) > maxLength {
+		id = id[:maxLength]
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(id) + 1 + suffixLen)
+
+	builder.WriteString(id)
+	builder.WriteByte('-')
+	builder.WriteString(suffix[:suffixLen])
+
+	return builder.String()
+}

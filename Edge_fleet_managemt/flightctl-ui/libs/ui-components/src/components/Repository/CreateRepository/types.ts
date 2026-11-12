@@ -1,0 +1,74 @@
+import { type OciRepoSpec, type RepoSpecType, type ResourceSyncType } from '@flightctl/types';
+
+export type ResourceSyncFormValue = {
+  name: string;
+  targetRevision: string;
+  path: string;
+  type: ResourceSyncType;
+  exists?: boolean;
+};
+
+export type BaseImage = {
+  displayName?: string;
+  imageName: string;
+  tags: string[];
+};
+
+export enum OciPlacementMode {
+  Registry = 'registry',
+  Repository = 'repository',
+  Namespace = 'namespace',
+}
+
+export type RepositoryFormValues = {
+  exists: boolean;
+  name: string;
+  repoType: RepoSpecType;
+  url: string;
+  validationSuffix?: string;
+  allowedRepoTypes?: RepoSpecType[];
+  showRepoTypes: boolean;
+  allowDeltaStorage: boolean;
+  useAdvancedConfig: boolean;
+  configType: 'http' | 'ssh';
+  httpConfig?: {
+    basicAuth?: {
+      use?: boolean;
+      username?: string;
+      password?: string;
+    };
+    mTlsAuth?: {
+      use?: boolean;
+      tlsCrt?: string;
+      tlsKey?: string;
+    };
+    caCrt?: string;
+    skipServerVerification?: boolean;
+    token?: string;
+  };
+  sshConfig?: {
+    sshPrivateKey?: string;
+    privateKeyPassphrase?: string;
+    skipServerVerification?: boolean;
+  };
+  ociConfig?: {
+    registry: string;
+    scheme?: OciRepoSpec.scheme;
+    accessMode?: OciRepoSpec.accessMode;
+    caCrt?: string;
+    ociAuth?: {
+      use?: boolean;
+      username?: string;
+      password?: string;
+    };
+    skipServerVerification?: boolean;
+    baseImages?: BaseImage[];
+    deltaStorageTarget?: boolean;
+    placementMode?: OciPlacementMode;
+    repository?: string;
+    namespace?: string;
+  };
+  canUseResourceSyncs: boolean;
+  useResourceSyncs: boolean;
+  resourceSyncs: ResourceSyncFormValue[];
+};

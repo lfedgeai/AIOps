@@ -1,0 +1,197 @@
+database:
+{{- if eq .db.type "external"}}
+  hostname: {{.db.external.hostname}}
+  type: pgsql
+  port: {{.db.external.port}}
+  name: {{.db.external.name}}
+  {{- if .db.external.sslmode}}
+  sslmode: {{.db.external.sslmode}}
+  {{- end}}
+  {{- if or (eq .db.external.sslmode "verify-full") (eq .db.external.sslmode "verify-ca") }}
+  sslrootcert: /root/.flightctl/certs/db/ca.crt
+  {{- end }}
+  {{- if .db.external.useClientCertAuth }}
+  sslcert: /root/.flightctl/certs/db/client.crt
+  sslkey: /root/.flightctl/certs/db/client.key
+  {{- end }}
+{{- else}}
+  hostname: flightctl-db
+  type: pgsql
+  port: 5432
+  name: flightctl
+{{- end}}
+organizations:
+  initialLabelSyncMappingsFile: /etc/flightctl/label-sync/mappings.yaml
+service:
+  address: flightctl-api:3080
+  agentEndpointAddress: unix:///var/run/flightctl-listeners/api-agent.sock
+  baseUrl: https://{{.global.baseDomain}}/_/flightctl/
+  disableTLS: true
+  baseAgentEndpointUrl: https://{{.global.baseDomain}}:7443/
+  baseUIUrl: https://{{.global.baseDomain}}
+  altNames:
+    - {{.global.baseDomain}}
+    - flightctl-api
+  rateLimit:
+    enabled: {{.service.rateLimit.enabled}}
+    requests: {{if .service.rateLimit.requests}}{{.service.rateLimit.requests}}{{else}}300{{end}}
+    window: {{if .service.rateLimit.window}}{{.service.rateLimit.window}}{{else}}1m{{end}}
+    authRequests: {{if .service.rateLimit.authRequests}}{{.service.rateLimit.authRequests}}{{else}}20{{end}}
+    authWindow: {{if .service.rateLimit.authWindow}}{{.service.rateLimit.authWindow}}{{else}}1h{{end}}
+  {{- with index .service "tpmCAPaths" }}
+  tpmCAPaths:
+  {{- range . }}
+    - {{ . }}
+  {{- end }}
+  {{- end }}
+kv:
+  hostname: flightctl-kv
+  port: 6379
+auth:
+  insecureSkipTlsVerify: {{.global.auth.insecureSkipTlsVerify}}
+  {{if not .global.auth.insecureSkipTlsVerify}}caCert: /root/.flightctl/certs/auth/ca.crt{{end}}
+{{- if eq .global.auth.type "aap"}}
+  aap:
+    apiUrl: {{.global.auth.aap.apiUrl}}
+    issuer: {{.global.auth.aap.issuer}}
+    clientId: {{.global.auth.aap.clientId}}
+    clientSecret: {{if .global.auth.aap.clientSecret}}{{.global.auth.aap.clientSecret}}{{end}}
+    authorizationUrl: {{.global.auth.aap.authorizationUrl}}
+    tokenUrl: {{.global.auth.aap.tokenUrl}}
+    enabled: {{if .global.auth.aap.enabled}}{{.global.auth.aap.enabled}}{{else}}true{{end}}
+    {{with .global.auth.aap.organizationNamePrefix}}organizationNamePrefix: {{.}}
+    {{end}}scopes:
+{{- if .global.auth.aap.scopes}}
+{{- range .global.auth.aap.scopes}}
+      - {{.}}
+{{- end}}
+{{- else}}
+      - read
+{{- end}} 
+
+{{- else if eq .global.auth.type "oidc"}}
+  oidc:
+    prompt: {{if eq .global.auth.oidc.prompt nil}}"select_account"{{else}}{{printf "%q" .global.auth.oidc.prompt}}{{end}}
+    enabled: {{if .global.auth.oidc.enabled}}{{.global.auth.oidc.enabled}}{{else}}true{{end}}
+    {{if eq .global.auth.pamOidcIssuer.enabled true}}
+    issuer: {{if .global.auth.pamOidcIssuer.issuer}}{{.global.auth.pamOidcIssuer.issuer}}{{else}}https://{{.global.baseDomain}}/_/pam-issuer/api/v1/auth{{end}}
+    clientId: {{if .global.auth.pamOidcIssuer.clientId}}{{.global.auth.pamOidcIssuer.clientId}}{{else}}flightctl-client{{end}}
+    clientSecret: {{if .global.auth.pamOidcIssuer.clientSecret}}{{.global.auth.pamOidcIssuer.clientSecret}}{{end}}
+    {{else}}
+    issuer: {{.global.auth.oidc.issuer}}
+    clientId: {{.global.auth.oidc.clientId}}
+    clientSecret: {{if .global.auth.oidc.clientSecret}}{{.global.auth.oidc.clientSecret}}{{end}}
+    
+    {{end}}
+    usernameClaim:
+      {{if .global.auth.oidc.usernameClaim}}{{range .global.auth.oidc.usernameClaim}}- {{.}}
+      {{end}}{{else}}- preferred_username
+      {{end}}
+    roleAssignment:
+      type: {{if .global.auth.oidc.roleAssignment.type}}{{.global.auth.oidc.roleAssignment.type}}{{else}}dynamic{{end}}
+      {{with .global.auth.oidc.roleAssignment.roles}}
+      roles:
+        {{range .}}- {{.}}
+        {{end}}
+      {{end}}
+      claimPath:
+        {{if .global.auth.oidc.roleAssignment.claimPath}}{{range .global.auth.oidc.roleAssignment.claimPath}}- {{.}}
+        {{end}}{{else}}- roles
+        {{end}}
+      {{with .global.auth.oidc.roleAssignment.separator}}separator: "{{.}}"{{end}}
+    scopes:
+{{- if .global.auth.oidc.scopes}}
+{{- range .global.auth.oidc.scopes}}
+      - {{.}}
+{{- end}}
+{{- else}}
+      - openid
+      - profile
+      - email
+      - roles
+      - offline_access
+{{- end}}
+    organizationAssignment:
+      type: {{if .global.auth.oidc.organizationAssignment.type}}{{.global.auth.oidc.organizationAssignment.type}}{{else}}static{{end}}
+      organizationName: {{if .global.auth.oidc.organizationAssignment.organizationName}}{{.global.auth.oidc.organizationAssignment.organizationName}}{{else}}default{{end}}
+      {{with .global.auth.oidc.organizationAssignment.claimPath}}
+      claimPath:
+        {{range .}}- {{.}}
+        {{end}}
+      {{end}}
+      {{with .global.auth.oidc.organizationAssignment.organizationNamePrefix}}organizationNamePrefix: {{.}}{{end}}
+      {{with .global.auth.oidc.organizationAssignment.organizationNameSuffix}}organizationNameSuffix: {{.}}{{end}}
+{{- end}}
+{{- if eq .vulnerabilityReporting.enabled true}}
+vulnerabilityReporting:
+  enabled: true
+{{- end}}
+{{- with .deltaGeneration }}
+{{- with .defaultRepository }}
+{{- if .registry }}
+deltaGeneration:
+  defaultRepository:
+    registry: {{ printf "%q" .registry }}
+    {{- if .repository }}
+    repository: {{ printf "%q" .repository }}
+    {{- end }}
+    {{- if .namespace }}
+    namespace: {{ printf "%q" .namespace }}
+    {{- end }}
+    {{- if .scheme }}
+    scheme: {{ printf "%q" .scheme }}
+    {{- end }}
+    {{- if .skipServerVerification }}
+    skipServerVerification: true
+    {{- end }}
+    {{- if .caCrt }}
+    ca.crt: {{ printf "%q" .caCrt }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- with .profiling }}
+{{- $pprof := .pprof }}
+{{- $pyroscope := .pyroscope }}
+{{- $pprofOn := false }}
+{{- $pyroscopeOn := false }}
+{{- if $pprof }}{{ if $pprof.enabled }}{{ $pprofOn = true }}{{ end }}{{ end }}
+{{- if $pyroscope }}{{ if $pyroscope.enabled }}{{ $pyroscopeOn = true }}{{ end }}{{ end }}
+{{- if or $pprofOn $pyroscopeOn }}
+profiling:
+{{- if $pprofOn }}
+  pprof:
+    enabled: true
+{{- if $pprof.port }}
+    port: {{ $pprof.port }}
+{{- end }}
+{{- end }}
+{{- if $pyroscopeOn }}
+  pyroscope:
+    enabled: true
+    serverAddress: {{ $pyroscope.serverAddress }}
+{{- if $pyroscope.applicationName }}
+    applicationName: {{ $pyroscope.applicationName }}
+{{- end }}
+{{- if $pyroscope.basicAuthUser }}
+    basicAuthUser: {{ $pyroscope.basicAuthUser }}
+{{- end }}
+{{- if $pyroscope.basicAuthPassword }}
+    basicAuthPassword: {{ $pyroscope.basicAuthPassword }}
+{{- end }}
+{{- if $pyroscope.tenantID }}
+    tenantID: {{ $pyroscope.tenantID }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- with .encryption }}
+encryption:
+  activeKeyID: {{ .activeKeyID }}
+  keys:
+  {{- range .keys }}
+    - id: {{ .id }}
+      path: {{ .path }}
+  {{- end }}
+{{- end }}

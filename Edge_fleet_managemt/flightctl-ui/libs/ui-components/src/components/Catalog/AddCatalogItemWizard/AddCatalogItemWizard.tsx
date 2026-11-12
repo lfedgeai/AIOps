@@ -1,0 +1,279 @@
+import * as React from 'react';
+import {
+  Alert,
+  Breadcrumb,
+  BreadcrumbItem,
+  Bullseye,
+  PageSection,
+  Spinner,
+  Title,
+  Wizard,
+  WizardStep,
+  type WizardStepType,
+} from '@patternfly/react-core';
+import { Trans } from 'react-i18next';
+import { type CatalogItem } from '@flightctl/types/alpha';
+import { Formik, type FormikErrors } from 'formik';
+
+import { useAppContext } from '../../../hooks/useAppContext';
+import { useFetch } from '../../../hooks/useFetch';
+import { useTranslation } from '../../../hooks/useTranslation';
+import { Link, ROUTE, useNavigate } from '../../../hooks/useNavigate';
+import GeneralInfoStep, { generalInfoStepId, isGeneralInfoStepValid } from './steps/GeneralInfoStep';
+import TypeConfigStep, { isTypeConfigStepValid, typeConfigStepId } from './steps/TypeConfigStep';
+import VersionStep, { isVersionStepValid, versionStepId } from './steps/VersionStep';
+import ReviewStep, { reviewStepId } from './steps/ReviewStep';
+import {
+  getCatalogItemPatches,
+  getCatalogItemResource,
+  getInitialValues,
+  getInitialValuesFromItem,
+  getValidationSchema,
+} from './utils';
+import { isWizardStepDisabled } from '../../../utils/wizards';
+import { type AddCatalogItemFormValues } from './types';
+import FlightCtlWizardFooter from '../../common/FlightCtlWizardFooter';
+import LeaveFormConfirmation from '../../common/LeaveFormConfirmation';
+import ErrorBoundary from '../../common/ErrorBoundary';
+import { getErrorMessage } from '../../../utils/error';
+import { usePermissionsContext } from '../../common/PermissionsContext';
+import PageWithPermissions from '../../common/PageWithPermissions';
+import { RESOURCE, VERB } from '../../../types/rbac';
+import { CatalogItemLabel } from '../CatalogItemDetails';
+
+const orderedIds = [generalInfoStepId, typeConfigStepId, versionStepId, reviewStepId];
+
+const getValidStepIds = (formikErrors: FormikErrors<AddCatalogItemFormValues>): string[] => {
+  const validStepIds: string[] = [];
+  if (isGeneralInfoStepValid(formikErrors)) {
+    validStepIds.push(generalInfoStepId);
+  }
+  if (isTypeConfigStepValid(formikErrors)) {
+    validStepIds.push(typeConfigStepId);
+  }
+  if (isVersionStepValid(formikErrors)) {
+    validStepIds.push(versionStepId);
+  }
+  if (validStepIds.length === orderedIds.length - 1) {
+    validStepIds.push(reviewStepId);
+  }
+  return validStepIds;
+};
+
+const validateStep = (activeStepId: string, errors: FormikErrors<AddCatalogItemFormValues>) => {
+  switch (activeStepId) {
+    case generalInfoStepId:
+      return isGeneralInfoStepValid(errors);
+    case typeConfigStepId:
+      return isTypeConfigStepValid(errors);
+    case versionStepId:
+      return isVersionStepValid(errors);
+    case reviewStepId:
+      return true;
+    default:
+      return false;
+  }
+};
+
+const AddCatalogItemWizard = () => {
+  const { t } = useTranslation();
+  const {
+    router: { useParams },
+  } = useAppContext();
+  const { catalogId, itemId } = useParams<{ catalogId: string; itemId: string }>();
+  const isEdit = !!catalogId && !!itemId;
+
+  const { post, patch, get } = useFetch();
+  const [initErr, setInitErr] = React.useState<unknown>();
+  const [error, setError] = React.useState<unknown>();
+  const [isLoading, setIsLoading] = React.useState(isEdit);
+  const [editItem, setEditItem] = React.useState<CatalogItem>();
+  const navigate = useNavigate();
+  const [currentStep, setCurrentStep] = React.useState<WizardStepType>();
+
+  React.useEffect(() => {
+    if (!isEdit) {
+      return;
+    }
+    const fetchItem = async () => {
+      try {
+        const item = await get<CatalogItem>(`catalogs/${catalogId}/items/${itemId}`);
+        setEditItem(item);
+      } catch (e) {
+        setInitErr(e);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    void fetchItem();
+  }, [get, isEdit, catalogId, itemId]);
+
+  const initialValues = editItem ? getInitialValuesFromItem(editItem) : getInitialValues();
+  const isReadOnly = !!editItem?.metadata?.owner;
+
+  const catalogItemEl = <CatalogItemLabel item={editItem} />;
+  let titleEl: React.ReactNode;
+  if (isReadOnly) {
+    titleEl = (
+      <Trans t={t} values={{ catalogItemEl }}>
+        View {catalogItemEl}
+      </Trans>
+    );
+  } else if (isEdit) {
+    titleEl = (
+      <Trans t={t} values={{ catalogItemEl }}>
+        Edit {catalogItemEl}
+      </Trans>
+    );
+  } else {
+    titleEl = t('Create catalog item');
+  }
+
+  let content: React.ReactNode = (
+    <PageSection hasBodyWrapper={false} type="wizard">
+      <ErrorBoundary>
+        <Formik<AddCatalogItemFormValues>
+          initialValues={initialValues}
+          validationSchema={getValidationSchema(t)}
+          validateOnMount
+          onSubmit={async (values) => {
+            setError(undefined);
+            try {
+              if (isEdit) {
+                const patchRequest = getCatalogItemPatches(values, editItem!);
+                if (patchRequest.length) {
+                  await patch<CatalogItem>(`catalogs/${catalogId}/items/${itemId}`, patchRequest);
+                }
+              } else {
+                const resource = getCatalogItemResource(values, values.catalog);
+                await post<CatalogItem>(`catalogs/${values.catalog}/items`, resource);
+              }
+              navigate(ROUTE.CATALOG);
+            } catch (e) {
+              setError(e);
+            }
+          }}
+        >
+          {({ errors: formikErrors }) => {
+            const validStepIds = getValidStepIds(formikErrors);
+
+            return (
+              <>
+                <LeaveFormConfirmation />
+                <Wizard
+                  footer={
+                    <FlightCtlWizardFooter
+                      firstStepId={generalInfoStepId}
+                      submitStepId={reviewStepId}
+                      validateStep={(activeStepId, errors) => validateStep(activeStepId, errors)}
+                      isReadOnly={isReadOnly}
+                      saveButtonText={isEdit ? t('Save') : t('Create')}
+                    />
+                  }
+                  onStepChange={(_, step) => {
+                    if (error) {
+                      setError(undefined);
+                    }
+                    setCurrentStep(step);
+                  }}
+                >
+                  <WizardStep name={t('General info')} id={generalInfoStepId}>
+                    {(!currentStep || currentStep?.id === generalInfoStepId) && (
+                      <GeneralInfoStep isEdit={isEdit} isReadOnly={isReadOnly} />
+                    )}
+                  </WizardStep>
+                  <WizardStep
+                    name={t('Type and configuration')}
+                    id={typeConfigStepId}
+                    isDisabled={isWizardStepDisabled(typeConfigStepId, orderedIds, validStepIds)}
+                  >
+                    {currentStep?.id === typeConfigStepId && <TypeConfigStep isEdit={isEdit} isReadOnly={isReadOnly} />}
+                  </WizardStep>
+                  <WizardStep
+                    name={t('Versions')}
+                    id={versionStepId}
+                    isDisabled={isWizardStepDisabled(versionStepId, orderedIds, validStepIds)}
+                  >
+                    {currentStep?.id === versionStepId && <VersionStep isReadOnly={isReadOnly} isEdit={isEdit} />}
+                  </WizardStep>
+                  <WizardStep
+                    name={isReadOnly ? t('Review') : isEdit ? t('Review and save') : t('Review and create')}
+                    id={reviewStepId}
+                    isDisabled={isWizardStepDisabled(reviewStepId, orderedIds, validStepIds)}
+                  >
+                    {currentStep?.id === reviewStepId && (
+                      <ReviewStep error={error} isEdit={isEdit} isReadOnly={isReadOnly} />
+                    )}
+                  </WizardStep>
+                </Wizard>
+              </>
+            );
+          }}
+        </Formik>
+      </ErrorBoundary>
+    </PageSection>
+  );
+
+  if (isLoading) {
+    content = (
+      <PageSection>
+        <Bullseye>
+          <Spinner />
+        </Bullseye>
+      </PageSection>
+    );
+  }
+
+  if (initErr) {
+    content = (
+      <PageSection>
+        <Alert isInline variant="danger" title={t('Failed to fetch catalog item {{item}}', { item: itemId })}>
+          {getErrorMessage(initErr)}
+        </Alert>
+      </PageSection>
+    );
+  }
+
+  return (
+    <>
+      <PageSection hasBodyWrapper={false} type="breadcrumb">
+        <Breadcrumb>
+          <BreadcrumbItem>
+            <Link to={ROUTE.CATALOG}>{t('Software Catalog')}</Link>
+          </BreadcrumbItem>
+          <BreadcrumbItem isActive>{titleEl}</BreadcrumbItem>
+        </Breadcrumb>
+      </PageSection>
+      <PageSection hasBodyWrapper={false}>
+        <Title headingLevel="h1" size="3xl">
+          {titleEl}
+        </Title>
+      </PageSection>
+      {content}
+    </>
+  );
+};
+
+const addCatalogItemWizardPermissions = [
+  { kind: RESOURCE.CATALOG, verb: VERB.LIST },
+  { kind: RESOURCE.CATALOG_ITEM, verb: VERB.GET },
+  { kind: RESOURCE.CATALOG_ITEM, verb: VERB.CREATE },
+  { kind: RESOURCE.CATALOG_ITEM, verb: VERB.PATCH },
+];
+
+const AddCatalogItemWizardWithPermissions = () => {
+  const {
+    router: { useParams },
+  } = useAppContext();
+  const { catalogId, itemId } = useParams<{ catalogId: string; itemId: string }>();
+  const isEdit = !!catalogId && !!itemId;
+  const { checkPermissions, loading } = usePermissionsContext();
+  const [canListCatalogs, canGet, canCreate, canPatch] = checkPermissions(addCatalogItemWizardPermissions);
+  return (
+    <PageWithPermissions allowed={canListCatalogs && (isEdit ? canPatch && canGet : canCreate)} loading={loading}>
+      <AddCatalogItemWizard />
+    </PageWithPermissions>
+  );
+};
+
+export default AddCatalogItemWizardWithPermissions;

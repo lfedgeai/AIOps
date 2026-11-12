@@ -1,0 +1,143 @@
+# syntax=docker/dockerfile:1.6
+#
+# Multi-stage base image build for flightctl device images - RHEL 10
+# Targets:
+#   - prebase: bootc base with repos, tooling, users, services (no flightctl RPMs)
+#   - base:    final base image starting from prebase and layering flightctl RPMs
+#
+
+FROM registry.redhat.io/ubi9/go-toolset@sha256:0a4666f7a4eb0644c97a73cba198eb268691b270d97831822689e7a2088f87be AS oci-delta-build
+USER 0
+RUN yum install -y gcc pkgconf-pkg-config ostree-devel && yum clean all && \
+    mkdir -p /out && chown 1001:0 /out
+USER 1001
+RUN CGO_ENABLED=1 GOBIN=/out go install -tags "exclude_graphdriver_aufs exclude_graphdriver_btrfs exclude_graphdriver_zfs" github.com/containers/oci-delta@45baae628ce3fa5fa2071a702426487dcf1f5e0b
+
+# ---------- Stage: prebase ----------
+FROM registry.redhat.io/rhel10/rhel-bootc:latest AS prebase
+
+COPY --from=oci-delta-build /out/oci-delta /usr/bin/oci-delta
+
+# Enable CRB (CodeReady Builder) for RHEL 10
+RUN dnf -y install dnf-plugins-core && \
+    dnf config-manager --set-enabled codeready-builder-for-rhel-10-x86_64-rpms
+
+# Enable EPEL repos (no EPEL Next for Red Hat Enterprise Linux)
+RUN --mount=type=cache,target=/var/cache/dnf \
+    --mount=type=cache,target=/var/lib/dnf \
+    dnf install -y epel-release
+
+# Utilities used by tests
+RUN --mount=type=cache,target=/var/cache/dnf \
+    --mount=type=cache,target=/var/lib/dnf \
+    dnf install -y python-dotenv
+
+# Base services and tooling that don't depend on our RPMs
+RUN --mount=type=cache,target=/var/cache/dnf \
+    --mount=type=cache,target=/var/lib/dnf \
+    dnf install -y greenboot greenboot-default-health-checks podman-compose && \
+    dnf install -y firewalld && \
+    systemctl enable firewalld.service && \
+    systemctl enable podman.service
+
+# Speed up greenboot rollback for E2E testing:
+# Reduce boot attempts from 3 to 1 (saves ~6 minutes per rollback test)
+# Note: This config is read at staging time by greenboot-grub2-set-counter.service
+RUN echo "GREENBOOT_MAX_BOOT_ATTEMPTS=1" >> /etc/greenboot/greenboot.conf
+
+# Create test user
+RUN useradd -ms /bin/bash user && \
+    echo "user:user" | chpasswd && \
+    echo "user ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# Create flightctl custom info directory
+RUN mkdir -p /usr/lib/flightctl/custom-info.d && \
+    chmod 755 /usr/lib/flightctl/custom-info.d
+
+# Add custom system info collectors
+RUN echo -e '#!/bin/bash\necho "my site"' > /usr/lib/flightctl/custom-info.d/siteName && \
+    echo -e '#!/bin/bash\necho ""' > /usr/lib/flightctl/custom-info.d/emptyValue && \
+    echo -e '#!/bin/bash\necho "no-show"' > /usr/lib/flightctl/custom-info.d/keyNotShown && \
+    chmod 755 /usr/lib/flightctl/custom-info.d/*
+
+
+ARG SOURCE_GIT_TAG
+ARG SOURCE_GIT_COMMIT
+LABEL org.opencontainers.image.source="https://github.com/flightctl/flightctl"
+LABEL org.opencontainers.image.version="${SOURCE_GIT_TAG}"
+LABEL org.opencontainers.image.revision="${SOURCE_GIT_COMMIT}"
+
+# ---------- Stage: base  ----------
+FROM prebase AS base
+
+# Redeclare ARGs after FROM to make them available in this stage
+ARG SOURCE_GIT_TAG
+ARG SOURCE_GIT_COMMIT
+
+# RPM source configuration (paths relative to {project root}/bin/)
+ARG RPM_DIR=rpm
+ARG RPM_COPR_REPO=
+ARG RPM_COPR_PACKAGE=flightctl-agent
+
+# Optional: CA trust, agent config and certs
+ARG TRUST_CA_FROM=
+ARG AGENT_CONFIG_FROM=
+ARG AGENT_CERTS_FROM=
+
+COPY --from=variant-context flightctl-e2e.tmpfiles.conf /usr/lib/tmpfiles.d/flightctl-e2e.tmpfiles.conf
+COPY --from=variant-context e2e-status-value.sh /usr/lib/flightctl/custom-info.d/e2eStatusValue
+RUN chmod 0755 /usr/lib/flightctl/custom-info.d/e2eStatusValue
+
+# Install CA trust, agent config and certs if provided
+RUN --mount=type=bind,from=project-bin,source=.,target=/build-context \
+    sh -exc '\
+      if [ -n "${TRUST_CA_FROM}" ]; then \
+        echo "Installing custom CA certificate from ${TRUST_CA_FROM}"; \
+        cp "/build-context/${TRUST_CA_FROM}" /etc/pki/ca-trust/source/anchors/; \
+        update-ca-trust; \
+      fi; \
+      if [ -n "${AGENT_CONFIG_FROM}" ]; then \
+        echo "Installing agent config from ${AGENT_CONFIG_FROM}"; \
+        mkdir -p /etc/flightctl; \
+        cp "/build-context/${AGENT_CONFIG_FROM}" /etc/flightctl/config.yaml; \
+      fi; \
+      if [ -n "${AGENT_CERTS_FROM}" ]; then \
+        echo "Installing agent certificates from ${AGENT_CERTS_FROM}"; \
+        mkdir -p /etc/flightctl/certs; \
+        if ls "/build-context/${AGENT_CERTS_FROM}"/* >/dev/null 2>&1; then \
+          cp "/build-context/${AGENT_CERTS_FROM}"/* /etc/flightctl/certs/; \
+        else \
+          echo "No certificate files found in ${AGENT_CERTS_FROM}, skipping copy"; \
+        fi; \
+      fi'
+
+# Install flightctl RPMs (from COPR or local files)
+RUN --mount=type=bind,from=project-bin,source=.,target=/build-context \
+    --mount=type=cache,target=/var/cache/dnf \
+    --mount=type=cache,target=/var/lib/dnf \
+    sh -exc '\
+      mkdir -p /tmp/rpms; \
+      if [ -n "${RPM_COPR_REPO}" ]; then \
+        echo "Installing from COPR: ${RPM_COPR_REPO}, package: ${RPM_COPR_PACKAGE}"; \
+        dnf copr -y enable ${RPM_COPR_REPO}; \
+        dnf install -y ${RPM_COPR_PACKAGE}; \
+      else \
+        echo "Installing local RPMs from ${RPM_DIR}"; \
+        cp /build-context/${RPM_DIR}/flightctl-agent-*.rpm \
+           /build-context/${RPM_DIR}/flightctl-selinux-*.rpm /tmp/rpms/; \
+        ls -l /tmp/rpms; \
+        dnf install -y /tmp/rpms/*.rpm; \
+        rm -rf /tmp/rpms; \
+      fi; \
+      systemctl enable flightctl-agent.service'
+
+# The flightctl-agent RPM recommends oci-delta, so dnf installs the released
+# oci-delta package over the pinned binary copied into prebase. Re-copy the
+# pinned build (OCI_DELTA_REF) so delta apply uses the tested version, and
+# restore the SELinux label the packaged binary would otherwise carry.
+COPY --from=oci-delta-build /out/oci-delta /usr/bin/oci-delta
+RUN restorecon -v /usr/bin/oci-delta 2>/dev/null || true
+
+LABEL org.opencontainers.image.source="https://github.com/flightctl/flightctl"
+LABEL org.opencontainers.image.version="${SOURCE_GIT_TAG}"
+LABEL org.opencontainers.image.revision="${SOURCE_GIT_COMMIT}"

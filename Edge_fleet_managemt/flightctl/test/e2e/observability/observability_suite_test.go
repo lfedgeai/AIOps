@@ -1,0 +1,93 @@
+package observability_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/flightctl/flightctl/test/e2e/infra"
+	"github.com/flightctl/flightctl/test/e2e/infra/auxiliary"
+	"github.com/flightctl/flightctl/test/e2e/infra/setup"
+	"github.com/flightctl/flightctl/test/harness/e2e"
+	testutil "github.com/flightctl/flightctl/test/util"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+const TIMEOUT = 5 * time.Minute
+const POLLING = 125 * time.Millisecond
+const LONGTIMEOUT = "10m"
+const TENMINTIMEOUT = 10 * time.Minute
+const TENSECTIMEOUT = 10 * time.Second
+const FIVESECTIMEOUT = 5 * time.Second
+
+var auxSvcs *auxiliary.Services
+
+func TestObservability(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Observability E2E Suite")
+}
+
+var _ = BeforeSuite(func() {
+	ctx := context.Background()
+	Expect(setup.EnsureDefaultProviders(nil)).To(Succeed())
+
+	providers := setup.GetDefaultProviders()
+	infra.SkipIfObservabilityNotConfigured(ctx, providers)
+
+	var auxFuture *e2e.AuxServicesFuture
+	if providers.Infra.GetEnvironmentType() == infra.EnvironmentKind {
+		auxFuture = e2e.StartAuxServicesAsync(ctx)
+	}
+
+	e2e.SetupWorkerHarnessOrAbort()
+
+	if auxFuture != nil {
+		auxSvcs = auxFuture.Wait()
+	} else {
+		var err error
+		auxSvcs, err = auxiliary.StartServices(ctx, []auxiliary.Service{
+			auxiliary.ServiceRegistry,
+			auxiliary.ServiceGitServer,
+		})
+		Expect(err).ToNot(HaveOccurred())
+	}
+})
+
+var _ = AfterSuite(func() {
+	// In CI, cleanup containers; in local dev, leave running for speed
+	if auxSvcs != nil {
+		auxSvcs.Cleanup(context.Background())
+	}
+})
+
+var _ = BeforeEach(func() {
+	harness := e2e.GetWorkerHarness()
+	suiteCtx := e2e.GetWorkerContext()
+
+	ctx := testutil.StartSpecTracerForGinkgo(suiteCtx)
+	harness.SetTestContext(ctx)
+})
+
+var _ = AfterEach(func() {
+	workerID := GinkgoParallelProcess()
+	GinkgoWriter.Printf("🔄 [AfterEach] Worker %d: Cleaning up test resources\n", workerID)
+
+	// Get the harness and context directly - no shared variables needed
+	harness := e2e.GetWorkerHarness()
+	suiteCtx := e2e.GetWorkerContext()
+
+	// Capture logs if test failed
+	harness.PrintAgentLogsIfFailed()
+	harness.CaptureDeploymentLogsIfFailed()
+
+	// Clean up test resources BEFORE switching back to suite context
+	// This ensures we use the correct test ID for resource cleanup
+	err := harness.CleanUpAllTestResources()
+	Expect(err).ToNot(HaveOccurred())
+
+	// Now restore suite context for any remaining cleanup operations
+	harness.SetTestContext(suiteCtx)
+
+	GinkgoWriter.Printf("✅ [AfterEach] Worker %d: Test cleanup completed\n", workerID)
+})

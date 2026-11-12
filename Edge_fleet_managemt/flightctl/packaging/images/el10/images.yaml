@@ -1,0 +1,75 @@
+api:
+  image: quay.io/flightctl/flightctl-api-el10
+  tag: latest
+periodic:
+  image: quay.io/flightctl/flightctl-periodic-el10
+  tag: latest
+worker:
+  image: quay.io/flightctl/flightctl-worker-el10
+  tag: latest
+delta-worker:
+  image: quay.io/flightctl/flightctl-delta-worker-el10
+  tag: latest
+alert-exporter:
+  image: quay.io/flightctl/flightctl-alert-exporter-el10
+  tag: latest
+catalog-collector:
+  image: quay.io/flightctl/flightctl-catalog-collector-el10
+  tag: latest
+cli-artifacts:
+  image: quay.io/flightctl/flightctl-cli-artifacts-el10
+  tag: latest
+alertmanager-proxy:
+  image: quay.io/flightctl/flightctl-alertmanager-proxy-el10
+  tag: latest
+pam-issuer:
+  image: quay.io/flightctl/flightctl-pam-issuer-el10
+  tag: latest
+ui:
+  image: quay.io/flightctl/flightctl-ui-el10
+  tag: latest
+db-setup:
+  image: quay.io/flightctl/flightctl-db-setup-el10
+  tag: latest
+gateway:
+  image: registry.access.redhat.com/ubi10/nginx-126
+  tag: "10.2-1793578939"
+db:
+  image: quay.io/sclorg/postgresql-16-c9s
+  tag: "20250214"
+kv:
+  # Using Valkey (Redis replacement) for EL10 flavor
+  image: quay.io/sclorg/valkey-8-c10s
+  tag: "20260121"
+alertmanager:
+  image: quay.io/prometheus/alertmanager
+  tag: v0.28.1
+imagebuilder-api:
+  image: quay.io/flightctl/flightctl-imagebuilder-api-el10
+  tag: latest
+imagebuilder-worker:
+  image: quay.io/flightctl/flightctl-imagebuilder-worker-el10
+  tag: latest
+# grafana and prometheus MUST remain here: packaging/rpm/flightctl.spec invokes
+# `flightctl-standalone render quadlets` with this file to populate
+# {{ .Grafana.Image }}:{{ .Grafana.Tag }} and {{ .Prometheus.Image }}:{{ .Prometheus.Tag }}
+# in the quadlet .container templates. Removing them breaks the RPM build.
+#
+# The flightctl-mirror-images tool excludes these entries at parse time (observabilityOnlyImages
+# in parser.go) because they belong to the optional flightctl-observability stack.
+# Mirror them manually for air-gapped deployments — see deploying-observability-linux.md.
+grafana:
+  image: quay.io/ceph/grafana
+  tag: 12.0.2
+prometheus:
+  image: quay.io/prometheus/prometheus
+  tag: "v2.43.1"
+telemetry-gateway:
+  image: quay.io/flightctl/flightctl-telemetry-gateway-el10
+  tag: latest
+userinfo-proxy:
+  image: quay.io/flightctl/flightctl-userinfo-proxy-el10
+  tag: latest
+remote-access:
+  image: quay.io/flightctl/flightctl-remote-access-el10
+  tag: latest

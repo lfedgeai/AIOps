@@ -1,0 +1,31 @@
+[Unit]
+Description=Flight Control Alertmanager Proxy service
+PartOf=flightctl.target
+After=flightctl-alertmanager.service flightctl-db-wait.service flightctl-db-migrate.service flightctl-certs-init.service
+Wants=flightctl-alertmanager.service flightctl-db-wait.service flightctl-db-migrate.service flightctl-certs-init.service
+
+[Container]
+ContainerName=flightctl-alertmanager-proxy
+Image={{ .AlertmanagerProxy.Image }}:{{ .AlertmanagerProxy.Tag }}
+Pull=missing
+Network=flightctl.network
+AddHost=%H:host-gateway
+EnvironmentFile=/etc/flightctl/flightctl-alertmanager-proxy/env
+Volume=/etc/flightctl/flightctl-alertmanager-proxy/config.yaml:/root/.flightctl/config.yaml:ro,z
+Volume=/etc/flightctl/label-sync:/etc/flightctl/label-sync:ro,z
+Volume=/etc/flightctl/encryption:/root/.flightctl/encryption:ro,z
+Volume=/etc/flightctl/pki/db:/root/.flightctl/certs/db:ro,z
+Secret=flightctl-postgresql-user-password,type=env,target=DB_PASSWORD
+Environment=DB_USER=flightctl_app
+
+[Service]
+Restart=always
+RestartSec=30
+
+ExecStartPre=/usr/bin/flightctl-standalone render template --input-file /usr/share/flightctl/flightctl-alertmanager-proxy/config.yaml.template --output-file /etc/flightctl/flightctl-alertmanager-proxy/config.yaml
+ExecStartPre=/usr/bin/flightctl-standalone render template --input-file /usr/share/flightctl/flightctl-alertmanager-proxy/env.template --output-file /etc/flightctl/flightctl-alertmanager-proxy/env
+
+ExecStartPost=bash -c '! systemctl is-active --quiet flightctl-gateway || podman exec flightctl-gateway nginx -s reload'
+
+[Install]
+WantedBy=flightctl.target

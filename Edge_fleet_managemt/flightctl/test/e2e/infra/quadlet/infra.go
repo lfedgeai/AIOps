@@ -1,0 +1,1175 @@
+// Package quadlet provides Quadlet/systemd-specific implementations of the infra providers.
+package quadlet
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	internalconfig "github.com/flightctl/flightctl/internal/config"
+	"github.com/flightctl/flightctl/test/e2e/infra"
+	"github.com/jackc/pgx/v5"
+	"github.com/sirupsen/logrus"
+	"sigs.k8s.io/yaml"
+)
+
+const (
+	remoteForwardReadyTimeout = 10 * time.Second
+	remoteForwardPollInterval = 100 * time.Millisecond
+	remoteForwardStopTimeout  = time.Second
+)
+
+// ServiceInfo holds metadata about a Quadlet service.
+type ServiceInfo struct {
+	ContainerName string
+	SystemdUnit   string
+	Port          int
+}
+
+// ServiceRegistry maps service names to their Quadlet-specific metadata.
+var ServiceRegistry = map[infra.ServiceName]ServiceInfo{
+	infra.ServiceRedis:              {ContainerName: "flightctl-kv", SystemdUnit: "flightctl-kv.service", Port: 6379},
+	infra.ServiceAPI:                {ContainerName: "flightctl-api", SystemdUnit: "flightctl-api.service", Port: 3443},
+	infra.ServiceWorker:             {ContainerName: "flightctl-worker", SystemdUnit: "flightctl-worker.service", Port: 7443},
+	infra.ServiceDeltaWorker:        {ContainerName: "flightctl-delta-worker", SystemdUnit: "flightctl-delta-worker.service", Port: 8080},
+	infra.ServicePeriodic:           {ContainerName: "flightctl-periodic", SystemdUnit: "flightctl-periodic.service", Port: 0},
+	infra.ServiceTelemetryGateway:   {ContainerName: "flightctl-telemetry-gateway", SystemdUnit: "flightctl-telemetry-gateway.service", Port: 9464},
+	infra.ServiceDB:                 {ContainerName: "flightctl-db", SystemdUnit: "flightctl-db.service", Port: 5432},
+	infra.ServiceUI:                 {ContainerName: "flightctl-ui", SystemdUnit: "flightctl-ui.service", Port: 9001},
+	infra.ServiceAlertmanager:       {ContainerName: "flightctl-alertmanager", SystemdUnit: "flightctl-alertmanager.service", Port: 9093},
+	infra.ServiceAlertmanagerProxy:  {ContainerName: "flightctl-alertmanager-proxy", SystemdUnit: "flightctl-alertmanager-proxy.service", Port: 8443},
+	infra.ServiceImageBuilderAPI:    {ContainerName: "flightctl-imagebuilder-api", SystemdUnit: "flightctl-imagebuilder-api.service", Port: 8445},
+	infra.ServiceImageBuilderWorker: {ContainerName: "flightctl-imagebuilder-worker", SystemdUnit: "flightctl-imagebuilder-worker.service", Port: 8080},
+	infra.ServiceAlertExporter:      {ContainerName: "flightctl-alert-exporter", SystemdUnit: "flightctl-alert-exporter.service", Port: 0},
+	infra.ServicePrometheus:         {ContainerName: "flightctl-prometheus", SystemdUnit: "flightctl-prometheus.service", Port: 9090},
+}
+
+// InfraProvider implements infra.InfraProvider for Quadlet environments.
+// Supports both local and remote Quadlet deployments via SSH.
+type InfraProvider struct {
+	// host is the hostname/IP where Quadlet services are running
+	host string
+	// sshUser is the SSH user for remote connections (empty for local)
+	sshUser string
+	// sshKeyPath is the path to SSH private key (optional)
+	sshKeyPath string
+	// configDir is the base directory for config files on the target host
+	configDir string
+	// secretDir is the base directory for secret files on the target host
+	secretDir string
+	// useSudo indicates whether to use sudo for commands on the target host
+	useSudo bool
+
+	// exposeCache keeps one port-forward per (service, protocol) so repeated ExposeService calls reuse it.
+	exposeCache map[string]struct {
+		url     string
+		cleanup func()
+	}
+	exposeCacheMu sync.Mutex
+}
+
+// NewInfraProvider creates a new Quadlet InfraProvider.
+// For remote hosts, set QUADLET_HOST and E2E_SSH_USER env vars.
+// Auth: set E2E_SSH_KEY_PATH for key-based auth, or E2E_SSH_PASSWORD for password auth (requires sshpass).
+// Registry comes from auxiliary; use auxiliary.Get(ctx).Registry.Host/Registry.Port and Registry.Authenticated for credential-required OCI pulls.
+func NewInfraProvider(configDir, secretDir string, useSudo bool) *InfraProvider {
+	host := os.Getenv("QUADLET_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+	if configDir == "" {
+		configDir = "/etc/flightctl"
+	}
+	if secretDir == "" {
+		secretDir = "/etc/flightctl/secrets" //nolint:gosec // G101: This is a path, not credentials
+	}
+	return &InfraProvider{
+		host:       host,
+		sshUser:    os.Getenv("E2E_SSH_USER"),
+		sshKeyPath: os.Getenv("E2E_SSH_KEY_PATH"),
+		configDir:  configDir,
+		secretDir:  secretDir,
+		useSudo:    useSudo,
+	}
+}
+
+// GetHost returns the host where Quadlet services are running.
+func (p *InfraProvider) GetHost() string {
+	return p.host
+}
+
+// isRemote returns true if the Quadlet host is remote (requires SSH).
+func (p *InfraProvider) isRemote() bool {
+	return p.sshUser != "" && p.host != "localhost" && p.host != "127.0.0.1"
+}
+
+// RunCommand runs a command on the Quadlet host (with SSH/sudo if configured). Used by SecretsProvider to read Podman secrets via container env.
+func (p *InfraProvider) RunCommand(command ...string) (string, error) {
+	return p.runCommand(command...)
+}
+
+// RunCommandContext runs a command on the Quadlet host with context cancellation support.
+// If ctx is canceled, the command is killed. Returns context.Canceled if ctx was canceled.
+func (p *InfraProvider) RunCommandContext(ctx context.Context, command ...string) (string, error) {
+	return p.runCommandWithOptionalStdinContext(ctx, nil, command...)
+}
+
+// RunCommandWithStdinContext runs a command with stdin data and context cancellation support.
+// Useful for piping large data that would exceed command argument length limits.
+func (p *InfraProvider) RunCommandWithStdinContext(ctx context.Context, stdin io.Reader, command ...string) (string, error) {
+	return p.runCommandWithOptionalStdinContext(ctx, stdin, command...)
+}
+
+// ReadHostFile reads a raw file from the quadlet host.
+func (p *InfraProvider) ReadHostFile(path string) (string, error) {
+	output, err := p.runCommand("cat", path)
+	if err != nil {
+		return "", fmt.Errorf("read host file %s: %w", path, err)
+	}
+	return output, nil
+}
+
+// WriteHostFile writes raw content to a file on the quadlet host.
+func (p *InfraProvider) WriteHostFile(path string, content []byte) error {
+	if err := p.writeHostFile(path, content); err != nil {
+		return fmt.Errorf("write host file %s: %w", path, err)
+	}
+	return nil
+}
+
+// RemoveHostFile removes a file from the quadlet host.
+func (p *InfraProvider) RemoveHostFile(path string) error {
+	if _, err := p.runCommand("rm", "-f", path); err != nil {
+		return fmt.Errorf("remove host file %s: %w", path, err)
+	}
+	return nil
+}
+
+// quoteForRemoteShell returns a single-quoted string safe for the remote POSIX shell; inner single quotes are escaped as backslash-quote.
+func quoteForRemoteShell(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// getSSHPassword returns the SSH password from E2E_SSH_PASSWORD (used when no key is set).
+func getSSHPassword() string {
+	return os.Getenv("E2E_SSH_PASSWORD")
+}
+
+// runCommandWithOptionalStdinContext runs a command with context cancellation support.
+// If ctx is canceled, the command is killed. Returns context.Canceled if ctx was canceled.
+func (p *InfraProvider) runCommandWithOptionalStdinContext(ctx context.Context, stdin io.Reader, command ...string) (string, error) {
+	var cmd *exec.Cmd
+
+	if p.isRemote() {
+		sshArgs := []string{"-o", "StrictHostKeyChecking=no"}
+		password := getSSHPassword()
+		usePassword := p.sshKeyPath == "" && password != ""
+		if p.sshKeyPath != "" {
+			sshArgs = append(sshArgs, "-o", "BatchMode=yes", "-i", p.sshKeyPath)
+		} else if !usePassword {
+			sshArgs = append(sshArgs, "-o", "BatchMode=yes")
+		}
+		sshTarget := fmt.Sprintf("%s@%s", p.sshUser, p.host)
+		sshArgs = append(sshArgs, sshTarget)
+
+		remoteParts := make([]string, 0, len(command)+1)
+		if p.useSudo {
+			remoteParts = append(remoteParts, quoteForRemoteShell("sudo"))
+		}
+		for _, c := range command {
+			remoteParts = append(remoteParts, quoteForRemoteShell(c))
+		}
+		sshArgs = append(sshArgs, strings.Join(remoteParts, " "))
+
+		if usePassword {
+			passwordFile, cleanupPasswordFile, err := sshpassPasswordFile(password)
+			if err != nil {
+				return "", fmt.Errorf("prepare SSH password for remote command: %w", err)
+			}
+			defer cleanupPasswordFile()
+
+			cmd = exec.CommandContext(ctx, "sshpass", append([]string{"-d", "3", "ssh"}, sshArgs...)...) //nolint:gosec // G204: sshArgs from trusted config
+			cmd.ExtraFiles = []*os.File{passwordFile}
+		} else {
+			cmd = exec.CommandContext(ctx, "ssh", sshArgs...) //nolint:gosec // G204: sshArgs from trusted config
+		}
+	} else {
+		// Local execution
+		if p.useSudo {
+			cmd = exec.CommandContext(ctx, "sudo", command...) //nolint:gosec // G204: command from trusted caller
+		} else {
+			cmd = exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // G204: command from trusted caller
+		}
+	}
+
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("command failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
+}
+
+// runCommandWithOptionalStdin runs a command (SSH if remote, else local). If stdin is non-nil it is attached to the process.
+// Calls runCommandWithOptionalStdinContext with a background context.
+func (p *InfraProvider) runCommandWithOptionalStdin(stdin io.Reader, command ...string) (string, error) {
+	return p.runCommandWithOptionalStdinContext(context.Background(), stdin, command...)
+}
+
+// runCommand executes a command, using SSH if the host is remote.
+func (p *InfraProvider) runCommand(command ...string) (string, error) {
+	return p.runCommandWithOptionalStdin(nil, command...)
+}
+
+// runCommandWithStdin runs a command with stdin attached (for remote, SSH forwards stdin to the remote process).
+func (p *InfraProvider) runCommandWithStdin(stdin io.Reader, command ...string) (string, error) {
+	return p.runCommandWithOptionalStdin(stdin, command...)
+}
+
+// GetConfigValue retrieves a configuration value from config files or environment.
+func (p *InfraProvider) GetConfigValue(name, key string) (string, error) {
+	if err := validatePathComponent("config name", name); err != nil {
+		return "", err
+	}
+	if err := validatePathComponent("config key", key); err != nil {
+		return "", err
+	}
+
+	// Try environment variable first (uppercase, with underscores)
+	envKey := strings.ToUpper(strings.ReplaceAll(name+"_"+key, "-", "_"))
+	if value := os.Getenv(envKey); value != "" {
+		return value, nil
+	}
+
+	// Read config file from target host
+	configFile := filepath.Join(p.configDir, name+".yaml")
+	data, err := p.runCommand("cat", configFile)
+	if err != nil {
+		// Try without .yaml extension
+		configFile = filepath.Join(p.configDir, name)
+		data, err = p.runCommand("cat", configFile)
+		if err != nil {
+			return "", fmt.Errorf("config %s not found in environment or files: %w", name, err)
+		}
+	}
+
+	// Parse as YAML and extract key
+	var config map[string]interface{}
+	if err := yaml.Unmarshal([]byte(data), &config); err != nil {
+		// If not YAML, treat as plain text for simple key lookup
+		return data, nil
+	}
+
+	value, ok := config[key]
+	if !ok {
+		return "", fmt.Errorf("key %s not found in config %s", key, name)
+	}
+
+	return fmt.Sprintf("%v", value), nil
+}
+
+// GetServiceConfig retrieves the full configuration content for a service.
+// For Quadlet, configs are on the target host at /etc/flightctl/<container-name>/config.yaml.
+func (p *InfraProvider) GetServiceConfig(service infra.ServiceName) (string, error) {
+	hostPath := p.serviceToHostConfigPath(service)
+	output, err := p.runCommand("cat", hostPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read config for service %s from %s: %w", service, hostPath, err)
+	}
+	return output, nil
+}
+
+// serviceToHostConfigPath returns the host filesystem path for a service's config.
+// Quadlet configs are stored at /etc/flightctl/<container-name>/config.yaml on the host.
+func (p *InfraProvider) serviceToHostConfigPath(service infra.ServiceName) string {
+	info := GetServiceInfo(service)
+	return filepath.Join(p.configDir, info.ContainerName, "config.yaml")
+}
+
+// serviceConfigPath returns the host path for the main service-config.yaml that
+// the template engine uses to generate per-service configs.
+func (p *InfraProvider) serviceConfigPath() string {
+	return filepath.Join(p.configDir, "service-config.yaml")
+}
+
+// GetStandaloneServiceConfig returns the raw /etc/flightctl/service-config.yaml contents.
+// This is quadlet-specific and is useful for tests that need to reconfigure
+// standalone auth or other top-level settings that are not exposed via
+// per-service config mappings.
+func (p *InfraProvider) GetStandaloneServiceConfig() (string, error) {
+	path := p.serviceConfigPath()
+	output, err := p.runCommand("cat", path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read standalone service config from %s: %w", path, err)
+	}
+	return output, nil
+}
+
+// SetStandaloneServiceConfig writes raw content to /etc/flightctl/service-config.yaml.
+// This is quadlet-specific and bypasses per-service config mappings.
+func (p *InfraProvider) SetStandaloneServiceConfig(content string) error {
+	path := p.serviceConfigPath()
+	return p.writeHostFile(path, []byte(content))
+}
+
+// GetSecretValue retrieves a secret value from secret files or environment.
+func (p *InfraProvider) GetSecretValue(name, key string) (string, error) {
+	if err := validatePathComponent("secret name", name); err != nil {
+		return "", err
+	}
+	if err := validatePathComponent("secret key", key); err != nil {
+		return "", err
+	}
+
+	// Try environment variable first
+	envKey := strings.ToUpper(strings.ReplaceAll(name+"_"+key, "-", "_"))
+	if value := os.Getenv(envKey); value != "" {
+		return value, nil
+	}
+
+	// Try specific key file in secrets directory on target host
+	secretFile := filepath.Join(p.secretDir, name, key)
+	data, err := p.runCommand("cat", secretFile)
+	if err == nil {
+		return strings.TrimSpace(data), nil
+	}
+
+	// Try YAML file
+	secretFile = filepath.Join(p.secretDir, name+".yaml")
+	data, err = p.runCommand("cat", secretFile)
+	if err != nil {
+		return "", fmt.Errorf("secret %s/%s not found in environment or files: %w", name, key, err)
+	}
+
+	var secrets map[string]interface{}
+	if err := yaml.Unmarshal([]byte(data), &secrets); err != nil {
+		return "", fmt.Errorf("failed to parse secret file %s: %w", secretFile, err)
+	}
+
+	value, ok := secrets[key]
+	if !ok {
+		return "", fmt.Errorf("key %s not found in secret %s", key, name)
+	}
+
+	return fmt.Sprintf("%v", value), nil
+}
+
+// GetServiceEndpoint returns the host and port for a named service.
+// For Quadlet, services run on the configured host with well-known ports.
+func (p *InfraProvider) GetServiceEndpoint(service infra.ServiceName) (string, int, error) {
+	info := GetServiceInfo(service)
+	return p.host, info.Port, nil
+}
+
+// ExposeService makes an internal service accessible from the test host.
+// If the container already publishes the port (e.g. flightctl-api), returns that URL and a no-op cleanup.
+// Otherwise (e.g. Redis) starts a TCP forwarder from a local port to the container, using SSH for remote Quadlet hosts.
+// Repeated calls for the same (service, protocol) return the same URL so polling (e.g. WaitForQueueAccessible) does not spawn a new forward every time.
+func (p *InfraProvider) ExposeService(service infra.ServiceName, protocol string) (string, func(), error) {
+	info := GetServiceInfo(service)
+	if info.Port == 0 {
+		return "", nil, fmt.Errorf("ExposeService: service %s has no port", service)
+	}
+	cacheKey := string(service) + ":" + protocol
+	p.exposeCacheMu.Lock()
+	if p.exposeCache != nil {
+		if e, ok := p.exposeCache[cacheKey]; ok {
+			p.exposeCacheMu.Unlock()
+			return e.url, func() {}, nil
+		}
+	} else {
+		p.exposeCache = make(map[string]struct {
+			url     string
+			cleanup func()
+		})
+	}
+	p.exposeCacheMu.Unlock()
+
+	// If the Quadlet publishes the port, use it directly.
+	if publishedHost, hostPort, ok := p.getPublishedPort(info.ContainerName, info.Port); ok {
+		if p.isRemote() && isLoopbackPublishedHost(publishedHost) {
+			logrus.Infof("Quadlet: %s publishes %d on remote loopback %s; using port-forward", service, info.Port, publishedHost)
+		} else {
+			host := publishedHost
+			if host == "" || isAllInterfacesPublishedHost(host) {
+				host = p.host
+			}
+			if host == "localhost" {
+				host = "127.0.0.1"
+			}
+			url := fmt.Sprintf("%s://%s", protocol, net.JoinHostPort(host, strconv.Itoa(hostPort)))
+			p.exposeCacheMu.Lock()
+			if e, ok := p.exposeCache[cacheKey]; ok {
+				p.exposeCacheMu.Unlock()
+				return e.url, func() {}, nil
+			}
+			p.exposeCache[cacheKey] = struct {
+				url     string
+				cleanup func()
+			}{url, func() {}}
+			p.exposeCacheMu.Unlock()
+			return url, func() {}, nil
+		}
+	}
+
+	// Not published: port-forward from a local port to the container.
+	containerIP, err := p.getContainerIP(info.ContainerName)
+	if err != nil {
+		return "", nil, fmt.Errorf("get container IP for %s: %w", info.ContainerName, err)
+	}
+	var url string
+	var cleanup func()
+	if p.isRemote() {
+		url, cleanup, err = p.startRemotePortForward(containerIP, info.Port, protocol, service)
+		if err != nil {
+			return "", nil, err
+		}
+	} else {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return "", nil, fmt.Errorf("listen on OS-assigned local port: %w", err)
+		}
+		localPort := listener.Addr().(*net.TCPAddr).Port
+		target := net.JoinHostPort(containerIP, strconv.Itoa(info.Port))
+		go runTCPForward(listener, target, service)
+		url = fmt.Sprintf("%s://127.0.0.1:%d", protocol, localPort)
+		cleanup = func() {
+			if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				logrus.Warnf("Quadlet: failed to close %s local port-forward: %v", service, err)
+			}
+		}
+	}
+	p.exposeCacheMu.Lock()
+	if e, ok := p.exposeCache[cacheKey]; ok {
+		p.exposeCacheMu.Unlock()
+		cleanup()
+		return e.url, func() {}, nil
+	}
+	p.exposeCache[cacheKey] = struct {
+		url     string
+		cleanup func()
+	}{url, cleanup}
+	p.exposeCacheMu.Unlock()
+	logrus.Infof("Quadlet: port-forwarding %s to %s", service, url)
+	// Return no-op cleanup so callers do not close the shared forward; InvalidateExposeCache owns cleanup.
+	return url, func() {}, nil
+}
+
+// InvalidateExposeCache stops any cached port-forward for the service and removes it from the cache.
+// Call after restarting a service so the next ExposeService creates a new forward to the new container IP.
+func (p *InfraProvider) InvalidateExposeCache(service infra.ServiceName) {
+	prefix := string(service) + ":"
+	p.exposeCacheMu.Lock()
+	defer p.exposeCacheMu.Unlock()
+	if p.exposeCache == nil {
+		return
+	}
+	for key, e := range p.exposeCache {
+		if strings.HasPrefix(key, prefix) {
+			e.cleanup() // stop the forwarded process / release resources
+			delete(p.exposeCache, key)
+		}
+	}
+}
+
+// getPublishedPort returns the published host and port for a container port (e.g. 0.0.0.0:3443).
+// Returns ("", 0, false) if the port is not published.
+func (p *InfraProvider) getPublishedPort(containerName string, containerPort int) (publishedHost string, hostPort int, ok bool) {
+	portArg := fmt.Sprintf("%d/tcp", containerPort)
+	args := []string{"podman", "port", containerName, portArg}
+	output, err := p.runCommand(args...)
+	if err != nil {
+		return "", 0, false
+	}
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return "", 0, false
+	}
+	// Output is like "0.0.0.0:3443", "127.0.0.1:3443", or ":::3443".
+	if i := strings.LastIndex(output, ":"); i >= 0 && i < len(output)-1 {
+		port, err := strconv.Atoi(output[i+1:])
+		if err == nil {
+			return strings.Trim(output[:i], "[]"), port, true
+		} else {
+			logrus.Debugf("Quadlet: ignoring invalid published port output %q: %v", output, err)
+		}
+	}
+	return "", 0, false
+}
+
+// getContainerIP returns the first container IP (Podman bridge).
+func (p *InfraProvider) getContainerIP(containerName string) (string, error) {
+	format := "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"
+	args := []string{"podman", "inspect", "-f", format, containerName}
+	output, err := p.runCommand(args...)
+	if err != nil {
+		return "", err
+	}
+	ip := strings.TrimSpace(output)
+	if ip == "" {
+		return "", fmt.Errorf("container %s has no network IP", containerName)
+	}
+	return ip, nil
+}
+
+// getFreePort asks the OS for an available local TCP port and releases the probe listener.
+func getFreePort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		logrus.Warnf("getFreePort: close probe listener: %v", err)
+	}
+	return port, nil
+}
+
+// runTCPForward accepts on listener and forwards each connection to target (host:port).
+func runTCPForward(listener net.Listener, target string, service infra.ServiceName) {
+	for {
+		client, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			backend, err := net.Dial("tcp", target)
+			if err != nil {
+				logrus.Warnf("Quadlet forward %s: dial %s: %v", service, target, err)
+				closeForwardConnection(client, service, "client")
+				return
+			}
+
+			copyDone := make(chan struct{}, 2)
+			go func() {
+				if _, err := io.Copy(backend, client); err != nil && !errors.Is(err, net.ErrClosed) {
+					logrus.Debugf("Quadlet forward %s: copy client to backend: %v", service, err)
+				}
+				copyDone <- struct{}{}
+			}()
+			go func() {
+				if _, err := io.Copy(client, backend); err != nil && !errors.Is(err, net.ErrClosed) {
+					logrus.Debugf("Quadlet forward %s: copy backend to client: %v", service, err)
+				}
+				copyDone <- struct{}{}
+			}()
+
+			<-copyDone
+			// Close both ends to unblock the other copy goroutine; ErrClosed is suppressed in both goroutines.
+			closeForwardConnection(client, service, "client")
+			closeForwardConnection(backend, service, "backend")
+			<-copyDone
+		}()
+	}
+}
+
+// ExecInService executes a command in the context of a service container.
+// For Quadlet, this uses podman exec on the target host (local or remote via SSH).
+func (p *InfraProvider) ExecInService(service infra.ServiceName, command []string) (string, error) {
+	info := GetServiceInfo(service)
+
+	podmanArgs := append([]string{"podman", "exec", info.ContainerName}, command...)
+	output, err := p.runCommand(podmanArgs...)
+	if err != nil {
+		return output, fmt.Errorf("failed to exec in service %s: %w", service, err)
+	}
+	return output, nil
+}
+
+// ExecInServiceWithStdin executes a command in the context of a service container with stdin attached.
+// For Quadlet: podman exec -i (stdin piped through SSH when remote).
+func (p *InfraProvider) ExecInServiceWithStdin(service infra.ServiceName, command []string, stdin io.Reader) (string, error) {
+	info := GetServiceInfo(service)
+
+	podmanArgs := append([]string{"podman", "exec", "-i", info.ContainerName}, command...)
+	output, err := p.runCommandWithStdin(stdin, podmanArgs...)
+	if err != nil {
+		return output, fmt.Errorf("failed to exec in service %s: %w", service, err)
+	}
+	return output, nil
+}
+
+// getServiceInfo returns the service metadata from the registry.
+// GetServiceInfo returns the service metadata from the registry.
+func GetServiceInfo(service infra.ServiceName) ServiceInfo {
+	if info, ok := ServiceRegistry[service]; ok {
+		return info
+	}
+	// Default for unknown services
+	name := string(service)
+	return ServiceInfo{ContainerName: name, SystemdUnit: name + ".service", Port: 0}
+}
+
+// GetEnvironmentType returns "quadlet".
+func (p *InfraProvider) GetEnvironmentType() string {
+	return infra.EnvironmentQuadlet
+}
+
+// GetAPILoginToken returns a token for flightctl login. Quadlet: read from env or file.
+func (p *InfraProvider) GetAPILoginToken() (string, error) {
+	if t := os.Getenv("E2E_PAM_TOKEN"); t != "" {
+		return strings.TrimSpace(t), nil
+	}
+	tokenPath := filepath.Join(p.secretDir, "api-login.token")
+	output, err := p.runCommand("cat", tokenPath)
+	if err != nil {
+		return "", fmt.Errorf("Quadlet: no E2E_PAM_TOKEN and could not read %s: %w", tokenPath, err)
+	}
+	return strings.TrimSpace(output), nil
+}
+
+// GetInternalNamespace returns empty for Quadlet (no split namespaces).
+func (p *InfraProvider) GetInternalNamespace() string {
+	return ""
+}
+
+// GetExternalNamespace returns empty for Quadlet (no K8s release namespace).
+func (p *InfraProvider) GetExternalNamespace() string {
+	return ""
+}
+
+// ServiceExists reports whether the backing Quadlet service is active.
+func (p *InfraProvider) ServiceExists(ctx context.Context, service infra.ServiceName) (bool, error) {
+	info := GetServiceInfo(service)
+	if info.SystemdUnit == "" {
+		return false, fmt.Errorf("unknown service %q", service)
+	}
+	out, err := p.runCommandWithOptionalStdinContext(ctx, nil, "systemctl", "is-active", info.SystemdUnit)
+	if err != nil {
+		return false, nil
+	}
+	return strings.TrimSpace(out) == "active", nil
+}
+
+// BuiltinDatabaseWorkloadAvailable reports whether service-config uses the built-in DB container.
+// When db.type is external (see deploy/podman/service-config.yaml), there is no local flightctl-db
+// workload to exec pg_dump into, matching Helm external DB behavior.
+func (p *InfraProvider) BuiltinDatabaseWorkloadAvailable() bool {
+	data, err := p.runCommand("cat", p.serviceConfigPath())
+	if err != nil {
+		logrus.Warnf("BuiltinDatabaseWorkloadAvailable: read %s: %v (assuming builtin DB)", p.serviceConfigPath(), err)
+		return true
+	}
+	switch quadletServiceConfigDBType([]byte(data)) {
+	case "external":
+		return false
+	default:
+		// builtin, empty, or unknown — same default as yaml_helpers.py --default "builtin"
+		return true
+	}
+}
+
+// quadletServiceConfigDBType returns the lowercase db.type value from service-config.yaml, or "" if missing.
+func quadletServiceConfigDBType(serviceConfigYAML []byte) string {
+	var root map[string]interface{}
+	if err := yaml.Unmarshal(serviceConfigYAML, &root); err != nil {
+		return ""
+	}
+	dbVal, ok := root["db"]
+	if !ok || dbVal == nil {
+		return ""
+	}
+	db, ok := dbVal.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	tRaw, ok := db["type"]
+	if !ok || tRaw == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", tRaw)))
+}
+
+// quadletEncryptionKeyDir is the host-side directory where Quadlet mounts encryption key files.
+// This matches the Volume source in the .container files: /etc/flightctl/encryption:/root/.flightctl/encryption:ro,z
+const quadletEncryptionKeyDir = "/etc/flightctl/encryption"
+
+// SetEncryptionKey writes a named encryption key file to the host filesystem at
+// /etc/flightctl/encryption/<keyFileName> so it becomes available to the service container.
+// For Quadlet the volume is bind-mounted from the host, so a host-side write is sufficient;
+// there is no need to restart the container for the file to appear inside it.
+func (p *InfraProvider) SetEncryptionKey(_ infra.ServiceName, keyFileName string, keyBytes []byte) error {
+	if keyFileName == "" {
+		return fmt.Errorf("SetEncryptionKey: keyFileName is required")
+	}
+	if strings.ContainsAny(keyFileName, "/\\.") {
+		return fmt.Errorf("SetEncryptionKey: keyFileName must be a plain basename, got %q", keyFileName)
+	}
+	if len(keyBytes) == 0 {
+		return fmt.Errorf("SetEncryptionKey: keyBytes is empty")
+	}
+	// Write the base64-encoded key so the file format matches generate-encryption-key.sh output
+	// (openssl rand -base64 32). DecodeAES256Key expects a base64-encoded string on disk.
+	hostPath := filepath.Join(quadletEncryptionKeyDir, keyFileName)
+	encoded := []byte(base64.StdEncoding.EncodeToString(keyBytes))
+	if err := p.writeHostFile(hostPath, encoded); err != nil {
+		return fmt.Errorf("SetEncryptionKey: write %s: %w", hostPath, err)
+	}
+	return nil
+}
+
+// ResetEncryptionKeys removes all key-* files from the Quadlet encryption key directory,
+// leaving only the original "key" file. Used by test recovery to undo key rotation.
+func (p *InfraProvider) ResetEncryptionKeys() error {
+	out, err := p.runCommand("ls", quadletEncryptionKeyDir)
+	if err != nil {
+		return fmt.Errorf("ResetEncryptionKeys: list %s: %w", quadletEncryptionKeyDir, err)
+	}
+	for _, name := range strings.Fields(out) {
+		if name != "key" && strings.HasPrefix(name, "key-") {
+			hostPath := filepath.Join(quadletEncryptionKeyDir, name)
+			if err := p.RemoveHostFile(hostPath); err != nil {
+				return fmt.Errorf("ResetEncryptionKeys: remove %s: %w", hostPath, err)
+			}
+			logrus.Infof("Quadlet: removed extra encryption key file %s", hostPath)
+		}
+	}
+	return nil
+}
+
+// SetServiceConfig writes the config content to the service's config file on the host.
+// Quadlet has a single config file per service; configKey is ignored (callers may pass
+// "" or "config.yaml" for API compatibility). For services with a section mapping
+// (see service_config_mapping.go), the content is transformed and merged into
+// /etc/flightctl/service-config.yaml so it persists across restarts when the template
+// re-renders. For other services, the content is written to the per-service config
+// file at /etc/flightctl/<container-name>/config.yaml.
+func (p *InfraProvider) SetServiceConfig(service infra.ServiceName, configKey, content string) error {
+	_ = configKey // Quadlet single-file: ignored
+
+	updates, err := applyServiceConfigMappings(service, content)
+	if err != nil {
+		return fmt.Errorf("apply service-config mapping: %w", err)
+	}
+	if updates != nil {
+		return p.mergeAndWriteServiceConfig(updates)
+	}
+
+	hostPath := p.serviceToHostConfigPath(service)
+	if err := p.writeHostFile(hostPath, []byte(content)); err != nil {
+		return fmt.Errorf("write config to %s: %w", hostPath, err)
+	}
+	return nil
+}
+
+// mergeAndWriteServiceConfig reads service-config.yaml from the host, merges the
+// given updates (service-config key -> value), and writes it back.
+func (p *InfraProvider) mergeAndWriteServiceConfig(updates map[string]interface{}) error {
+	path := p.serviceConfigPath()
+	existing, err := p.runCommand("cat", path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	var serviceConfig map[string]interface{}
+	if err := yaml.Unmarshal([]byte(existing), &serviceConfig); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	for k, v := range updates {
+		if v == nil {
+			delete(serviceConfig, k)
+		} else {
+			serviceConfig[k] = v
+		}
+	}
+	out, err := yaml.Marshal(serviceConfig)
+	if err != nil {
+		return fmt.Errorf("marshal service-config: %w", err)
+	}
+	if err := p.writeHostFile(path, out); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+// writeHostFile writes content to a path on the Quadlet host using the provider's command transport.
+func (p *InfraProvider) writeHostFile(path string, content []byte) error {
+	return p.writeHostFileContext(context.Background(), path, content)
+}
+
+func (p *InfraProvider) writeHostFileContext(ctx context.Context, path string, content []byte) error {
+	b64 := base64.StdEncoding.EncodeToString(content)
+	escaped := strings.ReplaceAll(b64, "'", "'\"'\"'")
+	script := fmt.Sprintf("printf '%%s' '%s' | base64 -d > %s", escaped, quoteForRemoteShell(path))
+	if _, err := p.runCommandWithOptionalStdinContext(ctx, nil, "sh", "-c", script); err != nil {
+		return fmt.Errorf("write remote file %s: %w", path, err)
+	}
+	return nil
+}
+
+// startRemotePortForward creates an SSH tunnel from a local port to an unpublished service container port.
+func (p *InfraProvider) startRemotePortForward(containerIP string, containerPort int, protocol string, service infra.ServiceName) (string, func(), error) {
+	containerIP = strings.TrimSpace(containerIP)
+	if net.ParseIP(containerIP) == nil {
+		return "", nil, fmt.Errorf("start remote port-forward for %s: invalid container IP %q", service, containerIP)
+	}
+	if containerPort <= 0 {
+		return "", nil, fmt.Errorf("start remote port-forward for %s: invalid container port %d", service, containerPort)
+	}
+	protocol = strings.TrimSpace(protocol)
+	if protocol == "" {
+		return "", nil, fmt.Errorf("start remote port-forward for %s: protocol is empty", service)
+	}
+
+	// SSH requires an explicit local port, so a small TOCTOU window is unavoidable.
+	// ExitOnForwardFailure below makes a conflicting bind fail immediately and clearly.
+	localPort, err := getFreePort()
+	if err != nil {
+		return "", nil, fmt.Errorf("get free port for remote %s forward: %w", service, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	forwardSpec := fmt.Sprintf("127.0.0.1:%d:%s", localPort, net.JoinHostPort(containerIP, strconv.Itoa(containerPort)))
+	sshArgs := []string{"-o", "StrictHostKeyChecking=no", "-o", "ExitOnForwardFailure=yes", "-N", "-L", forwardSpec}
+	password := getSSHPassword()
+	usePassword := p.sshKeyPath == "" && password != ""
+	if p.sshKeyPath != "" {
+		sshArgs = append(sshArgs, "-o", "BatchMode=yes", "-i", p.sshKeyPath)
+	} else if !usePassword {
+		sshArgs = append(sshArgs, "-o", "BatchMode=yes")
+	}
+	sshArgs = append(sshArgs, fmt.Sprintf("%s@%s", p.sshUser, p.host))
+
+	var cmd *exec.Cmd
+	if usePassword {
+		passwordFile, cleanupPasswordFile, err := sshpassPasswordFile(password)
+		if err != nil {
+			cancel()
+			return "", nil, fmt.Errorf("prepare SSH password for %s forward: %w", service, err)
+		}
+		defer cleanupPasswordFile()
+
+		cmd = exec.CommandContext(ctx, "sshpass", append([]string{"-d", "3", "ssh"}, sshArgs...)...) //nolint:gosec // G204: sshArgs from trusted config
+		cmd.ExtraFiles = []*os.File{passwordFile}
+	} else {
+		cmd = exec.CommandContext(ctx, "ssh", sshArgs...) //nolint:gosec // G204: sshArgs from trusted config
+	}
+
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return "", nil, fmt.Errorf("start SSH port-forward for %s: %w", service, err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			cancel()
+			if cmd.Process != nil {
+				if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+					logrus.Warnf("Quadlet: failed to stop %s SSH port-forward: %v", service, err)
+				}
+			}
+			select {
+			case <-done:
+			case <-time.After(remoteForwardStopTimeout):
+				logrus.Warnf("Quadlet: timed out waiting for %s SSH port-forward to stop", service)
+			}
+		})
+	}
+
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort))
+	deadline := time.Now().Add(remoteForwardReadyTimeout)
+	for time.Now().Before(deadline) {
+		select {
+		case waitErr := <-done:
+			cancel()
+			if waitErr == nil {
+				return "", nil, fmt.Errorf("SSH port-forward for %s exited unexpectedly", service)
+			}
+			return "", nil, fmt.Errorf("SSH port-forward for %s exited: %w", service, waitErr)
+		default:
+		}
+
+		conn, dialErr := net.DialTimeout("tcp", address, remoteForwardPollInterval)
+		if dialErr == nil {
+			if err := conn.Close(); err != nil {
+				logrus.Warnf("Quadlet: failed to close %s SSH port-forward readiness connection: %v", service, err)
+			}
+			url := fmt.Sprintf("%s://%s", protocol, address)
+			logrus.Infof("Quadlet: SSH port-forward for %s is ready at %s", service, url)
+			return url, cleanup, nil
+		}
+		time.Sleep(remoteForwardPollInterval)
+	}
+
+	cleanup()
+	return "", nil, fmt.Errorf("SSH port-forward for %s did not become ready within %s", service, remoteForwardReadyTimeout)
+}
+
+// closeForwardConnection closes one side of a TCP forward and logs non-duplicate cleanup failures.
+func closeForwardConnection(conn net.Conn, service infra.ServiceName, side string) {
+	if conn == nil {
+		return
+	}
+	if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		logrus.Warnf("Quadlet forward %s: close %s connection: %v", service, side, err)
+	}
+}
+
+// sshpassPasswordFile returns a read-only file descriptor containing the SSH password for sshpass -d.
+func sshpassPasswordFile(password string) (*os.File, func(), error) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("create password pipe: %w", err)
+	}
+
+	cleanup := func() {
+		if err := reader.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			logrus.Debugf("Quadlet: close sshpass password reader: %v", err)
+		}
+	}
+	if _, err := writer.WriteString(password); err != nil {
+		_ = writer.Close()
+		cleanup()
+		return nil, nil, fmt.Errorf("write password pipe: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("close password pipe writer: %w", err)
+	}
+
+	return reader, cleanup, nil
+}
+
+// validatePathComponent rejects path traversal and separator characters before joining host paths.
+func validatePathComponent(label, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s is empty", label)
+	}
+	if filepath.IsAbs(value) || strings.Contains(value, "..") || strings.Contains(value, "/") || strings.Contains(value, "\\") {
+		return fmt.Errorf("%s contains invalid path component %q", label, value)
+	}
+	return nil
+}
+
+// isAllInterfacesPublishedHost reports whether Podman published on all host interfaces.
+func isAllInterfacesPublishedHost(host string) bool {
+	return host == "0.0.0.0" || host == "::"
+}
+
+// isLoopbackPublishedHost reports whether Podman published only on host loopback.
+func isLoopbackPublishedHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// GetEncryptionConfig reads the current encryption block from the service's config file
+// and returns a typed EncryptionConfig. If no encryption block is present (e.g. Quadlet
+// with defaults baked in), a synthesized default is returned (activeKeyID=default,
+// path=EncryptionKeyDir/key).
+func (p *InfraProvider) GetEncryptionConfig(service infra.ServiceName) (*internalconfig.EncryptionConfig, error) {
+	raw, err := p.GetServiceConfig(service)
+	if err != nil {
+		return nil, fmt.Errorf("GetEncryptionConfig: read service config for %s: %w", service, err)
+	}
+	return infra.ParseEncryptionConfig(raw)
+}
+
+// SetEncryptionConfig writes the given encryption block into the service's config file,
+// preserving all other top-level keys.
+func (p *InfraProvider) SetEncryptionConfig(service infra.ServiceName, enc *internalconfig.EncryptionConfig) error {
+	raw, err := p.GetServiceConfig(service)
+	if err != nil {
+		return fmt.Errorf("SetEncryptionConfig: read service config for %s: %w", service, err)
+	}
+	updated, err := infra.MarshalEncryptionConfigIntoYAML(raw, enc)
+	if err != nil {
+		return fmt.Errorf("SetEncryptionConfig: merge encryption config for %s: %w", service, err)
+	}
+	return p.SetServiceConfig(service, "config.yaml", updated)
+}
+
+// GetDBConnectionParams reads DB connection parameters from the API service config and
+// Podman secrets. Hostname/port/name are parsed from GetServiceConfig(ServiceAPI);
+// the username defaults to "flightctl_app" and the password is read from Podman secret
+// "flightctl-postgresql-user-password" via `podman secret inspect --showsecret`.
+func (p *InfraProvider) GetDBConnectionParams() (infra.DBConnectionParams, error) {
+	raw, err := p.GetServiceConfig(infra.ServiceAPI)
+	if err != nil {
+		return infra.DBConnectionParams{}, fmt.Errorf("GetDBConnectionParams: read API service config: %w", err)
+	}
+
+	params, err := infra.ParseDBParamsFromAPIConfig(raw)
+	if err != nil {
+		return infra.DBConnectionParams{}, fmt.Errorf("GetDBConnectionParams: %w", err)
+	}
+
+	// The API service config stores cert paths as they appear inside the container
+	// (/root/.flightctl/certs/db/...), but ReadHostFile reads from the host filesystem.
+	// The container volume mount is: /etc/flightctl/pki/db -> /root/.flightctl/certs/db
+	// Translate the container path to the host path so ReadHostFile can access the cert.
+	const containerCertPrefix = "/root/.flightctl/certs/db/"
+	const hostCertPrefix = "/etc/flightctl/pki/db/"
+	if strings.HasPrefix(params.SSLRootCert, containerCertPrefix) {
+		params.SSLRootCert = hostCertPrefix + params.SSLRootCert[len(containerCertPrefix):]
+	}
+	if strings.HasPrefix(params.SSLCert, containerCertPrefix) {
+		params.SSLCert = hostCertPrefix + params.SSLCert[len(containerCertPrefix):]
+	}
+	if strings.HasPrefix(params.SSLKey, containerCertPrefix) {
+		params.SSLKey = hostCertPrefix + params.SSLKey[len(containerCertPrefix):]
+	}
+
+	// Apply Quadlet-specific default username if not set in config.
+	if params.User == "" {
+		params.User = "flightctl_app"
+	}
+
+	if params.Password == "" {
+		// Password is not in the config file; read it from the Podman secret.
+		out, err := p.runCommand("podman", "secret", "inspect", "--showsecret", "flightctl-postgresql-user-password")
+		if err != nil {
+			return infra.DBConnectionParams{}, fmt.Errorf("GetDBConnectionParams: podman secret inspect: %w", err)
+		}
+		var parsed []struct {
+			SecretData string `json:"SecretData"`
+		}
+		if jsonErr := json.Unmarshal([]byte(out), &parsed); jsonErr != nil {
+			return infra.DBConnectionParams{}, fmt.Errorf("GetDBConnectionParams: parse podman secret JSON: %w", jsonErr)
+		}
+		if len(parsed) == 0 || parsed[0].SecretData == "" {
+			return infra.DBConnectionParams{}, fmt.Errorf("GetDBConnectionParams: podman secret inspect returned empty SecretData")
+		}
+		params.Password = strings.TrimSpace(parsed[0].SecretData)
+	}
+
+	return params, nil
+}
+
+// QueryDBExternal connects to the external PostgreSQL database via pgx and executes the
+// given SQL, returning the trimmed text output. Uses a 30-second context timeout.
+func (p *InfraProvider) QueryDBExternal(sql string) (string, error) {
+	params, err := p.GetDBConnectionParams()
+	if err != nil {
+		return "", fmt.Errorf("QueryDBExternal: get DB connection params: %w", err)
+	}
+
+	sslMode := params.SSLMode
+	if sslMode == "" {
+		sslMode = "disable"
+	}
+	// Use postgres:// URL so special characters in credentials are safely percent-encoded.
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(params.User, params.Password),
+		Host:   net.JoinHostPort(params.Hostname, params.Port),
+		Path:   "/" + params.DBName,
+	}
+	q := url.Values{}
+	q.Set("sslmode", sslMode)
+	u.RawQuery = q.Encode()
+	dsn := u.String()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	connConfig, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return "", fmt.Errorf("QueryDBExternal: parse DSN: %w", err)
+	}
+
+	// When a CA cert path is present in the config (verify-ca/verify-full deployments),
+	// read the PEM from the deployment host and inject it into the TLS root pool so the
+	// test binary can verify the server certificate without needing system-wide trust.
+	if params.SSLRootCert != "" && connConfig.TLSConfig != nil {
+		caPEM, readErr := p.ReadHostFile(params.SSLRootCert)
+		if readErr != nil {
+			return "", fmt.Errorf("QueryDBExternal: read CA cert %s: %w", params.SSLRootCert, readErr)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM([]byte(caPEM)) {
+			return "", fmt.Errorf("QueryDBExternal: no valid certificates found in %s", params.SSLRootCert)
+		}
+		connConfig.TLSConfig.RootCAs = pool
+	}
+
+	// When the deployment requires mutual TLS (clientcert=require on the DB server),
+	// load the client cert and key from the host filesystem and inject them so pgx
+	// presents them during the TLS handshake.
+	if params.SSLCert != "" && params.SSLKey != "" && connConfig.TLSConfig != nil {
+		certPEM, readErr := p.ReadHostFile(params.SSLCert)
+		if readErr != nil {
+			return "", fmt.Errorf("QueryDBExternal: read client cert %s: %w", params.SSLCert, readErr)
+		}
+		keyPEM, readErr := p.ReadHostFile(params.SSLKey)
+		if readErr != nil {
+			return "", fmt.Errorf("QueryDBExternal: read client key %s: %w", params.SSLKey, readErr)
+		}
+		clientCert, parseErr := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+		if parseErr != nil {
+			return "", fmt.Errorf("QueryDBExternal: parse client cert/key: %w", parseErr)
+		}
+		connConfig.TLSConfig.Certificates = []tls.Certificate{clientCert}
+	}
+
+	conn, err := pgx.ConnectConfig(ctx, connConfig)
+	if err != nil {
+		return "", fmt.Errorf("QueryDBExternal: connect to DB: %w", err)
+	}
+	defer func() {
+		if closeErr := conn.Close(ctx); closeErr != nil {
+			logrus.Warnf("QueryDBExternal: close DB connection: %v", closeErr)
+		}
+	}()
+
+	rows, err := conn.Query(ctx, sql)
+	if err != nil {
+		return "", fmt.Errorf("QueryDBExternal: execute query: %w", err)
+	}
+	defer rows.Close()
+
+	// maxQueryOutputBytes caps accumulated row data to match the K8s Job log limit,
+	// preventing a large result set from exhausting the test process.
+	const maxQueryOutputBytes = 64 * 1024
+
+	var sb strings.Builder
+	for rows.Next() {
+		vals, err := rows.Values()
+		if err != nil {
+			return "", fmt.Errorf("QueryDBExternal: scan row: %w", err)
+		}
+		parts := make([]string, len(vals))
+		for i, v := range vals {
+			if v == nil {
+				parts[i] = ""
+			} else {
+				parts[i] = fmt.Sprintf("%v", v)
+			}
+		}
+		if sb.Len() > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(strings.Join(parts, "|"))
+		if sb.Len() >= maxQueryOutputBytes {
+			sb.WriteString("\n[... truncated at 64 KiB ...]")
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("QueryDBExternal: row iteration: %w", err)
+	}
+	return strings.TrimSpace(sb.String()), nil
+}

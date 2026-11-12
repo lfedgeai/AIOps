@@ -1,0 +1,184 @@
+import * as React from 'react';
+import { Wizard, WizardStep, type WizardStepType } from '@patternfly/react-core';
+import { Formik, type FormikErrors, useFormikContext } from 'formik';
+import * as Yup from 'yup';
+
+import type { Device, Fleet } from '@flightctl/types';
+import type { CatalogItem, CatalogItemVersion } from '@flightctl/types/alpha';
+import { useTranslation } from '../../../hooks/useTranslation';
+import type { InstallSpecFormik } from '../InstallWizard/types';
+import FlightCtlWizardFooter from '../../common/FlightCtlWizardFooter';
+import { getVersionFeatureRequirements } from '../../CatalogComposition/catalogCompositionUtils';
+import { type CatalogEditWizardMode, getSortedUpdates } from '../../../utils/catalog';
+import UpdateStep, { isUpdateStepValid } from './steps/UpdateStep';
+import { getErrorMessage } from '../../../utils/error';
+import ReviewStep from './steps/ReviewStep';
+import LeaveFormConfirmation from '../../common/LeaveFormConfirmation';
+import { isWizardStepDisabled } from '../../../utils/wizards';
+import EditWizardCompatibilityBanners from '../CatalogItemCompatibility/EditWizardCompatibilityBanners';
+
+const versionStepId = 'version-step';
+const reviewStepId = 'review-step';
+
+const orderedIds = [versionStepId, reviewStepId];
+
+const getValidStepIds = (errors: FormikErrors<InstallSpecFormik>): string[] => {
+  const validStepIds: string[] = [];
+  if (isUpdateStepValid(errors)) {
+    validStepIds.push(versionStepId);
+  }
+  if (validStepIds.length === orderedIds.length - 1) {
+    validStepIds.push(reviewStepId);
+  }
+  return validStepIds;
+};
+
+const validateUpdateWizardStep = (activeStepId: string, errors: FormikErrors<InstallSpecFormik>) => {
+  if (activeStepId === versionStepId) return isUpdateStepValid(errors);
+  return true;
+};
+
+type WizardContentProps = {
+  mode: CatalogEditWizardMode;
+  currentVersion: CatalogItemVersion;
+  catalogItem: CatalogItem;
+  error: string | undefined;
+  setError: (err: string | undefined) => void;
+  isEdit: boolean;
+  targetDevice?: Device;
+  targetFleet?: Fleet;
+};
+
+const WizardContent: React.FC<WizardContentProps> = ({
+  mode,
+  currentVersion,
+  catalogItem,
+  error,
+  setError,
+  isEdit,
+  targetDevice,
+  targetFleet,
+}) => {
+  const { t } = useTranslation();
+  const [currentStep, setCurrentStep] = React.useState<WizardStepType>();
+
+  const { errors } = useFormikContext<InstallSpecFormik>();
+
+  const validStepIds = getValidStepIds(errors);
+
+  return (
+    <>
+      <EditWizardCompatibilityBanners targetDevice={targetDevice} targetFleet={targetFleet} />
+      <LeaveFormConfirmation />
+      <Wizard
+        footer={
+          <FlightCtlWizardFooter<InstallSpecFormik>
+            firstStepId={versionStepId}
+            submitStepId={reviewStepId}
+            validateStep={(activeStepId, errors) => validateUpdateWizardStep(activeStepId, errors)}
+            saveButtonText={isEdit ? t('Update') : t('Deploy')}
+          />
+        }
+        onStepChange={(_, step) => {
+          if (error) {
+            setError(undefined);
+          }
+          setCurrentStep(step);
+        }}
+      >
+        <WizardStep name={t('Version')} id={versionStepId}>
+          {(!currentStep || currentStep?.id === versionStepId) && (
+            <UpdateStep
+              mode={mode}
+              catalogItem={catalogItem}
+              currentVersion={currentVersion}
+              isEdit={isEdit}
+              requiresAdvancedConfig={false}
+            />
+          )}
+        </WizardStep>
+        <WizardStep
+          name={t('Review and deploy')}
+          id={reviewStepId}
+          isDisabled={isWizardStepDisabled(reviewStepId, orderedIds, validStepIds)}
+        >
+          {currentStep?.id === reviewStepId && <ReviewStep error={error} isEdit={isEdit} />}
+        </WizardStep>
+      </Wizard>
+    </>
+  );
+};
+
+type EditOsWizardProps = {
+  mode: CatalogEditWizardMode;
+  catalogItem: CatalogItem;
+  currentVersion: CatalogItemVersion;
+  onUpdate: (catalogItemVersion: CatalogItemVersion, values: InstallSpecFormik) => Promise<void>;
+  currentChannel: string;
+  isEdit: boolean;
+  version: string;
+  channel: string;
+  targetDevice?: Device;
+  targetFleet?: Fleet;
+};
+
+const EditOsWizard: React.FC<EditOsWizardProps> = ({
+  mode,
+  catalogItem,
+  currentVersion,
+  onUpdate,
+  currentChannel,
+  isEdit,
+  version,
+  channel,
+  targetDevice,
+  targetFleet,
+}) => {
+  const [error, setError] = React.useState<string>();
+  const { t } = useTranslation();
+
+  const validationSchema = Yup.object({
+    version: Yup.string().required(t('Version must be selected')),
+  });
+
+  const latestVersion = getSortedUpdates(catalogItem, currentChannel, currentVersion.version)[0]?.version;
+  const initialVersion = isEdit ? latestVersion || currentVersion.version : version;
+  const initialChannel = isEdit ? currentChannel : channel;
+
+  return (
+    <Formik<InstallSpecFormik>
+      validationSchema={validationSchema}
+      initialValues={{
+        version: initialVersion,
+        channel: initialChannel,
+        featureRequirements: getVersionFeatureRequirements(catalogItem, initialVersion),
+      }}
+      validateOnMount
+      onSubmit={async (values) => {
+        const catalogItemVersion = catalogItem.spec.versions.find((v) => v.version === values.version);
+        if (!catalogItemVersion) {
+          setError(t('Version {{version}} not found', { version: values.version }));
+          return;
+        }
+        try {
+          await onUpdate(catalogItemVersion, values);
+        } catch (e) {
+          setError(getErrorMessage(e));
+        }
+      }}
+    >
+      <WizardContent
+        mode={mode}
+        currentVersion={currentVersion}
+        catalogItem={catalogItem}
+        error={error}
+        setError={setError}
+        isEdit={isEdit}
+        targetDevice={targetDevice}
+        targetFleet={targetFleet}
+      />
+    </Formik>
+  );
+};
+
+export default EditOsWizard;

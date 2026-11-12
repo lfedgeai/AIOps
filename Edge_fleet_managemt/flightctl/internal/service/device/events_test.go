@@ -1,0 +1,279 @@
+package device
+
+import (
+	"context"
+	"errors"
+	"strconv"
+	"testing"
+
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/google/uuid"
+	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/require"
+)
+
+func prepareTestDeviceForEvents(name string) *domain.Device {
+	status := domain.NewDeviceStatus()
+	return &domain.Device{
+		ApiVersion: "v1beta1",
+		Kind:       "Device",
+		Metadata:   domain.ObjectMeta{Name: lo.ToPtr(name), Generation: lo.ToPtr(int64(1)), ResourceVersion: lo.ToPtr("1"), Labels: &map[string]string{"labelKey": "labelValue"}},
+		Spec:       &domain.DeviceSpec{Os: &domain.DeviceOsSpec{Image: "img"}},
+		Status:     &status,
+	}
+}
+
+func TestEmitDeviceUpdatedEvent(t *testing.T) {
+	t.Run("When err is non-nil it should emit a creation/update failure event", func(t *testing.T) {
+		ev := &fakeEvents{}
+		EmitDeviceUpdatedEvent(context.Background(), ev, logrus.New(), domain.DeviceKind, uuid.New(), "dev1", nil, nil, true, errors.New("boom"))
+		require.Len(t, ev.created, 1)
+		require.Equal(t, domain.EventReasonResourceCreationFailed, ev.created[0].Reason)
+	})
+
+	t.Run("When created is true it should emit a single resource-created event", func(t *testing.T) {
+		ev := &fakeEvents{}
+		device := prepareTestDeviceForEvents("dev1")
+		EmitDeviceUpdatedEvent(context.Background(), ev, logrus.New(), domain.DeviceKind, uuid.New(), "dev1", nil, device, true, nil)
+		require.Len(t, ev.created, 1)
+		require.Equal(t, domain.EventReasonResourceCreated, ev.created[0].Reason)
+		require.Equal(t, domain.DeviceKind, ev.created[0].InvolvedObject.Kind)
+		require.Equal(t, "dev1", ev.created[0].InvolvedObject.Name)
+		require.Nil(t, ev.created[0].Details)
+	})
+
+	t.Run("When status changes it should publish a DeviceLabelReconciliationRequested event", func(t *testing.T) {
+		ev := &fakeEvents{}
+		oldDevice := prepareTestDeviceForEvents("dev1")
+		newDevice := prepareTestDeviceForEvents("dev1")
+		oldDevice.Status.SystemInfo.Architecture = "x86_64"
+		newDevice.Status.SystemInfo.Architecture = "aarch64"
+
+		EmitDeviceUpdatedEvent(context.Background(), ev, logrus.New(), domain.DeviceKind, uuid.New(), "dev1", oldDevice, newDevice, false, nil)
+
+		var reconciliationEvents []*domain.Event
+		for _, event := range ev.created {
+			if event.Reason == domain.EventReasonDeviceLabelReconciliationRequested {
+				reconciliationEvents = append(reconciliationEvents, event)
+			}
+		}
+		require.Len(t, reconciliationEvents, 1)
+		require.Equal(t, domain.DeviceKind, reconciliationEvents[0].InvolvedObject.Kind)
+		require.Equal(t, "dev1", reconciliationEvents[0].InvolvedObject.Name)
+		require.Nil(t, reconciliationEvents[0].Details)
+		require.Equal(t, "Device label reconciliation was requested.", reconciliationEvents[0].Message)
+	})
+
+	t.Run("When status is unchanged it should not publish a status reconciliation event", func(t *testing.T) {
+		ev := &fakeEvents{}
+		oldDevice := prepareTestDeviceForEvents("dev1")
+		newDevice := prepareTestDeviceForEvents("dev1")
+		newDevice.Metadata.Labels = &map[string]string{"team": "edge"}
+
+		EmitDeviceUpdatedEvent(context.Background(), ev, logrus.New(), domain.DeviceKind, uuid.New(), "dev1", oldDevice, newDevice, false, nil)
+
+		for _, event := range ev.created {
+			require.NotEqual(t, domain.EventReasonDeviceLabelReconciliationRequested, event.Reason)
+		}
+	})
+
+	t.Run("When a device spec changes without status it should not publish a status reconciliation event", func(t *testing.T) {
+		ev := &fakeEvents{}
+		oldDevice := prepareTestDeviceForEvents("dev1")
+		newDevice := prepareTestDeviceForEvents("dev1")
+		newDevice.Spec.Os.Image = "new-image"
+
+		EmitDeviceUpdatedEvent(context.Background(), ev, logrus.New(), domain.DeviceKind, uuid.New(), "dev1", oldDevice, newDevice, false, nil)
+
+		for _, event := range ev.created {
+			require.NotEqual(t, domain.EventReasonDeviceLabelReconciliationRequested, event.Reason)
+		}
+	})
+
+	t.Run("When a status update fails it should not publish reconciliation work", func(t *testing.T) {
+		ev := &fakeEvents{}
+		oldDevice := prepareTestDeviceForEvents("dev1")
+		newDevice := prepareTestDeviceForEvents("dev1")
+		newDevice.Status.SystemInfo.Architecture = "aarch64"
+		EmitDeviceUpdatedEvent(context.Background(), ev, logrus.New(), domain.DeviceKind, uuid.New(), "dev1", oldDevice, newDevice, false, errors.New("write failed"))
+
+		for _, event := range ev.created {
+			require.NotEqual(t, domain.EventReasonDeviceLabelReconciliationRequested, event.Reason)
+		}
+	})
+
+	t.Run("When updated with an empty old device it should not panic and should emit a status event", func(t *testing.T) {
+		ev := &fakeEvents{}
+		device := prepareTestDeviceForEvents("dev1")
+		device.Status.Updated.Status = domain.DeviceUpdatedStatusUpToDate
+		oldDevice := &domain.Device{}
+		require.NotPanics(t, func() {
+			EmitDeviceUpdatedEvent(context.Background(), ev, logrus.New(), domain.DeviceKind, uuid.New(), "dev1", oldDevice, device, false, nil)
+		})
+		require.NotEmpty(t, ev.created)
+	})
+
+	t.Run("When multiple status fields transition to Unknown it should deduplicate DeviceDisconnected events", func(t *testing.T) {
+		ev := &fakeEvents{}
+		oldDevice := prepareTestDeviceForEvents("dev1")
+		oldDevice.Status.Summary.Status = domain.DeviceSummaryStatusOnline
+		oldDevice.Status.Updated.Status = domain.DeviceUpdatedStatusUpToDate
+		oldDevice.Status.ApplicationsSummary.Status = domain.ApplicationsSummaryStatusHealthy
+
+		newDevice := prepareTestDeviceForEvents("dev1")
+		newDevice.Status.Summary.Status = domain.DeviceSummaryStatusUnknown
+		newDevice.Status.Updated.Status = domain.DeviceUpdatedStatusUnknown
+		newDevice.Status.ApplicationsSummary.Status = domain.ApplicationsSummaryStatusUnknown
+
+		EmitDeviceUpdatedEvent(context.Background(), ev, logrus.New(), domain.DeviceKind, uuid.New(), "dev1", oldDevice, newDevice, false, nil)
+
+		count := 0
+		for _, e := range ev.created {
+			if e.Reason == domain.EventReasonDeviceDisconnected {
+				count++
+			}
+		}
+		require.Equal(t, 1, count)
+	})
+
+	t.Run("When a standalone spec update it should delay render and emit PrepareDeltas", func(t *testing.T) {
+		ev := &fakeEvents{}
+		oldDevice := prepareTestDeviceForEvents("dev1")
+		newDevice := prepareTestDeviceForEvents("dev1")
+		newDevice.Spec = &domain.DeviceSpec{Os: &domain.DeviceOsSpec{Image: "img-2"}}
+		EmitDeviceUpdatedEvent(context.Background(), ev, logrus.New(), domain.DeviceKind, uuid.New(), "dev1", oldDevice, newDevice, false, nil)
+		var reasons []domain.EventReason
+		var delayed bool
+		for _, e := range ev.created {
+			reasons = append(reasons, e.Reason)
+			if e.Reason == domain.EventReasonResourceUpdated && e.Metadata.Annotations != nil {
+				delayed = (*e.Metadata.Annotations)[domain.EventAnnotationDelayDeviceRender] == "true"
+			}
+			if e.Reason == domain.EventReasonPrepareDeltas {
+				details, err := e.Details.AsPrepareDeltasDetails()
+				require.NoError(t, err)
+				require.Nil(t, details.TemplateVersion)
+			}
+		}
+		require.Contains(t, reasons, domain.EventReasonResourceUpdated)
+		require.Contains(t, reasons, domain.EventReasonPrepareDeltas)
+		require.True(t, delayed)
+	})
+
+	t.Run("When a fleet-owned spec update it should not emit PrepareDeltas or delay render", func(t *testing.T) {
+		ev := &fakeEvents{}
+		oldDevice := prepareTestDeviceForEvents("dev1")
+		oldDevice.Metadata.Owner = lo.ToPtr("Fleet/f1")
+		newDevice := prepareTestDeviceForEvents("dev1")
+		newDevice.Metadata.Owner = lo.ToPtr("Fleet/f1")
+		newDevice.Spec = &domain.DeviceSpec{Os: &domain.DeviceOsSpec{Image: "img-2"}}
+		EmitDeviceUpdatedEvent(context.Background(), ev, logrus.New(), domain.DeviceKind, uuid.New(), "dev1", oldDevice, newDevice, false, nil)
+		for _, e := range ev.created {
+			require.NotEqual(t, domain.EventReasonPrepareDeltas, e.Reason)
+			if e.Reason == domain.EventReasonResourceUpdated && e.Metadata.Annotations != nil {
+				require.NotEqual(t, "true", (*e.Metadata.Annotations)[domain.EventAnnotationDelayDeviceRender])
+			}
+		}
+	})
+
+	t.Run("When the resources cannot be cast to *domain.Device it should no-op", func(t *testing.T) {
+		ev := &fakeEvents{}
+		EmitDeviceUpdatedEvent(context.Background(), ev, logrus.New(), domain.DeviceKind, uuid.New(), "dev1", "not-a-device", "also-not", false, nil)
+		require.Empty(t, ev.created)
+	})
+}
+
+func TestEmitDeviceStatusAndResourceChanges(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		change func(*domain.Device)
+		field  domain.ResourceUpdatedDetailsUpdatedFields
+	}{
+		{name: "When status and spec change it should emit separate events", change: func(d *domain.Device) { d.Spec.Os.Image = "new-image" }, field: domain.Spec},
+		{name: "When status and labels change it should emit separate events", change: func(d *domain.Device) { d.Metadata.Labels = lo.ToPtr(map[string]string{"site": "east"}) }, field: domain.Labels},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := &fakeEvents{}
+			oldDevice, newDevice := prepareTestDeviceForEvents("dev1"), prepareTestDeviceForEvents("dev1")
+			oldDevice.Metadata.Owner, newDevice.Metadata.Owner = lo.ToPtr("Fleet/edge"), lo.ToPtr("Fleet/edge")
+			newDevice.Status.SystemInfo.Architecture = "aarch64"
+			tt.change(newDevice)
+
+			EmitDeviceUpdatedEvent(context.Background(), ev, logrus.New(), domain.DeviceKind, uuid.New(), "dev1", oldDevice, newDevice, false, nil)
+
+			require.Len(t, ev.created, 2)
+			var request, resourceUpdate *domain.Event
+			for _, event := range ev.created {
+				switch event.Reason {
+				case domain.EventReasonDeviceLabelReconciliationRequested:
+					request = event
+				case domain.EventReasonResourceUpdated:
+					resourceUpdate = event
+				}
+			}
+			require.NotNil(t, request)
+			require.Nil(t, request.Details)
+			require.NotNil(t, resourceUpdate)
+			details, err := resourceUpdate.Details.AsResourceUpdatedDetails()
+			require.NoError(t, err)
+			require.Equal(t, []domain.ResourceUpdatedDetailsUpdatedFields{tt.field}, details.UpdatedFields)
+		})
+	}
+}
+
+func TestEmitStandalonePrepareDeltasGeneration(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		annotations *map[string]string
+	}{
+		{name: "When the device has never rendered it should carry the desired generation"},
+		{
+			name:        "When successive specs share a rendered hash it should carry each desired generation",
+			annotations: lo.ToPtr(map[string]string{domain.DeviceAnnotationRenderedSpecHash: "previous-rendered-hash"}),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			oldDevice := prepareTestDeviceForEvents("dev1")
+			oldDevice.Metadata.Annotations = tt.annotations
+			for generation := int64(2); generation <= 3; generation++ {
+				newDevice := prepareTestDeviceForEvents("dev1")
+				newDevice.Metadata.Generation = lo.ToPtr(generation)
+				newDevice.Metadata.ResourceVersion = lo.ToPtr("42")
+				newDevice.Metadata.Annotations = tt.annotations
+				newDevice.Spec.Os.Image = "img-" + strconv.FormatInt(generation, 10)
+				ev := &fakeEvents{}
+				EmitDeviceUpdatedEvent(context.Background(), ev, logrus.New(), domain.DeviceKind, uuid.New(), "dev1", oldDevice, newDevice, false, nil)
+				var prepares int
+				for _, event := range ev.created {
+					if event.Reason != domain.EventReasonPrepareDeltas {
+						continue
+					}
+					prepares++
+					details, err := event.Details.AsPrepareDeltasDetails()
+					require.NoError(t, err)
+					require.Equal(t, newDevice.Metadata.Generation, details.Generation)
+					require.Equal(t, newDevice.Metadata.ResourceVersion, details.ResourceVersion)
+				}
+				require.Equal(t, 1, prepares)
+				oldDevice = newDevice
+			}
+		})
+	}
+}
+
+func TestEmitDeviceDecommissionEvent(t *testing.T) {
+	t.Run("When err is nil it should emit a decommission-success event", func(t *testing.T) {
+		ev := &fakeEvents{}
+		EmitDeviceDecommissionEvent(context.Background(), ev, domain.DeviceKind, uuid.New(), "dev1", false, nil)
+		require.Len(t, ev.created, 1)
+		require.Equal(t, domain.EventReasonDeviceDecommissioned, ev.created[0].Reason)
+	})
+
+	t.Run("When err is non-nil it should emit a decommission-failure event", func(t *testing.T) {
+		ev := &fakeEvents{}
+		EmitDeviceDecommissionEvent(context.Background(), ev, domain.DeviceKind, uuid.New(), "dev1", false, errors.New("boom"))
+		require.Len(t, ev.created, 1)
+		require.Equal(t, domain.EventReasonDeviceDecommissionFailed, ev.created[0].Reason)
+	})
+}

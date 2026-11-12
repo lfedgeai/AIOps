@@ -1,0 +1,255 @@
+import * as React from 'react';
+import {
+  ActionList,
+  ActionListGroup,
+  ActionListItem,
+  Alert,
+  Bullseye,
+  Button,
+  Card,
+  CardBody,
+  CardTitle,
+  Content,
+  Flex,
+  FlexItem,
+  Menu,
+  MenuContent,
+  MenuItem,
+  MenuList,
+  ModalBody,
+  ModalHeader,
+  PageSection,
+  Stack,
+  StackItem,
+  Title,
+} from '@patternfly/react-core';
+import FlightCtlModal from '@flightctl/ui-components/src/components/common/FlightCtlModal';
+
+import { useTranslation } from '../../hooks/useTranslation';
+import { type OrganizationItem, useOrganizationGuardContext } from './OrganizationGuard';
+import { ORGANIZATION_STORAGE_KEY } from '../../utils/organizationStorage';
+
+interface OrganizationSelectorContentProps {
+  defaultOrganizationId?: string;
+  organizations: OrganizationItem[];
+  onSelect: (orgId: string) => void;
+  onCancel?: () => void;
+  allowCancel?: boolean;
+  isFirstLogin?: boolean;
+}
+
+const MAX_ORGANIZATIONS_FOR_SCROLL = 4;
+const EXTRA_DELAY = 450;
+
+const OrganizationSelectorContent = ({
+  defaultOrganizationId,
+  organizations,
+  onSelect,
+  onCancel,
+  allowCancel = false,
+  isFirstLogin = false,
+}: OrganizationSelectorContentProps) => {
+  const { t } = useTranslation();
+  const [selectedOrg, setSelectedOrg] = React.useState<string | undefined>(defaultOrganizationId);
+  const needsScroll = organizations.length > MAX_ORGANIZATIONS_FOR_SCROLL;
+
+  return (
+    <Stack hasGutter>
+      <StackItem>
+        <Content component="p">
+          {isFirstLogin
+            ? t('You have access to multiple organizations. Please select one to continue.')
+            : t('Please select an organization to continue. This will refresh the application.')}
+        </Content>
+      </StackItem>
+      {organizations.length > 0 && (
+        <StackItem>
+          <Menu
+            activeItemId={selectedOrg}
+            selected={selectedOrg}
+            onSelect={(_ev, orgId) => setSelectedOrg(orgId as string)}
+            isScrollable={needsScroll}
+          >
+            <MenuContent menuHeight={needsScroll ? '230px' : 'auto'}>
+              <MenuList>
+                {organizations.map((org) => (
+                  <MenuItem key={org.id} itemId={org.id} description={org.description}>
+                    {org.label || org.id}
+                  </MenuItem>
+                ))}
+              </MenuList>
+            </MenuContent>
+          </Menu>
+        </StackItem>
+      )}
+      {organizations.length > 0 && (
+        <StackItem>
+          <ActionList>
+            <ActionListGroup>
+              <ActionListItem>
+                <Button variant="primary" onClick={() => onSelect(selectedOrg as string)} isDisabled={!selectedOrg}>
+                  {t('Continue')}
+                </Button>
+              </ActionListItem>
+              {allowCancel && (
+                <ActionListItem>
+                  <Button variant="link" onClick={onCancel}>
+                    {t('Cancel')}
+                  </Button>
+                </ActionListItem>
+              )}
+            </ActionListGroup>
+          </ActionList>
+        </StackItem>
+      )}
+    </Stack>
+  );
+};
+
+const OrganizationSelectorCustomModal = (props: OrganizationSelectorContentProps) => {
+  const { t } = useTranslation();
+
+  return (
+    <PageSection hasBodyWrapper={false}>
+      <Bullseye>
+        <Card isLarge>
+          <CardTitle>
+            <Flex justifyContent={{ default: 'justifyContentSpaceBetween' }}>
+              <FlexItem>
+                <Title headingLevel="h1" size="2xl">
+                  {t('Select Organization')}
+                </Title>
+              </FlexItem>
+            </Flex>
+          </CardTitle>
+          <CardBody>
+            <OrganizationSelectorContent {...props} isFirstLogin />
+          </CardBody>
+        </Card>
+      </Bullseye>
+    </PageSection>
+  );
+};
+
+interface OrganizationSelectorProps {
+  onClose?: (isChanged: boolean) => void;
+  isFirstLogin: boolean;
+}
+
+const OrganizationSelector = ({ onClose, isFirstLogin = true }: OrganizationSelectorProps) => {
+  const {
+    availableOrganizations,
+    selectOrganization,
+    mustShowOrganizationSelector,
+    selectionError,
+    isEmptyOrganizations,
+    refetch,
+    isReloading,
+  } = useOrganizationGuardContext();
+  const { t } = useTranslation();
+
+  const getLastSelectedOrganization = React.useCallback(() => {
+    try {
+      const savedOrgId = localStorage.getItem(ORGANIZATION_STORAGE_KEY);
+      if (savedOrgId && availableOrganizations.some((org) => org.id === savedOrgId)) {
+        return savedOrgId;
+      }
+    } catch {
+      // Ignore - we won't preselect the previously selected organization
+    }
+    return undefined;
+  }, [availableOrganizations]);
+
+  const handleSelect = React.useCallback(
+    (orgId: string) => {
+      const org = availableOrganizations.find((o) => o.id === orgId);
+      if (org) {
+        try {
+          selectOrganization(org);
+          onClose?.(true);
+        } catch {
+          onClose?.(false);
+        }
+      }
+    },
+    [availableOrganizations, selectOrganization, onClose],
+  );
+
+  const handleRefetch = React.useCallback(async () => {
+    await refetch(EXTRA_DELAY);
+  }, [refetch]);
+
+  if (selectionError) {
+    return (
+      <PageSection hasBodyWrapper={false}>
+        <Bullseye>
+          <Alert variant="danger" title={t('Unable to log in to the application')} isInline>
+            <Content>
+              {isEmptyOrganizations ? (
+                <>
+                  <Content component="p">{t('You do not have access to any organizations.')}</Content>
+                  <Content component="p">
+                    {t('Please contact your administrator to be granted access to an organization.')}
+                  </Content>
+                  <Content component="p">
+                    {t('You will need to log out and log in again to access the application.')}
+                  </Content>
+                </>
+              ) : (
+                <>
+                  <Content component="p">
+                    {t('We cannot log you in as we could not determine what organizations you have access to.')}
+                  </Content>
+                  <Content component="p">
+                    {t('Please try refreshing the page. If the problem persists, contact your administrator.')}
+                  </Content>
+                  <Content component="pre">
+                    <details>
+                      <summary>{t('Error details')}:</summary>
+                      {selectionError}
+                    </details>
+                  </Content>
+                </>
+              )}
+            </Content>
+            {!isEmptyOrganizations && (
+              <ActionList className="pf-v6-u-mt-md">
+                <ActionListGroup>
+                  <ActionListItem>
+                    <Button variant="primary" onClick={handleRefetch} isDisabled={isReloading}>
+                      {t('Reload organizations')}
+                    </Button>
+                  </ActionListItem>
+                </ActionListGroup>
+              </ActionList>
+            )}
+          </Alert>
+        </Bullseye>
+      </PageSection>
+    );
+  }
+
+  const commonProps = {
+    defaultOrganizationId: getLastSelectedOrganization(),
+    organizations: availableOrganizations,
+    onSelect: handleSelect,
+    onCancel: () => onClose?.(false),
+    allowCancel: !mustShowOrganizationSelector,
+  };
+
+  // The modal for selecting an organization can be displayed in two ways:
+  // If the user has not yet selected an organization - the modal is not dismissable and it's a custom "Modal" which allows interacting with the user menu.
+  // If the user already logged in and selected an organization - the modal is dismissable and it overlays the entire page.
+  return isFirstLogin ? (
+    <OrganizationSelectorCustomModal {...commonProps} />
+  ) : (
+    <FlightCtlModal variant="medium" isOpen onClose={() => onClose?.(false)}>
+      <ModalHeader title={t('Select Organization')} />
+      <ModalBody>
+        <OrganizationSelectorContent {...commonProps} isFirstLogin={false} />
+      </ModalBody>
+    </FlightCtlModal>
+  );
+};
+
+export default OrganizationSelector;

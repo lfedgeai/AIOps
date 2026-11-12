@@ -1,0 +1,215 @@
+package auth
+
+import (
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"slices"
+	"strings"
+
+	"github.com/flightctl/flightctl-ui/bridge"
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/openshift/osincli"
+	log "github.com/sirupsen/logrus"
+)
+
+type OIDCAuthHandler struct {
+	tlsConfig              *tls.Config
+	oidcDiscoveryForClient oidcServerResponse
+	scopes                 *[]string
+	endSessionEndpoint     string
+	userInfoEndpoint       string
+	authURL                string
+	tokenEndpoint          string
+	clientId               string
+	providerName           string
+	prompt                 *string
+	promptValuesSupported  []string
+}
+
+type oidcServerResponse struct {
+	TokenEndpoint         string   `json:"token_endpoint"`
+	AuthEndpoint          string   `json:"authorization_endpoint"`
+	UserInfoEndpoint      string   `json:"userinfo_endpoint"`
+	EndSessionEndpoint    string   `json:"end_session_endpoint"`
+	PromptValuesSupported []string `json:"prompt_values_supported"`
+}
+
+// filterUnsupportedPrompt omits the prompt when discovery defines
+// prompt_values_supported and any token in the prompt is missing from that list.
+// A nil supported list means discovery did not declare capabilities, so prompt
+// is kept unchanged. An empty supported list rejects every non-empty prompt.
+func filterUnsupportedPrompt(prompt string, supportedPrompts []string) string {
+	if prompt == "" || supportedPrompts == nil {
+		return prompt
+	}
+	for _, token := range strings.Fields(prompt) {
+		if !slices.Contains(supportedPrompts, token) {
+			return ""
+		}
+	}
+	return prompt
+}
+
+func getOIDCAuthHandler(provider *v1beta1.AuthProvider, oidcSpec *v1beta1.OIDCProviderSpec) (*OIDCAuthHandler, error) {
+	providerName := extractProviderName(provider)
+
+	if oidcSpec.Issuer == "" {
+		return nil, fmt.Errorf("OIDC provider %s missing Issuer", providerName)
+	}
+
+	if oidcSpec.ClientId == "" {
+		return nil, fmt.Errorf("OIDC provider %s missing ClientId", providerName)
+	}
+
+	authURL := oidcSpec.Issuer
+	clientId := oidcSpec.ClientId
+	internalAuthURL := (*string)(nil) // OIDC doesn't use internalAuthURL for now
+
+	tlsConfig, err := bridge.GetAuthTlsConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	url := authURL
+	if internalAuthURL != nil {
+		url = *internalAuthURL
+	}
+
+	oauthConfigUrl := fmt.Sprintf("%s/.well-known/openid-configuration", url)
+	req, err := http.NewRequest(http.MethodGet, oauthConfigUrl, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create http request: %w", err)
+	}
+
+	httpClient := http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}
+
+	res, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch oidc config: %w", err)
+	}
+
+	defer res.Body.Close()
+	bodyBytes, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read oidc config: %w", err)
+	}
+
+	oidcResponse := oidcServerResponse{}
+	if err := json.Unmarshal(bodyBytes, &oidcResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse oidc config: %w", err)
+	}
+
+	oidcForClient := oidcResponse
+	handler := &OIDCAuthHandler{
+		tlsConfig:              tlsConfig,
+		oidcDiscoveryForClient: oidcForClient,
+		scopes:                 oidcSpec.Scopes,
+		endSessionEndpoint:     oidcResponse.EndSessionEndpoint,
+		userInfoEndpoint:       oidcResponse.UserInfoEndpoint,
+		authURL:                authURL,
+		tokenEndpoint:          oidcResponse.TokenEndpoint,
+		clientId:               clientId,
+		providerName:           providerName,
+		prompt:                 oidcSpec.Prompt,
+		promptValuesSupported:  oidcResponse.PromptValuesSupported,
+	}
+
+	if internalAuthURL != nil {
+		extConfig := oidcServerResponse{
+			AuthEndpoint:       replaceBaseURL(oidcResponse.AuthEndpoint, *internalAuthURL, authURL),
+			TokenEndpoint:      replaceBaseURL(oidcResponse.TokenEndpoint, *internalAuthURL, authURL),
+			UserInfoEndpoint:   replaceBaseURL(oidcResponse.UserInfoEndpoint, *internalAuthURL, authURL),
+			EndSessionEndpoint: replaceBaseURL(oidcResponse.EndSessionEndpoint, *internalAuthURL, authURL),
+		}
+		handler.oidcDiscoveryForClient = extConfig
+		handler.endSessionEndpoint = extConfig.EndSessionEndpoint
+		handler.tokenEndpoint = extConfig.TokenEndpoint
+	}
+
+	return handler, nil
+}
+
+func replaceBaseURL(endpoint, oldBase, newBase string) string {
+	oldURL, err := url.Parse(oldBase)
+	if err != nil {
+		return endpoint
+	}
+	newURL, err := url.Parse(newBase)
+	if err != nil {
+		return endpoint
+	}
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil {
+		return endpoint
+	}
+	if endpointURL.Host == oldURL.Host {
+		endpointURL.Scheme = newURL.Scheme
+		endpointURL.Host = newURL.Host
+	}
+	return endpointURL.String()
+}
+
+func getOIDCClient(oidcConfig oidcServerResponse, tlsConfig *tls.Config, clientId string, providerScopes *[]string, redirectURL string) (*osincli.Client, error) {
+	defaultScopes := "openid profile email organization:*"
+	scope := buildScopeParam(providerScopes, defaultScopes)
+
+	oidcClientConfig := &osincli.ClientConfig{
+		ClientId:                 clientId,
+		AuthorizeUrl:             oidcConfig.AuthEndpoint,
+		TokenUrl:                 oidcConfig.TokenEndpoint,
+		RedirectUrl:              redirectURL,
+		ErrorsInStatusCode:       true,
+		SendClientSecretInParams: false,
+		Scope:                    scope,
+	}
+
+	client, err := osincli.NewClient(oidcClientConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	client.Transport = &http.Transport{
+		TLSClientConfig: tlsConfig,
+	}
+
+	return client, nil
+}
+
+func (o *OIDCAuthHandler) Logout(token string, postLogoutRedirectBase string) (string, error) {
+	if o.endSessionEndpoint == "" {
+		// Provider does not advertise RP-initiated logout; fall back to UI-only logout.
+		return "", nil
+	}
+
+	u, err := url.Parse(o.endSessionEndpoint)
+	if err != nil {
+		return "", err
+	}
+
+	uq := u.Query()
+	uq.Add("post_logout_redirect_uri", postLogoutRedirectBase)
+	uq.Add("client_id", o.clientId)
+	u.RawQuery = uq.Encode()
+	return u.String(), nil
+}
+
+func (a *OIDCAuthHandler) GetLoginRedirectURL(state string, codeChallenge string, redirectURI string) (string, error) {
+	client, err := getOIDCClient(a.oidcDiscoveryForClient, a.tlsConfig, a.clientId, a.scopes, redirectURI)
+	if err != nil {
+		return "", fmt.Errorf("failed to create OIDC client: %w", err)
+	}
+
+	normalizedPrompt := normalizeLoginPrompt(a.prompt)
+	resolvedPrompt := filterUnsupportedPrompt(normalizedPrompt, a.promptValuesSupported)
+	log.Debugf("OIDC prompt value: configured: %q, determined: %q", normalizedPrompt, resolvedPrompt)
+
+	return loginRedirect(client, state, codeChallenge, resolvedPrompt), nil
+}

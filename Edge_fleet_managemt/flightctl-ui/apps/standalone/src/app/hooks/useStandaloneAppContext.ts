@@ -1,0 +1,53 @@
+import * as React from 'react';
+import {
+  type AppContextProps,
+  FlightCtlApp,
+  type NavLinkFC,
+  appRoutes,
+} from '@flightctl/ui-components/src/hooks/useAppContext';
+import {
+  Link,
+  NavLink,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from 'react-router-dom';
+import { AuthContext } from '../context/AuthContext';
+import { useFetch } from './useFetch';
+
+const standaloneAppContext: Omit<AppContextProps, 'fetch' | 'settings'> = {
+  appType: FlightCtlApp.STANDALONE,
+  i18n: {
+    transNamespace: undefined,
+  },
+  router: {
+    useNavigate,
+    Link,
+    appRoutes,
+    NavLink: NavLink as NavLinkFC,
+    Navigate,
+    Route,
+    useParams,
+    useSearchParams,
+    Routes,
+    useLocation,
+  },
+};
+
+export const useStandaloneAppContext = (): AppContextProps => {
+  const { username } = React.useContext(AuthContext);
+  const fetch = useFetch();
+
+  return {
+    ...standaloneAppContext,
+    settings: {
+      isRHEM: window.isRHEM || false,
+    },
+    user: username,
+    fetch,
+  };
+};

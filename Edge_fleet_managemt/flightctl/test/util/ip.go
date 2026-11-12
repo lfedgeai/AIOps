@@ -1,0 +1,142 @@
+package util
+
+import (
+	"fmt"
+	"net"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+func GetTopLevelDir() string {
+	dir := os.Getenv("PWD")
+	if dir == "" {
+		var err error
+		dir, err = os.Getwd()
+		if err != nil {
+			Fail(fmt.Sprintf("Could not determine current directory: %v", err))
+			return ""
+		}
+	}
+	for {
+		_, err := os.Stat(filepath.Join(dir, "go.mod"))
+		if err == nil {
+			return dir
+		}
+		if !os.IsNotExist(err) {
+			Fail(fmt.Sprintf("Could not stat go.mod in %q: %v", dir, err))
+			return ""
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			Fail("Could not find top-level directory")
+			return ""
+		}
+		dir = parent
+	}
+}
+
+func GetScriptPath(script string) string {
+	scriptsDir := GetTopLevelDir() + "/test/scripts/" + script
+	return scriptsDir
+}
+
+func GetTestExamplesYamlPath(yamlName string) string {
+	if yamlName == "" {
+		return ""
+	}
+	return filepath.Join(GetTopLevelDir(), "/test/data/examples/", yamlName)
+}
+
+func GetExtIP() string {
+	// execute the test/scripts/get_ext_ip.sh script to get the external IP
+	// of the host machine
+	cmd := exec.Command(GetScriptPath("/get_ext_ip.sh")) //nolint:gosec
+	output, err := cmd.Output()
+	Expect(err).ToNot(HaveOccurred())
+	return strings.TrimSpace(string(output))
+}
+
+func BinaryExistsOnPath(binaryName string) bool {
+	_, err := exec.LookPath(binaryName)
+	return err == nil
+}
+
+// resolveIPAddressForHostname resolves the ip address associated with the hostname. Prefers ip4 addresses
+// but will return ip6 address if there are no ip4 addresses.
+// If the IPV6_ONLY environment variable is set to "true", IPv6 addresses are preferred instead.
+func resolveIPAddressForHostname(hostname string) (string, error) {
+	if ip := net.ParseIP(hostname); ip != nil {
+		return ip.String(), nil
+	}
+	// Take the first ipv4 address that matches that we find
+	ips, err := net.LookupIP(hostname)
+	if err != nil {
+		return "", fmt.Errorf("failed to lookup IP '%s': %w", hostname, err)
+	}
+	if len(ips) == 0 {
+		return "", fmt.Errorf("hostname '%s' resolved to no IP addresses", hostname)
+	}
+
+	// In IPv6 mode, prefer IPv6 addresses
+	if os.Getenv("IPV6_ONLY") == "true" {
+		for _, ip := range ips {
+			if ip.To4() == nil && ip.To16() != nil {
+				return ip.String(), nil
+			}
+		}
+	}
+
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			return ip.String(), nil
+		}
+	}
+	return ips[0].String(), nil
+}
+
+// ParseURIForIPAndPort parses a string URI and attempts to extract the IP address and port.
+// It handles URIs with or without a scheme. If no port is specified, it attempts to
+// deduce it from common schemes (http: 80, https: 443).
+// If no scheme is supplied, http is assumed
+func ParseURIForIPAndPort(rawURI string) (string, string, error) {
+	// if no scheme exists default to http. scheme is required for url.Parse
+	if !strings.Contains(rawURI, "://") {
+		rawURI = "http://" + rawURI
+	}
+
+	parsedURL, err := url.Parse(rawURI)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to parse URI '%s': %w", rawURI, err)
+	}
+
+	hostname := parsedURL.Hostname()
+	if hostname == "" {
+		return "", "", fmt.Errorf("no hostname found in URI '%s'", rawURI)
+	}
+
+	ip, err := resolveIPAddressForHostname(hostname)
+	if err != nil {
+		return "", "", err
+	}
+
+	// use the parsed port or default to a few well known ones if nothing is supplied
+	port := parsedURL.Port()
+	if port == "" {
+		// If no port is specified, try to infer from scheme
+		switch strings.ToLower(parsedURL.Scheme) {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return "", "", fmt.Errorf("no port specified in URI '%s' and scheme '%s' has no default port defined", rawURI, parsedURL.Scheme)
+		}
+	}
+	return ip, port, nil
+}

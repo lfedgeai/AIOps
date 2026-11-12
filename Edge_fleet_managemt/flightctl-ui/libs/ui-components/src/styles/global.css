@@ -1,0 +1,15 @@
+/*
+ * Reduce opacity of all placeholders so they are clearly distinguishable from entered values.
+ */
+.fctl-app .pf-v6-c-form-control > ::placeholder,
+.fctl-app .pf-v6-c-text-input-group__text-input::placeholder {
+  opacity: 0.6;
+}
+
+/*
+ * PatternFly ExpandableSection animates collapse via max-height, which can leave
+ * reserved vertical space when collapsed. Override when content is hidden.
+ */
+.fctl-app .pf-v6-c-expandable-section__content:where([hidden]) {
+  --pf-v6-c-expandable-section__content--MaxHeight: 0;
+}

@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flightctl-telemetry-gateway-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+    flightctl.service: flightctl-telemetry-gateway
+data:
+  config.yaml: |-
+    database:
+        hostname: {{ include "flightctl.dbHostname" . }}
+        type: "pgsql"
+        port: {{ include "flightctl.dbPort" . | int }}
+        name: {{ .Values.db.name }}
+        {{- if eq .Values.db.type "external" }}
+        {{- if .Values.db.external.sslmode }}
+        sslmode: {{ .Values.db.external.sslmode | quote }}
+        {{- end }}
+        {{- if .Values.db.external.tlsConfigMapName }}
+        sslrootcert: /etc/ssl/postgres/ca-cert.pem
+        {{- end }}
+        {{- if .Values.db.external.tlsSecretName }}
+        sslkey: /etc/ssl/postgres/client-key.pem
+        sslcert: /etc/ssl/postgres/client-cert.pem
+        {{- end }}
+        {{- end }}
+    service: {}
+    kv:
+        hostname: flightctl-kv.{{ default .Release.Namespace .Values.global.internalNamespace }}.svc.cluster.local
+        port: 6379
+    telemetryGateway:
+      listen: { device: "0.0.0.0:4317" }
+      export: { prometheus: "0.0.0.0:9464" }
+      {{- if .Values.telemetryGateway.forward.endpoint }}
+      forward:
+        endpoint: {{ .Values.telemetryGateway.forward.endpoint | quote }}
+        {{- with .Values.telemetryGateway.forward.headers }}
+        headers:
+          {{- range $key, $val := . }}
+          {{ $key }}: {{ $val | quote }}
+          {{- end }}
+        {{- end }}
+        {{- if or .Values.telemetryGateway.forward.tls.insecureSkipTlsVerify .Values.telemetryGateway.forward.tls.caFile .Values.telemetryGateway.forward.tls.certFile .Values.telemetryGateway.forward.tls.keyFile }}
+        tls:
+          {{- if .Values.telemetryGateway.forward.tls.insecureSkipTlsVerify }}
+          insecureSkipTlsVerify: true
+          {{- end }}
+          {{- if .Values.telemetryGateway.forward.tls.caFile }}
+          caFile: {{ .Values.telemetryGateway.forward.tls.caFile | quote }}
+          {{- end }}
+          {{- if .Values.telemetryGateway.forward.tls.certFile }}
+          certFile: {{ .Values.telemetryGateway.forward.tls.certFile | quote }}
+          {{- end }}
+          {{- if .Values.telemetryGateway.forward.tls.keyFile }}
+          keyFile: {{ .Values.telemetryGateway.forward.tls.keyFile | quote }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+    {{- if (default dict .Values.dev).tracing }}
+    tracing:
+        enabled: true
+        endpoint: {{ .Values.dev.tracing.endpoint }}
+        insecure: {{ .Values.dev.tracing.insecure }}
+    {{ end }}
+{{ include "flightctl.profiling" . | nindent 4 }}

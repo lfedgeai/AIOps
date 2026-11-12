@@ -1,0 +1,34 @@
+{{- $exposeService := include "flightctl.getServiceExposeMethod" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: flightctl-telemetry-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+    flightctl.service: flightctl-telemetry-gateway
+spec:
+  {{- if eq $exposeService "nodePort" }}
+  type: NodePort
+  {{- else }}
+  type: ClusterIP
+  {{- end }}
+  selector:
+    flightctl.service: flightctl-telemetry-gateway
+  ports:
+    - name: otlp
+      port: 4317
+      targetPort: otlp
+      protocol: TCP
+      appProtocol: grpc
+      {{- if and (eq $exposeService "nodePort") .Values.dev.nodePorts.telemetryGatewayOtlp }}
+      nodePort: {{ .Values.dev.nodePorts.telemetryGatewayOtlp }}
+      {{- end }}
+    - name: metrics
+      port: 9464
+      targetPort: prometheus
+      protocol: TCP
+      appProtocol: http
+      {{- if and (eq $exposeService "nodePort") .Values.dev.nodePorts.telemetryGatewayProm }}
+      nodePort: {{ .Values.dev.nodePorts.telemetryGatewayProm }}
+      {{- end }}

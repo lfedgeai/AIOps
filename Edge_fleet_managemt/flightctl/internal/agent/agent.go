@@ -1,0 +1,626 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/agent/client"
+	agent_config "github.com/flightctl/flightctl/internal/agent/config"
+	"github.com/flightctl/flightctl/internal/agent/device"
+	"github.com/flightctl/flightctl/internal/agent/device/applications"
+	applicationprovider "github.com/flightctl/flightctl/internal/agent/device/applications/provider"
+	"github.com/flightctl/flightctl/internal/agent/device/certmanager"
+	"github.com/flightctl/flightctl/internal/agent/device/config"
+	"github.com/flightctl/flightctl/internal/agent/device/console"
+	"github.com/flightctl/flightctl/internal/agent/device/deltastatus"
+	"github.com/flightctl/flightctl/internal/agent/device/dependency"
+	"github.com/flightctl/flightctl/internal/agent/device/fileio"
+	"github.com/flightctl/flightctl/internal/agent/device/hook"
+	imagepruning "github.com/flightctl/flightctl/internal/agent/device/image_pruning"
+	"github.com/flightctl/flightctl/internal/agent/device/lifecycle"
+	"github.com/flightctl/flightctl/internal/agent/device/os"
+	"github.com/flightctl/flightctl/internal/agent/device/policy"
+	"github.com/flightctl/flightctl/internal/agent/device/resource"
+	"github.com/flightctl/flightctl/internal/agent/device/spec"
+	"github.com/flightctl/flightctl/internal/agent/device/spec/audit"
+	"github.com/flightctl/flightctl/internal/agent/device/status"
+	"github.com/flightctl/flightctl/internal/agent/device/systemd"
+	"github.com/flightctl/flightctl/internal/agent/device/systeminfo"
+	systeminfocommon "github.com/flightctl/flightctl/internal/agent/device/systeminfo/common"
+	"github.com/flightctl/flightctl/internal/agent/identity"
+	"github.com/flightctl/flightctl/internal/agent/instrumentation"
+	"github.com/flightctl/flightctl/internal/agent/reload"
+	"github.com/flightctl/flightctl/internal/agent/shutdown"
+	"github.com/flightctl/flightctl/internal/tpm"
+	"github.com/flightctl/flightctl/pkg/executer"
+	"github.com/flightctl/flightctl/pkg/log"
+	"github.com/flightctl/flightctl/pkg/poll"
+	"github.com/flightctl/flightctl/pkg/version"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
+)
+
+const (
+	// TODO: expose via config
+	gracefulShutdownTimeout = 2 * time.Minute
+)
+
+// AgentOption is a function that configures an Agent
+type AgentOption func(*Agent)
+
+// WithExecuter sets a custom executer for the agent (e.g., for testing).
+// This allows tests to inject a safe executer that prevents dangerous commands from executing.
+func WithExecuter(exec executer.Executer) AgentOption {
+	return func(a *Agent) {
+		a.executer = exec
+	}
+}
+
+// New creates a new agent.
+func New(log *log.PrefixLogger, config *agent_config.Config, configFile string, opts ...AgentOption) *Agent {
+	a := &Agent{
+		config:     config,
+		configFile: configFile,
+		log:        log,
+		executer:   executer.NewCommonExecuter(), // default executer
+	}
+
+	// Apply all options
+	for _, opt := range opts {
+		opt(a)
+	}
+
+	return a
+}
+
+type Agent struct {
+	config     *agent_config.Config
+	configFile string
+	log        *log.PrefixLogger
+	executer   executer.Executer
+}
+
+func (a *Agent) GetLogPrefix() string {
+	return a.log.Prefix()
+}
+
+func (a *Agent) Run(ctx context.Context) error {
+	a.log.Infof("Starting agent...")
+	defer a.log.Infof("Agent stopped")
+
+	defer utilruntime.HandleCrash()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	startAsync := func(fn func(context.Context)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fn(ctx)
+		}()
+	}
+
+	// start instrumentation early so startup paths are observable.
+	startAsync(instrumentation.NewAgentInstrumentation(a.log, a.config).Run)
+
+	// create file io writer and reader
+	rwFactory := fileio.NewReadWriterFactory(a.config.GetTestRootDir())
+	rootReadWriter, err := rwFactory("")
+	if err != nil {
+		return fmt.Errorf("initialize root read/writer: %w", err)
+	}
+	deltaStatusStore := deltastatus.New(rootReadWriter, a.config.DataDir, a.log)
+
+	tpmClient, err := a.tryLoadTPM(rootReadWriter)
+	if err != nil {
+		return fmt.Errorf("failed to initialize TPM client: %w", err)
+	}
+
+	// create identity provider
+	identityProvider := identity.NewProvider(
+		tpmClient,
+		rootReadWriter,
+		a.config,
+		a.log,
+	)
+
+	if err := identityProvider.Initialize(ctx); err != nil {
+		return fmt.Errorf("failed to initialize identity provider: %w", err)
+	}
+
+	deviceName, err := identityProvider.GetDeviceName()
+	if err != nil {
+		return fmt.Errorf("failed to get device name: %w", err)
+	}
+
+	csr, err := identity.ResolveCSR(rootReadWriter, a.config.DataDir, identityProvider, deviceName, a.log)
+	if err != nil {
+		return fmt.Errorf("resolving CSR for enrollment: %w", err)
+	}
+
+	// Use the executer configured during agent construction
+	exec := a.executer
+
+	// create enrollment client
+	enrollmentClient, err := newEnrollmentClient(a.config, a.log)
+	if err != nil {
+		return err
+	}
+
+	// TODO: replace wait with poll
+	backoff := wait.Backoff{
+		Cap:      time.Duration(a.config.EnrollmentVerifyCap),
+		Duration: time.Duration(a.config.EnrollmentVerifyInterval),
+		Factor:   1.5,
+		Steps:    a.config.EnrollmentVerifySteps,
+	}
+
+	pollBackoff := poll.Config{
+		MaxDelay:     1 * time.Minute,
+		BaseDelay:    10 * time.Second,
+		Factor:       1.5,
+		MaxSteps:     a.config.PullRetrySteps,
+		JitterFactor: 0.1,
+	}
+
+	specFetchErrorBackoff := poll.Config{
+		BaseDelay:    time.Duration(a.config.SpecFetchErrorBaseDelay),
+		MaxDelay:     time.Duration(a.config.SpecFetchErrorMaxDelay),
+		Factor:       2.0,
+		JitterFactor: 0.2,
+	}
+
+	// create os client
+	osClient := os.NewClient(a.log, exec)
+	caps := osClient.Capabilities(ctx)
+	a.log.Infof("OS mode detected: %s", caps.OsMode)
+	a.log.Infof("delta eligible: %t bootc=%q oci-delta=%q", caps.DeltaEligible, caps.BootcVersion, caps.OCIDeltaVersion)
+
+	// create podman client
+	podmanClientFactory := client.NewPodmanFactory(a.log, pollBackoff, rwFactory)
+	rootPodmanClient, err := podmanClientFactory("")
+	if err != nil {
+		return err
+	}
+
+	// create skopeo client
+	skopeoClientFactory := client.NewSkopeoFactory(a.log, rwFactory)
+
+	// create kube client
+	kubeClient := client.NewKube(a.log, exec, rootReadWriter)
+
+	// create helm client
+	helmClient := client.NewHelm(a.log, exec, rootReadWriter, a.config.DataDir, pollBackoff)
+
+	// create CRI client
+	criClient := client.NewCRI(a.log, exec, rootReadWriter, pollBackoff)
+
+	// create CLI clients
+	cliClients := client.NewCLIClients(
+		client.WithKubeClient(kubeClient),
+		client.WithHelmClient(helmClient),
+		client.WithCRIClient(criClient),
+	)
+
+	// create systemd client
+	rootSystemdClient := client.NewSystemd(exec, v1beta1.RootUsername)
+
+	// create systemInfo manager
+	systemInfoManager := systeminfo.NewManager(
+		a.log,
+		exec,
+		rootReadWriter,
+		a.config.DataDir,
+		a.config.SystemInfo,
+		a.config.SystemInfoCustom,
+		a.config.SystemInfoTimeout,
+		a.config.SystemInfoCollectionInterval(),
+	)
+
+	if tpmClient != nil {
+		systemInfoManager.RegisterCollector(ctx, systeminfocommon.TPMVendorInfoKey, tpmClient.VendorInfoCollector)
+		defer func() {
+			if err = tpmClient.Close(); err != nil {
+				a.log.Errorf("Failed to close TPM client: %v", err)
+			}
+		}()
+	}
+	if err := systemInfoManager.Initialize(ctx); err != nil {
+		return err
+	}
+
+	// create shutdown manager
+	shutdownManager := shutdown.NewManager(a.log, rootSystemdClient, rootReadWriter, gracefulShutdownTimeout, cancel)
+
+	reloadManager := reload.NewManager(a.configFile, a.log)
+
+	policyManager := policy.NewManager(a.log)
+
+	deviceNotFoundHandler := func() error {
+		return wipeCertificateAndRestart(ctx, identityProvider, exec, a.log)
+	}
+
+	// create audit logger
+	auditLogger, err := audit.NewFileLogger(
+		&a.config.AuditLog,
+		rootReadWriter,
+		deviceName,
+		version.Get().String(),
+		a.log,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create audit logger: %w", err)
+	}
+	defer func() {
+		if err := auditLogger.Close(); err != nil {
+			a.log.Errorf("Failed to close audit logger: %v", err)
+		}
+	}()
+
+	// create spec manager
+	specManager := spec.NewManager(
+		deviceName,
+		a.config.DataDir,
+		policyManager,
+		rootReadWriter,
+		osClient,
+		caps,
+		pollBackoff,
+		specFetchErrorBackoff,
+		deviceNotFoundHandler,
+		auditLogger,
+		a.log,
+	)
+
+	// create status manager with critical-change channel
+	criticalCh := make(chan struct{}, 1)
+	statusManager := status.NewManager(
+		deviceName,
+		a.log,
+		status.WithCriticalCh(criticalCh),
+	)
+
+	// create resource manager with injected notifier
+	resourceManager := resource.NewManager(
+		a.log,
+		statusManager.CriticalChangeNotifier(),
+	)
+
+	// create hook manager
+	hookManager := hook.NewManager(rootReadWriter, exec, a.log)
+
+	// create systemd manager
+	systemdManagerFactory := systemd.NewManagerFactory(a.log)
+	rootSystemdManager, err := systemdManagerFactory("")
+	if err != nil {
+		return err
+	}
+
+	// create pull config resolver
+	pullConfigResolver := dependency.NewPullConfigResolver(a.log, rwFactory)
+
+	// create application manager
+	appDataCache := applicationprovider.NewAppDataCache()
+	applicationsManager := applications.NewManager(
+		a.log,
+		rwFactory,
+		podmanClientFactory,
+		cliClients,
+		systemInfoManager,
+		systemdManagerFactory,
+		pullConfigResolver,
+		applications.WithDeltaStatusStore(deltaStatusStore),
+		applications.WithAppDataCache(appDataCache),
+	)
+
+	// register the application manager with the shutdown manager
+	shutdownManager.Register("applications", applicationsManager.Shutdown)
+
+	// create os manager
+	rootSkopeoClient, err := skopeoClientFactory("")
+	if err != nil {
+		return fmt.Errorf("initialize root Skopeo client: %w", err)
+	}
+
+	osManager := os.NewManager(
+		a.log,
+		osClient,
+		caps,
+		rootReadWriter,
+		rootPodmanClient,
+		pullConfigResolver,
+		client.NewOCIDelta(a.log, exec, time.Duration(a.config.PullTimeout)),
+		rootSkopeoClient,
+		time.Duration(a.config.PullTimeout),
+		os.WithDeltaStatusStore(deltaStatusStore),
+	)
+
+	// create prefetch manager
+	prefetchManager := dependency.NewPrefetchManager(
+		a.log,
+		podmanClientFactory,
+		skopeoClientFactory,
+		cliClients,
+		rootReadWriter,
+		a.config.PullTimeout,
+		resourceManager,
+		pollBackoff,
+		dependency.WithOCIDelta(client.NewOCIDelta(a.log, exec, time.Duration(a.config.PullTimeout))),
+		dependency.WithOCIDeltaFactory(client.NewOCIDeltaFactory(a.log, time.Duration(a.config.PullTimeout))),
+		dependency.WithReadWriterFactory(rwFactory),
+		dependency.WithDeltaStatusStore(deltaStatusStore),
+		dependency.WithApplicationNameResolver(applicationprovider.ResolveImageAppName),
+	)
+
+	// create lifecycle manager
+	lifecycleManager := lifecycle.NewManager(
+		deviceName,
+		a.config.EnrollmentService.EnrollmentUIEndpoint,
+		a.config.ManagementService.GetClientCertificatePath(),
+		a.config.ManagementService.GetClientKeyPath(),
+		a.config.DataDir,
+		rootReadWriter,
+		enrollmentClient,
+		csr,
+		a.config.DefaultLabels,
+		a.config.LabelFromSystemInfo,
+		caps,
+		statusManager,
+		rootSystemdClient,
+		identityProvider,
+		hookManager,
+		a.config.Enrollment.PreEnrollment.FailurePolicy,
+		backoff,
+		a.log,
+	)
+
+	// register status exporters
+	statusManager.RegisterStatusExporter(applicationsManager)
+	// The prefetch exporter enriches application status with delta fallback reasons.
+	statusManager.RegisterStatusExporter(prefetchManager)
+	statusManager.RegisterStatusExporter(rootSystemdManager)
+	statusManager.RegisterStatusExporter(resourceManager)
+	statusManager.RegisterCriticalExporter(resourceManager)
+	statusManager.RegisterStatusExporter(specManager)
+	statusManager.RegisterStatusExporter(systemInfoManager)
+	// The OS exporter adds delta capability fields to SystemInfo, so run it after
+	// the system-info exporter replaces SystemInfo with its cached snapshot.
+	statusManager.RegisterStatusExporter(osManager)
+	if len(a.config.Warnings) > 0 {
+		statusManager.RegisterStatusExporter(newConfigWarningExporter(a.config.Warnings))
+	}
+
+	// create config controller
+	configController := config.NewController(
+		rootReadWriter,
+		a.config.DataDir,
+		a.log,
+	)
+
+	bootstrap := device.NewBootstrap(
+		deviceName,
+		exec,
+		rootReadWriter,
+		specManager,
+		statusManager,
+		hookManager,
+		lifecycleManager,
+		&a.config.ManagementService.Config,
+		systemInfoManager,
+		a.config.GetManagementMetricsCallback(),
+		rootPodmanClient,
+		rootSystemdClient,
+		identityProvider,
+		a.log,
+	)
+
+	// bootstrap
+	if err := bootstrap.Initialize(ctx); err != nil {
+		return fmt.Errorf("bootstrap failed: %w", err)
+	}
+
+	// Initialize certificate manager
+	certManager, err := certmanager.NewAgentCertManager(
+		ctx, a.log,
+		a.config, deviceName,
+		bootstrap.ManagementClient(),
+		rootReadWriter,
+		identity.NewExportableFactory(tpmClient, a.log),
+		identityProvider,
+		statusManager,
+		systemInfoManager,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to initialize certificate manager: %w", err)
+	}
+
+	// create the gRPC client this must be done after bootstrap
+	grpcClient, err := identityProvider.CreateGRPCClient(&a.config.ManagementService.Config)
+	if err != nil {
+		a.log.Warnf("Failed to create gRPC client: %v", err)
+	}
+
+	// create a separate gRPC client for flightctl-remote-access
+	remoteAccessGrpcClient, err := identityProvider.CreateGRPCClient(&a.config.RemoteAccessService.Config)
+	if err != nil {
+		a.log.Warnf("Failed to create remote access gRPC client: %v", err)
+	}
+
+	// create console manager
+	consoleManager := console.NewManager(
+		grpcClient,
+		deviceName,
+		console.ConsoleUser,
+		exec,
+		specManager.Watch(),
+		a.log,
+	)
+
+	applicationsManager.WithConsole(deviceName, remoteAccessGrpcClient)
+
+	applicationsController := applications.NewController(
+		podmanClientFactory,
+		cliClients,
+		applicationsManager,
+		rwFactory,
+		a.log,
+		systemInfoManager.BootTime(),
+		applications.WithControllerAppDataCache(appDataCache),
+	)
+
+	// create image pruning manager
+	pruningManager := imagepruning.New(
+		podmanClientFactory,
+		rootPodmanClient,
+		cliClients,
+		specManager,
+		rwFactory,
+		rootReadWriter,
+		a.log,
+		a.config.ImagePruning,
+		a.config.DataDir,
+	)
+
+	// create agent
+	agent := device.NewAgent(
+		deviceName,
+		rootSystemdClient,
+		rootReadWriter,
+		statusManager,
+		specManager,
+		applicationsManager,
+		rootSystemdManager,
+		a.config.StatusUpdateInterval,
+		*a.config.StatusUpdateJitter,
+		hookManager,
+		osManager,
+		policyManager,
+		lifecycleManager,
+		applicationsController,
+		configController,
+		resourceManager,
+		consoleManager,
+		osClient,
+		rootPodmanClient,
+		prefetchManager,
+		pullConfigResolver,
+		pruningManager,
+		caps,
+		criticalCh,
+		backoff,
+		a.log,
+	)
+
+	// Populate collectors registered during startup before asynchronous work begins.
+	systemInfoManager.CollectPending(ctx)
+
+	// register reloader with reload manager
+	reloadManager.Register(agent.ReloadConfig)
+	reloadManager.Register(systemInfoManager.ReloadConfig)
+	reloadManager.Register(statusManager.ReloadCollect)
+	reloadManager.Register(certManager.Sync)
+	reloadManager.Register(pruningManager.ReloadConfig)
+
+	// When the server returns ConflictPaused (e.g. post-restore), clear lastStatus so the next status sync pushes device details.
+	specManager.Publisher().SetOnConflictPausedInvalidator(statusManager)
+
+	// agent is serial by default. only a small number of operations run async.
+	// device reconciliation, status updates, and spec application happen serially.
+
+	startAsync(shutdownManager.Run)
+	startAsync(reloadManager.Run)
+	startAsync(resourceManager.Run)
+	startAsync(prefetchManager.Run)
+	startAsync(systemInfoManager.Run)
+	appConsoleWatcher := specManager.Watch()
+	startAsync(consoleManager.Run)
+	startAsync(func(ctx context.Context) { applicationsManager.RunConsole(ctx, appConsoleWatcher) })
+	startAsync(specManager.Publisher().Run)
+	startAsync(certManager.Run)
+
+	// main agent loop: all critical work happens here serially
+	err = agent.Run(ctx)
+
+	// wait for all async goroutines to finish before returning so that
+	// callers (e.g. integration tests) can rely on full cleanup.
+	cancel()
+	wg.Wait()
+
+	return err
+}
+
+func newEnrollmentClient(cfg *agent_config.Config, log *log.PrefixLogger) (client.Enrollment, error) {
+	// Create infinite retry policy for enrollment requests using same config as management client
+	// but with infinite retries (MaxSteps: 0)
+	infiniteRetryConfig := poll.Config{
+		BaseDelay:    10 * time.Second,
+		Factor:       1.5,
+		MaxDelay:     1 * time.Minute,
+		MaxSteps:     0,
+		JitterFactor: 0.1,
+	}
+
+	httpClient, err := client.NewFromConfig(&cfg.EnrollmentService.Config, log, client.WithHTTPRetry(infiniteRetryConfig))
+	if err != nil {
+		return nil, err
+	}
+	return client.NewEnrollment(httpClient, cfg.GetEnrollmentMetricsCallback()), nil
+}
+
+func (a *Agent) tryLoadTPM(writer fileio.ReadWriter) (tpm.Client, error) {
+	if !a.config.TPM.Enabled {
+		a.log.Info("TPM device identity is disabled. Skipping TPM setup.")
+		return nil, nil
+	}
+
+	tpmClient, err := tpm.NewClient(a.log, writer, a.config)
+	if err != nil {
+		return nil, fmt.Errorf("creating TPM client: %w", err)
+	}
+	return tpmClient, nil
+}
+
+// wipeCertificateAndRestart wipes only the certificate (not keys or CSR) and restarts the flightctl-agent service
+func wipeCertificateAndRestart(ctx context.Context, identityProvider identity.Provider, executer executer.Executer, log *log.PrefixLogger) error {
+	log.Warn("Device not found on management server - wiping certificate and restarting agent")
+
+	// Wipe only the certificate, preserving keys and CSR
+	if err := identityProvider.WipeCertificateOnly(); err != nil {
+		return fmt.Errorf("failed to wipe certificate: %w", err)
+	}
+
+	// Restart the flightctl-agent service
+	systemdClient := client.NewSystemd(executer, v1beta1.RootUsername)
+	if err := systemdClient.Restart(ctx, "flightctl-agent"); err != nil {
+		return fmt.Errorf("failed to restart flightctl-agent service: %w", err)
+	}
+
+	log.Info("Successfully wiped certificate and restarted flightctl-agent service")
+	return nil
+}
+
+// configWarningExporter surfaces config loading warnings (e.g. skipped drop-ins)
+// in the device summary on every status collection cycle.
+type configWarningExporter struct {
+	msg string
+}
+
+func newConfigWarningExporter(warnings []string) *configWarningExporter {
+	return &configWarningExporter{
+		msg: log.Truncate(strings.Join(warnings, "; "), status.MaxMessageLength),
+	}
+}
+
+func (e *configWarningExporter) Status(_ context.Context, s *v1beta1.DeviceStatus, _ ...status.CollectorOpt) error {
+	if s.Summary.Status != v1beta1.DeviceSummaryStatusOnline {
+		return nil
+	}
+	s.Summary.Status = v1beta1.DeviceSummaryStatusDegraded
+	s.Summary.Info = &e.msg
+	return nil
+}

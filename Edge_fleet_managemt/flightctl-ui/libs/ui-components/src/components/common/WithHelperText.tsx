@@ -1,0 +1,66 @@
+import * as React from 'react';
+import { Button, FormGroup, Popover } from '@patternfly/react-core';
+import { OutlinedQuestionCircleIcon } from '@patternfly/react-icons/dist/js/icons/outlined-question-circle-icon';
+
+import './WithHelperText.css';
+
+type HelperTextPopoverProps = {
+  label: string;
+  isInline?: boolean;
+  triggerAction?: 'click' | 'hover';
+  content: React.ReactNode;
+};
+
+type FormGroupWithHelperTextProps = HelperTextPopoverProps & {
+  isRequired?: boolean;
+};
+
+const HelperTextPopover = ({
+  ariaLabel,
+  content,
+  triggerAction,
+}: Omit<HelperTextPopoverProps, 'label'> & { ariaLabel: string }) => (
+  <Popover aria-label={ariaLabel} bodyContent={content} withFocusTrap triggerAction={triggerAction}>
+    <Button
+      icon={<OutlinedQuestionCircleIcon />}
+      component="a"
+      isInline
+      variant="plain"
+      onClick={(ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }}
+      aria-label={`${ariaLabel} help text`}
+    />
+  </Popover>
+);
+
+const LabelWithHelperText = ({
+  label,
+  hideLabel,
+  isInline,
+  content,
+  triggerAction,
+}: HelperTextPopoverProps & { hideLabel?: boolean }) => (
+  <span className={`fctl-label-withhelpertext${isInline ? ' fctl-label-withhelpertext--inline' : ''}`}>
+    {!hideLabel && label}
+    <HelperTextPopover ariaLabel={label} content={content} triggerAction={triggerAction} />
+  </span>
+);
+
+export const FormGroupWithHelperText = ({
+  label,
+  isRequired,
+  content,
+  children,
+}: React.PropsWithChildren<FormGroupWithHelperTextProps>) => (
+  <FormGroup
+    label={label}
+    labelHelp={content ? <HelperTextPopover ariaLabel={label} content={content} /> : undefined}
+    isRequired={isRequired}
+  >
+    {children}
+  </FormGroup>
+);
+
+export default LabelWithHelperText;

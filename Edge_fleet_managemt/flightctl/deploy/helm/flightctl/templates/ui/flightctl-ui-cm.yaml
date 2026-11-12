@@ -1,0 +1,31 @@
+{{ if .Values.ui.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flightctl-ui
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+    flightctl.service: flightctl-ui
+data:
+  FLIGHTCTL_SERVER: https://flightctl-api:3443/
+  FLIGHTCTL_SERVER_EXTERNAL: {{ include "flightctl.getApiUrl" . }}
+  {{- if .Values.remoteAccess.enabled }}
+  FLIGHTCTL_REMOTE_ACCESS_SERVER: {{ include "flightctl.getInternalRemoteAccessUrl" . }}
+  {{- end }}
+  {{- if .Values.cliArtifacts.enabled }}
+  FLIGHTCTL_CLI_ARTIFACTS_SERVER: {{ include "flightctl.getInternalCliArtifactsUrl" . }}
+  {{- end }}
+  {{- if .Values.alertmanagerProxy.enabled }}
+  FLIGHTCTL_ALERTMANAGER_PROXY: {{ include "flightctl.getInternalAlertManagerProxyUrl" . }}
+  {{- end }}
+  {{- if and .Values.imageBuilderApi .Values.imageBuilderApi.enabled }}
+  FLIGHTCTL_IMAGEBUILDER_SERVER: {{ include "flightctl.getInternalImagebuilderApiUrl" . }}
+  {{- end }}
+  IS_RHEM: {{ (eq .Chart.Name "redhat-rhem") | quote }}
+  AUTH_INSECURE_SKIP_VERIFY: {{ default ((.Values.global).auth).insecureSkipTlsVerify .Values.ui.auth.insecureSkipTlsVerify | quote }}
+  BASE_UI_URL: {{ include "flightctl.getUIUrl" . }}
+  {{- /* When unset, default true; do not use Sprig default (it treats false as empty). */}}
+  TRUST_X_FORWARDED_HEADERS: {{ if and .Values.ui (hasKey .Values.ui "trustXForwardedHeaders") }}{{ .Values.ui.trustXForwardedHeaders | quote }}{{ else }}{{ true | quote }}{{ end }}
+  TRUSTED_PROXY_CIDRS: {{ .Values.ui.trustedProxyCidrs | default "" | quote }}
+{{ end }}

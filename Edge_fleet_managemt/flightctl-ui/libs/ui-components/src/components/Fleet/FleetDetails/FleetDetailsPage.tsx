@@ -1,0 +1,154 @@
+import React from 'react';
+import { DropdownItem, Tab } from '@patternfly/react-core';
+import { type Fleet } from '@flightctl/types';
+
+import { RESOURCE, VERB } from '../../../types/rbac';
+import PageWithPermissions from '../../common/PageWithPermissions';
+import { useFetchPeriodically } from '../../../hooks/useFetchPeriodically';
+import { useTranslation } from '../../../hooks/useTranslation';
+import { ROUTE, useNavigate } from '../../../hooks/useNavigate';
+import { usePermissionsContext } from '../../common/PermissionsContext';
+import { useAppContext } from '../../../hooks/useAppContext';
+import DetailsPage from '../../DetailsPage/DetailsPage';
+import DetailsPageActions from '../../DetailsPage/DetailsPageActions';
+import DeleteFleetModal from '../DeleteFleetModal/DeleteFleetModal';
+import FleetDetailsContent from './FleetDetailsContent';
+import FleetRestoreBanner from './FleetRestoreBanner';
+import FleetYaml from './FleetYaml';
+import TabsNav from '../../TabsNav/TabsNav';
+import FleetDetailsCatalog from './FleetDetailsCatalog';
+import ActionsDropdownList from '../../common/ActionsDropdownList';
+import { CatalogItemsProvider } from '../../Catalog/CatalogItemsContext';
+
+const fleetDetailsPermissions = [
+  { kind: RESOURCE.FLEET, verb: VERB.DELETE },
+  { kind: RESOURCE.FLEET, verb: VERB.PATCH },
+];
+const FleetDetailPage = () => {
+  const { t } = useTranslation();
+
+  const {
+    router: { useParams, Routes, Route, Navigate },
+  } = useAppContext();
+
+  const { fleetId } = useParams() as { fleetId: string };
+  const [fleet, isLoading, error, refetch] = useFetchPeriodically<Required<Fleet>>({
+    endpoint: `fleets/${fleetId}?addDevicesSummary=true`,
+  });
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = React.useState<boolean>();
+
+  const navigate = useNavigate();
+
+  const { checkPermissions } = usePermissionsContext();
+  const [canDelete, canEdit] = checkPermissions(fleetDetailsPermissions);
+
+  const isManaged = !!fleet?.metadata?.owner;
+  const hasActions = canDelete || (canEdit && !isManaged) || isManaged;
+
+  return (
+    <DetailsPage
+      loading={isLoading}
+      error={error}
+      id={fleetId}
+      titleDataTestId="fleet-details-title"
+      resourceLink={ROUTE.FLEETS}
+      resourceType="Fleets"
+      resourceTypeLabel={t('Fleets')}
+      banner={<FleetRestoreBanner fleet={fleet} refetch={refetch} />}
+      nav={
+        <TabsNav aria-label="Fleet details tabs" tabKeys={['details', 'catalog', 'yaml']}>
+          <Tab eventKey="details" title={t('Details')} />
+          <Tab eventKey="catalog" title={t('Catalog')} />
+          <Tab eventKey="yaml" title={t('YAML')} />
+        </TabsNav>
+      }
+      actions={
+        hasActions && (
+          <DetailsPageActions>
+            <ActionsDropdownList>
+              {isManaged && (
+                <ActionsDropdownList.Item>
+                  <DropdownItem
+                    data-testid="fleet-details-menu-view-configurations"
+                    onClick={() => navigate({ route: ROUTE.FLEET_EDIT, postfix: fleetId })}
+                  >
+                    {t('View fleet configurations')}
+                  </DropdownItem>
+                </ActionsDropdownList.Item>
+              )}
+              {canEdit && !isManaged && (
+                <ActionsDropdownList.Item>
+                  <DropdownItem
+                    data-testid="fleet-details-menu-edit-configurations"
+                    onClick={() => navigate({ route: ROUTE.FLEET_EDIT, postfix: fleetId })}
+                  >
+                    {t('Edit fleet configurations')}
+                  </DropdownItem>
+                </ActionsDropdownList.Item>
+              )}
+              {canDelete && (
+                <ActionsDropdownList.Item isDanger>
+                  <DropdownItem
+                    title={t('Delete fleet')}
+                    onClick={() => {
+                      setIsDeleteModalOpen(true);
+                    }}
+                    isAriaDisabled={isManaged}
+                    tooltipProps={
+                      isManaged
+                        ? {
+                            content: t(
+                              "This fleet is managed by a resource sync and cannot be directly deleted. Either remove this fleet's definition from the resource sync configuration, or delete the resource sync first.",
+                            ),
+                          }
+                        : undefined
+                    }
+                  >
+                    {t('Delete fleet')}
+                  </DropdownItem>
+                </ActionsDropdownList.Item>
+              )}
+            </ActionsDropdownList>
+          </DetailsPageActions>
+        )
+      }
+    >
+      {fleet && (
+        <>
+          <CatalogItemsProvider spec={fleet.spec.template.spec}>
+            <Routes>
+              <Route index element={<Navigate to="details" replace />} />
+              <Route path="details" element={<FleetDetailsContent fleet={fleet} />} />
+              <Route path="catalog" element={<FleetDetailsCatalog fleet={fleet} refetch={refetch} />} />
+              <Route path="yaml" element={<FleetYaml fleet={fleet} refetch={refetch} canEdit={canEdit} />} />
+            </Routes>
+          </CatalogItemsProvider>
+          {isDeleteModalOpen && (
+            <DeleteFleetModal
+              fleetId={fleetId}
+              onClose={(hasDeleted?: boolean) => {
+                if (hasDeleted) {
+                  refetch();
+                  navigate(ROUTE.FLEETS);
+                }
+                setIsDeleteModalOpen(false);
+              }}
+            />
+          )}
+        </>
+      )}
+    </DetailsPage>
+  );
+};
+
+const FleetDetailsWithPermissions = () => {
+  const { checkPermissions, loading } = usePermissionsContext();
+  const [allowed] = checkPermissions([{ kind: RESOURCE.FLEET, verb: VERB.GET }]);
+  return (
+    <PageWithPermissions allowed={allowed} loading={loading}>
+      <FleetDetailPage />
+    </PageWithPermissions>
+  );
+};
+
+export default FleetDetailsWithPermissions;

@@ -1,0 +1,28 @@
+{{ if eq (include "flightctl.getServiceExposeMethod" .) "route" }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  labels:
+    {{- with .Values.global.additionalRouteLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.api.additionalRouteLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+    flightctl.service: flightctl-api
+  name: flightctl-api
+  namespace: {{ .Release.Namespace }}
+spec:
+  host: api.{{ include "flightctl.getBaseDomain" . }}
+  port:
+    targetPort: 3443
+  tls:
+    termination: passthrough # the service is responsible for terminating TLS and authenticating devices through TLSs
+    insecureEdgeTerminationPolicy: None
+  to:
+    kind: Service
+    name: flightctl-api
+    weight: 100
+  wildcardPolicy: None
+{{ end }}

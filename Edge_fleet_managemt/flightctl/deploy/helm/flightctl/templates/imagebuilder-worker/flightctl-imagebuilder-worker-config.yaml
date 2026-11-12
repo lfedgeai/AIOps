@@ -1,0 +1,148 @@
+{{- if and .Values.imageBuilderWorker .Values.imageBuilderWorker.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    flightctl.service: flightctl-imagebuilder-worker
+    {{- include "flightctl.standardLabels" . | nindent 4 }}
+  name: flightctl-imagebuilder-worker-config
+  namespace: {{ default .Release.Namespace .Values.global.internalNamespace }}
+data:
+  config.yaml: |-
+    database:
+        hostname: {{ include "flightctl.dbHostname" . }}
+        type: "pgsql"
+        port: {{ include "flightctl.dbPort" . | int }}
+        name: {{ .Values.db.name }}
+        {{- if eq .Values.db.type "external" }}
+        {{- if .Values.db.external.sslmode }}
+        sslmode: {{ .Values.db.external.sslmode | quote }}
+        {{- end }}
+        {{- if .Values.db.external.tlsConfigMapName }}
+        sslrootcert: /etc/ssl/postgres/ca-cert.pem
+        {{- end }}
+        {{- if .Values.db.external.tlsSecretName }}
+        sslkey: /etc/ssl/postgres/client-key.pem
+        sslcert: /etc/ssl/postgres/client-cert.pem
+        {{- end }}
+        {{- end }}
+    kv:
+        hostname: flightctl-kv.{{ default .Release.Namespace .Values.global.internalNamespace }}.svc.cluster.local
+        port: 6379
+    service:
+        {{- if eq (include "flightctl.getServiceExposeMethod" .) "nodePort" }}
+        baseAgentEndpointUrl: https://agent-api.{{ include "flightctl.getBaseDomain" . }}:{{ .Values.dev.nodePorts.agent }}/
+        {{- else if and (eq (include "flightctl.getServiceExposeMethod" .) "gateway") (not (eq (int .Values.global.gateway.ports.tls) 443)) }}
+        baseAgentEndpointUrl: https://agent-api.{{ include "flightctl.getBaseDomain" . }}:{{ .Values.global.gateway.ports.tls }}/
+        {{- else }}
+        baseAgentEndpointUrl: https://agent-api.{{ include "flightctl.getBaseDomain" . }}/
+        {{- end }}
+        baseUIUrl: {{ include "flightctl.getUIUrl" . }}
+    imageBuilderWorker:
+        logLevel: {{ default "info" .Values.imageBuilderWorker.logLevel }}
+        maxConcurrentBuilds: {{ default 2 .Values.imageBuilderWorker.maxConcurrentBuilds }}
+        defaultTTL: {{ default "168h" .Values.imageBuilderWorker.defaultTTL }}
+        imageBuilderTimeout: {{ default "3m" .Values.imageBuilderWorker.imageBuilderTimeout }}
+        timeoutCheckTaskInterval: {{ default "1m" .Values.imageBuilderWorker.timeoutCheckTaskInterval }}
+        {{- if .Values.imageBuilderWorker.rpmRepoUrl }}
+        rpmRepoUrl: {{ .Values.imageBuilderWorker.rpmRepoUrl | quote }}
+        {{- end }}
+        {{- if kindIs "bool" .Values.imageBuilderWorker.rpmRepoAdd }}
+        rpmRepoAdd: {{ .Values.imageBuilderWorker.rpmRepoAdd }}
+        {{- end }}
+        {{- if .Values.imageBuilderWorker.rpmRepoEnable }}
+        rpmRepoEnable: {{ .Values.imageBuilderWorker.rpmRepoEnable | quote }}
+        {{- end }}
+        {{- if kindIs "int" .Values.imageBuilderWorker.dnfTimeout }}
+        dnfTimeout: {{ .Values.imageBuilderWorker.dnfTimeout }}
+        {{- end }}
+        {{- if kindIs "int" .Values.imageBuilderWorker.dnfRetries }}
+        dnfRetries: {{ .Values.imageBuilderWorker.dnfRetries }}
+        {{- end }}
+        {{- if kindIs "bool" .Values.imageBuilderWorker.dnfSkipUnavailable }}
+        dnfSkipUnavailable: {{ .Values.imageBuilderWorker.dnfSkipUnavailable }}
+        {{- end }}
+        {{- with .Values.imageBuilderWorker.serviceImages }}
+        {{- $podman := .podman | default (dict "image" "" "skipTlsVerify" false) }}
+        {{- $bootc := .bootcImageBuilder | default (dict "image" "" "skipTlsVerify" false) }}
+        {{- $syft := .syft | default (dict "image" "" "skipTlsVerify" false) }}
+        serviceImages:
+          podman:
+            image: {{ $podman.image | default "" | quote }}
+            skipTlsVerify: {{ $podman.skipTlsVerify | default false }}
+          bootcImageBuilder:
+            image: {{ $bootc.image | default "" | quote }}
+            skipTlsVerify: {{ $bootc.skipTlsVerify | default false }}
+          syft:
+            image: {{ $syft.image | default "" | quote }}
+            skipTlsVerify: {{ $syft.skipTlsVerify | default false }}
+        {{- end }}
+        {{- with .Values.imageBuilderWorker.sbom }}
+        sbom:
+          enabled: {{ if kindIs "bool" .enabled }}{{ .enabled }}{{ else }}true{{ end }}
+          pushToRegistry: {{ if kindIs "bool" .pushToRegistry }}{{ .pushToRegistry }}{{ else }}true{{ end }}
+          uploadToTrustify: {{ if kindIs "bool" .uploadToTrustify }}{{ .uploadToTrustify }}{{ else }}true{{ end }}
+          {{- if .purlTransform }}
+          purlTransform:
+            {{- if kindIs "bool" .purlTransform.enabled }}
+            enabled: {{ .purlTransform.enabled }}
+            {{- end }}
+            {{- if .purlTransform.byType }}
+            byType:
+              {{- range $type, $rules := .purlTransform.byType }}
+              {{ $type }}:
+                {{- if $rules.namespaceMapping }}
+                namespaceMapping:
+                  {{- range $k, $v := $rules.namespaceMapping }}
+                  {{ $k }}: {{ $v | quote }}
+                  {{- end }}
+                {{- end }}
+                {{- if $rules.distroMapping }}
+                distroMapping:
+                  {{- range $k, $v := $rules.distroMapping }}
+                  {{ $k }}: {{ $v | quote }}
+                  {{- end }}
+                {{- end }}
+                {{- if $rules.allowedQualifiers }}
+                allowedQualifiers:
+                  {{- range $rules.allowedQualifiers }}
+                  - {{ . | quote }}
+                  {{- end }}
+                {{- end }}
+              {{- end }}
+            {{- end }}
+          {{- end }}
+        {{- end }}
+    {{- $vuln := default dict .Values.vulnerabilityReporting }}
+    {{- $trustify := default dict $vuln.trustify }}
+    {{- $auth := default dict $trustify.auth }}
+    {{- if default false $vuln.enabled }}
+    vulnerabilityReporting:
+        enabled: true
+        syncInterval: {{ $vuln.syncInterval | default "15m" | quote }}
+        {{- if $vuln.backend }}
+        backend: {{ $vuln.backend | quote }}
+        {{- end }}
+        {{- if $vuln.trustify }}
+        trustify:
+            endpoint: {{ $trustify.endpoint | quote }}
+            {{- if $vuln.trustify.auth }}
+            auth:
+                mode: {{ $auth.mode | default "none" | quote }}
+                {{- if $auth.oidcIssuerUrl }}
+                oidcIssuerUrl: {{ $auth.oidcIssuerUrl | quote }}
+                {{- end }}
+            {{- end }}
+            {{- if $trustify.caCertConfigMapName }}
+            caFile: /etc/ssl/vulnerability/trustify/ca-cert.pem
+            {{- else if $trustify.caFile }}
+            caFile: {{ $trustify.caFile | quote }}
+            {{- end }}
+            {{- if $trustify.skipTlsVerify }}
+            skipTlsVerify: true
+            {{- end }}
+        {{- end }}
+    {{- end }}
+{{ include "flightctl.profiling" . | nindent 4 }}
+{{- include "flightctl.encryptionConfig" . | nindent 4 }}
+{{- end }}

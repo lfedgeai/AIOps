@@ -1,0 +1,839 @@
+package common
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"runtime/debug"
+	"strings"
+
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/util"
+	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
+)
+
+type resourceEvent struct {
+	resourceKind domain.ResourceKind
+	resourceName string
+	reason       domain.EventReason
+	message      string
+	details      *domain.EventDetails
+}
+
+// convertUpdateDetails converts ResourceUpdatedDetails to EventDetails
+func convertUpdateDetails(updates *domain.ResourceUpdatedDetails) *domain.EventDetails {
+	if updates == nil {
+		return nil
+	}
+	details := domain.EventDetails{}
+	if err := details.FromResourceUpdatedDetails(*updates); err != nil {
+		// If conversion fails, return nil rather than panicking
+		return nil
+	}
+	return &details
+}
+
+// Helper functions for standardized event message formatting
+
+// formatResourceActionMessage creates a standardized message for resource actions
+func formatResourceActionMessage(resourceKind domain.ResourceKind, action string, details *string) string {
+	s := fmt.Sprintf("%s was %s successfully", resourceKind, action)
+	if details != nil {
+		s += fmt.Sprintf(" (%s)", *details)
+	}
+	s += "."
+	return s
+}
+
+// formatResourceActionFailedTemplate creates a template for failed resource actions
+func formatResourceActionFailedTemplate(resourceKind domain.ResourceKind, action string) string {
+	return fmt.Sprintf("%s %s failed: %%s.", resourceKind, action)
+}
+
+// formatDeviceMultipleOwnersMessage creates a standardized message for multiple owners detected
+func formatDeviceMultipleOwnersMessage(matchingFleets []string) string {
+	return fmt.Sprintf("Device matches multiple fleets: %s.", strings.Join(matchingFleets, ", "))
+}
+
+// formatDeviceMultipleOwnersResolvedMessage creates a standardized message for multiple owners resolved
+func formatDeviceMultipleOwnersResolvedMessage(resolutionType domain.DeviceMultipleOwnersResolvedDetailsResolutionType, assignedOwner *string) string {
+	switch resolutionType {
+	case domain.SingleMatch:
+		return fmt.Sprintf("Device multiple owners conflict was resolved: single fleet match, assigned to fleet '%s'.", lo.FromPtr(assignedOwner))
+	case domain.NoMatch:
+		return "Device multiple owners conflict was resolved: no fleet matches, owner was removed."
+	case domain.FleetDeleted:
+		return "Device multiple owners conflict was resolved: fleet was deleted."
+	default:
+		return "Device multiple owners conflict was resolved."
+	}
+}
+
+func getBaseEvent(ctx context.Context, resourceEvent resourceEvent) *domain.Event {
+	return domain.GetBaseEvent(ctx, resourceEvent.resourceKind, resourceEvent.resourceName, resourceEvent.reason, resourceEvent.message, resourceEvent.details)
+}
+
+// GetResourceCreatedOrUpdatedSuccessEvent creates an event for successful resource creation or update
+func GetResourceCreatedOrUpdatedSuccessEvent(ctx context.Context, created bool, resourceKind domain.ResourceKind, resourceName string, updates *domain.ResourceUpdatedDetails, log logrus.FieldLogger, annotations map[string]string) *domain.Event {
+	if !created && (updates == nil || len(updates.UpdatedFields) == 0) {
+		return nil
+	}
+
+	details := convertUpdateDetails(updates)
+	if updates != nil && details == nil {
+		log.WithField("updates", updates).Error("Failed to serialize event details")
+		return nil
+	}
+
+	var event *domain.Event
+	if created {
+		event = getBaseEvent(ctx, resourceEvent{
+			resourceKind: resourceKind,
+			resourceName: resourceName,
+			reason:       domain.EventReasonResourceCreated,
+			message:      formatResourceActionMessage(resourceKind, "created", nil),
+			details:      details,
+		})
+	} else {
+		updatedFieldsStr := strings.Join(lo.Map(updates.UpdatedFields, func(item domain.ResourceUpdatedDetailsUpdatedFields, _ int) string {
+			return string(item)
+		}), ", ")
+		event = getBaseEvent(ctx, resourceEvent{
+			resourceKind: resourceKind,
+			resourceName: resourceName,
+			reason:       domain.EventReasonResourceUpdated,
+			message:      formatResourceActionMessage(resourceKind, "updated", &updatedFieldsStr),
+			details:      details,
+		})
+	}
+	event.Metadata.Annotations = &annotations
+
+	return event
+}
+
+// GetDeviceEventFromUpdateDetails creates a device event from update details
+func GetDeviceEventFromUpdateDetails(ctx context.Context, resourceName string, update ResourceUpdate) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: resourceName,
+		reason:       update.Reason,
+		message:      update.Details,
+		details:      nil,
+	})
+}
+
+// GetResourceCreatedOrUpdatedFailureEvent creates an event for failed resource creation or update
+func GetResourceCreatedOrUpdatedFailureEvent(ctx context.Context, created bool, resourceKind domain.ResourceKind, resourceName string, status domain.Status, updatedDetails *domain.ResourceUpdatedDetails) *domain.Event {
+	// Ignore 4XX status codes
+	if status.Code >= 400 && status.Code < 500 {
+		return nil
+	}
+
+	if created {
+		return getBaseEvent(ctx, resourceEvent{
+			resourceKind: resourceKind,
+			resourceName: resourceName,
+			reason:       domain.EventReasonResourceCreationFailed,
+			message:      fmt.Sprintf(formatResourceActionFailedTemplate(resourceKind, "creation"), status.Message),
+			details:      convertUpdateDetails(updatedDetails),
+		})
+	}
+
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: resourceKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonResourceUpdateFailed,
+		message:      fmt.Sprintf(formatResourceActionFailedTemplate(resourceKind, "update"), status.Message),
+		details:      convertUpdateDetails(updatedDetails),
+	})
+}
+
+// GetResourceDeletedFailureEvent creates an event for failed resource deletion
+func GetResourceDeletedFailureEvent(ctx context.Context, resourceKind domain.ResourceKind, resourceName string, status domain.Status) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: resourceKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonResourceDeletionFailed,
+		message:      fmt.Sprintf(formatResourceActionFailedTemplate(resourceKind, "deletion"), status.Message),
+		details:      nil,
+	})
+}
+
+// GetResourceDeletedSuccessEvent creates an event for successful resource deletion
+func GetResourceDeletedSuccessEvent(ctx context.Context, resourceKind domain.ResourceKind, resourceName string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: resourceKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonResourceDeleted,
+		message:      formatResourceActionMessage(resourceKind, "deleted", nil),
+		details:      nil,
+	})
+}
+
+// GetEnrollmentRequestApprovedEvent creates an event for enrollment request approval
+func GetEnrollmentRequestApprovedEvent(ctx context.Context, resourceName string, log logrus.FieldLogger) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.EnrollmentRequestKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonEnrollmentRequestApproved,
+		message:      formatResourceActionMessage(domain.EnrollmentRequestKind, "approved", nil),
+		details:      nil,
+	})
+}
+
+// GetEnrollmentRequestApprovalFailedEvent creates an event for failed enrollment request approval
+func GetEnrollmentRequestApprovalFailedEvent(ctx context.Context, resourceName string, status domain.Status, log logrus.FieldLogger) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.EnrollmentRequestKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonEnrollmentRequestApprovalFailed,
+		message:      fmt.Sprintf(formatResourceActionFailedTemplate(domain.EnrollmentRequestKind, "approval"), status.Message),
+		details:      nil,
+	})
+}
+
+// GetDeviceDecommissionedSuccessEvent creates an event for successful device decommission
+func GetDeviceDecommissionedSuccessEvent(ctx context.Context, _ bool, _ domain.ResourceKind, resourceName string, update *domain.ResourceUpdatedDetails, log logrus.FieldLogger) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonDeviceDecommissioned,
+		message:      formatResourceActionMessage(domain.DeviceKind, "decommissioned", nil),
+		details:      convertUpdateDetails(update),
+	})
+}
+
+// GetDeviceDecommissionedFailureEvent creates an event for failed device decommission
+func GetDeviceDecommissionedFailureEvent(ctx context.Context, _ bool, _ domain.ResourceKind, resourceName string, status domain.Status) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonDeviceDecommissionFailed,
+		message:      fmt.Sprintf(formatResourceActionFailedTemplate(domain.DeviceKind, "decommission"), status.Message),
+		details:      nil,
+	})
+}
+
+// GetDeviceMultipleOwnersDetectedEvent creates an event for multiple fleet owners detected
+func GetDeviceMultipleOwnersDetectedEvent(ctx context.Context, deviceName string, matchingFleets []string, log logrus.FieldLogger) *domain.Event {
+	message := formatDeviceMultipleOwnersMessage(matchingFleets)
+
+	details := domain.EventDetails{}
+	detailsStruct := domain.DeviceMultipleOwnersDetectedDetails{
+		DetailType:     domain.DeviceMultipleOwnersDetected,
+		MatchingFleets: matchingFleets,
+	}
+	if err := details.FromDeviceMultipleOwnersDetectedDetails(detailsStruct); err != nil {
+		log.WithError(err).Error("Failed to serialize device multiple owners detected event details")
+		return nil
+	}
+
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: deviceName,
+		reason:       domain.EventReasonDeviceMultipleOwnersDetected,
+		message:      message,
+		details:      &details,
+	})
+}
+
+// GetDeviceMultipleOwnersResolvedEvent creates an event for multiple fleet owners resolved
+func GetDeviceMultipleOwnersResolvedEvent(ctx context.Context, deviceName string, resolutionType domain.DeviceMultipleOwnersResolvedDetailsResolutionType, assignedOwner *string, previousMatchingFleets []string, log logrus.FieldLogger) *domain.Event {
+	message := formatDeviceMultipleOwnersResolvedMessage(resolutionType, assignedOwner)
+
+	details := domain.EventDetails{}
+	detailsStruct := domain.DeviceMultipleOwnersResolvedDetails{
+		DetailType:             domain.DeviceMultipleOwnersResolved,
+		ResolutionType:         resolutionType,
+		AssignedOwner:          assignedOwner,
+		PreviousMatchingFleets: &previousMatchingFleets,
+	}
+	if err := details.FromDeviceMultipleOwnersResolvedDetails(detailsStruct); err != nil {
+		log.WithError(err).Error("Failed to serialize device multiple owners resolved event details")
+		return nil
+	}
+
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: deviceName,
+		reason:       domain.EventReasonDeviceMultipleOwnersResolved,
+		message:      message,
+		details:      &details,
+	})
+}
+
+// GetDeviceSpecValidEvent creates an event for device spec becoming valid
+func GetDeviceSpecValidEvent(ctx context.Context, deviceName string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: deviceName,
+		reason:       domain.EventReasonDeviceSpecValid,
+		message:      "Device specification is valid.",
+		details:      nil,
+	})
+}
+
+// GetDeviceSpecInvalidEvent creates an event for device spec becoming invalid
+func GetDeviceSpecInvalidEvent(ctx context.Context, deviceName string, message string) *domain.Event {
+	msg := fmt.Sprintf("Device specification is invalid: %s.", message)
+
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: deviceName,
+		reason:       domain.EventReasonDeviceSpecInvalid,
+		message:      msg,
+		details:      nil,
+	})
+}
+
+// GetDeviceConflictResolvedEvent creates an event for device conflict being resolved
+func GetDeviceConflictResolvedEvent(ctx context.Context, deviceName string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: deviceName,
+		reason:       domain.EventReasonDeviceConflictResolved,
+		message:      "Device conflict has been resolved and device has been resumed.",
+		details:      nil,
+	})
+}
+
+// GetDeviceConflictPausedEvent creates an event for device being paused due to version conflict
+func GetDeviceConflictPausedEvent(ctx context.Context, deviceName string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: deviceName,
+		reason:       domain.EventReasonDeviceConflictPaused,
+		message:      "Device has been paused due to version conflict after reconnection.",
+		details:      nil,
+	})
+}
+
+// GetFleetSpecValidEvent creates an event for fleet spec becoming valid
+func GetFleetSpecValidEvent(ctx context.Context, fleetName string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.FleetKind,
+		resourceName: fleetName,
+		reason:       domain.EventReasonFleetValid,
+		message:      "Fleet specification is valid.",
+		details:      nil,
+	})
+}
+
+// GetFleetSpecInvalidEvent creates an event for fleet spec becoming invalid
+func GetFleetSpecInvalidEvent(ctx context.Context, fleetName string, message string) *domain.Event {
+	msg := fmt.Sprintf("Fleet specification is invalid: %s.", message)
+
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.FleetKind,
+		resourceName: fleetName,
+		reason:       domain.EventReasonFleetInvalid,
+		message:      msg,
+		details:      nil,
+	})
+}
+
+// ResourceSync event functions
+func GetResourceSyncCommitDetectedEvent(ctx context.Context, resourceName string, commitHash string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.ResourceSyncKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonResourceSyncCommitDetected,
+		message:      fmt.Sprintf("New commit detected: %s.", commitHash),
+		details:      nil,
+	})
+}
+
+func GetResourceSyncAccessibleEvent(ctx context.Context, resourceName string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.ResourceSyncKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonResourceSyncAccessible,
+		message:      "Repository is accessible.",
+		details:      nil,
+	})
+}
+
+func GetResourceSyncInaccessibleEvent(ctx context.Context, resourceName string, errorMessage string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.ResourceSyncKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonResourceSyncInaccessible,
+		message:      fmt.Sprintf("Repository is inaccessible: %s.", errorMessage),
+		details:      nil,
+	})
+}
+
+func GetResourceSyncParsedEvent(ctx context.Context, resourceName string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.ResourceSyncKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonResourceSyncParsed,
+		message:      "Resources parsed successfully.",
+		details:      nil,
+	})
+}
+
+func GetResourceSyncParsingFailedEvent(ctx context.Context, resourceName string, errorMessage string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.ResourceSyncKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonResourceSyncParsingFailed,
+		message:      fmt.Sprintf("Resource parsing failed: %s", errorMessage),
+		details:      nil,
+	})
+}
+
+func GetResourceSyncSyncedEvent(ctx context.Context, resourceName string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.ResourceSyncKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonResourceSyncSynced,
+		message:      "Resources synced successfully.",
+		details:      nil,
+	})
+}
+
+func GetResourceSyncSyncFailedEvent(ctx context.Context, resourceName string, errorMessage string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.ResourceSyncKind,
+		resourceName: resourceName,
+		reason:       domain.EventReasonResourceSyncSyncFailed,
+		message:      fmt.Sprintf("Resource sync failed: %s.", errorMessage),
+		details:      nil,
+	})
+}
+
+// GetFleetRolloutNewEvent creates an event for fleet rollout creation
+func GetFleetRolloutNewEvent(ctx context.Context, name string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.FleetKind,
+		resourceName: name,
+		reason:       domain.EventReasonFleetRolloutCreated,
+		message:      "Fleet rollout created.",
+		details:      nil,
+	})
+}
+
+// GetFleetRolloutBatchCompletedEvent creates an event for fleet rollout completion
+func GetFleetRolloutBatchCompletedEvent(ctx context.Context, name string, deployingTemplateVersion string, report *domain.RolloutBatchCompletionReport) *domain.Event {
+	details := domain.FleetRolloutBatchCompletedDetails{
+		DetailType:        domain.FleetRolloutBatchCompleted,
+		TemplateVersion:   deployingTemplateVersion,
+		Batch:             report.BatchName,
+		SuccessPercentage: report.SuccessPercentage,
+		Total:             report.Total,
+		Successful:        report.Successful,
+		Failed:            report.Failed,
+		TimedOut:          report.TimedOut,
+	}
+	eventDetails := domain.EventDetails{}
+	if err := eventDetails.FromFleetRolloutBatchCompletedDetails(details); err != nil {
+		// If serialization fails, return nil rather than panicking
+		return nil
+	}
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.FleetKind,
+		resourceName: name,
+		reason:       domain.EventReasonFleetRolloutBatchCompleted,
+		message:      fmt.Sprintf("Fleet rollout batch %s completed with %d%% success rate.", report.BatchName, report.SuccessPercentage),
+		details:      &eventDetails,
+	})
+}
+
+// GetFleetRolloutStartedEvent creates an event for fleet rollout start
+func GetFleetRolloutStartedEvent(ctx context.Context, templateVersionName string, fleetName string, immediateRollout bool, policyRemoved bool) *domain.Event {
+	rolloutType := domain.Batched
+	if immediateRollout {
+		rolloutType = "None"
+	}
+	details := domain.FleetRolloutStartedDetails{
+		DetailType:      domain.FleetRolloutStarted,
+		RolloutStrategy: rolloutType,
+		TemplateVersion: templateVersionName,
+	}
+	eventDetails := domain.EventDetails{}
+	if err := eventDetails.FromFleetRolloutStartedDetails(details); err != nil {
+		// If serialization fails, return nil rather than panicking
+		return nil
+	}
+
+	message := "Fleet rollout started."
+	if policyRemoved {
+		message = "Fleet rollout started due to policy removal."
+	}
+
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.FleetKind,
+		resourceName: fleetName,
+		reason:       domain.EventReasonFleetRolloutStarted,
+		message:      message,
+		details:      &eventDetails,
+	})
+}
+
+// GetFleetRolloutDeviceSelectedEvent creates an event for fleet rollout device selection
+func GetFleetRolloutDeviceSelectedEvent(ctx context.Context, deviceName string, fleetName string, templateVersion string) *domain.Event {
+	details := domain.FleetRolloutDeviceSelectedDetails{
+		DetailType:      domain.FleetRolloutDeviceSelected,
+		FleetName:       fleetName,
+		TemplateVersion: templateVersion,
+	}
+	eventDetails := domain.EventDetails{}
+	if err := eventDetails.FromFleetRolloutDeviceSelectedDetails(details); err != nil {
+		// If serialization fails, return nil rather than panicking
+		return nil
+	}
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: deviceName,
+		reason:       domain.EventReasonFleetRolloutDeviceSelected,
+		message:      fmt.Sprintf("Device was selected for update while rolling out fleet %s with template version %s.", fleetName, templateVersion),
+		details:      &eventDetails,
+	})
+}
+
+// GetApplicationLifecycleChangedEvent creates an event for a device-level application
+// lifecycle change (stop/start/restart).
+func GetApplicationLifecycleChangedEvent(ctx context.Context, deviceName string, appName string, action domain.ApplicationLifecycleChangedDetailsAction) *domain.Event {
+	details := domain.ApplicationLifecycleChangedDetails{
+		DetailType: domain.ApplicationLifecycleChangedDT,
+		AppName:    appName,
+		Action:     action,
+	}
+	eventDetails := domain.EventDetails{}
+	if err := eventDetails.FromApplicationLifecycleChangedDetails(details); err != nil {
+		// If serialization fails, return nil rather than panicking
+		return nil
+	}
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: deviceName,
+		reason:       domain.EventReasonApplicationLifecycleChanged,
+		message:      fmt.Sprintf("Requested %s of application %s on device %s.", action, appName, deviceName),
+		details:      &eventDetails,
+	})
+}
+
+// GetFleetApplicationLifecycleChangedEvent creates an event for a fleet-level application
+// lifecycle change (fleet-scoped stop/start APIs).
+func GetFleetApplicationLifecycleChangedEvent(ctx context.Context, fleetName string, appName string, action domain.ApplicationLifecycleChangedDetailsAction) *domain.Event {
+	details := domain.ApplicationLifecycleChangedDetails{
+		DetailType: domain.ApplicationLifecycleChangedDT,
+		AppName:    appName,
+		Action:     action,
+	}
+	eventDetails := domain.EventDetails{}
+	if err := eventDetails.FromApplicationLifecycleChangedDetails(details); err != nil {
+		// If serialization fails, return nil rather than panicking
+		return nil
+	}
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.FleetKind,
+		resourceName: fleetName,
+		reason:       domain.EventReasonApplicationLifecycleChanged,
+		message:      fmt.Sprintf("Requested %s of application %s on fleet %s.", action, appName, fleetName),
+		details:      &eventDetails,
+	})
+}
+
+// GetEnrollmentHookSucceededEvent creates an event when enrollment hooks complete successfully.
+func GetEnrollmentHookSucceededEvent(ctx context.Context, deviceName string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: deviceName,
+		reason:       domain.EventReasonEnrollmentHookSucceeded,
+		message:      "Enrollment hooks completed successfully.",
+		details:      nil,
+	})
+}
+
+// GetEnrollmentHookFailedEvent creates an event when enrollment hooks fail with Block policy.
+func GetEnrollmentHookFailedEvent(ctx context.Context, deviceName string, message string) *domain.Event {
+	msg := fmt.Sprintf("Enrollment hook failed: %s.", message)
+
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: deviceName,
+		reason:       domain.EventReasonEnrollmentHookFailed,
+		message:      msg,
+		details:      nil,
+	})
+}
+
+// GetEnrollmentHookNotifyFailedEvent creates an event when enrollment hook notification fails
+// under Continue policy (worker patches Pending, agent proceeds).
+func GetEnrollmentHookNotifyFailedEvent(ctx context.Context, deviceName string, message string) *domain.Event {
+	msg := fmt.Sprintf("Enrollment hook notification failed: %s.", message)
+
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: deviceName,
+		reason:       domain.EventReasonEnrollmentHookNotifyFailed,
+		message:      msg,
+		details:      nil,
+	})
+}
+
+// GetEnrollmentHookManualOverrideEvent creates an event when an operator manually overrides
+// a failed enrollment hook condition.
+func GetEnrollmentHookManualOverrideEvent(ctx context.Context, deviceName string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.DeviceKind,
+		resourceName: deviceName,
+		reason:       domain.EventReasonEnrollmentHookManualOverride,
+		message:      "Enrollment hook failure was manually overridden by an operator.",
+		details:      nil,
+	})
+}
+
+// GetFleetRolloutBatchDispatchedEvent creates an event for fleet rollout batch dispatch
+func GetFleetRolloutBatchDispatchedEvent(ctx context.Context, fleetName string, templateVersion string, batch string) *domain.Event {
+	details := domain.FleetRolloutBatchDispatchedDetails{
+		DetailType:      domain.FleetRolloutBatchDispatched,
+		TemplateVersion: templateVersion,
+		Batch:           batch,
+	}
+	eventDetails := domain.EventDetails{}
+	if err := eventDetails.FromFleetRolloutBatchDispatchedDetails(details); err != nil {
+		// If serialization fails, return nil rather than panicking
+		return nil
+	}
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.FleetKind,
+		resourceName: fleetName,
+		reason:       domain.EventReasonFleetRolloutBatchDispatched,
+		message:      "Fleet rollout batch dispatched.",
+		details:      &eventDetails,
+	})
+}
+
+// GetFleetRolloutCompletedEvent creates an event for fleet rollout completion
+func GetFleetRolloutCompletedEvent(ctx context.Context, name string, templateVersion string) *domain.Event {
+	details := domain.FleetRolloutCompletedDetails{
+		DetailType:      domain.FleetRolloutCompleted,
+		TemplateVersion: templateVersion,
+	}
+	eventDetails := domain.EventDetails{}
+	if err := eventDetails.FromFleetRolloutCompletedDetails(details); err != nil {
+		// If serialization fails, return nil rather than panicking
+		return nil
+	}
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.FleetKind,
+		resourceName: name,
+		reason:       domain.EventReasonFleetRolloutCompleted,
+		message:      "Fleet rollout completed.",
+		details:      &eventDetails,
+	})
+}
+
+// GetFleetRolloutFailedEvent creates an event for fleet rollout failure
+func GetFleetRolloutFailedEvent(ctx context.Context, name string, deployingTemplateVersion string, message string) *domain.Event {
+	details := domain.FleetRolloutFailedDetails{
+		DetailType:      domain.FleetRolloutFailed,
+		TemplateVersion: deployingTemplateVersion,
+	}
+	eventDetails := domain.EventDetails{}
+	if err := eventDetails.FromFleetRolloutFailedDetails(details); err != nil {
+		// If serialization fails, return nil rather than panicking
+		return nil
+	}
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.FleetKind,
+		resourceName: name,
+		reason:       domain.EventReasonFleetRolloutFailed,
+		message:      message,
+		details:      &eventDetails,
+	})
+}
+
+// GetRepositoryAccessibleEvent creates an event for repository accessibility
+func GetRepositoryAccessibleEvent(ctx context.Context, name string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.RepositoryKind,
+		resourceName: name,
+		reason:       domain.EventReasonRepositoryAccessible,
+		message:      "Repository is accessible.",
+		details:      nil,
+	})
+}
+
+// GetRepositoryInaccessibleEvent creates an event for repository inaccessibility
+func GetRepositoryInaccessibleEvent(ctx context.Context, name string, errorMessage string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.RepositoryKind,
+		resourceName: name,
+		reason:       domain.EventReasonRepositoryInaccessible,
+		message:      fmt.Sprintf("Repository is inaccessible: %s.", errorMessage),
+		details:      nil,
+	})
+}
+
+// GetDependencyChangeDetectedEvent creates an event when the sync controller detects an upstream change.
+func GetDependencyChangeDetectedEvent(ctx context.Context, kind domain.ResourceKind, name, resourceKey, fingerprint string) *domain.Event {
+	details := domain.DependencyChangeDetectedDetails{
+		DetailType:  domain.DependencyChangeDetected,
+		ResourceKey: resourceKey,
+		Fingerprint: fingerprint,
+	}
+	eventDetails := domain.EventDetails{}
+	if err := eventDetails.FromDependencyChangeDetectedDetails(details); err != nil {
+		return nil
+	}
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: kind,
+		resourceName: name,
+		reason:       domain.EventReasonDependencyChangeDetected,
+		message:      fmt.Sprintf("Dependency change detected for %s (fingerprint: %.8s).", resourceKey, fingerprint),
+		details:      &eventDetails,
+	})
+}
+
+// GetDependencySyncProbeFailedEvent creates an audit event when a dependency probe fails.
+func GetDependencySyncProbeFailedEvent(ctx context.Context, kind domain.ResourceKind, name, resourceKey, sanitizedError string) *domain.Event {
+	details := domain.DependencySyncProbeFailedDetails{
+		DetailType:  domain.DependencySyncProbeFailedDT,
+		ResourceKey: resourceKey,
+		Error:       sanitizedError,
+	}
+	eventDetails := domain.EventDetails{}
+	if err := eventDetails.FromDependencySyncProbeFailedDetails(details); err != nil {
+		return nil
+	}
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: kind,
+		resourceName: name,
+		reason:       domain.EventReasonDependencySyncProbeFailed,
+		message:      fmt.Sprintf("Dependency probe failed for %s: %s.", resourceKey, sanitizedError),
+		details:      &eventDetails,
+	})
+}
+
+// GetReferencedRepositoryUpdatedEvent creates an event for a referenced repository being updated
+func GetReferencedRepositoryUpdatedEvent(ctx context.Context, kind domain.ResourceKind, name, repositoryName string) *domain.Event {
+	details := domain.ReferencedRepositoryUpdatedDetails{
+		DetailType: domain.ReferencedRepositoryUpdated,
+		Repository: repositoryName,
+	}
+	eventDetails := domain.EventDetails{}
+	if err := eventDetails.FromReferencedRepositoryUpdatedDetails(details); err != nil {
+		// If serialization fails, return nil rather than panicking
+		return nil
+	}
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: kind,
+		resourceName: name,
+		reason:       domain.EventReasonReferencedRepositoryUpdated,
+		message:      fmt.Sprintf("Referenced repository %s updated.", repositoryName),
+		details:      &eventDetails,
+	})
+}
+
+// GetSystemRestoredEvent creates an event for system restoration completion
+// Associates the event with a system-level resource using the System kind
+func GetSystemRestoredEvent(ctx context.Context, devicesUpdated int64) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.SystemKind,
+		resourceName: domain.SystemComponentDB,
+		reason:       domain.EventReasonSystemRestored,
+		message:      fmt.Sprintf("System restored successfully. Updated %d devices for post-restoration preparation.", devicesUpdated),
+		details:      nil,
+	})
+}
+
+// GetEncryptionMigrationStartedEvent creates a system-wide event when encryption migration begins for a key.
+func GetEncryptionMigrationStartedEvent(ctx context.Context, keyID string) *domain.Event {
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.SystemKind,
+		resourceName: domain.SystemComponentEncryption,
+		reason:       domain.EventReasonEncryptionMigrationStarted,
+		message:      fmt.Sprintf("Encryption migration started for key %q.", keyID),
+		details:      nil,
+	})
+}
+
+// GetEncryptionMigrationCompletedEvent creates a system-wide event when encryption migration finishes for a key.
+// retiredKeyIDs lists previous keys prepared for retirement after the migration completed.
+func GetEncryptionMigrationCompletedEvent(ctx context.Context, keyID string, retiredKeyIDs []string) *domain.Event {
+	msg := fmt.Sprintf("Encryption migration to key %q completed.", keyID)
+	if len(retiredKeyIDs) > 0 {
+		msg += fmt.Sprintf(" Previous keys no longer in use and safe to remove: %v.", retiredKeyIDs)
+	}
+	return getBaseEvent(ctx, resourceEvent{
+		resourceKind: domain.SystemKind,
+		resourceName: domain.SystemComponentEncryption,
+		reason:       domain.EventReasonEncryptionMigrationCompleted,
+		message:      msg,
+		details:      nil,
+	})
+}
+
+// ComputeResourceUpdatedDetails determines which fields were updated by comparing old and new ObjectMeta.
+// Generic across all resource kinds; resource-specific event handlers use this to build
+// domain.ResourceUpdatedDetails before emitting a ResourceUpdated event.
+func ComputeResourceUpdatedDetails(oldMetadata, newMetadata domain.ObjectMeta) *domain.ResourceUpdatedDetails {
+	updateDetails := &domain.ResourceUpdatedDetails{
+		UpdatedFields: []domain.ResourceUpdatedDetailsUpdatedFields{},
+	}
+
+	// Check if spec changed (Generation field)
+	if oldMetadata.Generation != nil && newMetadata.Generation != nil &&
+		*oldMetadata.Generation != *newMetadata.Generation {
+		updateDetails.UpdatedFields = append(updateDetails.UpdatedFields, domain.Spec)
+	}
+
+	// Check if labels changed
+	if !reflect.DeepEqual(oldMetadata.Labels, newMetadata.Labels) {
+		updateDetails.UpdatedFields = append(updateDetails.UpdatedFields, domain.Labels)
+	}
+
+	// Check if owner changed
+	if !util.StringsAreEqual(oldMetadata.Owner, newMetadata.Owner) {
+		updateDetails.UpdatedFields = append(updateDetails.UpdatedFields, domain.Owner)
+		if oldMetadata.Owner != nil {
+			updateDetails.PreviousOwner = oldMetadata.Owner
+		}
+		if newMetadata.Owner != nil {
+			updateDetails.NewOwner = newMetadata.Owner
+		}
+	}
+
+	// Only return details if there were actual updates
+	if len(updateDetails.UpdatedFields) == 0 {
+		return nil
+	}
+
+	return updateDetails
+}
+
+// CastResources safely casts both old and new interface{} resources to the specified type T.
+// Returns ok=true only if both resources are either nil or successfully cast to *T.
+func CastResources[T any](oldResource, newResource interface{}) (oldTyped, newTyped *T, ok bool) {
+	if oldResource != nil {
+		if oldTyped, ok = oldResource.(*T); !ok {
+			return nil, nil, false
+		}
+	}
+
+	if newResource != nil {
+		if newTyped, ok = newResource.(*T); !ok {
+			return nil, nil, false
+		}
+	}
+
+	return oldTyped, newTyped, true
+}
+
+// SafeEventCallback runs callback and recovers panics so event emission cannot fail a completed persist.
+func SafeEventCallback(log logrus.FieldLogger, callback func()) {
+	if callback == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("Event Callback panicked: %v\nBacktrace:\n%s", r, string(debug.Stack()))
+		}
+	}()
+	callback()
+}

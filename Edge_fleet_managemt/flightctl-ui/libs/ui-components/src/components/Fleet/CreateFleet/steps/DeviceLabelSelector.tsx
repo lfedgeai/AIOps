@@ -1,0 +1,146 @@
+import * as React from 'react';
+import { useField } from 'formik';
+import { Alert, Button, Spinner, Stack, StackItem } from '@patternfly/react-core';
+import { RedoIcon } from '@patternfly/react-icons/dist/js/icons/redo-icon';
+import debounce from 'lodash/debounce';
+
+import { type DeviceList } from '@flightctl/types';
+import LabelsField from '../../../form/LabelsField';
+import { getInvalidKubernetesLabels, hasUniqueLabelKeys } from '../../../form/validations';
+import { useFetch } from '../../../../hooks/useFetch';
+import useLabelKeyProvenance from '../../../../hooks/useLabelKeyProvenance';
+import { useTranslation } from '../../../../hooks/useTranslation';
+import { type FlightCtlLabel } from '../../../../types/extraTypes';
+import { getApiListCount } from '../../../../utils/api';
+import { getErrorMessage } from '../../../../utils/error';
+import { toAPILabel } from '../../../../utils/labels';
+import { commonQueries } from '../../../../utils/query';
+import LabelsView from '../../../common/LabelsView';
+
+const validateLabels = (labels: FlightCtlLabel[]) =>
+  hasUniqueLabelKeys(labels) && getInvalidKubernetesLabels(labels).length === 0;
+
+type DeviceLabelSelectorProps = {
+  managedKeys: string[];
+  isManagedLabel: (key: string) => boolean;
+};
+
+const DeviceLabelSelector = ({ managedKeys, isManagedLabel }: DeviceLabelSelectorProps) => {
+  const { t } = useTranslation();
+  const { get } = useFetch();
+  const [{ value: labels }] = useField<FlightCtlLabel[]>('labels');
+
+  const [isLoading, setIsLoading] = React.useState<boolean>(false);
+  const [deviceCountError, setDeviceCountError] = React.useState<string>();
+  const [deviceCount, setDeviceCount] = React.useState<number>(0);
+
+  const updateDeviceCount = async (matchLabels: FlightCtlLabel[]) => {
+    try {
+      const deviceListResp = await get<DeviceList>(
+        commonQueries.getDevicesWithExactLabelMatching(matchLabels, { limit: 1 }),
+      );
+      const num = getApiListCount(deviceListResp);
+      setDeviceCount(num || 0);
+    } catch (e) {
+      setDeviceCountError(getErrorMessage(e));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const debouncedUpdateCount = React.useCallback(debounce(updateDeviceCount, 800), []);
+
+  const reloadDeviceSelection = React.useCallback(
+    (labels: FlightCtlLabel[]) => {
+      const hasLabels = labels.length > 0;
+
+      // The error field is not set on time, we manually validate the labels
+      // to make sure we only trigger requests when labels are valid
+      const validLabels = validateLabels(labels);
+      if (validLabels && hasLabels) {
+        setIsLoading(true);
+        setDeviceCountError(undefined);
+        void debouncedUpdateCount(labels);
+      } else if (!hasLabels) {
+        setDeviceCount(0);
+      }
+    },
+    [debouncedUpdateCount],
+  );
+
+  React.useEffect(() => {
+    reloadDeviceSelection(labels);
+  }, [labels, reloadDeviceSelection]);
+
+  let message: React.ReactNode;
+  let showHelperText = true;
+  if (isLoading) {
+    message = <Spinner size="sm" />;
+  } else if (deviceCountError) {
+    showHelperText = false;
+    message = (
+      <Alert isInline variant="danger" title={t('Failed to determine the number of selected devices')}>
+        {deviceCountError}
+        <Button
+          variant="link"
+          icon={<RedoIcon />}
+          onClick={() => {
+            reloadDeviceSelection(labels);
+          }}
+        >
+          {t('Try again')}
+        </Button>
+      </Alert>
+    );
+  } else if (labels.length > 0) {
+    showHelperText = false;
+    message = (
+      <Alert
+        isInline
+        variant={deviceCount === 0 ? 'warning' : 'info'}
+        title={t('{{ count }} devices matching the labels were selected.', { count: deviceCount })}
+      />
+    );
+  } else {
+    message = t(
+      'Add labels to select devices, or add device-reported labels (shown in gray) when organizing by device status.',
+    );
+  }
+
+  return (
+    <Stack hasGutter>
+      <StackItem>
+        <LabelsField
+          name="labels"
+          helperText={showHelperText ? message : undefined}
+          addButtonText={t('Add label or device-reported label')}
+          isManagedLabel={isManagedLabel}
+        />
+      </StackItem>
+      {!showHelperText && message && <StackItem>{message}</StackItem>}
+      {managedKeys.length > 0 && (
+        <StackItem>
+          <Alert isInline variant="warning" title={t('Device-reported labels can change fleet membership')}>
+            {t(
+              'You selected device-reported labels ({{keys}}). If the value reported by a device changes, the device may unexpectedly leave this fleet.',
+              { keys: managedKeys.join(', ') },
+            )}
+          </Alert>
+        </StackItem>
+      )}
+    </Stack>
+  );
+};
+
+const DeviceLabelSelectorWrapper = ({ isReadOnly }: { isReadOnly: boolean }) => {
+  const [{ value: labels }] = useField<FlightCtlLabel[]>('labels');
+  const { isManagedLabel, managedKeys } = useLabelKeyProvenance(labels);
+
+  if (isReadOnly) {
+    return <LabelsView prefix="device-selector" labels={toAPILabel(labels)} isManagedLabel={isManagedLabel} />;
+  }
+  return <DeviceLabelSelector managedKeys={managedKeys} isManagedLabel={isManagedLabel} />;
+};
+
+export default DeviceLabelSelectorWrapper;

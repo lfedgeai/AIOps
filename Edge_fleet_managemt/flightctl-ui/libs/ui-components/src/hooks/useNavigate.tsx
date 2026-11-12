@@ -1,0 +1,147 @@
+import * as React from 'react';
+import { type LinkProps as RouterLinkProps } from 'react-router-dom';
+import { useNavigationGuard } from '../components/common/NavigationGuardContext';
+import { useAppContext } from './useAppContext';
+
+export interface NavigateFunction {
+  (to: Route | ToObj, urlParams?: Record<string, string>): void;
+  (delta: number): void;
+}
+
+export enum ROUTE {
+  ROOT = 'ROOT',
+  FLEETS = 'FLEETS',
+  FLEET_CREATE = 'FLEET_CREATE',
+  FLEET_IMPORT = 'FLEET_IMPORT',
+  FLEET_DETAILS = 'FLEET_DETAILS',
+  FLEET_EDIT = 'FLEET_EDIT',
+  DEVICES = 'DEVICES',
+  DEVICE_DETAILS = 'DEVICE_DETAILS',
+  DEVICE_EDIT = 'DEVICE_EDIT',
+  REPOSITORIES = 'REPOSITORIES',
+  REPO_CREATE = 'REPO_CREATE',
+  REPO_EDIT = 'REPO_EDIT',
+  REPO_DETAILS = 'REPO_DETAILS',
+  RESOURCE_SYNC_DETAILS = 'RESOURCE_SYNC_DETAILS',
+  ENROLLMENT_REQUESTS = 'ENROLLMENT_REQUESTS',
+  ENROLLMENT_REQUEST_DETAILS = 'ENROLLMENT_REQUEST_DETAILS',
+  COMMAND_LINE_TOOLS = 'COMMAND_LINE_TOOLS',
+  AUTH_PROVIDERS = 'AUTH_PROVIDERS',
+  AUTH_PROVIDER_CREATE = 'AUTH_PROVIDER_CREATE',
+  AUTH_PROVIDER_EDIT = 'AUTH_PROVIDER_EDIT',
+  AUTH_PROVIDER_DETAILS = 'AUTH_PROVIDER_DETAILS',
+  IMAGE_BUILDS = 'IMAGE_BUILDS',
+  IMAGE_BUILD_CREATE = 'IMAGE_BUILD_CREATE',
+  IMAGE_BUILD_DETAILS = 'IMAGE_BUILD_DETAILS',
+  IMAGE_BUILD_NEW_VERSION = 'IMAGE_BUILD_NEW_VERSION',
+  CATALOG = 'CATALOG',
+  CATALOG_ADD_ITEM = 'CATALOG_ADD_ITEM',
+  CATALOG_EDIT_ITEM = 'CATALOG_EDIT_ITEM',
+  CATALOG_IMPORT = 'CATALOG_IMPORT',
+  CATALOG_INSTALL = 'CATALOG_INSTALL',
+  CATALOG_FLEET_EDIT = 'CATALOG_FLEET_EDIT',
+  CATALOG_DEVICE_EDIT = 'CATALOG_DEVICE_EDIT',
+  SECURITY_OVERVIEW = 'SECURITY_OVERVIEW',
+}
+
+export type RouteWithPostfix =
+  | ROUTE.FLEET_DETAILS
+  | ROUTE.FLEET_EDIT
+  | ROUTE.REPO_DETAILS
+  | ROUTE.RESOURCE_SYNC_DETAILS
+  | ROUTE.REPO_EDIT
+  | ROUTE.DEVICE_DETAILS
+  | ROUTE.DEVICE_EDIT
+  | ROUTE.ENROLLMENT_REQUEST_DETAILS
+  | ROUTE.AUTH_PROVIDER_EDIT
+  | ROUTE.AUTH_PROVIDER_DETAILS
+  | ROUTE.IMAGE_BUILD_DETAILS
+  | ROUTE.IMAGE_BUILD_NEW_VERSION
+  | ROUTE.CATALOG_EDIT_ITEM
+  | ROUTE.CATALOG_INSTALL
+  | ROUTE.CATALOG_FLEET_EDIT
+  | ROUTE.CATALOG_DEVICE_EDIT;
+export type Route = Exclude<ROUTE, RouteWithPostfix>;
+
+type ToObj = { route: RouteWithPostfix; postfix: string | undefined };
+
+export const useNavigate = () => {
+  const {
+    router: { useNavigate: useRouterNavigate, appRoutes },
+  } = useAppContext();
+  const { tryNavigate } = useNavigationGuard();
+
+  const navigate = useRouterNavigate();
+
+  return React.useCallback<NavigateFunction>(
+    (to: Route | number | ToObj, urlParams?: Record<string, string>) => {
+      tryNavigate(() => {
+        if (typeof to === 'number') {
+          navigate(to);
+        } else {
+          const urlParamsStr = urlParams ? `?${new URLSearchParams(urlParams).toString()}` : '';
+
+          if (toParamIsToObj(to)) {
+            const route = appRoutes[to.route];
+            navigate(`${route}/${to.postfix}${urlParamsStr}`);
+          } else {
+            const route = appRoutes[to];
+            navigate(`${route}${urlParamsStr}`);
+          }
+        }
+      });
+    },
+    [navigate, appRoutes, tryNavigate],
+  );
+};
+
+export type LinkProps = Omit<RouterLinkProps, 'to' | 'state'> & {
+  to: Route | ToObj;
+  query?: string;
+  state?: unknown; // override the "any" type from react-router
+};
+
+const toParamIsToObj = (to: LinkProps['to']): to is ToObj => {
+  if (typeof to === 'object') {
+    return 'route' in to;
+  }
+  return false;
+};
+
+export const Link = ({ to, query, onClick, ...rest }: LinkProps) => {
+  const {
+    router: { Link: RouterLink, appRoutes, useNavigate: useRouterNavigate },
+  } = useAppContext();
+  const { tryNavigate } = useNavigationGuard();
+  const navigate = useRouterNavigate();
+
+  let route = '';
+  if (toParamIsToObj(to)) {
+    route = `${appRoutes[to.route]}/${to.postfix}`;
+  } else {
+    route = appRoutes[to];
+  }
+
+  const href = query ? `${route}?${query}` : route;
+
+  return (
+    <RouterLink
+      to={href}
+      {...rest}
+      onClick={(event) => {
+        onClick?.(event);
+        if (event.defaultPrevented) {
+          return;
+        }
+        const isModified = event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+        // Let the browser handle new-tab/window / non-primary clicks.
+        if (event.button !== 0 || isModified || (rest.target && rest.target !== '_self')) {
+          return;
+        }
+        // Always route through the guard so we never miss a lock due to stale React state.
+        event.preventDefault();
+        tryNavigate(() => navigate(href, { replace: rest.replace, state: rest.state }));
+      }}
+    />
+  );
+};

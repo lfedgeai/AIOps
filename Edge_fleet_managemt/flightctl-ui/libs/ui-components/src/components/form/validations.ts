@@ -1,0 +1,1599 @@
+import * as Yup from 'yup';
+import { type TFunction } from 'i18next';
+import countBy from 'lodash/countBy';
+import yaml from 'js-yaml';
+
+import { AppType, type ImageOrCatalogItemRefSpec, ImagePullPolicy } from '@flightctl/types';
+import { type FlightCtlLabel } from '../../types/extraTypes';
+import {
+  AppSpecType,
+  type ApplicationEntry,
+  type BatchForm,
+  BatchLimitType,
+  type ComposeAppForm,
+  type DisruptionBudgetForm,
+  type GitConfigTemplate,
+  type HelmAppForm,
+  type HttpConfigTemplate,
+  type InlineConfigTemplate,
+  type InlineFileForm,
+  type KubeSecretTemplate,
+  type ManualAppForm,
+  type PortMapping,
+  type QuadletAppForm,
+  type RolloutPolicyForm,
+  type SpecConfigTemplate,
+  type SystemdUnitFormValue,
+  type UpdatePolicyForm,
+  type VmAppForm,
+  getAppIdentifier,
+  isGitConfigTemplate,
+  isHttpConfigTemplate,
+  isInlineConfigTemplate,
+  isKubeSecretTemplate,
+} from '../../types/deviceSpec';
+import { labelToString } from '../../utils/labels';
+import { isValidKubernetesQuantity } from '../../utils/kubernetesQuantity';
+import { UpdateScheduleMode } from '../../utils/time';
+import { VM_PORT_PROTOCOLS, loadYamlDocument, parseVmCloudInitUserData } from '../../utils/vmApplications';
+
+const SYSTEMD_PATTERNS_REGEXP =
+  /^[0-9a-zA-Z:\-_.\\\[\]!\-\*\?]+(@[0-9a-zA-Z:\-_.\\\[\]!\-\*\?]+)?(\.[a-zA-Z\[\]!\-\*\?]+)?$/;
+const SYSTEMD_UNITS_MAX_PATTERNS = 256;
+
+// Accepts uppercase characters, and "underscore" symbols
+const K8S_LABEL_VALUE_START_END = /^[a-z0-9A-Z](.*[a-z0-9A-Z])?$/;
+const K8S_LABEL_VALUE_ALLOWED_CHARACTERS = /^[a-z0-9A-Z._-]*$/;
+const K8S_LABEL_VALUE_MAX_LENGTH = 63;
+
+const GENERIC_NAME_MAX_LENGTH = 63;
+const EXTENDED_MAX_LENGTH = 253;
+export const MAX_TARGET_REVISION_LENGTH = 244;
+
+// Does not accept uppercase characters, nor "underscore" symbols
+const K8S_DNS_SUBDOMAIN_START_END = /^[a-z0-9](.*[a-z0-9])?$/;
+const K8S_DNS_SUBDOMAIN_ALLOWED_CHARACTERS = /^[a-z0-9.-]*$/;
+const K8S_DNS_SUBDOMAIN_VALUE_MAX_LENGTH = 253;
+
+const OCI_IMAGE_FULL_REGEXP = /^(?![./_])[a-zA-Z0-9.\-\/:@_+]*$/;
+// Accepts all characters from the above regex, but it rejects leading dot, slash, or underscore
+const OCI_IMAGE_ALLOWED_CHARS_REGEXP = /^[a-zA-Z0-9.\-\/:@_+]*$/;
+const GENERIC_NAME_REGEXP = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
+const CONFIG_NAME_REGEXP = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/; // same as generic name plus "dots"
+const APPLICATION_VAR_NAME_REGEXP = /^[a-zA-Z_]+[a-zA-Z0-9_]*$/;
+
+export const GIT_TARGET_REVISION_REGEX = /^[a-zA-Z0-9]([a-zA-Z0-9.\/_-])*$/;
+
+const TEMPLATE_VARIABLES_REGEXP = /{{.+?}}/g;
+// Special characters allowed: "dot", "pipe", "spaces" "quote", "backward slash", "underscore", "forward slash", "hyphen"
+const TEMPLATE_VARIABLES_CONTENT_REGEXP = /^([.a-zA-Z0-9|\s"\\_\/-])+$/;
+const TIME_VALUE_REGEXP = /^([01][0-9]|2[0-3]):([0-5][0-9])$/;
+// Go duration format: positive number followed by unit (s, m, or h). Examples: "30m", "1h", "45m", "30s"
+const DURATION_REGEXP = /^\d+[smh]$/;
+
+const absolutePathRegex = /^\/.*$/;
+
+// Accepts only relative paths. Rejects absolute paths, parent traversal (../), leading ./, and segments that are only dots (., .., ...).
+export const relativePathRegex =
+  /^(?!\.\.\/|\.\/)(?:\.\/)*(?!\.+$)(?:[\w][\w.-]*|\.[A-Za-z0-9_][\w.-]*)(?:\/(?!\.+$)(?:[\w][\w.-]*|\.[A-Za-z0-9_][\w.-]*))*\/?$/;
+
+const HELM_VALUES_FILE_EXT_REGEXP = /\.(yaml|yml)$/i;
+
+const isInteger = (val: number | undefined) => val === undefined || Number.isInteger(val);
+
+const validComposeFileNames = [
+  'podman-compose.yaml',
+  'podman-compose.yml',
+  'podman-compose.override.yaml',
+  'docker-compose.yaml',
+  'docker-compose.yml',
+  'docker-compose.override.yaml',
+];
+const validComposeFileNameDisplay = [
+  '(podman|docker)-compose.yaml',
+  '(podman|docker)-compose.yml',
+  '(podman|docker)-compose.override.yaml',
+].join(', ');
+
+// At least one of the following file types is required, and none of the unsupported ones are allowed
+const supportedQuadletExtensions = ['.container', '.volume', '.network', '.image', '.pod'];
+const unsupportedQuadletExtensions = ['.build', '.artifact', '.kube'];
+
+export const getLabelValueValidations = (t: TFunction) => [
+  { key: 'labelValueStartAndEnd', message: t('Starts and ends with a letter or a number.') },
+  {
+    key: 'labelValueAllowedChars',
+    message: t('Contains only letters, numbers, hyphens (-), dots (.), and underscores (_).'),
+  },
+  {
+    key: 'labelValueMaxLength',
+    message: t('1-{{ maxCharacters }} characters.', { maxCharacters: K8S_LABEL_VALUE_MAX_LENGTH }),
+  },
+];
+
+export const getDnsSubdomainValidations = (t: TFunction) => [
+  { key: 'dnsSubdomainStartAndEnd', message: t('Starts and ends with a lowercase letter or a number.') },
+  {
+    key: 'dnsSubdomainAllowedChars',
+    message: t('Contains only lowercase letters, numbers, hyphens (-), and dots (.).'),
+  },
+  {
+    key: 'dnsSubdomainMaxLength',
+    message: t('1-{{ maxCharacters }} characters.', { maxCharacters: K8S_DNS_SUBDOMAIN_VALUE_MAX_LENGTH }),
+  },
+];
+
+export const getKubernetesDnsSubdomainErrors = (value: string) => {
+  const errorKeys: Record<string, string> = {};
+  if (!K8S_DNS_SUBDOMAIN_START_END.test(value)) {
+    errorKeys.dnsSubdomainStartAndEnd = 'failed';
+  }
+  if (!K8S_DNS_SUBDOMAIN_ALLOWED_CHARACTERS.test(value)) {
+    errorKeys.dnsSubdomainAllowedChars = 'failed';
+  }
+  if (value?.length > K8S_DNS_SUBDOMAIN_VALUE_MAX_LENGTH) {
+    errorKeys.dnsSubdomainMaxLength = 'failed';
+  }
+  return errorKeys;
+};
+
+export const hasUniqueLabelKeys = (labels: FlightCtlLabel[]) => {
+  const uniqueKeys = new Set(labels.map((label) => label.key));
+  return uniqueKeys.size === labels.length;
+};
+
+export const getInvalidKubernetesLabels = (labels: FlightCtlLabel[]) => {
+  return labels.filter((unvalidatedLabel) => {
+    const key = unvalidatedLabel.key || '';
+    const value = unvalidatedLabel.value || '';
+
+    const keyParts = key.split('/');
+    if (keyParts.length > 2) {
+      return true;
+    }
+
+    // Key prefix validations
+    const keyPrefix = keyParts.length === 2 ? keyParts[0] : '';
+    if (keyPrefix) {
+      if (
+        keyPrefix.length > K8S_DNS_SUBDOMAIN_VALUE_MAX_LENGTH ||
+        !K8S_DNS_SUBDOMAIN_START_END.test(keyPrefix) ||
+        !K8S_DNS_SUBDOMAIN_ALLOWED_CHARACTERS.test(keyPrefix)
+      ) {
+        return true;
+      }
+    }
+
+    // Key name validations
+    const keyName = keyPrefix ? keyParts[1] : key;
+    if (
+      keyName.length > K8S_LABEL_VALUE_MAX_LENGTH ||
+      !K8S_LABEL_VALUE_START_END.test(keyName) ||
+      !K8S_LABEL_VALUE_ALLOWED_CHARACTERS.test(keyName)
+    ) {
+      return true;
+    }
+
+    // Value validations
+    return value.length === 0
+      ? false
+      : value.length > K8S_LABEL_VALUE_MAX_LENGTH ||
+          !K8S_LABEL_VALUE_START_END.test(value) ||
+          !K8S_LABEL_VALUE_ALLOWED_CHARACTERS.test(value);
+  });
+};
+
+export const validKubernetesDnsSubdomain = (
+  t: TFunction,
+  { isRequired, fieldName }: { isRequired: boolean; fieldName?: string },
+) =>
+  isRequired
+    ? Yup.string()
+        .defined(t('{{ fieldName }} is required', { fieldName: fieldName || t('Name') }))
+        .test('k8sDnsSubdomainFormat', (value: string, testContext) => {
+          const errorKeys = getKubernetesDnsSubdomainErrors(value);
+          return Object.keys(errorKeys).length > 0
+            ? testContext.createError({
+                message: errorKeys,
+              })
+            : true;
+        })
+    : Yup.string();
+
+const labelValueValidations = (labelValue: string | undefined, testContext: Yup.TestContext) => {
+  if (!labelValue) {
+    return true;
+  }
+  const errorKeys: Partial<Record<string, string>> = {};
+  if (!K8S_LABEL_VALUE_START_END.test(labelValue)) {
+    errorKeys.labelValueStartAndEnd = 'failed';
+  }
+  if (!K8S_LABEL_VALUE_ALLOWED_CHARACTERS.test(labelValue)) {
+    errorKeys.labelValueAllowedChars = 'failed';
+  }
+  if (labelValue.length > K8S_LABEL_VALUE_MAX_LENGTH) {
+    errorKeys.labelValueMaxLength = 'failed';
+  }
+  if (Object.keys(errorKeys).length === 0) {
+    return true;
+  }
+  return testContext.createError({
+    message: errorKeys,
+  });
+};
+
+export const validKubernetesLabelValue = (
+  t: TFunction,
+  { isRequired, fieldName }: { isRequired: boolean; fieldName?: string },
+) =>
+  isRequired
+    ? Yup.string()
+        .required(t('{{ fieldName }} is required', { fieldName: fieldName || t('Name') }))
+        .test('k8sLabelValueFormat', labelValueValidations)
+    : Yup.string().test('k8sLabelValueFormat', labelValueValidations);
+
+const genericNameSchema = (t: TFunction) =>
+  Yup.string().matches(
+    GENERIC_NAME_REGEXP,
+    t('Use lowercase alphanumeric characters, or hyphens (-). Must start and end with an alphanumeric character.'),
+  );
+
+export const validApplicationAndVolumeName = (t: TFunction) =>
+  genericNameSchema(t).max(
+    EXTENDED_MAX_LENGTH,
+    t('Name must not exceed {{ maxLength }} characters', {
+      maxLength: EXTENDED_MAX_LENGTH,
+    }),
+  );
+
+export const requiredApplicationNameSchema = (t: TFunction) =>
+  validApplicationAndVolumeName(t).required(t('Application name is required.'));
+
+/** Normalize a display name into a DNS-safe application name. */
+export const toValidApplicationName = (rawName: string): string => {
+  const normalized = rawName
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  if (!normalized) {
+    return 'application';
+  }
+
+  if (GENERIC_NAME_REGEXP.test(normalized)) {
+    return normalized.slice(0, EXTENDED_MAX_LENGTH);
+  }
+
+  let fixed = normalized;
+  if (!/^[a-z0-9]/.test(fixed)) {
+    fixed = `a${fixed}`;
+  }
+  if (!/[a-z0-9]$/.test(fixed)) {
+    fixed = `${fixed}a`;
+  }
+  fixed = fixed.slice(0, EXTENDED_MAX_LENGTH);
+
+  return GENERIC_NAME_REGEXP.test(fixed) ? fixed : 'application';
+};
+
+export const validConfigName = (t: TFunction) =>
+  Yup.string()
+    .matches(
+      CONFIG_NAME_REGEXP,
+      t(
+        'Use lowercase alphanumeric characters, hyphens (-), or dots (.). Must start and end with an alphanumeric character.',
+      ),
+    )
+    .max(
+      EXTENDED_MAX_LENGTH,
+      t('Name must not exceed {{ maxLength }} characters', {
+        maxLength: EXTENDED_MAX_LENGTH,
+      }),
+    );
+
+export const getBuildNameValidations = (t: TFunction) => [
+  {
+    key: 'imageBuildName',
+    message: t(
+      'Use lowercase alphanumeric characters, or hyphens (-). Must start and end with an alphanumeric character.',
+    ),
+  },
+];
+
+export const validImageBuildName = (t: TFunction) =>
+  Yup.string()
+    .required(t('Build name is required'))
+    .test('imageBuildName', function (value: string | undefined) {
+      if (!value) return true;
+      return GENERIC_NAME_REGEXP.test(value) || this.createError({ message: { imageBuildName: 'failed' } });
+    });
+
+export const maxLengthString = (t: TFunction, props: { maxLength: number; fieldName: string }) =>
+  Yup.string().max(props.maxLength, t('{{ fieldName }} must not exceed {{ maxLength }} characters', props));
+
+export const validOsImage = (t: TFunction, { isFleet }: { isFleet: boolean }) =>
+  maxLengthString(t, { fieldName: t('System image'), maxLength: 2048 }).test(
+    'osImageValidations',
+    t('System image is invalid'),
+    (osImage: string | undefined) => {
+      if (!osImage) {
+        return true;
+      }
+
+      let validateOsImage = osImage;
+      if (isFleet) {
+        // Extract template variables if they are present, they contain otherwise invalid characters
+        const templateVariables = [...osImage.matchAll(TEMPLATE_VARIABLES_REGEXP)];
+        if (templateVariables.length > 0) {
+          const invalidVariables = templateVariables.filter(([match]) => {
+            const content = match.slice(2, -2).trim(); // Remove the surrounding "{{" and "}}", and trim any extra whitespace
+            return !content || !TEMPLATE_VARIABLES_CONTENT_REGEXP.test(content);
+          });
+          if (invalidVariables.length > 0) {
+            return false;
+          }
+          validateOsImage = osImage.replace(TEMPLATE_VARIABLES_REGEXP, 'tv');
+        }
+      }
+
+      return OCI_IMAGE_FULL_REGEXP.test(validateOsImage);
+    },
+  );
+
+export const validOsFormValue = (t: TFunction, { isFleet }: { isFleet: boolean }) =>
+  Yup.object({
+    image: Yup.string().test('os-image', t('System image is invalid'), function (image) {
+      const parent = this.parent as ImageOrCatalogItemRefSpec;
+      if (!image || parent?.catalogItemRef) {
+        return true;
+      }
+      try {
+        validOsImage(t, { isFleet }).validateSync(image);
+        return true;
+      } catch (e) {
+        return this.createError({ message: (e as Yup.ValidationError).message || t('System image is invalid') });
+      }
+    }),
+    catalogItemRef: Yup.mixed(),
+  }).nullable();
+
+export const validHelmNamespace = (t: TFunction) =>
+  genericNameSchema(t).max(
+    GENERIC_NAME_MAX_LENGTH,
+    t('Namespace must not exceed {{ maxLength }} characters', {
+      maxLength: GENERIC_NAME_MAX_LENGTH,
+    }),
+  );
+
+export const validHelmValuesFile = (t: TFunction) =>
+  Yup.string().test('helm-values-file', function (filename) {
+    if (!filename) {
+      return true;
+    }
+    if (filename.length > EXTENDED_MAX_LENGTH) {
+      return this.createError({
+        message: t('Values file path must not exceed {{ max }} characters.', {
+          max: EXTENDED_MAX_LENGTH,
+        }),
+      });
+    }
+    if (filename.startsWith('/') || filename.includes('..')) {
+      return this.createError({
+        message: t('Values file path must be relative and cannot contain parent directory references (..).'),
+      });
+    }
+
+    if (!HELM_VALUES_FILE_EXT_REGEXP.test(filename)) {
+      return this.createError({
+        message: t('Values file must have .yaml or .yml extension.'),
+      });
+    }
+    return true;
+  });
+
+export const validLabelsSchema = (t: TFunction, forbiddenLabels?: string[]) =>
+  Yup.array()
+    .of(
+      Yup.object<FlightCtlLabel>().shape({
+        key: Yup.string()
+          .required()
+          .test('forbid labels', 'is forbidden', (key: string, testContext) => {
+            if (forbiddenLabels?.length && forbiddenLabels.includes(key)) {
+              return testContext.createError({
+                path: 'labels',
+                message: t('Label key "{{ forbiddenLabel }}" is forbidden', { forbiddenLabel: key }),
+              });
+            }
+            return true;
+          }),
+        value: Yup.string(),
+      }),
+    )
+    .required()
+    .test('missing keys', (labels: FlightCtlLabel[], testContext) => {
+      const missingKeyLabels = labels.filter((label) => !label.key).map((label) => label.value);
+      return missingKeyLabels.length > 0
+        ? testContext.createError({
+            message: t('Label keys are required. Invalid labels: {{invalidLabels}}', {
+              invalidLabels: `=${missingKeyLabels.join(', =')}`,
+            }),
+          })
+        : true;
+    })
+    .test('unique keys', t('Label keys must be unique'), hasUniqueLabelKeys)
+    .test('invalid-labels', (labels: FlightCtlLabel[], testContext) => {
+      const invalidLabels = getInvalidKubernetesLabels(labels);
+
+      return invalidLabels.length > 0
+        ? testContext.createError({
+            message: t('The following labels are not valid Kubernetes labels: {{invalidLabels}}', {
+              invalidLabels: `${invalidLabels.map(labelToString).join(', ')}`,
+            }),
+          })
+        : true;
+    });
+
+export const validGroupLabelKeysSchema = (t: TFunction) =>
+  Yup.array()
+    .of(
+      Yup.string()
+        .required()
+        .test('only-label-keys', t("Full labels are not allowed, use only the 'key' part."), (value?: string) => {
+          return !value?.includes('=');
+        }),
+    )
+    .test('unique keys', t('Label keys must be unique'), (labelKeys) => {
+      const uniqueKeys = new Set(labelKeys);
+      return uniqueKeys.size === labelKeys?.length;
+    });
+
+export const appVariablesSchema = (t: TFunction) => {
+  return Yup.array()
+    .of(
+      Yup.object().shape({
+        name: Yup.string()
+          .required(t('Variable name is required.'))
+          .matches(APPLICATION_VAR_NAME_REGEXP, t('Use alphanumeric characters, or underscore (_)')),
+        value: Yup.string().required(t('Variable value is required.')),
+      }),
+    )
+    .required()
+    .test('unique-vars-names', t('Variable names of an application must be unique'), (vars) => {
+      const uniqueKeys = new Set(vars.map((varItem) => varItem.name));
+      return uniqueKeys.size === vars?.length;
+    });
+};
+
+const appSpecTypeSchema = (t: TFunction) =>
+  Yup.string().oneOf([AppSpecType.INLINE, AppSpecType.OCI_IMAGE]).required(t('Definition source is required'));
+
+// Common file path validation schema for inline applications
+const inlineAppFilePathSchema = (t: TFunction) =>
+  Yup.string()
+    .required(t('File path is required'))
+    .max(
+      EXTENDED_MAX_LENGTH,
+      t('File path length cannot exceed {{ maxCharacters }} characters.', {
+        maxCharacters: EXTENDED_MAX_LENGTH,
+      }),
+    )
+    .matches(
+      relativePathRegex,
+      t('Application file path must be relative. It cannot be outside the application directory.'),
+    );
+
+// Common file object schema for inline applications
+const inlineAppFileSchema = (t: TFunction) =>
+  Yup.array()
+    .of(
+      Yup.object().shape({
+        content: Yup.string(),
+        path: inlineAppFilePathSchema(t),
+      }),
+    )
+    .min(1, t('Application must include at least one file.'))
+    .required();
+
+// Common test for unique file paths in inline applications
+const uniqueFilePathsTest =
+  (t: TFunction) => (files: InlineFileForm[] | undefined, testContext: Yup.TestContext<Yup.AnyObject>) => {
+    if (!files || files.length === 0) {
+      return true;
+    }
+
+    const duplicateFilePaths = Object.entries(countBy(files.map((file) => file.path)))
+      .filter(([, count]) => {
+        return count > 1;
+      })
+      .map(([filePath]) => filePath);
+
+    if (duplicateFilePaths.length === 0) {
+      return true;
+    }
+
+    // Create errors for all files with duplicate paths
+    const errors = files.reduce((errors, file, index) => {
+      if (duplicateFilePaths.includes(file.path)) {
+        errors.push(
+          new Yup.ValidationError(
+            t('Each file of the same application must use different paths.'),
+            '',
+            `${testContext.path}[${index}].path`,
+          ),
+        );
+      }
+      return errors;
+    }, [] as Yup.ValidationError[]);
+
+    if (errors.length === 0) {
+      return true;
+    }
+
+    return testContext.createError({
+      message: () => errors,
+    });
+  };
+
+const composeFileName = (t: TFunction) => (files: InlineFileForm[], testContext: Yup.TestContext<Yup.AnyObject>) => {
+  const invalidFiles = files
+    .map((file, index) => {
+      if (!file.path) {
+        return null;
+      }
+      // Extract filename from relative path (get last part after slash, or use whole path if no slash)
+      const fileName = file.path.includes('/') ? file.path.split('/').pop() || file.path : file.path;
+      if (!validComposeFileNames.includes(fileName)) {
+        return index;
+      }
+      return null;
+    })
+    .filter((index): index is number => index !== null);
+
+  if (invalidFiles.length > 0) {
+    const firstInvalidIndex = invalidFiles[0];
+    return testContext.createError({
+      path: `${testContext.path}[${firstInvalidIndex}].path`,
+      message: () =>
+        t('File name must be one of: {{ allowedFileNames }}', {
+          allowedFileNames: validComposeFileNameDisplay,
+        }),
+    });
+  }
+  return true;
+};
+
+// Helper to extract file extension from a path
+const getFileExtension = (path: string): string => {
+  const lastDot = path.lastIndexOf('.');
+  return lastDot !== -1 ? path.substring(lastDot) : '';
+};
+
+// Helper to check if a path is at root level (no slashes)
+const isAtRoot = (path: string): boolean => {
+  return !path.includes('/');
+};
+
+// Validation for quadlet applications: checks for unsupported types first, then requires at least one supported type
+const quadletFileTypesValidation =
+  (t: TFunction) => (files: InlineFileForm[], testContext: Yup.TestContext<Yup.AnyObject>) => {
+    if (!files || files.length === 0) {
+      return true; // This is handled by the min(1) requirement
+    }
+
+    // First, check for unsupported types (more specific error)
+    const invalidFiles = files
+      .map((file, index) => {
+        if (!file.path) {
+          return null;
+        }
+        const ext = getFileExtension(file.path);
+        if (unsupportedQuadletExtensions.includes(ext)) {
+          return index;
+        }
+        return null;
+      })
+      .filter((index): index is number => index !== null);
+
+    if (invalidFiles.length > 0) {
+      const firstInvalidIndex = invalidFiles[0];
+      const invalidExt = getFileExtension(files[firstInvalidIndex].path);
+      return testContext.createError({
+        path: `${testContext.path}[${firstInvalidIndex}].path`,
+        message: () =>
+          t('Unsupported quadlet file type {{ extension }}. Supported types: {{ supportedTypes }}', {
+            extension: invalidExt,
+            supportedTypes: supportedQuadletExtensions.join(', '),
+          }),
+      });
+    }
+
+    // Then, check if there's at least one supported type
+    const hasSupportedType = files.some((file) => {
+      if (!file.path) {
+        return false;
+      }
+      const ext = getFileExtension(file.path);
+      return supportedQuadletExtensions.includes(ext);
+    });
+
+    if (!hasSupportedType) {
+      // Set error on the first file's path so it's visible in the UI
+      const firstFileWithPath = files.findIndex((file) => file.path);
+      const firstFileIndex = firstFileWithPath >= 0 ? firstFileWithPath : 0;
+      return testContext.createError({
+        path: `${testContext.path}[${firstFileIndex}].path`,
+        message: () =>
+          t('Quadlet application must include at least one of the following file types: {{ supportedTypes }}', {
+            supportedTypes: supportedQuadletExtensions.join(', '),
+          }),
+      });
+    }
+
+    return true;
+  };
+
+// Validation for quadlet applications: quadlet files must be at root level
+const quadletFilesAtRoot = (t: TFunction) => (files: InlineFileForm[], testContext: Yup.TestContext<Yup.AnyObject>) => {
+  if (!files || files.length === 0) {
+    return true;
+  }
+
+  const invalidFiles = files
+    .map((file, index) => {
+      if (!file.path) {
+        return null;
+      }
+      const ext = getFileExtension(file.path);
+      // Only check files with supported quadlet extensions
+      if (supportedQuadletExtensions.includes(ext) && !isAtRoot(file.path)) {
+        return index;
+      }
+      return null;
+    })
+    .filter((index): index is number => index !== null);
+
+  if (invalidFiles.length > 0) {
+    const firstInvalidIndex = invalidFiles[0];
+    return testContext.createError({
+      path: `${testContext.path}[${firstInvalidIndex}].path`,
+      message: () => t('Quadlet files must be at root level (no subdirectories)'),
+    });
+  }
+
+  return true;
+};
+
+const PORT_NUMBER_REGEXP = /^\d+$/;
+const MAX_PORT = 65535;
+
+// Memory limits: accepts numbers with optional Podman units (b, k, m, g)
+const MEMORY_LIMIT_REGEXP = /^\d+[bkmg]?$/i;
+
+export const validatePortNumber = (port: string, t: TFunction): string | undefined => {
+  if (!port) {
+    return undefined; // Empty is allowed (not required until adding)
+  }
+  if (!PORT_NUMBER_REGEXP.test(port)) {
+    return t('Port must be a number');
+  }
+
+  const num = Number.parseInt(port, 10);
+  if (Number.isNaN(num) || num.toString() !== port) {
+    return t('Port must be a number');
+  }
+  if (num < 1 || num > MAX_PORT) {
+    return t('Port must be between 1 and 65535');
+  }
+  return undefined;
+};
+
+export const isValidPortNumber = (port: string): boolean => {
+  if (!port) return false;
+  const num = Number.parseInt(port, 10);
+  return !Number.isNaN(num) && num > 0 && num <= MAX_PORT && num.toString() === port;
+};
+
+export const isDuplicatePortMapping = (
+  hostPort: string,
+  targetPort: string,
+  existingPorts: PortMapping[] = [],
+): boolean => {
+  if (!hostPort || !targetPort) {
+    return false;
+  }
+  return existingPorts.some((port) => port.hostPort === hostPort);
+};
+
+export const isValidPortMapping = (
+  hostPort: string,
+  targetPort: string,
+  existingPorts: PortMapping[] = [],
+): boolean => {
+  if (!isValidPortNumber(hostPort) || !isValidPortNumber(targetPort)) {
+    return false;
+  }
+  return !isDuplicatePortMapping(hostPort, targetPort, existingPorts);
+};
+
+export const PUBLIC_KEY_MAX_LENGTH = 8 * 1024; // (8 KB)
+
+const VALID_SSH_PUBLIC_KEY_TYPES = [
+  'ssh-rsa',
+  'ssh-ed25519',
+  'ecdsa-sha2-nistp256',
+  'ecdsa-sha2-nistp384',
+  'ecdsa-sha2-nistp521',
+  'ssh-dss',
+];
+
+const SSH_PUBLIC_KEY_BASE64_DATA_REGEX = /^(?=.{50,}$)[A-Za-z0-9+/]+=*$/;
+// Characters that could be used for injection attacks
+const MALICIOUS_PUBLIC_KEY_CHARACTERS = /[;|&`()[\]{}<>"'\\\t$]/;
+
+export const validateSshPublicKey = (publicKey: string, t: TFunction): string | undefined => {
+  if (publicKey.length > PUBLIC_KEY_MAX_LENGTH) {
+    return t('SSH public key is too long');
+  }
+
+  // Allow newlines only at the end
+  const trimmedKey = publicKey.replace(/[\r\n]+$/g, '');
+  if (/[\r\n]/.test(trimmedKey)) {
+    return t('A single public key can be provided only');
+  }
+
+  if (MALICIOUS_PUBLIC_KEY_CHARACTERS.test(trimmedKey)) {
+    return t('Invalid SSH public key');
+  }
+
+  const parts = trimmedKey.trim().split(/\s+/);
+  if (parts.length < 2) {
+    return t('Invalid SSH public key format. Expected: "[TYPE] key [comment]"');
+  }
+
+  const keyType = parts[0];
+  if (!VALID_SSH_PUBLIC_KEY_TYPES.includes(keyType)) {
+    return t('Unsupported SSH public key type. Supported types: {{supportedTypes}}', {
+      supportedTypes: VALID_SSH_PUBLIC_KEY_TYPES.join(', '),
+    });
+  }
+
+  const base64Data = parts[1];
+  if (!SSH_PUBLIC_KEY_BASE64_DATA_REGEX.test(base64Data)) {
+    return t('Invalid SSH public key data');
+  }
+
+  return undefined;
+};
+
+export const validateCPULimit = (cpu: string | undefined): boolean => {
+  if (!cpu) {
+    return true;
+  }
+
+  if (!/^\d+(\.\d+)?$/.test(cpu)) {
+    return false;
+  }
+  const val = Number.parseFloat(cpu);
+  if (Number.isNaN(val) || val < 0) {
+    return false;
+  }
+  return true;
+};
+
+export const validateMemoryLimit = (memory: string | undefined): boolean => {
+  if (!memory) {
+    return true;
+  }
+
+  if (!MEMORY_LIMIT_REGEXP.test(memory)) {
+    return false;
+  }
+  return true;
+};
+
+export const validateKubevirtMemoryGuest = (memory: string | undefined): boolean => {
+  if (!memory) {
+    return true;
+  }
+
+  return isValidKubernetesQuantity(memory);
+};
+
+const ociImageSchema = (t: TFunction) =>
+  Yup.string().test('oci-image-format', (value, testContext) => {
+    if (!value) return true;
+    if (!OCI_IMAGE_ALLOWED_CHARS_REGEXP.test(value)) {
+      return testContext.createError({
+        message: t('Image includes invalid characters.'),
+      });
+    }
+    if (!OCI_IMAGE_FULL_REGEXP.test(value)) {
+      return testContext.createError({
+        message: t('Image must not start with a dot (.), slash (/), or underscore (_).'),
+      });
+    }
+    return true;
+  });
+
+const imageSpecSchema = (t: TFunction, imageRequired: boolean, requiredMessage: string) =>
+  Yup.mixed().test('image-or-catalog-ref', function (val) {
+    const value = val as ImageOrCatalogItemRefSpec;
+    if (!value) {
+      return imageRequired ? this.createError({ message: requiredMessage }) : true;
+    }
+    if (value.catalogItemRef) {
+      // For now, CatalogItems cannot be edited via the UI, so if they are set they must be valid
+      return true;
+    }
+    try {
+      const schema = imageRequired ? ociImageSchema(t).required(requiredMessage) : ociImageSchema(t);
+      schema.validateSync(value.image);
+      return true;
+    } catch (e) {
+      return this.createError({ message: (e as Yup.ValidationError).message || requiredMessage });
+    }
+  });
+
+const volumeNameSchema = (t: TFunction) => validApplicationAndVolumeName(t).required(t('Volume name is required'));
+
+const imagePullPolicySchema = (t: TFunction) =>
+  Yup.string()
+    .oneOf(
+      [ImagePullPolicy.PullAlways, ImagePullPolicy.PullIfNotPresent, ImagePullPolicy.PullNever],
+      t('Pull policy must be one of: Always, IfNotPresent, or Never'),
+    )
+    .required(t('Pull policy is required'));
+
+const mountPathSchema = (t: TFunction, isRequired: boolean = true) => {
+  const schema = Yup.string().matches(absolutePathRegex, t('Mount path must be absolute.'));
+  return isRequired ? schema.required(t('Mount path is required for this volume type')) : schema;
+};
+
+export const singleContainerVolumesSchema = (t: TFunction) =>
+  Yup.array().of(
+    Yup.object().shape({
+      name: volumeNameSchema(t),
+      imageSpec: imageSpecSchema(t, false, ''),
+      imagePullPolicy: Yup.string(),
+      mountPath: mountPathSchema(t, true),
+    }),
+  );
+
+export const composeQuadletVolumesSchema = (t: TFunction) =>
+  Yup.array().of(
+    Yup.object().shape({
+      name: volumeNameSchema(t),
+      imageSpec: imageSpecSchema(t, true, t('Image reference is required for this volume type')),
+      imagePullPolicy: imagePullPolicySchema(t),
+    }),
+  );
+
+const portNumberField = (t: TFunction, requiredMessage: string, testName: string) =>
+  Yup.string()
+    .required(requiredMessage)
+    .test(testName, (value, testContext) => {
+      const error = validatePortNumber(value || '', t);
+      return error ? testContext.createError({ message: error }) : true;
+    });
+
+const containerAppPortMappingSchema = (t: TFunction) =>
+  Yup.array().of(
+    Yup.object()
+      .shape({
+        hostPort: portNumberField(t, t('Host port is required'), 'valid-host-port'),
+        targetPort: portNumberField(t, t('Container port is required'), 'valid-target-port'),
+      })
+      .required(),
+  );
+
+const vmAppPortMappingSchema = (t: TFunction) =>
+  Yup.array().of(
+    Yup.object()
+      .shape({
+        hostPort: portNumberField(t, t('Host port is required'), 'valid-host-port'),
+        targetPort: portNumberField(t, t('VM port is required'), 'valid-target-port'),
+        protocol: Yup.string()
+          .required(t('Protocol is required'))
+          .test('valid-protocol', (value, testContext) => {
+            const normalizedProtocol = (value || 'tcp').toLowerCase();
+            return VM_PORT_PROTOCOLS.includes(normalizedProtocol as (typeof VM_PORT_PROTOCOLS)[number])
+              ? true
+              : testContext.createError({ message: t('Invalid port values') });
+          }),
+      })
+      .required(),
+  );
+
+const manualContainerAppSchema = (t: TFunction) =>
+  Yup.object().shape({
+    specType: Yup.string()
+      .oneOf([AppSpecType.OCI_IMAGE])
+      .required(t('Definition source must be image for this type of applications')),
+    appType: Yup.string().oneOf([AppType.AppTypeContainer]).required(t('Application type is required')),
+    name: validApplicationAndVolumeName(t),
+    image: ociImageSchema(t).required(t('Image is required.')),
+    cpuLimit: Yup.string().test(
+      'valid-cpu-format',
+      t('CPU limit is invalid. Use a positive number of cores (e.g. 0.5 or 2).'),
+      validateCPULimit,
+    ),
+    memoryLimit: Yup.string().test(
+      'valid-memory-format',
+      t('Memory limit is invalid. Use a number with optional unit b, k, m, or g (e.g. 512m or 2g).'),
+      validateMemoryLimit,
+    ),
+    volumes: singleContainerVolumesSchema(t),
+    variables: appVariablesSchema(t),
+    runAs: Yup.string(),
+  });
+
+const manualHelmAppSchema = (t: TFunction) =>
+  Yup.object<HelmAppForm>().shape({
+    specType: Yup.string()
+      .oneOf([AppSpecType.OCI_IMAGE])
+      .required(t('Definition source must be image for this type of applications')),
+    appType: Yup.string().oneOf([AppType.AppTypeHelm]).required(t('Application type is required')),
+    name: validApplicationAndVolumeName(t),
+    image: ociImageSchema(t).required(t('Image is required.')),
+    namespace: validHelmNamespace(t),
+    valuesYaml: Yup.string().test('valid-yaml', t('YAML content is invalid.'), (value) => {
+      if (!value || value.trim() === '') {
+        return true;
+      }
+      try {
+        yaml.load(value);
+      } catch {
+        return false;
+      }
+      return true;
+    }),
+    valuesFiles: Yup.array().of(validHelmValuesFile(t)),
+  });
+
+const manualVmAppSchema = (t: TFunction) =>
+  Yup.object<VmAppForm>().shape({
+    specType: Yup.string()
+      .oneOf([AppSpecType.INLINE])
+      .required(t('Definition source must be inline for this type of applications')),
+    appType: Yup.string().oneOf([AppType.AppTypeVm]).required(t('Application type is required')),
+    name: validApplicationAndVolumeName(t).required(t('Name is required for VM applications.')),
+    configMode: Yup.string().oneOf(['form', 'yaml']).required(),
+    vmYaml: Yup.string().when('configMode', {
+      is: 'yaml',
+      then: (schema) =>
+        schema
+          .required(t('VM specification is required.'))
+          .test(
+            'valid-kubevirt-virtual-machine',
+            t('Provide a valid KubeVirt VirtualMachine manifest with metadata.name matching the application name.'),
+            function validateVmYamlManifest(vmYaml) {
+              if (!vmYaml) {
+                return true;
+              }
+
+              const doc = loadYamlDocument(vmYaml);
+              if (!doc) {
+                return this.createError({ message: t('YAML manifest could not be parsed.') });
+              }
+              if (!doc || typeof doc !== 'object') {
+                return this.createError({ message: t('Invalid KubeVirt VirtualMachine manifest.') });
+              }
+              if (doc.apiVersion !== 'kubevirt.io/v1' || doc.kind !== 'VirtualMachine') {
+                return this.createError({
+                  message: t(
+                    'KubeVirt VirtualMachine manifest must have apiVersion: kubevirt.io/v1 and kind: VirtualMachine.',
+                  ),
+                });
+              }
+              if (!doc.spec || typeof doc.spec !== 'object') {
+                return this.createError({
+                  message: t('KubeVirt VirtualMachine manifest must have a spec object.'),
+                });
+              }
+              const appName = (this.parent as VmAppForm).name;
+              if (appName && doc.metadata?.name !== appName) {
+                return this.createError({
+                  message: t('KubeVirt VirtualMachine manifest must have metadata.name matching the application name.'),
+                });
+              }
+              return true;
+            },
+          ),
+    }),
+    diskImage: Yup.string().when('configMode', {
+      is: 'form',
+      then: () => ociImageSchema(t).required(t('Disk image is required for VM applications.')),
+    }),
+    cpuCores: Yup.number().when('configMode', {
+      is: 'form',
+      then: (schema) =>
+        schema
+          .integer(t('CPU cores must be a whole number.'))
+          .min(1, t('CPU cores must be at least 1.'))
+          .required(t('CPU cores is required.')),
+    }),
+    memory: Yup.string().when('configMode', {
+      is: 'form',
+      then: (schema) =>
+        schema
+          .required(t('Memory is required.'))
+          .test(
+            'valid-kubevirt-memory-guest',
+            t('Provide a valid KubeVirt memory value.'),
+            validateKubevirtMemoryGuest,
+          ),
+    }),
+    cloudInit: Yup.string().when('configMode', {
+      is: 'form',
+      then: (schema) =>
+        schema.test('valid-cloud-init-ssh-key', function (cloudInitValue) {
+          const parsed = parseVmCloudInitUserData(cloudInitValue);
+          if (parsed.enableSshKey && parsed.sshPublicKey) {
+            const error = validateSshPublicKey(parsed.sshPublicKey, t);
+            if (error) {
+              return this.createError({ message: error });
+            }
+          }
+          return true;
+        }),
+    }),
+    sshPublicKey: Yup.string().when(['configMode', 'enableSshKey'], {
+      is: (configMode: string, enableSshKey: boolean) => configMode === 'form' && enableSshKey,
+      then: (schema) =>
+        schema
+          .required(t('SSH public key is required when SSH is enabled.'))
+          .test('flightctl-ssh-public-key', function (publicKey) {
+            if (!publicKey) {
+              return true;
+            }
+            const error = validateSshPublicKey(publicKey, t);
+            return error ? this.createError({ message: error }) : true;
+          }),
+    }),
+    password: Yup.string().when(['configMode', 'enablePassword'], {
+      is: (configMode: string, enablePassword: boolean) => configMode === 'form' && enablePassword,
+      then: (schema) => schema.required(t('Password is required when password authentication is enabled.')),
+    }),
+    publishPorts: vmAppPortMappingSchema(t),
+  });
+
+const manualImageAppSchema = (t: TFunction) =>
+  Yup.object<QuadletAppForm | ComposeAppForm>().shape({
+    specType: Yup.string()
+      .oneOf([AppSpecType.OCI_IMAGE])
+      .required(t('Definition source must be image for this type of applications')),
+    appType: Yup.string()
+      .oneOf([AppType.AppTypeCompose, AppType.AppTypeQuadlet])
+      .required(t('Application type is required')),
+    name: validApplicationAndVolumeName(t),
+    image: ociImageSchema(t).required(t('Image is required.')),
+    volumes: composeQuadletVolumesSchema(t),
+    variables: appVariablesSchema(t),
+  });
+
+const manualInlineQuadletAppSchema = (t: TFunction) =>
+  Yup.object<QuadletAppForm>().shape({
+    specType: appSpecTypeSchema(t),
+    appType: Yup.string().oneOf([AppType.AppTypeQuadlet]).required(t('Application type is required')),
+    name: validApplicationAndVolumeName(t).required(t('Name is required for quadlet applications.')),
+    files: inlineAppFileSchema(t)
+      .test('unique-file-paths', uniqueFilePathsTest(t))
+      .test('quadlet-file-types', quadletFileTypesValidation(t))
+      .test('quadlet-files-at-root', quadletFilesAtRoot(t)),
+    volumes: composeQuadletVolumesSchema(t),
+    variables: appVariablesSchema(t),
+  });
+
+const manualInlineComposeAppSchema = (t: TFunction) =>
+  Yup.object<ComposeAppForm>().shape({
+    specType: appSpecTypeSchema(t),
+    appType: Yup.string().oneOf([AppType.AppTypeCompose]).required(t('Application type is required')),
+    name: validApplicationAndVolumeName(t).required(t('Name is required for compose applications.')),
+    files: inlineAppFileSchema(t)
+      .test('unique-file-paths', uniqueFilePathsTest(t))
+      .test('compose-file-name', composeFileName(t)),
+    volumes: composeQuadletVolumesSchema(t),
+    variables: appVariablesSchema(t),
+  });
+
+const manualAppSchema = (t: TFunction) =>
+  Yup.lazy((value: ManualAppForm) => {
+    // Container applications (image-based with ports and resources)
+    if (value.appType === AppType.AppTypeContainer) {
+      return manualContainerAppSchema(t);
+    }
+
+    // Helm applications
+    if (value.appType === AppType.AppTypeHelm) {
+      return manualHelmAppSchema(t);
+    }
+
+    // VM applications
+    if (value.appType === AppType.AppTypeVm) {
+      return manualVmAppSchema(t);
+    }
+
+    // Image applications (Quadlet or Compose) — OCI string
+    if (value.specType === AppSpecType.OCI_IMAGE) {
+      return manualImageAppSchema(t);
+    }
+
+    // Inline quadlet applications
+    if (value.appType === AppType.AppTypeQuadlet && value.specType === AppSpecType.INLINE) {
+      return manualInlineQuadletAppSchema(t);
+    }
+
+    // Inline compose applications
+    return manualInlineComposeAppSchema(t);
+  });
+
+export const validApplicationsSchema = (t: TFunction) => {
+  return Yup.array()
+    .of(
+      Yup.lazy((value: ApplicationEntry) => {
+        if (value?.type === 'catalog') {
+          // Pinned catalog apps: channel/version are locked on catalogItemRef; config edits rebuild apiApp.
+          return Yup.object().shape({
+            type: Yup.string().oneOf(['catalog']).required(),
+            app: Yup.object().shape({
+              catalogItemRef: Yup.mixed().required(),
+              apiApp: Yup.mixed().required(),
+            }),
+          });
+        }
+        return Yup.object().shape({
+          type: Yup.string().oneOf(['manual']).required(),
+          app: manualAppSchema(t),
+        });
+      }),
+    )
+    .test('valid-container-ports', (appsValue, testContext) => {
+      const entries = (appsValue || []) as ApplicationEntry[];
+      const hostPorts = entries.flatMap((entry) =>
+        entry.type === 'manual' && entry.app.appType === AppType.AppTypeContainer && 'ports' in entry.app
+          ? (entry.app.ports || []).map((port) => port.hostPort).filter(isValidPortNumber)
+          : [],
+      );
+      const counts = countBy(hostPorts);
+      const errors = entries.flatMap((entry, appIndex) => {
+        if (entry.type !== 'manual' || entry.app.appType !== AppType.AppTypeContainer || !('ports' in entry.app)) {
+          return [];
+        }
+        const ports = entry.app.ports || [];
+        // Keep mapping and duplicate errors at one path so Formik preserves both in the combined field.
+        const messages: string[] = [];
+        try {
+          containerAppPortMappingSchema(t).validateSync(ports, { abortEarly: false });
+        } catch (error) {
+          if (!(error instanceof Yup.ValidationError)) {
+            throw error;
+          }
+          messages.push(...error.errors);
+        }
+        const duplicatePorts = [...new Set(ports.map((port) => port.hostPort).filter((port) => counts[port] > 1))];
+        if (duplicatePorts.length > 0) {
+          messages.push(
+            t('The following host ports are used in more than one application: {{ports}}', {
+              ports: duplicatePorts.join(', '),
+            }),
+          );
+        }
+        return messages.length > 0
+          ? [
+              testContext.createError({
+                message: [...new Set(messages)].join(' '),
+                path: `${testContext.path}[${appIndex}].app.ports`,
+              }),
+            ]
+          : [];
+      });
+      return errors.length ? new Yup.ValidationError(errors) : true;
+    })
+    .test('unique-app-ids', (appsValue, testContext) => {
+      if (!appsValue?.length) {
+        return true;
+      }
+
+      const entries = appsValue as ApplicationEntry[];
+      const appIds = entries.map(getAppIdentifier);
+      const duplicateIds = Object.entries(countBy(appIds))
+        .filter(([, count]) => {
+          return count > 1;
+        })
+        .map(([id]) => id);
+      if (duplicateIds.length === 0) {
+        return true;
+      }
+
+      const errors = entries.reduce((acc, entry, appIndex) => {
+        if (duplicateIds.includes(appIds[appIndex] || '')) {
+          const name = entry.app.name;
+          const error = name
+            ? new Yup.ValidationError(t('Application name must be unique.'), '', `applications[${appIndex}].app.name`)
+            : new Yup.ValidationError(
+                t('Name is required, another application uses the same image.'),
+                '',
+                `applications[${appIndex}].app.name`,
+              );
+
+          acc.push(error);
+        }
+        return acc;
+      }, [] as Yup.ValidationError[]);
+
+      return testContext.createError({
+        message: () => errors,
+      });
+    });
+};
+
+export const validFleetRolloutPolicySchema = (t: TFunction) => {
+  return Yup.object()
+    .shape({
+      isCustomized: Yup.boolean().required(),
+      updateTimeout: Yup.number()
+        .required('Update timeout is required')
+        .test('not-decimal', t('Cannot be decimal'), isInteger),
+      batches: Yup.array()
+        .of(
+          Yup.lazy((values: BatchForm) =>
+            Yup.object<BatchForm>().shape({
+              selector: validLabelsSchema(t),
+              limitType: Yup.string()
+                .oneOf([BatchLimitType.BatchLimitAbsoluteNumber, BatchLimitType.BatchLimitPercent])
+                .required(),
+              limit: Yup.number()
+                .test('correct-percentage', t('Percentage must be between 1 and 100.'), (num) => {
+                  if (num === undefined) {
+                    return true;
+                  }
+                  if (values.limitType === BatchLimitType.BatchLimitPercent && num > 100) {
+                    return false;
+                  }
+                  return true;
+                })
+                .test('not-decimal', t('Cannot be decimal'), isInteger)
+                // When an absolute number, we can only restrict the minimum value
+                .min(1, t('Value must be greater or equal than 1')),
+              successThreshold: Yup.number()
+                .required('Success threshold is required')
+                .min(1, t('Success threshold must be between 1 and 100'))
+                .max(100, t('Success threshold must be between 1 and 100'))
+                .test('not-decimal', t('Cannot be decimal'), isInteger),
+            }),
+          ),
+        )
+        .required(),
+    })
+    .test('valid-rollout', (rolloutPolicy: RolloutPolicyForm | undefined, testContext) => {
+      if (!rolloutPolicy || rolloutPolicy.batches.length === 0) {
+        return true;
+      }
+
+      const errors = rolloutPolicy.batches.reduce((errors, batch, batchIndex) => {
+        const hasError = batch.limit === undefined && batch.selector.length === 0;
+        if (hasError) {
+          errors.push(
+            new Yup.ValidationError(
+              t('At least one of the label selector or numeric selector must be specified.'),
+              '',
+              `rolloutPolicy.batches[${batchIndex}]`,
+            ),
+          );
+        }
+        return errors;
+      }, [] as Yup.ValidationError[]);
+
+      return testContext.createError({
+        message: () => errors,
+      });
+    });
+};
+
+const requiredDownloadTimes = (t: TFunction, isStartTime: boolean) =>
+  Yup.string().when(['isCustomized', 'downloadAndInstallDiffer'], ([isCustomized, downloadAndInstallDiffer]) => {
+    if (!isCustomized) {
+      return Yup.string();
+    }
+    if (downloadAndInstallDiffer) {
+      return Yup.string().required(
+        isStartTime ? t('Downloading start time is required') : t('Downloading end time is required'),
+      );
+    }
+    return Yup.string()
+      .required(
+        isStartTime
+          ? t('Downloading and installing start times are required')
+          : t('Downloading and installing end times are required'),
+      )
+      .matches(TIME_VALUE_REGEXP, t('Time must be in hh:mm with 24-hour format', { nsSeparator: '|' }));
+  });
+
+const requiredInstallTimes = (t: TFunction, isStartTime: boolean) =>
+  Yup.string().when(['isCustomized', 'downloadAndInstallDiffer'], ([isCustomized, downloadAndInstallDiffer]) => {
+    if (isCustomized && downloadAndInstallDiffer) {
+      return Yup.string()
+        .required(isStartTime ? t('Installing start time is required') : t('Installing end time is required'))
+        .matches(TIME_VALUE_REGEXP, t('Time must be in hh:mm with 24-hour format', { nsSeparator: '|' }));
+    }
+    return Yup.string();
+  });
+
+const requiredStartGraceDuration = (t: TFunction, isInstallField: boolean = false) =>
+  Yup.string().when(['isCustomized', 'downloadAndInstallDiffer'], ([isCustomized, downloadAndInstallDiffer]) => {
+    if (!isCustomized || (isInstallField && !downloadAndInstallDiffer)) {
+      return Yup.string();
+    }
+    return Yup.string()
+      .required(t('Start grace duration is required'))
+      .matches(DURATION_REGEXP, t('Duration must be a number followed by a unit ("s", "m", or "h")'));
+  });
+
+const validDeltaGenerationDuration = (t: TFunction) =>
+  Yup.string().when(['isCustomized', 'generateDelta'], ([isCustomized, generateDelta]) => {
+    if (isCustomized && generateDelta) {
+      return Yup.string()
+        .test(
+          'at-least-one-delta-timing',
+          t('Enter at least one of rollout hold deadline or per-job generation timeout.'),
+          function (value) {
+            const { maxWaitForDelta, deltaGenerationTimeout } = this.parent as {
+              maxWaitForDelta?: string;
+              deltaGenerationTimeout?: string;
+            };
+            return Boolean(value || maxWaitForDelta || deltaGenerationTimeout);
+          },
+        )
+        .test(
+          'valid-duration',
+          t('Duration must be a number followed by a unit ("s", "m", or "h")'),
+          (value) => !value || DURATION_REGEXP.test(value),
+        );
+    }
+    return Yup.string();
+  });
+
+const updateWeekDaysSchema = (t: TFunction) =>
+  Yup.array()
+    .required()
+    .of(Yup.boolean().required())
+    .test(
+      'selected weekdays',
+      t('Select at least one day of the week for "weekly" schedules'),
+      (selectedDays: boolean[], { path, parent }) => {
+        const parentWeekMode =
+          path === 'updatePolicy.downloadWeekDays'
+            ? (parent as UpdatePolicyForm).downloadScheduleMode
+            : (parent as UpdatePolicyForm).installScheduleMode;
+
+        if (parentWeekMode === UpdateScheduleMode.Weekly) {
+          return selectedDays.some(Boolean);
+        }
+
+        return true;
+      },
+    );
+
+export const validUpdatePolicySchema = (t: TFunction) => {
+  return Yup.object().shape({
+    isCustomized: Yup.boolean().required(),
+    downloadAndInstallDiffer: Yup.boolean().required(),
+    // Fields are flattened so "isCustomized" can be used for validating them
+    downloadStartsAt: requiredDownloadTimes(t, true),
+    downloadEndsAt: requiredDownloadTimes(t, false),
+    downloadStartGraceDuration: requiredStartGraceDuration(t, false),
+    downloadScheduleMode: Yup.string().oneOf([UpdateScheduleMode.Weekly, UpdateScheduleMode.Daily]).required(),
+    downloadWeekDays: updateWeekDaysSchema(t),
+    downloadTimeZone: Yup.string().required(t('Select the timezone for downloading updates')),
+    installStartsAt: requiredInstallTimes(t, true),
+    installEndsAt: requiredInstallTimes(t, false),
+    installStartGraceDuration: requiredStartGraceDuration(t, true),
+    installScheduleMode: Yup.string().oneOf([UpdateScheduleMode.Weekly, UpdateScheduleMode.Daily]).required(),
+    installWeekDays: updateWeekDaysSchema(t),
+    installTimeZone: Yup.string().required(t('Select the timezone for installing updates')),
+  });
+};
+
+export const validDeltaGenerationSchema = (t: TFunction) =>
+  Yup.object().shape({
+    isCustomized: Yup.boolean(),
+    generateDelta: Yup.boolean().required(),
+    maxWaitForDelta: validDeltaGenerationDuration(t),
+    deltaGenerationTimeout: validDeltaGenerationDuration(t),
+  });
+
+export const validFleetDisruptionBudgetSchema = (t: TFunction) => {
+  return Yup.object()
+    .shape({
+      isCustomized: Yup.boolean().required(),
+      minAvailable: Yup.number().test('not-decimal', t('Number of devices cannot be decimal'), isInteger),
+      maxUnavailable: Yup.number().test('not-decimal', t('Number of devices cannot be decimal'), isInteger),
+      groupBy: validGroupLabelKeysSchema(t),
+    })
+    .test(
+      'has-min-or-max',
+      t('At least one of minimum available or maximum unavailable devices is required.'),
+      (value: DisruptionBudgetForm) =>
+        !(value.isCustomized && value.minAvailable === undefined && value.maxUnavailable === undefined),
+    );
+};
+
+export const validConfigTemplatesSchema = (t: TFunction) =>
+  Yup.array()
+    .test('unique-names', t('Source names must be unique'), (templates: SpecConfigTemplate[] | undefined) => {
+      if (!templates) {
+        return true;
+      }
+      const uniqueNames = new Set(templates.map((template) => template.name));
+      return uniqueNames.size === templates.length;
+    })
+    .of(
+      Yup.lazy((value: SpecConfigTemplate) => {
+        if (isGitConfigTemplate(value)) {
+          return Yup.object<GitConfigTemplate>().shape({
+            type: Yup.string().required(t('Source type is required.')),
+            name: validConfigName(t).required(t('Name is required.')),
+            path: Yup.string().required(t('Path is required.')).matches(absolutePathRegex, t('Path must be absolute.')),
+            repository: Yup.string().required(t('Repository is required.')),
+            targetRevision: maxLengthString(t, {
+              maxLength: MAX_TARGET_REVISION_LENGTH,
+              fieldName: t('Target revision'),
+            }).required(t('Branch/tag/commit is required.')),
+          });
+        } else if (isHttpConfigTemplate(value)) {
+          return Yup.object<HttpConfigTemplate>().shape({
+            type: Yup.string().required(t('Source type is required.')),
+            repository: Yup.string().required(t('Repository is required.')),
+            name: validConfigName(t).required(t('Name is required.')),
+            filePath: Yup.string()
+              .required(t('File path is required.'))
+              .matches(absolutePathRegex, t('Path must be absolute.')),
+            suffix: Yup.string(),
+          });
+        } else if (isKubeSecretTemplate(value)) {
+          return Yup.object<KubeSecretTemplate>().shape({
+            type: Yup.string().required(t('Source type is required.')),
+            name: validConfigName(t).required(t('Name is required.')),
+            secretName: Yup.string().required(t('Secret name is required.')),
+            secretNs: Yup.string().required(t('Secret namespace is required.')),
+            mountPath: Yup.string()
+              .required(t('Mount path is required.'))
+              .matches(absolutePathRegex, t('Mount path must be absolute.')),
+          });
+        } else if (isInlineConfigTemplate(value)) {
+          return Yup.object<InlineConfigTemplate>().shape({
+            type: Yup.string().required(t('Source type is required.')),
+            name: validConfigName(t).required(t('Name is required.')),
+            files: Yup.array().of(
+              Yup.object<InlineConfigTemplate['files'][0]>().shape({
+                path: Yup.string()
+                  .required(t('Path is required.'))
+                  .matches(absolutePathRegex, t('File path must be absolute.'))
+                  .test(
+                    'unique-paths',
+                    t('File path must be unique.'),
+                    (path) => !path || value.files.filter((file) => file.path === path).length == 1,
+                  ),
+                content: Yup.string(),
+                permissions: Yup.string().test(
+                  'permissions',
+                  t('Permissions must use octal notation'),
+                  (perm: string | undefined) => {
+                    if (!perm) {
+                      return true;
+                    }
+                    const valNum = Number(`0o${perm}`);
+                    return Number.isFinite(valNum) && valNum >= 0 && valNum <= 0o7777;
+                  },
+                ),
+              }),
+            ),
+          });
+        }
+
+        return Yup.object<InlineConfigTemplate>().shape({
+          name: validConfigName(t).required(t('Name is required.')),
+          type: Yup.string().required(t('Source type is required.')),
+        });
+      }),
+    );
+
+export const systemdUnitListValidationSchema = (t: TFunction) =>
+  Yup.array()
+    .max(
+      SYSTEMD_UNITS_MAX_PATTERNS,
+      t('The maximum number of systemd units is {{maxSystemUnits}}.', { maxSystemUnits: SYSTEMD_UNITS_MAX_PATTERNS }),
+    )
+    .of(
+      Yup.object<SystemdUnitFormValue>().shape({
+        pattern: Yup.string().required('Service name is required'),
+        exists: Yup.boolean().required(),
+      }),
+    )
+    .test('invalid patterns', (systemdUnits: SystemdUnitFormValue[] | undefined, testContext) => {
+      // Supports templated SystemD services with extended regex for all allowed unit file formats and glob searches
+      // See SYSTEMD_PATTERNS_REGEXP
+      const invalidSystemdUnits = (systemdUnits || [])
+        .map((unit) => unit.pattern)
+        .filter((pattern) => {
+          return pattern.length > SYSTEMD_UNITS_MAX_PATTERNS || !SYSTEMD_PATTERNS_REGEXP.test(pattern);
+        });
+      if (invalidSystemdUnits.length === 0) {
+        return true;
+      }
+      return testContext.createError({
+        message: t('Invalid systemd service names: {{invalidPatterns}}', {
+          invalidPatterns: invalidSystemdUnits.join(', '),
+        }),
+      });
+    })
+    .test(
+      'unique patterns',
+      t('Systemd service names must be unique'),
+      (patterns: SystemdUnitFormValue[] | undefined) => {
+        const uniqueKeys = new Set(patterns?.map((p) => p.pattern) || []);
+        return uniqueKeys.size === (patterns?.length || 0);
+      },
+    );
+
+export const deviceSystemdUnitsValidationSchema = (t: TFunction) =>
+  Yup.object({
+    systemdUnits: systemdUnitListValidationSchema(t),
+  });
+
+const getExpandedAlias = (alias: string | undefined, massDeviceCount: number) => {
+  if (!alias) {
+    return '';
+  }
+  return alias.replace(/{{n+}}/g, `${massDeviceCount}`);
+};
+
+const forbiddenDeviceLabels = ['alias'];
+export const deviceApprovalValidationSchema = (t: TFunction, { massDeviceCount }: { massDeviceCount: number }) =>
+  Yup.object({
+    deviceAlias:
+      massDeviceCount === 0
+        ? validKubernetesLabelValue(t, { isRequired: false, fieldName: t('Alias') })
+        : Yup.string()
+            .test(
+              'massApprovalAliasLength',
+              t('Device aliases must be at most {{maxCharacters}} characters long.', {
+                maxCharacters: K8S_LABEL_VALUE_MAX_LENGTH,
+              }),
+              (value: string | undefined) => {
+                // When a number template is present, we want to check the length of the longest alias in the series.
+                const maxLengthAlias = getExpandedAlias(value, massDeviceCount);
+                return maxLengthAlias.length <= K8S_LABEL_VALUE_MAX_LENGTH;
+              },
+            )
+            .test(
+              'massApprovalAliasFormat',
+              t(
+                'Device aliases must start and end with a letter or number, contain only letters, numbers, dashes (-), dots (.), and underscores (_).',
+              ),
+              (value: string | undefined) => {
+                // Validate format regardless of alias length, since length checks are done in the previous test.
+                const maxLengthAlias = getExpandedAlias(value, 1);
+                const invalidLabel = getInvalidKubernetesLabels([{ key: 'alias', value: maxLengthAlias }]);
+                return invalidLabel.length === 0;
+              },
+            ),
+    labels: validLabelsSchema(t, forbiddenDeviceLabels),
+  });
+
+export const createMassResumeValidationSchema = (t: TFunction) =>
+  Yup.object().shape({
+    mode: Yup.string().oneOf(['fleet', 'labels', 'all']).required(),
+    fleetId: Yup.string().when('mode', ([mode]) =>
+      mode === 'fleet' ? Yup.string().required(t('Fleet selection is required')) : Yup.string(),
+    ),
+    labels: Yup.array().when('mode', ([mode]) => {
+      if (mode === 'labels') {
+        return validLabelsSchema(t).min(1, t('At least one label is required'));
+      }
+      return Yup.array();
+    }),
+  });
+
+export const validURLSchema = (t: TFunction) => Yup.string().url(t('Must be a valid URL'));

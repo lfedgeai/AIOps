@@ -1,0 +1,164 @@
+package signer
+
+import (
+	"context"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/flightctl/flightctl/internal/config/ca"
+	"github.com/flightctl/flightctl/internal/consts"
+	"github.com/flightctl/flightctl/internal/flterrors"
+	"github.com/flightctl/flightctl/internal/org"
+	fccrypto "github.com/flightctl/flightctl/pkg/crypto"
+	"github.com/google/uuid"
+)
+
+var (
+	NullOrgID            = org.DefaultID
+	OIDSignerName        = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 99999, 1, 1}
+	OIDOrgID             = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 99999, 1, 2}
+	OIDDeviceFingerprint = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 99999, 1, 3}
+)
+
+type certOption = func(*x509.Certificate) error
+
+func WithExtension(oid asn1.ObjectIdentifier, value string) certOption {
+	return func(cert *x509.Certificate) error {
+		encoded, err := asn1.Marshal(value)
+		if err != nil {
+			return fmt.Errorf("marshal extension for OID %v: %w", oid, err)
+		}
+		cert.ExtraExtensions = append(cert.ExtraExtensions, pkix.Extension{
+			Id:       oid,
+			Critical: false,
+			Value:    encoded,
+		})
+		return nil
+	}
+}
+
+func PeerCertificateFromCtx(ctx context.Context) (*x509.Certificate, error) {
+	cert, ok := ctx.Value(consts.TLSPeerCertificateCtxKey).(*x509.Certificate)
+	if !ok || cert == nil {
+		return nil, fmt.Errorf("peer certificate not found")
+	}
+	return cert, nil
+}
+
+func GetSignerNameExtension(cert *x509.Certificate) (string, error) {
+	s, err := fccrypto.GetCertificateExtensionValueAsStr(cert, OIDSignerName)
+	if err != nil {
+		return "", err
+	}
+	return s, nil
+}
+
+func GetDeviceFingerprintExtension(cert *x509.Certificate) (string, error) {
+	s, err := fccrypto.GetCertificateExtensionValueAsStr(cert, OIDDeviceFingerprint)
+	if err != nil {
+		return "", err
+	}
+	return s, nil
+}
+
+// GetOrgIDExtensionFromCSR extracts the organization ID (UUID) from the CSR's
+// OIDOrgID extension. It returns (id, true, nil) if present and valid;
+// (uuid.Nil, false, nil) if the extension is absent; and (uuid.Nil, present, err)
+// if retrieval fails or the value cannot be parsed as a UUID.
+func GetOrgIDExtensionFromCSR(cert *x509.CertificateRequest) (uuid.UUID, bool, error) {
+	s, err := fccrypto.GetCSRExtensionValueAsStr(cert, OIDOrgID)
+	if errors.Is(err, flterrors.ErrExtensionNotFound) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, fmt.Errorf("failed to get OrgID extension from CSR: %w", err)
+	}
+	orgID, err := uuid.Parse(s)
+	if err != nil {
+		return uuid.Nil, true, fmt.Errorf("invalid OrgID format in CSR: %w", err)
+	}
+	return orgID, true, nil
+}
+
+// GetOrgIDExtensionFromCert extracts the organization ID (UUID) from the
+// certificate's OIDOrgID extension. It returns (id, true, nil) if present and
+// valid; (uuid.Nil, false, nil) if the extension is absent; and (uuid.Nil,
+// present, err) if retrieval fails or the value cannot be parsed as a UUID.
+func GetOrgIDExtensionFromCert(cert *x509.Certificate) (uuid.UUID, bool, error) {
+	s, err := fccrypto.GetCertificateExtensionValueAsStr(cert, OIDOrgID)
+
+	if errors.Is(err, flterrors.ErrExtensionNotFound) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, fmt.Errorf("failed to get OrgID extension from certificate: %w", err)
+	}
+
+	orgID, err := uuid.Parse(s)
+	if err != nil {
+		return uuid.Nil, true, fmt.Errorf("invalid OrgID format in certificate: %w", err)
+	}
+	return orgID, true, nil
+}
+
+func DeviceFingerprintFromCN(cfg *ca.Config, commonName string) (string, error) {
+	prefix := cfg.DeviceCommonNamePrefix
+
+	if !strings.HasPrefix(commonName, prefix) {
+		return "", fmt.Errorf("common name %q missing expected prefix %q", commonName, prefix)
+	}
+
+	fingerprint := strings.TrimPrefix(commonName, prefix)
+	if len(fingerprint) < 16 {
+		return "", fmt.Errorf("fingerprint extracted from CN must be at least %d characters: got %q", 16, fingerprint)
+	}
+
+	return fingerprint, nil
+}
+
+func CNFromDeviceFingerprint(cfg *ca.Config, fingerprint string) (string, error) {
+	if len(fingerprint) < 16 {
+		return "", errors.New("device fingerprint must have 16 characters at least")
+	}
+	if strings.HasPrefix(fingerprint, cfg.DeviceCommonNamePrefix) {
+		return fingerprint, nil
+	}
+	return cfg.DeviceCommonNamePrefix + fingerprint, nil
+}
+
+func BootstrapCNFromName(cfg *ca.Config, name string) string {
+	commonNames := []string{cfg.ClientBootstrapCommonName}
+	for _, cn := range append(commonNames, cfg.ExtraAllowedPrefixes...) {
+		if name == cn {
+			return name
+		}
+	}
+
+	prefixes := []string{cfg.ClientBootstrapCommonNamePrefix, cfg.DeviceCommonNamePrefix}
+	for _, prefix := range append(prefixes, cfg.ExtraAllowedPrefixes...) {
+		if strings.HasPrefix(name, prefix) {
+			return name
+		}
+	}
+	return cfg.ClientBootstrapCommonNamePrefix + name
+}
+
+// IsIssuedByAnySigner returns true if signer is non-nil and its name matches
+// one of the provided allowed signer names.
+func IsIssuedByAnySigner(signer Signer, allowed ...string) bool {
+	if signer == nil {
+		return false
+	}
+	return slices.Contains(allowed, signer.Name())
+}
+
+// IsDeviceManagementClientCertSigner returns true if the peer certificate signer
+// indicates a valid device management identity (initial management cert or renewal cert).
+func IsDeviceManagementClientCertSigner(cfg *ca.Config, signer Signer) bool {
+	return IsIssuedByAnySigner(signer, cfg.DeviceManagementSignerName, cfg.DeviceManagementRenewalSignerName)
+}

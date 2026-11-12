@@ -1,0 +1,508 @@
+package tasks
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/url"
+	"path/filepath"
+	"strings"
+
+	config_latest_types "github.com/coreos/ignition/v2/config/v3_4/types"
+	"github.com/flightctl/flightctl/internal/config"
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/instrumentation/encryption"
+	sshcrypto "github.com/flightctl/flightctl/internal/ssh"
+	"github.com/flightctl/flightctl/pkg/ignition"
+	"github.com/go-git/go-billy/v5"
+	"github.com/go-git/go-billy/v5/memfs"
+	"github.com/go-git/go-git/v5"
+	gitconfig "github.com/go-git/go-git/v5/config"
+	gitplumbing "github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	gitmemory "github.com/go-git/go-git/v5/storage/memory"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
+)
+
+// a function to clone a git repo, for mockable unit testing
+type cloneGitRepoFunc func(ctx context.Context, repo *domain.Repository, revision *string, depth *int, cfg *config.Config) (billy.Filesystem, string, error)
+
+func CloneGitRepo(ctx context.Context, repo *domain.Repository, revision *string, depth *int, cfg *config.Config) (billy.Filesystem, string, error) {
+	storage := gitmemory.NewStorage()
+	mfs := memfs.New()
+	repoURL, err := repo.Spec.GetRepoURL()
+	if err != nil {
+		return nil, "", err
+	}
+	opts := &git.CloneOptions{
+		URL: repoURL,
+	}
+	if depth != nil {
+		opts.Depth = *depth
+	}
+	gitOptions, err := getGitOptions(ctx, repo, cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	opts.Auth = gitOptions.Auth
+	opts.InsecureSkipTLS = gitOptions.InsecureSkipTLS
+	opts.ClientCert = gitOptions.ClientCert
+	opts.ClientKey = gitOptions.ClientKey
+	opts.CABundle = gitOptions.CABundle
+	hash := ""
+	if revision != nil {
+		referenceIsHash := gitplumbing.IsHash(*revision)
+		if !referenceIsHash {
+			opts.ReferenceName = gitplumbing.ReferenceName(*revision)
+		} else {
+			hash = *revision
+		}
+	}
+	gitRepo, err := git.CloneContext(ctx, storage, mfs, opts)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed cloning git repo: %w", err)
+	}
+	if hash != "" {
+		worktree, err := gitRepo.Worktree()
+		if err != nil {
+			return nil, "", fmt.Errorf("failed getting git repo worktree: %w", err)
+		}
+		err = worktree.Checkout(&git.CheckoutOptions{Hash: gitplumbing.NewHash(hash), Force: true})
+		if err != nil {
+			return nil, "", fmt.Errorf("failed checking out specified git hash %s: %w", gitplumbing.NewHash(hash), err)
+		}
+	} else {
+		head, err := gitRepo.Head()
+		if err != nil {
+			return nil, "", fmt.Errorf("failed getting git repo head: %w", err)
+		}
+		hash = head.Hash().String()
+	}
+
+	return mfs, hash, nil
+}
+
+// GitLsRemote resolves one or more git refs (branch name, tag name, or full
+// ref path) to their commit SHAs without cloning the repository. A single
+// remote.List call is made regardless of how many refs are requested. The
+// returned map contains only the refs that were found. Error messages are
+// sanitized to prevent credential leakage.
+// The caller's context controls the deadline. ListOptions.Timeout applies to
+// Remote.List, whereas this function uses Remote.ListContext.
+func GitLsRemote(ctx context.Context, repoURL string, refs []string, options *git.ListOptions) (map[string]string, error) {
+	if repoURL == "" {
+		return nil, fmt.Errorf("repository URL must not be empty")
+	}
+	if len(refs) == 0 {
+		return map[string]string{}, nil
+	}
+
+	remote := git.NewRemote(gitmemory.NewStorage(), &gitconfig.RemoteConfig{
+		Name: "origin",
+		URLs: []string{repoURL},
+	})
+
+	if options == nil {
+		options = &git.ListOptions{}
+	}
+	remoteRefs, err := remote.ListContext(ctx, options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list remote refs: %s", sanitizeGitError(err))
+	}
+
+	wanted := make(map[string]bool, len(refs)*3)
+	refLookup := make(map[string]string, len(refs)*3)
+	for _, ref := range refs {
+		for _, candidate := range []string{ref, "refs/heads/" + ref, "refs/tags/" + ref} {
+			wanted[candidate] = true
+			refLookup[candidate] = ref
+		}
+	}
+
+	resolved := make(map[string]string, len(refs))
+	for _, r := range remoteRefs {
+		refName := r.Name().String()
+		if wanted[refName] {
+			originalRef := refLookup[refName]
+			if _, exists := resolved[originalRef]; !exists {
+				resolved[originalRef] = r.Hash().String()
+			}
+		}
+	}
+
+	return resolved, nil
+}
+
+func sanitizeGitError(err error) string {
+	msg := err.Error()
+	if idx := strings.LastIndex(msg, ": "); idx != -1 && idx+2 < len(msg) {
+		msg = strings.TrimSpace(msg[idx+2:])
+	}
+	msg = strings.TrimSuffix(msg, ".")
+	return redactURLsInString(msg)
+}
+
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = url.User("redacted")
+	return u.String()
+}
+
+func redactURLsInString(s string) string {
+	for _, scheme := range []string{"https://", "http://"} {
+		for {
+			idx := strings.Index(s, scheme)
+			if idx == -1 {
+				break
+			}
+			end := strings.IndexAny(s[idx:], " \t\n")
+			if end == -1 {
+				end = len(s) - idx
+			}
+			rawURL := s[idx : idx+end]
+			redacted := redactURL(rawURL)
+			if rawURL == redacted {
+				break
+			}
+			s = strings.Replace(s, rawURL, redacted, 1)
+		}
+	}
+	return s
+}
+
+// sshAuthWrapper wraps an SSH auth method to apply additional crypto settings
+type sshAuthWrapper struct {
+	wrapped        transport.AuthMethod
+	cryptoSettings sshcrypto.SSHCryptoSettings
+}
+
+func (w *sshAuthWrapper) Name() string {
+	return w.wrapped.Name()
+}
+
+func (w *sshAuthWrapper) String() string {
+	return w.wrapped.String()
+}
+
+func (w *sshAuthWrapper) ClientConfig() (*ssh.ClientConfig, error) {
+	// Get the base config from the wrapped auth method
+	sshAuth, ok := w.wrapped.(interface {
+		ClientConfig() (*ssh.ClientConfig, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("wrapped auth does not support ClientConfig()")
+	}
+
+	cfg, err := sshAuth.ClientConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply crypto settings to the config
+	w.cryptoSettings.ApplyCryptoSettingsToClientConfig(cfg)
+	return cfg, nil
+}
+
+// wrapAuthWithCryptoSettings wraps an auth method to apply SSH crypto settings
+func wrapAuthWithCryptoSettings(auth transport.AuthMethod, settings sshcrypto.SSHCryptoSettings) transport.AuthMethod {
+	// If no settings are configured, return the auth as-is
+	if len(settings.KeyExchanges) == 0 && len(settings.Ciphers) == 0 && len(settings.MACs) == 0 {
+		return auth
+	}
+
+	return &sshAuthWrapper{
+		wrapped:        auth,
+		cryptoSettings: settings,
+	}
+}
+
+// getSSHUser extracts the username from a Git repository URL.
+func getSSHUser(rawURL string) string {
+	endpoint, err := transport.NewEndpoint(rawURL)
+	if err != nil {
+		return ""
+	}
+	return endpoint.User
+}
+
+// Read repository's ssh/http config and create transport.AuthMethod.
+// If no ssh/http config is defined a nil is returned.
+func getAuth(ctx context.Context, repository *domain.Repository, cfg *config.Config) (transport.AuthMethod, error) {
+	gitSpec, err := repository.Spec.AsGitRepoSpec()
+	if err != nil {
+		// Not a Git repo spec, no auth
+		return nil, nil
+	}
+
+	// Handle SSH authentication
+	if gitSpec.SshConfig != nil {
+		var auth *gitssh.PublicKeys
+		if gitSpec.SshConfig.SshPrivateKey != nil {
+			// Decrypt SSH private key (passthrough if plaintext for BC)
+			decryptedKey, _, err := encryption.Decrypt(ctx, encryption.Ciphertext(*gitSpec.SshConfig.SshPrivateKey))
+			if err != nil {
+				return nil, fmt.Errorf("decrypt SSH private key: %w", err)
+			}
+
+			sshPrivateKey, err := base64.StdEncoding.DecodeString(string(decryptedKey))
+			if err != nil {
+				return nil, fmt.Errorf("decode SSH private key: %w", err)
+			}
+
+			password := ""
+			if gitSpec.SshConfig.PrivateKeyPassphrase != nil {
+				// Decrypt passphrase (passthrough if plaintext for BC)
+				decryptedPassphrase, _, err := encryption.Decrypt(ctx, encryption.Ciphertext(*gitSpec.SshConfig.PrivateKeyPassphrase))
+				if err != nil {
+					return nil, fmt.Errorf("decrypt SSH passphrase: %w", err)
+				}
+				password = string(decryptedPassphrase)
+			}
+			user := getSSHUser(gitSpec.Url)
+			auth, err = gitssh.NewPublicKeys(user, sshPrivateKey, password)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		// Configure host key verification
+		if gitSpec.SshConfig.SkipServerVerification != nil && *gitSpec.SshConfig.SkipServerVerification {
+			if auth == nil {
+				auth = &gitssh.PublicKeys{}
+			}
+			auth.HostKeyCallbackHelper = gitssh.HostKeyCallbackHelper{
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec
+			}
+		} else {
+			callback, cbErr := buildKnownHostsCallback()
+			if cbErr != nil {
+				return nil, cbErr
+			}
+			if callback != nil {
+				if auth == nil {
+					auth = &gitssh.PublicKeys{}
+				}
+				auth.HostKeyCallbackHelper = gitssh.HostKeyCallbackHelper{HostKeyCallback: callback}
+			}
+		}
+
+		// Apply SSH crypto algorithm configuration for FIPS compliance
+		if auth != nil {
+			cryptoSettings := sshcrypto.GetSSHCryptoSettings(cfg)
+			// Set HostKeyAlgorithms directly on the auth struct
+			auth.HostKeyAlgorithms = cryptoSettings.HostKeyAlgorithms
+			// Wrap the auth to apply additional crypto settings
+			return wrapAuthWithCryptoSettings(auth, cryptoSettings), nil
+		}
+
+		return auth, nil
+	}
+
+	// Handle HTTP authentication
+	if gitSpec.HttpConfig != nil {
+		if gitSpec.HttpConfig.Token != nil {
+			// Decrypt token (passthrough if plaintext for BC)
+			decryptedToken, _, err := encryption.Decrypt(ctx, encryption.Ciphertext(*gitSpec.HttpConfig.Token))
+			if err != nil {
+				return nil, fmt.Errorf("decrypt HTTP token: %w", err)
+			}
+			auth := &githttp.TokenAuth{
+				Token: string(decryptedToken),
+			}
+			return auth, nil
+		}
+		if gitSpec.HttpConfig.Username != nil && gitSpec.HttpConfig.Password != nil {
+			// Decrypt password (passthrough if plaintext for BC)
+			decryptedPassword, _, err := encryption.Decrypt(ctx, encryption.Ciphertext(*gitSpec.HttpConfig.Password))
+			if err != nil {
+				return nil, fmt.Errorf("decrypt HTTP password: %w", err)
+			}
+			auth := &githttp.BasicAuth{
+				Username: *gitSpec.HttpConfig.Username,
+				Password: string(decryptedPassword),
+			}
+			return auth, nil
+		}
+	}
+
+	// No auth config - public repository
+	return nil, nil
+}
+
+// getGitOptions builds authentication and TLS settings for a single Git operation.
+func getGitOptions(ctx context.Context, repository *domain.Repository, cfg *config.Config) (*git.ListOptions, error) {
+	options := &git.ListOptions{}
+	gitSpec, err := repository.Spec.AsGitRepoSpec()
+	if err != nil {
+		return options, nil
+	}
+
+	repoURL, parseErr := url.Parse(gitSpec.Url)
+	if parseErr == nil && strings.EqualFold(repoURL.Scheme, "https") && gitSpec.SshConfig == nil && gitSpec.HttpConfig != nil {
+		options, err = getRepoHTTPSOptions(ctx, *gitSpec.HttpConfig)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	options.Auth, err = getAuth(ctx, repository, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return options, nil
+}
+
+func getRepoHTTPSOptions(ctx context.Context, httpConfig domain.HttpConfig) (*git.ListOptions, error) {
+	options := &git.ListOptions{}
+	if httpConfig.SkipServerVerification != nil {
+		options.InsecureSkipTLS = *httpConfig.SkipServerVerification
+	}
+
+	if httpConfig.TlsCrt != nil && httpConfig.TlsKey != nil {
+		decryptedCrt, _, err := encryption.Decrypt(ctx, encryption.Ciphertext(*httpConfig.TlsCrt))
+		if err != nil {
+			return nil, fmt.Errorf("decrypt TLS cert: %w", err)
+		}
+		cert, err := base64.StdEncoding.DecodeString(string(decryptedCrt))
+		if err != nil {
+			return nil, fmt.Errorf("decode TLS cert: %w", err)
+		}
+
+		decryptedKey, _, err := encryption.Decrypt(ctx, encryption.Ciphertext(*httpConfig.TlsKey))
+		if err != nil {
+			return nil, fmt.Errorf("decrypt TLS key: %w", err)
+		}
+		key, err := base64.StdEncoding.DecodeString(string(decryptedKey))
+		if err != nil {
+			return nil, fmt.Errorf("decode TLS key: %w", err)
+		}
+
+		if _, err := tls.X509KeyPair(cert, key); err != nil {
+			return nil, fmt.Errorf("validate TLS client certificate/key: %w", err)
+		}
+
+		options.ClientCert = cert
+		options.ClientKey = key
+	}
+
+	if httpConfig.CaCrt != nil {
+		ca, err := base64.StdEncoding.DecodeString(*httpConfig.CaCrt)
+		if err != nil {
+			return nil, fmt.Errorf("decode CA bundle: %w", err)
+		}
+		if !x509.NewCertPool().AppendCertsFromPEM(ca) {
+			return nil, fmt.Errorf("parse CA bundle: no valid PEM certificates")
+		}
+
+		options.CABundle = ca
+	}
+
+	return options, nil
+}
+
+func buildKnownHostsCallback() (ssh.HostKeyCallback, error) {
+	cb, err := knownhosts.New("/etc/flightctl/ssh/known_hosts")
+	if err != nil {
+		return nil, fmt.Errorf("failed to load SSH known_hosts: %w", err)
+	}
+	return cb, nil
+}
+
+// ConvertFileSystemToIgnition converts a filesystem to an ignition config
+// The filesystem is expected to be a git repo, and the path is the root of the repo
+// The function will recursively walk the filesystem and add all files to the ignition config
+// In case user provides file path we will add file as "/file-name"
+// In case user provides folder we will drop folder path add all files and subfolder with subfolder paths, like
+// Example: ConvertFileSystemToIgnition(mfs, "/test-path) will go through all subfolder and files and build ignition paths like
+// /etc/motd, /etc/config/file.yaml
+// The function will return an error if the path does not exist or if there is an error reading the filesystem
+func ConvertFileSystemToIgnition(mfs billy.Filesystem, path string) (*config_latest_types.Config, error) {
+	fileInfo, err := mfs.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed accessing path %s: %w", path, err)
+	}
+
+	wrapper, err := ignition.NewWrapper()
+	if err != nil {
+		return nil, fmt.Errorf("failed initializing ignition wrapper: %w", err)
+	}
+
+	if fileInfo.IsDir() {
+		files, err := mfs.ReadDir(path)
+		if err != nil {
+			return nil, fmt.Errorf("failed reading directory %s: %w", path, err)
+		}
+		err = addGitDirToIgnitionConfig(mfs, path, "/", files, wrapper)
+		if err != nil {
+			return nil, fmt.Errorf("failed converting directory %s to ignition: %w", path, err)
+		}
+	} else {
+		err = addGitFileToIgnitionConfig(mfs, path, filepath.Join("/", fileInfo.Name()), fileInfo, wrapper)
+		if err != nil {
+			return nil, fmt.Errorf("failed converting file %s to ignition: %w", path, err)
+		}
+	}
+
+	ignition := wrapper.AsIgnitionConfig()
+	return &ignition, nil
+}
+
+func CloneGitRepoToIgnition(ctx context.Context, repo *domain.Repository, revision string, path string, cfg *config.Config) (*config_latest_types.Config, string, error) {
+	mfs, hash, err := CloneGitRepo(ctx, repo, &revision, nil, cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	ign, err := ConvertFileSystemToIgnition(mfs, path)
+	if err != nil {
+		return nil, "", err
+	}
+	return ign, hash, nil
+}
+
+func addGitDirToIgnitionConfig(mfs billy.Filesystem, fullPrefix, ignPrefix string, fileInfos []fs.FileInfo, wrapper ignition.Wrapper) error {
+	for _, fileInfo := range fileInfos {
+		if fileInfo.IsDir() {
+			subdirFiles, err := mfs.ReadDir(filepath.Join(fullPrefix, fileInfo.Name()))
+			if err != nil {
+				return fmt.Errorf("failed reading directory %s: %w", fileInfo.Name(), err)
+			}
+			// recursion!
+			err = addGitDirToIgnitionConfig(mfs, filepath.Join(fullPrefix, fileInfo.Name()), filepath.Join(ignPrefix, fileInfo.Name()), subdirFiles, wrapper)
+			if err != nil {
+				return err
+			}
+		} else {
+			err := addGitFileToIgnitionConfig(mfs, filepath.Join(fullPrefix, fileInfo.Name()), filepath.Join(ignPrefix, fileInfo.Name()), fileInfo, wrapper)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func addGitFileToIgnitionConfig(mfs billy.Filesystem, fullPath, ignPath string, fileInfo fs.FileInfo, wrapper ignition.Wrapper) error {
+	openFile, err := mfs.Open(fullPath)
+	if err != nil {
+		return err
+	}
+	defer openFile.Close()
+
+	fileContents, err := io.ReadAll(openFile)
+	if err != nil {
+		return err
+	}
+
+	wrapper.SetFile(ignPath, fileContents, int(fileInfo.Mode()), false, "", "")
+	return nil
+}

@@ -1,0 +1,340 @@
+package client
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"testing"
+
+	"github.com/containerd/platforms"
+	"github.com/flightctl/flightctl/internal/agent/device/fileio"
+	"github.com/flightctl/flightctl/pkg/executer"
+	"github.com/flightctl/flightctl/pkg/log"
+	"github.com/flightctl/flightctl/pkg/poll"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+)
+
+func TestNormalizeImageRef(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "image with tag",
+			input:    "registry.io/namespace/user/image:tag",
+			expected: "registry.io/namespace/user/image",
+		},
+		{
+			name:     "image with digest",
+			input:    "registry.io/namespace/user/image@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+			expected: "registry.io/namespace/user/image",
+		},
+		{
+			name:     "image with oci scheme and tag",
+			input:    "oci://registry.example.com/charts/mychart:1.0.0",
+			expected: "registry.example.com/charts/mychart",
+		},
+		{
+			name:     "image with docker scheme",
+			input:    "docker://quay.io/myorg/myapp:v1",
+			expected: "quay.io/myorg/myapp",
+		},
+		{
+			name:     "localhost registry with port and tag",
+			input:    "localhost:5000/test-image:v1.0",
+			expected: "localhost:5000/test-image",
+		},
+		{
+			name:     "image without tag",
+			input:    "registry.io/namespace/image",
+			expected: "registry.io/namespace/image",
+		},
+		{
+			name:     "official docker hub image with tag",
+			input:    "nginx:latest",
+			expected: "docker.io/library/nginx",
+		},
+		{
+			name:     "user docker hub image",
+			input:    "user/nginx:latest",
+			expected: "docker.io/user/nginx",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := normalizeImageRef(tc.input)
+			require.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func TestBuildRegistryPaths(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name:  "full path with four levels",
+			input: "registry.io/namespace/user/image",
+			expected: []string{
+				"registry.io/namespace/user/image",
+				"registry.io/namespace/user",
+				"registry.io/namespace",
+				"registry.io",
+			},
+		},
+		{
+			name:  "short path with two levels",
+			input: "registry.io/image",
+			expected: []string{
+				"registry.io/image",
+				"registry.io",
+			},
+		},
+		{
+			name:  "single level",
+			input: "registry.io",
+			expected: []string{
+				"registry.io",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := buildRegistryPaths(tc.input)
+			require.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func TestNormalizeAuthFileKey(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "registry-1.docker.io normalizes to docker.io",
+			input:    "registry-1.docker.io",
+			expected: "docker.io",
+		},
+		{
+			name:     "index.docker.io normalizes to docker.io",
+			input:    "index.docker.io",
+			expected: "docker.io",
+		},
+		{
+			name:     "docker.io stays as docker.io",
+			input:    "docker.io",
+			expected: "docker.io",
+		},
+		{
+			name:     "https scheme stripped and path removed",
+			input:    "https://registry.io/v2/",
+			expected: "registry.io",
+		},
+		{
+			name:     "http scheme stripped and path removed",
+			input:    "http://registry.io/v2/",
+			expected: "registry.io",
+		},
+		{
+			name:     "https scheme stripped, no path",
+			input:    "https://registry.io",
+			expected: "registry.io",
+		},
+		{
+			name:     "plain registry name unchanged",
+			input:    "quay.io",
+			expected: "quay.io",
+		},
+		{
+			name:     "registry with namespace not affected by scheme stripping",
+			input:    "registry.io/namespace",
+			expected: "registry.io/namespace",
+		},
+		{
+			name:     "registry with namespace and scheme gets path stripped",
+			input:    "https://registry.io/namespace/image",
+			expected: "registry.io",
+		},
+		{
+			name:     "localhost with port",
+			input:    "localhost:5000",
+			expected: "localhost:5000",
+		},
+		{
+			name:     "localhost with port and https scheme",
+			input:    "https://localhost:5000/v2/",
+			expected: "localhost:5000",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := normalizeAuthFileKey(tc.input)
+			require.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func TestCRIImageRepoDigestsConfig(t *testing.T) {
+	testCases := []struct {
+		name      string
+		config    string
+		exists    bool
+		pathError error
+	}{
+		{name: "When no config is specified it should use runtime defaults"},
+		{name: "When the config exists it should use that config", config: "/etc/crictl.yaml", exists: true},
+		{name: "When the config is missing it should use runtime defaults", config: "/etc/crictl.yaml"},
+		{name: "When checking the config fails it should return the error", config: "/etc/crictl.yaml", pathError: fmt.Errorf("permission denied")},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			require := require.New(t)
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			mockExec := executer.NewMockExecuter(ctrl)
+			rw := fileio.NewMockReadWriter(ctrl)
+			if tc.config != "" {
+				rw.EXPECT().PathExists(tc.config).Return(tc.exists, tc.pathError).Times(2)
+			}
+			args := []any{}
+			if tc.exists {
+				args = append(args, "--config", tc.config)
+			}
+			image := "registry.example.com/app:v1"
+			if tc.pathError == nil {
+				mockExec.EXPECT().ExecuteWithContext(gomock.Any(), "crictl", append(args, "images", image)...).Return("IMAGE TAG ID\napp v1 abc", "", 0)
+				mockExec.EXPECT().ExecuteWithContext(gomock.Any(), "crictl", append(args, "inspecti", "--output", "json", image)...).Return(`{"status":{"repoDigests":["registry.example.com/app@sha256:abc"]}}`, "", 0)
+			}
+			cri := NewCRI(log.NewPrefixLogger("test"), mockExec, rw, poll.Config{})
+			opts := []ClientOption{WithCRIConfig(tc.config)}
+			require.Equal(tc.pathError == nil, cri.ImageExists(context.Background(), image, opts...))
+			digests, err := cri.ImageRepoDigests(context.Background(), image, opts...)
+			if tc.pathError != nil {
+				require.ErrorIs(err, tc.pathError)
+				require.Nil(digests)
+			} else {
+				require.NoError(err)
+				require.Equal([]string{"registry.example.com/app@sha256:abc"}, digests)
+			}
+		})
+	}
+}
+
+func TestCRIImageReferences(t *testing.T) {
+	const digestA = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const digestB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	testCases := []struct {
+		name       string
+		setupMocks func(*testing.T, *executer.MockExecuter, *fileio.MockReadWriter)
+		want       map[string]string
+		wantError  bool
+	}{
+		{
+			name: "When local repository digests are present it should select the lexical repository reference",
+			setupMocks: func(t *testing.T, mockExec *executer.MockExecuter, rw *fileio.MockReadWriter) {
+				require := require.New(t)
+				imageList, err := json.Marshal(map[string]any{
+					"images": []any{
+						map[string]any{"repoDigests": []string{"quay.io/z/app@" + digestA, "quay.io/a/app@" + digestA}},
+						map[string]any{"repoDigests": []string{"quay.io/b/app@" + digestB, "invalid"}},
+						map[string]any{"repoDigests": []string{}},
+					},
+				})
+				require.NoError(err)
+				rw.EXPECT().PathExists("/etc/crictl.yaml").Return(true, nil)
+				mockExec.EXPECT().ExecuteWithContext(gomock.Any(), "crictl", "--config", "/etc/crictl.yaml", "images", "--output", "json").
+					Return(string(imageList), "", 0)
+			},
+			want: map[string]string{
+				digestA: "quay.io/a/app@" + digestA,
+				digestB: "quay.io/b/app@" + digestB,
+			},
+		},
+		{
+			name: "When listing local images fails it should return an error",
+			setupMocks: func(_ *testing.T, mockExec *executer.MockExecuter, rw *fileio.MockReadWriter) {
+				rw.EXPECT().PathExists("/etc/crictl.yaml").Return(true, nil)
+				mockExec.EXPECT().ExecuteWithContext(gomock.Any(), "crictl", "--config", "/etc/crictl.yaml", "images", "--output", "json").
+					Return("", "crictl failed", 1)
+			},
+			wantError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			require := require.New(t)
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			mockExec := executer.NewMockExecuter(ctrl)
+			rw := fileio.NewMockReadWriter(ctrl)
+			tc.setupMocks(t, mockExec, rw)
+
+			cri := NewCRI(log.NewPrefixLogger("test"), mockExec, rw, poll.Config{})
+			references, err := cri.ImageReferences(context.Background(), WithCRIConfig("/etc/crictl.yaml"))
+			if tc.wantError {
+				require.Error(err)
+				require.Nil(references)
+				return
+			}
+			require.NoError(err)
+			require.Equal(tc.want, references)
+		})
+	}
+}
+
+func TestCRIContainerdImagePlatformDigest(t *testing.T) {
+	require := require.New(t)
+	const (
+		indexDigest    = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+		platformDigest = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	)
+	hostPlatform := platforms.DefaultSpec()
+	platform := map[string]string{
+		"os":           hostPlatform.OS,
+		"architecture": hostPlatform.Architecture,
+	}
+	if hostPlatform.Variant != "" {
+		platform["variant"] = hostPlatform.Variant
+	}
+	manifest, err := json.Marshal(map[string]any{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.index.v1+json",
+		"manifests": []map[string]any{{
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest":    platformDigest,
+			"size":      100,
+			"platform":  platform,
+		}},
+	})
+	require.NoError(err)
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockExec := executer.NewMockExecuter(ctrl)
+	rw := fileio.NewReadWriter(fileio.NewReader(), fileio.NewWriter())
+	cri := NewCRI(log.NewPrefixLogger("test"), mockExec, rw, poll.Config{})
+	mockExec.EXPECT().ExecuteWithContext(
+		gomock.Any(),
+		"ctr", "--address", "/run/containerd/containerd.sock", "--namespace", "k8s.io",
+		"content", "get", indexDigest,
+	).Return(string(manifest), "", 0)
+
+	got, err := cri.ContainerdImagePlatformDigest(
+		context.Background(),
+		"/run/containerd/containerd.sock",
+		indexDigest,
+	)
+	require.NoError(err)
+	require.Equal(platformDigest, got)
+}

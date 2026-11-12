@@ -1,0 +1,504 @@
+import * as React from 'react';
+import {
+  Content,
+  DescriptionList,
+  DescriptionListDescription,
+  DescriptionListGroup,
+  DescriptionListTerm,
+  Divider,
+  Dropdown,
+  DropdownItem,
+  EmptyStateActions,
+  EmptyStateBody,
+  EmptyStateFooter,
+  MenuToggle,
+  PageSection,
+  Split,
+  SplitItem,
+  Stack,
+  StackItem,
+  TreeView,
+  type TreeViewDataItem,
+} from '@patternfly/react-core';
+import { SearchIcon } from '@patternfly/react-icons/dist/js/icons/search-icon';
+import { EllipsisVIcon } from '@patternfly/react-icons/dist/js/icons/ellipsis-v-icon';
+
+import { type Device, type Fleet, OsModeType } from '@flightctl/types';
+import {
+  type Catalog,
+  type CatalogItem,
+  CatalogItemCategory,
+  CatalogItemType,
+  type CatalogList,
+} from '@flightctl/types/alpha';
+
+import { useTranslation } from '../../hooks/useTranslation';
+import CatalogPageToolbar, { CreateCatalogItemBtn, ImportCatalogBtn } from './CatalogPageToolbar';
+import { type CatalogFilter, useCatalogFilter } from './useCatalogFilter';
+import CatalogItemDetails from './CatalogItemDetails';
+import { appTypeIds, useCatalogItems } from './useCatalogItems';
+import ListPageBody from '../ListPage/ListPageBody';
+import ResourceListEmptyState from '../common/ResourceListEmptyState';
+import { RESOURCE, VERB } from '../../types/rbac';
+import { usePermissionsContext } from '../common/PermissionsContext';
+import { ROUTE, useNavigate } from '../../hooks/useNavigate';
+import ListPage from '../ListPage/ListPage';
+import { useFetchPeriodically } from '../../hooks/useFetchPeriodically';
+import DeleteCatalogModal from './DeleteCatalogModal';
+import CreateCatalogModal from './AddCatalogItemWizard/CreateCatalogModal';
+import WithTooltip from '../common/WithTooltip';
+import ActionsDropdownList from '../common/ActionsDropdownList';
+import ResourceSyncImportStatus from '../ResourceSync/ResourceSyncImportStatus';
+import CatalogLandingPage, { CatalogLandingPageContent, useLandingPagePermissions } from './CatalogLandingPage';
+import PageWithPermissions from '../common/PageWithPermissions';
+import CatalogItemGallery from './CatalogItemGallery';
+
+import './CatalogPage.css';
+
+type CatalogPageContentProps = {
+  canInstall: boolean;
+  targetFleet?: Fleet;
+  targetDevice?: Device;
+  onInstall: (installItem: { item: CatalogItem; channel: string; version: string }) => void;
+  showCatalogMgmt?: boolean;
+  canEditCatalog?: boolean;
+  canDeleteCatalog?: boolean;
+};
+
+type CatalogEmptyStateProps = {
+  hasFilters: boolean;
+  showCatalogMgmt: boolean;
+  isUpdating: boolean;
+};
+
+const CatalogEmptyState = ({ hasFilters, showCatalogMgmt, isUpdating }: CatalogEmptyStateProps) => {
+  const { t } = useTranslation();
+
+  if (isUpdating) {
+    return <ResourceListEmptyState icon={SearchIcon} titleText={t('Loading catalog items')} />;
+  } else if (hasFilters) {
+    return (
+      <ResourceListEmptyState icon={SearchIcon} titleText={t('No results found')}>
+        <EmptyStateBody>
+          {t('No catalog items match the selected filters or search. Try adjusting the category or search.')}
+        </EmptyStateBody>
+      </ResourceListEmptyState>
+    );
+  }
+
+  return (
+    <ResourceListEmptyState icon={SearchIcon} titleText={t('No catalog items yet')}>
+      <EmptyStateBody>
+        {t('Catalog items are applications and system images you can deploy to your devices.')}
+      </EmptyStateBody>
+      {showCatalogMgmt && (
+        <EmptyStateFooter>
+          <EmptyStateActions>
+            <CreateCatalogItemBtn />
+            <ImportCatalogBtn />
+          </EmptyStateActions>
+        </EmptyStateFooter>
+      )}
+    </ResourceListEmptyState>
+  );
+};
+
+const CatalogPageFilter = ({
+  catalogFilter,
+  hasPackageMode,
+}: {
+  catalogFilter: CatalogFilter;
+  hasPackageMode?: boolean;
+}) => {
+  const { t } = useTranslation();
+
+  const onHandleCheck = (_event: React.ChangeEvent<HTMLInputElement>, item: TreeViewDataItem) => {
+    const id = item.id as string;
+
+    if (id === CatalogItemCategory.CatalogItemCategoryApplication) {
+      if (appTypeIds.every((typeId) => catalogFilter.itemType.includes(typeId))) {
+        catalogFilter.setItemType(catalogFilter.itemType.filter((typeId) => !appTypeIds.includes(typeId)));
+      } else {
+        const newTypes = catalogFilter.itemType.filter((typeId) => !appTypeIds.includes(typeId));
+        catalogFilter.setItemType([...newTypes, ...appTypeIds]);
+      }
+    } else {
+      const newTypes = catalogFilter.itemType.includes(id as CatalogItemType)
+        ? catalogFilter.itemType.filter((c) => c !== id)
+        : [...catalogFilter.itemType, id as CatalogItemType];
+      catalogFilter.setItemType(newTypes);
+    }
+  };
+
+  const osTypeChecked = catalogFilter.itemType.includes(CatalogItemType.CatalogItemTypeOS);
+  const anyAppTypeChecked = appTypeIds.some((typeId) => catalogFilter.itemType.includes(typeId));
+
+  const filterData: TreeViewDataItem[] = [
+    {
+      name: (
+        <>
+          <Stack>
+            <StackItem>{t('Operating system')}</StackItem>
+            {hasPackageMode && (
+              <StackItem>
+                <Content component="small">{t('Not available for package-based devices')}</Content>
+              </StackItem>
+            )}
+          </Stack>
+        </>
+      ),
+      id: CatalogItemType.CatalogItemTypeOS,
+      checkProps: {
+        checked: osTypeChecked,
+        disabled: hasPackageMode,
+      },
+    },
+    {
+      name: t('Application'),
+      id: CatalogItemCategory.CatalogItemCategoryApplication,
+      checkProps: {
+        checked: appTypeIds.every((typeId) => catalogFilter.itemType.includes(typeId))
+          ? true
+          : anyAppTypeChecked
+            ? null
+            : false,
+      },
+      defaultExpanded: true,
+      children: [
+        {
+          name: t('Container'),
+          id: CatalogItemType.CatalogItemTypeContainer,
+          checkProps: {
+            checked: catalogFilter.itemType.includes(CatalogItemType.CatalogItemTypeContainer),
+          },
+        },
+        {
+          name: t('Helm'),
+          id: CatalogItemType.CatalogItemTypeHelm,
+          checkProps: {
+            checked: catalogFilter.itemType.includes(CatalogItemType.CatalogItemTypeHelm),
+          },
+        },
+        {
+          name: t('Quadlet'),
+          id: CatalogItemType.CatalogItemTypeQuadlet,
+          checkProps: {
+            checked: catalogFilter.itemType.includes(CatalogItemType.CatalogItemTypeQuadlet),
+          },
+        },
+        {
+          name: t('Compose'),
+          id: CatalogItemType.CatalogItemTypeCompose,
+          checkProps: {
+            checked: catalogFilter.itemType.includes(CatalogItemType.CatalogItemTypeCompose),
+          },
+        },
+        {
+          name: t('Data'),
+          id: CatalogItemType.CatalogItemTypeData,
+          checkProps: {
+            checked: catalogFilter.itemType.includes(CatalogItemType.CatalogItemTypeData),
+          },
+        },
+      ],
+    },
+  ];
+
+  return <TreeView hasAnimations data={filterData} onCheck={onHandleCheck} hasCheckboxes />;
+};
+
+export const CatalogPageContent = ({
+  targetFleet,
+  targetDevice,
+  canInstall,
+  onInstall,
+  showCatalogMgmt,
+  canEditCatalog,
+  canDeleteCatalog,
+}: CatalogPageContentProps) => {
+  const { t } = useTranslation();
+
+  const { shouldShowCards, permissions: catalogPermissions } = useLandingPagePermissions();
+  const [showGettingStarted, setShowGettingStarted] = React.useState(false);
+  const [catalogList, catalogLoading, catalogErr, refetchCatalogs] = useFetchPeriodically<CatalogList>({
+    endpoint: 'catalogs',
+  });
+  const [catalogMenuOpen, setCatalogMenuOpen] = React.useState<string>();
+  const [selectedItem, setSelectedItem] = React.useState<{ itemName: string; catalog: string }>();
+  const [catalogToEdit, setCatalogToEdit] = React.useState<Catalog>();
+  const [catalogToDelete, setCatalogToDelete] = React.useState<Catalog>();
+  const catalogFilter = useCatalogFilter();
+
+  const targetHasPackageMode = targetDevice?.status?.systemInfo?.osMode === OsModeType.OsModePackage;
+  const excludeItemType = targetHasPackageMode ? CatalogItemType.CatalogItemTypeOS : undefined;
+
+  const [catalogItems, isLoading, error, pagination, isUpdating, refetch] = useCatalogItems({
+    catalogFilter,
+    excludeItemType,
+  });
+
+  const item = selectedItem
+    ? catalogItems?.find(
+        ({ metadata }) => metadata.name === selectedItem.itemName && metadata.catalog === selectedItem.catalog,
+      )
+    : undefined;
+
+  const filterIsEmpty =
+    catalogFilter.itemType.length === 0 && !catalogFilter.nameFilter.trim() && catalogFilter.catalogs.length === 0;
+
+  const onSelectItem = React.useCallback((selection: CatalogItem) => {
+    setSelectedItem((val) => {
+      if (!val || val.itemName !== selection.metadata.name || val.catalog !== selection.metadata.catalog) {
+        return {
+          itemName: selection.metadata.name || '',
+          catalog: selection.metadata.catalog,
+        };
+      } else {
+        return undefined;
+      }
+    });
+  }, []);
+
+  return (
+    <>
+      <ListPageBody error={error || catalogErr} loading={isLoading || catalogLoading}>
+        <div>
+          <CatalogPageToolbar
+            {...catalogFilter}
+            pagination={pagination}
+            isUpdating={isUpdating}
+            showCatalogMgmt={!!showCatalogMgmt}
+          />
+          {!catalogList?.items.length ||
+          (catalogList.items.length === 1 &&
+            catalogList.items[0].metadata.name === 'default' &&
+            !catalogItems.length &&
+            filterIsEmpty &&
+            !isUpdating) ? (
+            <PageSection hasBodyWrapper={false} type="wizard">
+              <div className="fctl-catalog-page">
+                <CatalogLandingPage />
+              </div>
+            </PageSection>
+          ) : (
+            <PageSection hasBodyWrapper={false}>
+              <Split hasGutter>
+                <SplitItem className="fctl-catalog-page fctl-catalog-page__filters">
+                  <DescriptionList>
+                    <DescriptionListGroup>
+                      <DescriptionListTerm>{t('Catalog')}</DescriptionListTerm>
+                      <DescriptionListDescription>
+                        <TreeView
+                          data-testid="catalog-filter-tree"
+                          hasAnimations
+                          onCheck={(_, item) => {
+                            const itemId = item.id as string;
+                            if (catalogFilter.catalogs.includes(itemId)) {
+                              catalogFilter.setCatalogs((catalogs) => catalogs.filter((c) => c !== itemId));
+                            } else {
+                              catalogFilter.setCatalogs((catalogs) => [...catalogs, itemId]);
+                            }
+                          }}
+                          hasCheckboxes
+                          data={catalogList.items.map((c) => {
+                            const canDelete = !c.metadata.owner && canDeleteCatalog;
+                            const itemId = c.metadata.name as string;
+                            return {
+                              name: c.spec.displayName || itemId,
+                              id: itemId,
+                              checkProps: {
+                                checked: !!itemId && catalogFilter.catalogs.includes(itemId),
+                              },
+                              action: showCatalogMgmt ? (
+                                <Dropdown
+                                  isOpen={catalogMenuOpen === itemId}
+                                  onOpenChange={(isOpen) => {
+                                    if (isOpen) {
+                                      setCatalogMenuOpen(itemId);
+                                    } else if (catalogMenuOpen === itemId) {
+                                      setCatalogMenuOpen(undefined);
+                                    }
+                                  }}
+                                  onSelect={() => setCatalogMenuOpen(undefined)}
+                                  toggle={(toggleRef) => (
+                                    <MenuToggle
+                                      ref={toggleRef}
+                                      isExpanded={catalogMenuOpen === itemId}
+                                      onClick={() => setCatalogMenuOpen(itemId)}
+                                      variant="plain"
+                                      icon={<EllipsisVIcon />}
+                                      aria-label={t('Actions dropdown')}
+                                    />
+                                  )}
+                                >
+                                  <ActionsDropdownList>
+                                    <ActionsDropdownList.Item>
+                                      <DropdownItem onClick={() => setCatalogToEdit(c)}>
+                                        {!!c.metadata.owner || !canEditCatalog ? t('View catalog') : t('Edit catalog')}
+                                      </DropdownItem>
+                                    </ActionsDropdownList.Item>
+                                    <ActionsDropdownList.Item isDanger>
+                                      <WithTooltip
+                                        showTooltip={!!c.metadata.owner}
+                                        content={t(
+                                          'This catalog is managed by a resource sync and cannot be directly removed. Either remove the catalog definition from the resource sync configuration, or delete the resource sync first.',
+                                        )}
+                                      >
+                                        <DropdownItem
+                                          isAriaDisabled={!canDelete}
+                                          onClick={canDelete ? () => setCatalogToDelete(c) : undefined}
+                                        >
+                                          {t('Delete catalog')}
+                                        </DropdownItem>
+                                      </WithTooltip>
+                                    </ActionsDropdownList.Item>
+                                  </ActionsDropdownList>
+                                </Dropdown>
+                              ) : undefined,
+                            };
+                          })}
+                        />
+                      </DescriptionListDescription>
+                    </DescriptionListGroup>
+                    <DescriptionListGroup>
+                      <DescriptionListTerm>{t('Category')}</DescriptionListTerm>
+                      <DescriptionListDescription>
+                        <CatalogPageFilter catalogFilter={catalogFilter} hasPackageMode={targetHasPackageMode} />
+                      </DescriptionListDescription>
+                    </DescriptionListGroup>
+                    {shouldShowCards && showCatalogMgmt && (
+                      <DescriptionListGroup>
+                        <DescriptionListTerm>{t('Get started')}</DescriptionListTerm>
+                        <DescriptionListDescription>
+                          <TreeView
+                            data={[
+                              {
+                                name: t('Help cards'),
+                                id: 'help-cards',
+                                checkProps: {
+                                  checked: showGettingStarted,
+                                },
+                              },
+                            ]}
+                            onCheck={() => setShowGettingStarted((prev) => !prev)}
+                            hasCheckboxes
+                          />
+                        </DescriptionListDescription>
+                      </DescriptionListGroup>
+                    )}
+                  </DescriptionList>
+                </SplitItem>
+                <Divider
+                  orientation={{
+                    default: 'vertical',
+                  }}
+                />
+                <SplitItem isFilled className="fctl-catalog-page">
+                  {!isLoading && catalogItems.length === 0 ? (
+                    <CatalogEmptyState
+                      hasFilters={!filterIsEmpty}
+                      showCatalogMgmt={!!showCatalogMgmt}
+                      isUpdating={isUpdating}
+                    />
+                  ) : (
+                    <Stack hasGutter>
+                      {showGettingStarted && (
+                        <StackItem>
+                          <CatalogLandingPageContent permissions={catalogPermissions} />
+                        </StackItem>
+                      )}
+                      <StackItem>
+                        <CatalogItemGallery catalogItems={catalogItems} onSelect={onSelectItem} />
+                      </StackItem>
+                    </Stack>
+                  )}
+                </SplitItem>
+              </Split>
+            </PageSection>
+          )}
+        </div>
+      </ListPageBody>
+      {!!item && (
+        <CatalogItemDetails
+          onClose={() => setSelectedItem(undefined)}
+          item={item}
+          canInstall={canInstall}
+          targetFleet={targetFleet}
+          targetDevice={targetDevice}
+          onInstall={onInstall}
+          refetch={refetch}
+          showCatalogMgmt={!!showCatalogMgmt}
+        />
+      )}
+      {!!catalogToEdit && (
+        <CreateCatalogModal
+          catalog={catalogToEdit}
+          onClose={() => setCatalogToEdit(undefined)}
+          onSuccess={() => {
+            setCatalogToEdit(undefined);
+            refetchCatalogs();
+          }}
+        />
+      )}
+      {!!catalogToDelete && (
+        <DeleteCatalogModal
+          catalogId={catalogToDelete.metadata.name || ''}
+          catalogDisplayName={catalogToDelete.spec.displayName || catalogToDelete.metadata.name || ''}
+          onClose={() => setCatalogToDelete(undefined)}
+          onDeleteSuccess={() => {
+            setCatalogToDelete(undefined);
+            catalogFilter.setCatalogs([]);
+            refetchCatalogs();
+            refetch();
+          }}
+        />
+      )}
+    </>
+  );
+};
+
+const catalogPagePermissions = [
+  { kind: RESOURCE.FLEET, verb: VERB.PATCH },
+  { kind: RESOURCE.DEVICE, verb: VERB.PATCH },
+  { kind: RESOURCE.CATALOG, verb: VERB.PATCH },
+  { kind: RESOURCE.CATALOG, verb: VERB.DELETE },
+  { kind: RESOURCE.CATALOG_ITEM, verb: VERB.LIST },
+  { kind: RESOURCE.CATALOG, verb: VERB.LIST },
+];
+
+const CatalogPage = () => {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { checkPermissions, loading } = usePermissionsContext();
+  const [canEditFleet, canEditDevice, canEditCatalog, canDeleteCatalog, canListItems, canListCatalogs] =
+    checkPermissions(catalogPagePermissions);
+
+  return (
+    <PageWithPermissions allowed={canListItems && canListCatalogs} loading={loading}>
+      <ResourceSyncImportStatus type="catalog" />
+      <ListPage
+        title={t('Software Catalog')}
+        description={t('Browse and manage catalog items available for deployment to your fleets and devices.')}
+      >
+        <CatalogPageContent
+          canInstall={canEditFleet || canEditDevice}
+          canEditCatalog={canEditCatalog}
+          canDeleteCatalog={canDeleteCatalog}
+          onInstall={({ item, channel, version }) => {
+            const params = new URLSearchParams({
+              channel,
+              version,
+            });
+            navigate({
+              route: ROUTE.CATALOG_INSTALL,
+              postfix: `${item.metadata.catalog}/${item.metadata.name}?${params.toString()}`,
+            });
+          }}
+          showCatalogMgmt
+        />
+      </ListPage>
+    </PageWithPermissions>
+  );
+};
+
+export default CatalogPage;

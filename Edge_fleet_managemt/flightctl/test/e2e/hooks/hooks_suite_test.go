@@ -1,0 +1,86 @@
+package hooks
+
+import (
+	"context"
+	"testing"
+
+	testinfra "github.com/flightctl/flightctl/test/e2e/infra"
+	"github.com/flightctl/flightctl/test/e2e/infra/auxiliary"
+	"github.com/flightctl/flightctl/test/e2e/infra/setup"
+	"github.com/flightctl/flightctl/test/harness/e2e"
+	testutil "github.com/flightctl/flightctl/test/util"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+const TIMEOUT = "5m"
+const POLLING = "125ms"
+const LONGTIMEOUT = "10m"
+
+func TestHooks(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Hooks E2E Suite")
+}
+
+var auxSvcs *auxiliary.Services
+
+var _ = BeforeSuite(func() {
+	auxFuture := e2e.StartAuxServicesAsync(context.Background())
+	Expect(setup.EnsureDefaultProviders(nil)).To(Succeed())
+	e2e.SetupWorkerHarnessOrAbort()
+	auxSvcs = auxFuture.Wait()
+})
+
+var _ = BeforeEach(func() {
+	// Get the harness and context directly - no package-level variables
+	workerID := GinkgoParallelProcess()
+	harness := e2e.GetWorkerHarness()
+	suiteCtx := e2e.GetWorkerContext()
+
+	GinkgoWriter.Printf("🔄 [BeforeEach] Worker %d: Setting up test with VM from pool\n", workerID)
+
+	// Create test-specific context for proper tracing
+	ctx := testutil.StartSpecTracerForGinkgo(suiteCtx)
+
+	// Set the test context in the harness
+	harness.SetTestContext(ctx)
+	specLabels := CurrentSpecReport().Labels()
+	if isEnrollmentHookNotifyScenario(specLabels) && !testinfra.IsQuadletEnvironment() {
+		Skip("notify webhook E2E requires a VM/Quadlet environment with host endpoint reachability")
+	}
+
+	// Setup VM from pool, revert to pristine snapshot, and start agent
+	err := harness.SetupVMFromPoolAndStartAgent(workerID)
+	Expect(err).ToNot(HaveOccurred())
+	if isEnrollmentHookScenario(specLabels) {
+		Expect(prepareImageBackedReEnrollment(harness)).To(Succeed())
+		if !isEnrollmentHookReEnrollmentScenario(specLabels) {
+			Expect(harness.StartAgentWithRetry()).To(Succeed())
+		}
+	}
+
+	GinkgoWriter.Printf("✅ [BeforeEach] Worker %d: Test setup completed\n", workerID)
+})
+
+var _ = AfterEach(func() {
+	workerID := GinkgoParallelProcess()
+	GinkgoWriter.Printf("🔄 [AfterEach] Worker %d: Cleaning up test resources\n", workerID)
+
+	// Get the harness and context directly - no shared variables needed
+	harness := e2e.GetWorkerHarness()
+	suiteCtx := e2e.GetWorkerContext()
+
+	// Capture logs if test failed
+	harness.PrintAgentLogsIfFailed()
+	harness.CaptureDeploymentLogsIfFailed()
+
+	// Clean up test resources BEFORE switching back to suite context
+	// This ensures we use the correct test ID for resource cleanup
+	err := harness.CleanUpAllTestResources()
+	Expect(err).ToNot(HaveOccurred())
+
+	// Now restore suite context for any remaining cleanup operations
+	harness.SetTestContext(suiteCtx)
+
+	GinkgoWriter.Printf("✅ [AfterEach] Worker %d: Test cleanup completed\n", workerID)
+})

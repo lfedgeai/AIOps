@@ -1,0 +1,70 @@
+import * as React from 'react';
+import { type EnrollmentRequestApproval } from '@flightctl/types';
+import { Alert, ModalBody, ModalHeader } from '@patternfly/react-core';
+import FlightCtlModal from '@flightctl/ui-components/src/components/common/FlightCtlModal';
+
+import { Formik } from 'formik';
+
+import { useFetch } from '../../../hooks/useFetch';
+import { getErrorMessage } from '../../../utils/error';
+import ApproveDeviceForm, { type ApproveDeviceFormProps, type ApproveDeviceFormValues } from './ApproveDeviceForm';
+import {
+  EnrollmentRequestStatus as EnrollmentRequestStatusType,
+  getApprovalStatus,
+} from '../../../utils/status/enrollmentRequest';
+import { useTranslation } from '../../../hooks/useTranslation';
+import { deviceApprovalValidationSchema } from '../../form/validations';
+
+import { fromAPILabel, toAPILabel } from '../../../utils/labels';
+
+type DeviceEnrollmentModalProps = Omit<ApproveDeviceFormProps, 'error'>;
+
+const DeviceEnrollmentModal: React.FC<DeviceEnrollmentModalProps> = ({ enrollmentRequest, onClose }) => {
+  const { t } = useTranslation();
+  const { put } = useFetch();
+  const [error, setError] = React.useState<string>();
+  const labels = enrollmentRequest.spec.labels || {};
+  return (
+    <Formik<ApproveDeviceFormValues>
+      initialValues={{
+        labels: fromAPILabel(labels).filter((label) => label.key !== 'alias'),
+        deviceAlias: labels.alias || '',
+      }}
+      validationSchema={deviceApprovalValidationSchema(t, { massDeviceCount: 0 })}
+      onSubmit={async ({ labels, deviceAlias }) => {
+        setError(undefined);
+        const deviceLabels: EnrollmentRequestApproval['labels'] = toAPILabel(labels);
+        if (deviceAlias) {
+          deviceLabels.alias = deviceAlias;
+        }
+
+        try {
+          await put<EnrollmentRequestApproval>(`enrollmentrequests/${enrollmentRequest.metadata.name}/approval`, {
+            approved: true,
+            labels: deviceLabels,
+            // "replaceLabels=true" indicates that the labels we're sending are the complete final set
+            replaceLabels: true,
+          });
+          onClose(true);
+        } catch (e) {
+          setError(getErrorMessage(e));
+        }
+      }}
+    >
+      {({ isSubmitting }) => (
+        <FlightCtlModal isOpen onClose={() => !isSubmitting && onClose()} variant="small">
+          <ModalHeader title={t('Approve pending device')} />
+          <ModalBody>
+            {getApprovalStatus(enrollmentRequest) !== EnrollmentRequestStatusType.Approved ? (
+              <ApproveDeviceForm enrollmentRequest={enrollmentRequest} onClose={onClose} error={error} />
+            ) : (
+              <Alert isInline variant="info" title={t('Enrollment request is already approved.')} />
+            )}
+          </ModalBody>
+        </FlightCtlModal>
+      )}
+    </Formik>
+  );
+};
+
+export default DeviceEnrollmentModal;

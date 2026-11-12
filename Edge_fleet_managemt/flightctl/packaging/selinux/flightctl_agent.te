@@ -1,0 +1,198 @@
+policy_module(flightctl_agent, 1.0.0)
+
+# Security Enhanced Linux Reference
+# https://pages.cs.wisc.edu/~matyas/selinux-policy/
+# https://access.redhat.com/articles/6999267
+
+
+type flightctl_agent_t;
+type flightctl_agent_exec_t;
+type flightctl_agent_var_lib_t;
+type flightctl_agent_var_log_t;
+type flightctl_agent_tmp_t;
+type flightctl_agent_custom_info_exec_t;
+
+gen_require(`
+    type install_t, install_exec_t;
+    type hostname_t, hostname_exec_t;
+    type kernel_t, ptmx_t, devpts_t;
+    type bin_t;
+    type container_runtime_t;
+    type container_t;
+    type systemd_systemctl_exec_t;
+    type systemd_logind_t;
+    type init_t;
+    type firewalld_t;
+    type node_t;
+    type unconfined_t, unconfined_service_t;
+    type shell_exec_t;
+    type tpm_device_t;
+    type kvm_device_t;
+
+    attribute domain;
+')
+
+init_daemon_domain(flightctl_agent_t, flightctl_agent_exec_t)
+files_type(flightctl_agent_var_lib_t)
+files_type(flightctl_agent_var_log_t)
+files_tmp_file(flightctl_agent_tmp_t)
+files_type(flightctl_agent_custom_info_exec_t)
+
+## Basic file access permissions  ##
+
+files_manage_all_files(flightctl_agent_t)
+exec_files_pattern(flightctl_agent_t, file_type, file_type)
+mmap_read_files_pattern(flightctl_agent_t, file_type, file_type)
+files_read_all_chr_files(flightctl_agent_t)
+
+domtrans_pattern(flightctl_agent_t, install_exec_t, install_t)
+domtrans_pattern(flightctl_agent_t, hostname_exec_t, hostname_t)
+# Allow the agent to transition to unconfined for shell sessions (e.g. the console)
+domtrans_pattern(flightctl_agent_t, shell_exec_t, unconfined_t)
+container_runtime_domtrans(flightctl_agent_t)
+
+# Allow the agent to run subprocesses as unconfined_t only for that subprocess. This allows us to
+# run things like the 'sos' binary which requires a ton of privileges without having to give them
+# all to the agent.
+domtrans_pattern(flightctl_agent_t, bin_t, unconfined_t)
+domtrans_pattern(flightctl_agent_t, systemd_systemctl_exec_t, unconfined_t)
+# Also give the agent the ability to kill such managed subprocessses
+allow flightctl_agent_t unconfined_t:process {signal sigkill};
+# Allow dbus to write back to the agent
+allow system_dbusd_t flightctl_agent_t:fifo_file write;
+
+## Process management & capabilities  ##
+
+# Basic process capabilities
+allow flightctl_agent_t self:capability { dac_override chown fowner fsetid kill setuid setgid sys_admin sys_ptrace audit_write sys_resource dac_read_search sys_chroot mknod };
+allow flightctl_agent_t self:capability2 { mac_admin mac_override };
+allow flightctl_agent_t self:cap_userns { kill };
+allow flightctl_agent_t self:process { fork signal sigchld execmem setfscreate getsched setsched setpgid setcap setrlimit };
+# Allow the agent to write kernel keys
+allow flightctl_agent_t self:key write;
+
+
+## System information access  ##
+
+# Kernel and system state
+kernel_read_system_state(flightctl_agent_t)
+kernel_read_network_state(flightctl_agent_t)
+kernel_read_all_proc(flightctl_agent_t)
+kernel_read_all_sysctls(flightctl_agent_t)
+kernel_request_load_module(flightctl_agent_t)
+
+# Device information
+dev_read_sysfs(flightctl_agent_t)
+dev_read_kmsg(flightctl_agent_t)
+
+## Hardware feature detection  ##
+
+# KVM detection reads /proc/modules (covered by kernel_read_all_proc) and stats
+# /sys/module/{kvm,kvm_intel,kvm_amd} (covered by dev_read_sysfs), then stats and
+# read-only opens the /dev/kvm character device to confirm it is usable.
+# /dev/kvm is labelled kvm_device_t, which the reference policy declares with
+# dev_node() only and not files_type(); it is therefore not part of the
+# file_type attribute and is NOT covered by files_read_all_chr_files() above.
+# Grant only what the accessibility probe performs: getattr for stat(2) and
+# open/read for the read-only open(2). ioctl is deliberately withheld - the
+# agent probes for the device, it never drives the KVM API.
+allow flightctl_agent_t kvm_device_t:chr_file { getattr open read };
+
+## Networking permissions  ##
+
+# Network connections
+corenet_tcp_connect_all_ports(flightctl_agent_t)
+corenet_sendrecv_all_client_packets(flightctl_agent_t)
+corenet_tcp_bind_unreserved_ports(flightctl_agent_t)
+sysnet_dns_name_resolve(flightctl_agent_t)
+
+# Socket permissions
+allow flightctl_agent_t self:{ tcp_socket udp_socket netlink_route_socket } { create bind connect read write getattr setattr lock append sendto recvfrom listen accept };
+allow flightctl_agent_t self:unix_dgram_socket { create connect read write getattr };
+allow flightctl_agent_t kernel_t:unix_dgram_socket sendto;
+allow flightctl_agent_t kernel_t:unix_stream_socket connectto;
+
+# Netlink audit socket for namespace operations
+allow flightctl_agent_t self:netlink_audit_socket { create bind connect read write getattr setattr lock append sendto recvfrom nlmsg_relay };
+
+## System services access  ##
+
+# Localization and logging
+logging_send_audit_msgs(flightctl_agent_t)
+
+# Systemd service management
+systemd_manage_all_unit_files(flightctl_agent_t)
+systemd_start_all_unit_files(flightctl_agent_t)
+systemd_status_all_unit_files(flightctl_agent_t)
+systemd_reload_all_services(flightctl_agent_t)
+systemd_start_all_services(flightctl_agent_t)
+# Older SELinux policies do not define systemd_stop_all_services.
+ifdef(`systemd_stop_all_services',`
+    systemd_stop_all_services(flightctl_agent_t)
+',`
+    systemd_stop_systemd_services(flightctl_agent_t)
+')
+allow flightctl_agent_t init_t:system { status stop start };
+
+# This is only available on RHEL10
+optional_policy(`
+    systemd_userdbd_stream_connect(flightctl_agent_t)
+')
+
+# sshd config/service permissions
+ssh_systemctl(flightctl_agent_t)
+
+# D-Bus system bus access
+dbus_system_bus_client(flightctl_agent_t)
+optional_policy(`
+    systemd_dbus_chat_hostnamed(flightctl_agent_t)
+')
+# This is necessary to run the hook that calls firewall-cmd --reload
+allow flightctl_agent_t systemd_logind_t:dbus send_msg;
+allow flightctl_agent_t firewalld_t:dbus send_msg;
+
+## Container runtime support  ##
+
+# Container runtime process interaction
+allow flightctl_agent_t { install_t hostname_t container_runtime_t }:fd use;
+allow { install_t hostname_t container_runtime_t } flightctl_agent_t:fd use;
+allow flightctl_agent_t { install_t hostname_t container_runtime_t }:process { sigchld signal sigkill sigstop signull };
+
+# Container runtime transitions
+allow flightctl_agent_t container_runtime_t:process2 { nnp_transition nosuid_transition };
+allow flightctl_agent_t install_t:process2 { nnp_transition nosuid_transition };
+
+## Console & terminal access  ##
+
+# Terminal and PTY access for console sessions
+term_use_all_terms(flightctl_agent_t)
+allow flightctl_agent_t ptmx_t:chr_file { create read write lock open ioctl getattr setattr };
+allow flightctl_agent_t devpts_t:chr_file { create read write append open getattr ioctl setattr };
+allow flightctl_agent_t devpts_t:filesystem associate;
+
+# VM serial console access via /proc/<pid>/root/<socket>:
+# Traverse the container root filesystem (directories, symlinks, files) and
+# connect to the QEMU virtio-serial Unix domain socket owned by the container.
+allow flightctl_agent_t container_t:dir search;
+allow flightctl_agent_t container_t:lnk_file read;
+allow flightctl_agent_t container_t:file read;
+allow flightctl_agent_t container_t:unix_stream_socket connectto;
+
+## Filesystem & mount operations  ##
+
+# Filesystem mount operations
+fs_mount_all_fs(flightctl_agent_t)
+fs_remount_all_fs(flightctl_agent_t)
+fs_unmount_all_fs(flightctl_agent_t)
+fs_getattr_all_fs(flightctl_agent_t)
+
+# Write TPM devices
+allow flightctl_agent_t tpm_device_t:chr_file { getattr open read write };
+  
+# This allows installation of dnf packages
+allow flightctl_agent_t node_t:tcp_socket node_bind;
+
+# REMOVE this once https://github.com/bootc-dev/bootc/issues/1434 is fixed. We don't want to allow
+# it so as not to alter the behavior of bootc, but we can suppress the error as it has been
+# determined to be inoculous by the bootc maintainer.
+dontaudit unconfined_service_t self:capability2 mac_admin;

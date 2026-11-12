@@ -1,0 +1,503 @@
+package e2e
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/test/util"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/types"
+	"github.com/sirupsen/logrus"
+)
+
+// GetDeviceImageRefForFleet returns the device OS image reference to use in fleet/device spec.
+// Pass registryHost and registryPort from auxiliary (e.g. auxiliary.Get(ctx).Registry.Host, .Registry.Port).
+// if either is empty, returns the quay.io fallback.
+func (h *Harness) GetDeviceImageRefForFleet(registryHost, registryPort, deviceImageTag string) string {
+	return getImageRefForFleet(registryHost, registryPort, util.DeviceImageRegistryPath, deviceImageTag, func(t string) string {
+		return util.NewDeviceImageReference(t).String()
+	})
+}
+
+// GetSleepAppImageRefForFleet returns the sleep-app image reference for use in device specs.
+// Pass registryHost and registryPort from auxiliary (e.g. auxiliary.Get(ctx).Registry.Host, .Registry.Port); if either is empty, returns the quay.io fallback.
+func (h *Harness) GetSleepAppImageRefForFleet(registryHost, registryPort, tag string) string {
+	return getImageRefForFleet(registryHost, registryPort, util.SleepAppRegistryPath, tag, func(t string) string {
+		return util.NewSleepAppImageReference(t).String()
+	})
+}
+
+func getImageRefForFleet(registryHost, registryPort, registryPath, tag string, fallback func(string) string) string {
+	if registryHost == "" || registryPort == "" {
+		return fallback(tag)
+	}
+	ref := registryHost + ":" + registryPort + "/" + registryPath
+	if tag != "" {
+		ref += ":" + tag
+	}
+	return ref
+}
+
+// CreateFleetDeviceSpec builds a device spec. Pass registryHost and registryPort from auxiliary for Os.Image; when deviceImageTag is empty they are unused.
+func (h *Harness) CreateFleetDeviceSpec(registryHost, registryPort, deviceImageTag string, additionalConfigs ...v1beta1.ConfigProviderSpec) (v1beta1.DeviceSpec, error) {
+	var deviceSpec v1beta1.DeviceSpec
+
+	if deviceImageTag != "" {
+		deviceSpec.Os = &v1beta1.DeviceOsSpec{
+			Image: h.GetDeviceImageRefForFleet(registryHost, registryPort, deviceImageTag),
+		}
+	}
+
+	if len(additionalConfigs) > 0 {
+		deviceSpec.Config = &additionalConfigs
+	}
+
+	return deviceSpec, nil
+}
+
+func (h *Harness) WaitForFleetContents(fleetName string, description string, condition func(fleet *v1beta1.Fleet) bool, timeout string) {
+	waitForResourceContents(fleetName, description, func(id string) (*v1beta1.Fleet, error) {
+		response, err := h.Client.GetFleetWithResponse(h.Context, id, nil)
+		Expect(err).NotTo(HaveOccurred())
+		if response.JSON200 == nil {
+			logrus.Errorf("An error happened retrieving fleet: %+v", response)
+			return nil, fmt.Errorf("error retrieving fleet: %s", id)
+		}
+		return response.JSON200, nil
+	}, condition, timeout)
+}
+
+func (h *Harness) GetFleet(fleetName string) (*v1beta1.Fleet, error) {
+	response, err := h.Client.GetFleetWithResponse(h.Context, fleetName, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get fleet: %s %w", fleetName, err)
+	}
+	if response == nil || response.JSON200 == nil {
+		return nil, fmt.Errorf("fleet: %s response is nil", fleetName)
+	}
+	return response.JSON200, nil
+}
+
+// Create a test fleet resource
+func (h *Harness) CreateOrUpdateTestFleet(testFleetName string, fleetSpecOrSelector interface{}, deviceSpec ...v1beta1.DeviceSpec) error {
+	testFleet := v1beta1.Fleet{
+		ApiVersion: v1beta1.FleetAPIVersion,
+		Kind:       v1beta1.FleetKind,
+		Metadata: v1beta1.ObjectMeta{
+			Name:   &testFleetName,
+			Labels: &map[string]string{},
+		},
+	}
+
+	// Add test label to fleet metadata
+	h.addTestLabelToResource(&testFleet.Metadata)
+
+	switch spec := fleetSpecOrSelector.(type) {
+	case v1beta1.FleetSpec:
+		testFleet.Spec = spec
+
+	case v1beta1.LabelSelector:
+		var devSpec v1beta1.DeviceSpec
+		if len(deviceSpec) > 0 {
+			devSpec = deviceSpec[0]
+		}
+
+		testFleet.Spec = v1beta1.FleetSpec{
+			Selector: &spec,
+			Template: struct {
+				Metadata *v1beta1.ObjectMeta "json:\"metadata,omitempty\""
+				Spec     v1beta1.DeviceSpec  "json:\"spec\""
+			}{
+				Spec: devSpec,
+			},
+		}
+
+	default:
+		return fmt.Errorf("first parameter must be either FleetSpec or LabelSelector")
+	}
+
+	resp, err := h.Client.ReplaceFleetWithResponse(h.Context, testFleetName, testFleet)
+	if err != nil {
+		return apiWriteTransportError{operation: fmt.Sprintf("replace fleet %q", testFleetName), err: err}
+	}
+	// Replace creates with 201 or updates with 200; anything else is a failed apply.
+	if resp.StatusCode() != 200 && resp.StatusCode() != 201 {
+		statusMessage := string(resp.Body)
+		switch {
+		case resp.JSON400 != nil:
+			statusMessage = resp.JSON400.Message
+		case resp.JSON401 != nil:
+			statusMessage = resp.JSON401.Message
+		case resp.JSON403 != nil:
+			statusMessage = resp.JSON403.Message
+		case resp.JSON404 != nil:
+			statusMessage = resp.JSON404.Message
+		case resp.JSON409 != nil:
+			statusMessage = resp.JSON409.Message
+		case resp.JSON429 != nil:
+			statusMessage = resp.JSON429.Message
+		case resp.JSON503 != nil:
+			statusMessage = resp.JSON503.Message
+		}
+		return fmt.Errorf("unexpected status creating/updating fleet %s: %d: %s", testFleetName, resp.StatusCode(), statusMessage)
+	}
+	return nil
+}
+
+// CreateFleetWithSelector creates a fleet with the specified label selector and empty device spec.
+func (h *Harness) CreateFleetWithSelector(fleetName string, labelSelector map[string]string) error {
+	selector := v1beta1.LabelSelector{
+		MatchLabels: &labelSelector,
+	}
+	return h.CreateOrUpdateTestFleet(fleetName, selector)
+}
+
+// CreateFleetWithSelectorRetry returns an Eventually-compatible function that creates a fleet with the specified selector.
+// Transient API transport errors are retried, while non-retryable errors stop polling immediately.
+func (h *Harness) CreateFleetWithSelectorRetry(fleetName string, labelSelector map[string]string) func() error {
+	return func() error {
+		err := h.CreateFleetWithSelector(fleetName, labelSelector)
+		if err == nil {
+			return nil
+		}
+		if isRetryableAPIWriteError(err) {
+			return fmt.Errorf("create fleet %q with selector %v: %w", fleetName, labelSelector, err)
+		}
+		return StopTrying(fmt.Sprintf("non-retryable error creating fleet %q with selector %v", fleetName, labelSelector)).Wrap(err)
+	}
+}
+
+// CreateTestFleetWithConfig creates a test fleet with a configuration.
+func (h *Harness) CreateTestFleetWithConfig(testFleetName string, testFleetSelector v1beta1.LabelSelector, configProviderSpec v1beta1.ConfigProviderSpec) error {
+	var testFleetSpec = v1beta1.DeviceSpec{
+		Config: &[]v1beta1.ConfigProviderSpec{
+			configProviderSpec,
+		},
+	}
+	err := h.CreateOrUpdateTestFleet(testFleetName, testFleetSelector, testFleetSpec)
+	return err
+}
+
+type apiWriteTransportError struct {
+	operation string
+	err       error
+}
+
+func (e apiWriteTransportError) Error() string {
+	return fmt.Sprintf("%s: %v", e.operation, e.err)
+}
+
+func (e apiWriteTransportError) Unwrap() error {
+	return e.err
+}
+
+// isRetryableAPIWriteError reports whether an API write failed before the server returned
+// an HTTP response. It is intentionally limited to transport-level failures that can occur
+// while routes or pods settle, and does not classify API status responses as retryable.
+func isRetryableAPIWriteError(err error) bool {
+	transportErr, ok := apiWriteTransportCause(err)
+	if !ok {
+		return false
+	}
+
+	// Prefer sentinel checks when the transport error is preserved in the error chain.
+	if errors.Is(transportErr, io.EOF) || errors.Is(transportErr, io.ErrUnexpectedEOF) {
+		return true
+	}
+
+	// Some net/http and TLS failures are wrapped as url errors with only message text
+	// available at this layer, so keep the string checks narrow and transport-specific.
+	errText := strings.ToLower(transportErr.Error())
+	return strings.Contains(errText, "eof") ||
+		strings.Contains(errText, "connection reset") ||
+		strings.Contains(errText, "connection refused") ||
+		strings.Contains(errText, "server closed idle connection") ||
+		strings.Contains(errText, "tls: bad record mac")
+}
+
+func apiWriteTransportCause(err error) (error, bool) {
+	if err == nil {
+		return nil, false
+	}
+
+	var writeErr apiWriteTransportError
+	if errors.As(err, &writeErr) {
+		if writeErr.err != nil {
+			return writeErr.err, true
+		}
+		return writeErr, true
+	}
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Err != nil {
+			return urlErr.Err, true
+		}
+		return urlErr, true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr, true
+	}
+
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return err, true
+	}
+
+	return nil, false
+}
+
+// CreateFleetWithLabelConfig creates a fleet that selects devices by a single label key/value
+// and applies the given config providers.
+func (h *Harness) CreateFleetWithLabelConfig(fleetName, labelKey string, configs ...v1beta1.ConfigProviderSpec) error {
+	selector := v1beta1.LabelSelector{MatchLabels: &map[string]string{labelKey: fleetName}}
+	deviceSpec := v1beta1.DeviceSpec{
+		Config: &configs,
+	}
+	return h.CreateOrUpdateTestFleet(fleetName, selector, deviceSpec)
+}
+
+// CreateFleetAndEnrollDevice creates a fleet with the given config providers, enrolls a device
+// with a matching label, waits for it to become UpToDate, and returns the device ID and initial
+// rendered version. Returns an error if any step fails.
+func (h *Harness) CreateFleetAndEnrollDevice(fleetName, labelKey string, configs ...v1beta1.ConfigProviderSpec) (string, int, error) {
+	if err := h.CreateFleetWithLabelConfig(fleetName, labelKey, configs...); err != nil {
+		return "", 0, fmt.Errorf("failed to create fleet %s: %w", fleetName, err)
+	}
+
+	deviceID, _ := h.EnrollAndWaitForOnlineStatus(map[string]string{labelKey: fleetName})
+	if deviceID == "" {
+		return "", 0, fmt.Errorf("enrolled device ID is empty for fleet %s", fleetName)
+	}
+
+	initialVersion, err := h.GetCurrentDeviceRenderedVersion(deviceID)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to get rendered version for device %s: %w", deviceID, err)
+	}
+
+	logrus.Infof("Fleet %s: device %s enrolled with initial rendered version %d", fleetName, deviceID, initialVersion)
+	return deviceID, initialVersion, nil
+}
+
+func (h *Harness) DeleteFleet(testFleetName string) error {
+	_, err := h.Client.DeleteFleet(h.Context, testFleetName)
+	return err
+}
+
+// DeleteFleetIgnoreNotFound deletes a fleet, ignoring 404 errors.
+func (h *Harness) DeleteFleetIgnoreNotFound(fleetName string) error {
+	resp, err := h.Client.DeleteFleetWithResponse(h.Context, fleetName)
+	if err != nil {
+		return fmt.Errorf("failed to delete fleet %s: %w", fleetName, err)
+	}
+	if resp.StatusCode() != 200 && resp.StatusCode() != 404 {
+		return fmt.Errorf("unexpected status deleting fleet %s: %d", fleetName, resp.StatusCode())
+	}
+	return nil
+}
+
+// HaveReason returns a type-safe Gomega matcher for the Condition's Reason field.
+func HaveReason(expected string) types.GomegaMatcher {
+	return WithTransform(
+		// This part is checked by the compiler!
+		func(c v1beta1.Condition) string { return c.Reason },
+		Equal(expected),
+	)
+}
+
+// HaveStatus returns a type-safe Gomega matcher for the Condition's Status field.
+func HaveStatus(expected v1beta1.ConditionStatus) types.GomegaMatcher {
+	return WithTransform(
+		// This part is also checked by the compiler!
+		func(c v1beta1.Condition) v1beta1.ConditionStatus { return c.Status },
+		Equal(expected),
+	)
+}
+
+// cHaveType returns a type-safe Gomega matcher for the Condition's Type field.
+func cHaveType(expected v1beta1.ConditionType) types.GomegaMatcher {
+	return WithTransform(
+		// This part is also checked by the compiler!
+		func(c v1beta1.Condition) v1beta1.ConditionType { return c.Type },
+		Equal(expected),
+	)
+}
+
+func (h *Harness) WaitForFleetUpdateToFail(fleetName string) {
+	logrus.Infof("Waiting for fleet update to fail for fleet %s", fleetName)
+	Eventually(h.GetRolloutStatus, LONGTIMEOUT, POLLING).
+		WithArguments(fleetName).
+		Should(SatisfyAll(
+			cHaveType(v1beta1.ConditionTypeFleetRolloutInProgress),
+			HaveStatus(v1beta1.ConditionStatusFalse),
+			HaveReason(v1beta1.RolloutSuspendedReason),
+		), fmt.Sprintf("Timed out waiting for fleet %s update to fail", fleetName))
+
+}
+
+func (h *Harness) WaitForBatchStart(fleetName string, batchNumber int) {
+	var lastLoggedBatch int = -3
+	var lastMissingLog time.Time
+	// Poll more frequently (250ms) so we catch batch N before the controller advances to the next batch.
+	// Accept batch N or higher since the reconciler may race through empty batches quickly.
+	Eventually(func() int {
+		response, err := h.Client.GetFleetWithResponse(h.Context, fleetName, nil)
+		if err != nil {
+			GinkgoWriter.Printf("failed to get fleet with response: %s\n", err)
+			return -2
+		}
+		if response == nil {
+			GinkgoWriter.Printf("fleet response is nil\n")
+			return -2
+		}
+		fleet := response.JSON200
+		if fleet == nil {
+			GinkgoWriter.Printf("fleet is nil\n")
+			return -2
+		}
+
+		annotations := fleet.Metadata.Annotations
+		if annotations == nil {
+			return -2
+		}
+
+		batchNumberStr, ok := (*annotations)[v1beta1.FleetAnnotationBatchNumber]
+		if !ok {
+			if time.Since(lastMissingLog) >= 5*time.Second {
+				GinkgoWriter.Printf("batch number not found in annotations (will keep polling) - available: %v\n", *annotations)
+				lastMissingLog = time.Now()
+			}
+			return -2
+		}
+
+		batchNumberInt, err := strconv.Atoi(batchNumberStr)
+		if err != nil {
+			GinkgoWriter.Printf("failed to convert batch number to int: %s\n", err)
+			return -2
+		}
+
+		if batchNumberInt < batchNumber && batchNumberInt != lastLoggedBatch {
+			GinkgoWriter.Printf("Current batch number: %d, waiting for at least %d\n", batchNumberInt, batchNumber)
+			lastLoggedBatch = batchNumberInt
+		} else if batchNumberInt > batchNumber && lastLoggedBatch != batchNumberInt {
+			GinkgoWriter.Printf("Batch %d already completed, now at batch %d\n", batchNumber, batchNumberInt)
+			lastLoggedBatch = batchNumberInt
+		}
+
+		return batchNumberInt
+	}, LONGTIMEOUT, POLLING).Should(BeNumerically(">=", batchNumber))
+}
+
+func (h *Harness) GetRolloutStatus(fleetName string) (v1beta1.Condition, error) {
+	response, err := h.Client.GetFleetWithResponse(h.Context, fleetName, nil)
+	if err != nil {
+		return v1beta1.Condition{}, fmt.Errorf("failed to get fleet with response: %s", err)
+	}
+	fleet := response.JSON200
+
+	if fleet.Status == nil || fleet.Status.Conditions == nil {
+		return v1beta1.Condition{}, fmt.Errorf("fleet status or conditions is nil")
+	}
+
+	for _, condition := range fleet.Status.Conditions {
+		if condition.Type == v1beta1.ConditionTypeFleetRolloutInProgress {
+			return condition, nil
+		}
+	}
+	return v1beta1.Condition{}, fmt.Errorf("fleet rollout condition not found")
+}
+
+func (h *Harness) UpdateFleetWithRetries(fleetName string, updateFunction func(*v1beta1.Fleet)) {
+	updateResourceWithRetries(func() error {
+		return h.UpdateFleet(fleetName, updateFunction)
+	})
+}
+
+func (h *Harness) UpdateFleet(fleetName string, updateFunc func(*v1beta1.Fleet)) error {
+	fleet, err := h.GetFleet(fleetName)
+	Expect(err).ToNot(HaveOccurred())
+
+	updateFunc(fleet)
+
+	replaceResp, err := h.Client.ReplaceFleetWithResponse(h.Context, fleetName, *fleet)
+	if err != nil {
+		logrus.Errorf("Unexpected error updating fleet %s: %v", fleetName, err)
+		return err
+	}
+
+	// response code 200 = updated, we are expecting to update... something else is unexpected
+	if replaceResp.StatusCode() != 200 {
+		logrus.Errorf("Unexpected http status code received: %d", replaceResp.StatusCode())
+		logrus.Errorf("Unexpected http response: %s", string(replaceResp.Body))
+
+		statusMessage := ""
+		switch {
+		case replaceResp.JSON400 != nil:
+			statusMessage = replaceResp.JSON400.Message
+		case replaceResp.JSON401 != nil:
+			statusMessage = replaceResp.JSON401.Message
+		case replaceResp.JSON403 != nil:
+			statusMessage = replaceResp.JSON403.Message
+		case replaceResp.JSON404 != nil:
+			statusMessage = replaceResp.JSON404.Message
+		case replaceResp.JSON409 != nil:
+			statusMessage = replaceResp.JSON409.Message
+		case replaceResp.JSON429 != nil:
+			statusMessage = replaceResp.JSON429.Message
+		case replaceResp.JSON503 != nil:
+			statusMessage = replaceResp.JSON503.Message
+		default:
+			statusMessage = string(replaceResp.Body)
+		}
+
+		return fmt.Errorf("unexpected status code %d: %s", replaceResp.StatusCode(), statusMessage)
+	}
+
+	return nil
+}
+
+func (h *Harness) FleetExists(fleetName string) bool {
+	resp, err := h.Client.GetFleetWithResponse(h.Context, fleetName, nil)
+	if err != nil {
+		return false
+	}
+	return resp.JSON200 != nil
+}
+
+func (h *Harness) WaitForFleetCount(params *v1beta1.ListFleetsParams, expectedCount int, timeout, polling time.Duration) {
+	Eventually(func() (int, error) {
+		resp, err := h.Client.ListFleetsWithResponse(h.Context, params)
+		if err != nil {
+			return 0, err
+		}
+		if resp.JSON200 == nil {
+			return 0, fmt.Errorf("unexpected nil response")
+		}
+		return len(resp.JSON200.Items), nil
+	}, timeout, polling).Should(Equal(expectedCount),
+		fmt.Sprintf("Expected %d fleets matching params", expectedCount))
+}
+
+// CountTemplateVersions returns the number of template versions for a fleet.
+func (h *Harness) CountTemplateVersions(fleetName string) (int, error) {
+	resp, err := h.Client.ListTemplateVersionsWithResponse(h.Context, fleetName, &v1beta1.ListTemplateVersionsParams{})
+	if err != nil {
+		return 0, fmt.Errorf("failed to list template versions for fleet %s: %w", fleetName, err)
+	}
+	if resp == nil {
+		return 0, fmt.Errorf("nil response listing template versions for fleet %s", fleetName)
+	}
+	if resp.JSON200 == nil {
+		return 0, fmt.Errorf("unexpected status %d listing template versions for fleet %s", resp.StatusCode(), fleetName)
+	}
+	return len(resp.JSON200.Items), nil
+}

@@ -1,0 +1,633 @@
+package util
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/x509"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/api/client"
+	agentclient "github.com/flightctl/flightctl/internal/api/client/agent"
+	apiserver "github.com/flightctl/flightctl/internal/api_server"
+	"github.com/flightctl/flightctl/internal/api_server/agentserver"
+	"github.com/flightctl/flightctl/internal/api_server/middleware"
+	"github.com/flightctl/flightctl/internal/config"
+	"github.com/flightctl/flightctl/internal/crypto"
+	"github.com/flightctl/flightctl/internal/org"
+	"github.com/flightctl/flightctl/internal/store/model"
+	"github.com/flightctl/flightctl/internal/util"
+	flightlog "github.com/flightctl/flightctl/pkg/log"
+	"github.com/flightctl/flightctl/pkg/queues"
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/types"
+	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
+)
+
+const (
+	caCertValidityDays          = 365 * 10
+	serverCertValidityDays      = 365 * 1
+	clientBootStrapValidityDays = 365 * 1
+	adminCertValidityDays       = 365 * 1
+	signerCertName              = "ca"
+	serverCertName              = "server"
+	clientBootstrapCertName     = "client-enrollment"
+)
+
+// InitLogsWithDebug creates a logger with debug level if LOG_LEVEL=debug is set
+func InitLogsWithDebug() *logrus.Logger {
+	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
+		return flightlog.InitLogs(logLevel)
+	}
+	return flightlog.InitLogs()
+}
+
+type testQueue struct {
+	queue chan []byte
+	done  <-chan struct{}
+	wg    *sync.WaitGroup
+}
+
+type testProvider struct {
+	queues      map[string]*testQueue
+	queuesMu    sync.Mutex
+	pubsubQueue chan []byte
+	// done is closed by Stop to signal shutdown. Senders select on it rather
+	// than relying on the queues being closed, so a send can never race a
+	// close. Only Stop closes it, and the stopped guard makes that happen
+	// exactly once.
+	done    chan struct{}
+	stopped atomic.Bool
+	wg      *sync.WaitGroup
+	log     logrus.FieldLogger
+}
+
+func (t *testProvider) NewPubSubPublisher(_ context.Context, channelName string) (queues.PubSubPublisher, error) {
+	return t, nil
+}
+
+func (t *testProvider) NewPubSubSubscriber(_ context.Context, channelName string) (queues.PubSubSubscriber, error) {
+	return t, nil
+}
+
+func NewTestProvider(log logrus.FieldLogger) queues.Provider {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	return &testProvider{
+		queues:      make(map[string]*testQueue),
+		pubsubQueue: make(chan []byte, 20),
+		done:        make(chan struct{}),
+		wg:          &wg,
+		log:         log,
+	}
+}
+
+func (t *testProvider) NewQueueProducer(_ context.Context, name string) (queues.QueueProducer, error) {
+	return t.getQueue(name), nil
+}
+
+func (t *testProvider) NewQueueConsumer(_ context.Context, name string) (queues.QueueConsumer, error) {
+	return t.getQueue(name), nil
+}
+
+func (t *testProvider) getQueue(name string) *testQueue {
+	t.queuesMu.Lock()
+	defer t.queuesMu.Unlock()
+	queue, ok := t.queues[name]
+	if !ok {
+		queue = &testQueue{queue: make(chan []byte, 20), done: t.done, wg: t.wg}
+		t.queues[name] = queue
+	}
+	return queue
+}
+
+func (t *testProvider) Stop() {
+	if !t.stopped.Swap(true) {
+		t.wg.Done()
+		// Close the shutdown signal rather than the queues themselves. A
+		// producer can still be mid-send when a server shuts down, and
+		// closing a channel out from under a send panics.
+		close(t.done)
+	}
+}
+
+func (t *testProvider) Wait() {
+	t.wg.Wait()
+}
+
+func (t *testProvider) CheckHealth(_ context.Context) error {
+	return nil
+}
+
+// Enqueue publishes to the work queue. Once Stop has been called the message
+// is dropped instead of being delivered: the consumers are on their way down,
+// and a test provider has nowhere to put it.
+func (t *testQueue) Enqueue(_ context.Context, b []byte, timestamp int64) error {
+	// Check shutdown first so that a stopped provider always drops, rather
+	// than enqueueing whenever select happens to pick the ready send.
+	select {
+	case <-t.done:
+		return nil
+	default:
+	}
+
+	select {
+	case <-t.done:
+		return nil
+	case t.queue <- b:
+		return nil
+	}
+}
+
+func (t *testProvider) Close() {
+}
+
+func (t *testQueue) Close() {
+}
+
+func (t *testQueue) Consume(ctx context.Context, handler queues.ConsumeHandler) error {
+	t.wg.Add(1)
+	go func() {
+		defer t.wg.Done()
+		log := logrus.New()
+		dispatch := func(b []byte) {
+			// Use detached context with grace period for in-flight work.
+			// This allows handlers to complete database operations even when
+			// the test context is cancelled during cleanup.
+			processCtx, cancel := context.WithTimeout(
+				context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			if err := handler(processCtx, b, "test-entry-id", t, log); err != nil {
+				log.WithError(err).Errorf("handling message: %s", string(b))
+			}
+		}
+		// Drain everything buffered before giving up on a shutdown signal.
+		// Stop used to close the queue, and a closed channel still yields its
+		// buffered values, so work enqueued before shutdown was delivered;
+		// keep that behaviour.
+		drain := func() bool {
+			select {
+			case b := <-t.queue:
+				dispatch(b)
+				return true
+			default:
+				return false
+			}
+		}
+		for {
+			if drain() {
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.done:
+				for drain() {
+				}
+				return
+			case b := <-t.queue:
+				dispatch(b)
+			}
+		}
+	}()
+	return nil
+}
+
+func (t *testQueue) Complete(ctx context.Context, entryID string, body []byte, err error) error {
+	// For test provider, this is a no-op since we don't track in-flight messages
+	return nil
+}
+
+func (t *testProvider) ProcessTimedOutMessages(ctx context.Context, queueName string, timeout time.Duration, handler func(entryID string, body []byte, idle time.Duration) error) (int, error) {
+	// For test provider, this is a no-op since we don't track in-flight messages
+	return 0, nil
+}
+
+func (t *testProvider) RetryFailedMessages(ctx context.Context, queueName string, config queues.RetryConfig, handler func(entryID string, body []byte, retryCount int) error) (int, error) {
+	// For test provider, this is a no-op since we don't track failed messages
+	return 0, nil
+}
+
+func (t *testProvider) GetLatestProcessedTimestamp(ctx context.Context) (time.Time, error) {
+	// For test provider, return zero time since we don't track checkpoints
+	return time.Time{}, nil
+}
+
+func (t *testProvider) AdvanceCheckpointAndCleanup(ctx context.Context) error {
+	// For test provider, this is a no-op since we don't track checkpoints
+	return nil
+}
+
+func (t *testProvider) SetCheckpointTimestamp(ctx context.Context, timestamp time.Time) error {
+	// For test provider, this is a no-op since we don't track checkpoints
+	return nil
+}
+
+func (t *testProvider) Subscribe(ctx context.Context, handler queues.PubSubHandler) (queues.Subscription, error) {
+	t.wg.Add(1)
+	go func() {
+		defer t.wg.Done()
+		log := logrus.New()
+		deliver := func(b []byte) {
+			if err := handler(ctx, b, log); err != nil {
+				log.WithError(err).Errorf("handling broadcast message: %s", string(b))
+			}
+		}
+		drain := func() bool {
+			select {
+			case b := <-t.pubsubQueue:
+				deliver(b)
+				return true
+			default:
+				return false
+			}
+		}
+		for {
+			if drain() {
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.done:
+				for drain() {
+				}
+				return
+			case b := <-t.pubsubQueue:
+				deliver(b)
+			}
+		}
+	}()
+	return t, nil
+}
+
+// Publish broadcasts to subscribers. As with Enqueue, a message published
+// after Stop is dropped: without this the send would block forever once the
+// buffer filled and the subscribers had exited.
+func (t *testProvider) Publish(ctx context.Context, payload []byte) error {
+	select {
+	case <-t.done:
+		return nil
+	default:
+	}
+
+	select {
+	case <-t.done:
+		return nil
+	case t.pubsubQueue <- payload:
+		return nil
+	}
+}
+
+// RunOcCommand executes an oc CLI command with the given arguments and returns
+// its trimmed stdout. Returns an error if oc is not on PATH, the command fails,
+// or execution exceeds 30 seconds.
+func RunOcCommand(args ...string) (string, error) {
+	if !BinaryExistsOnPath("oc") {
+		return "", fmt.Errorf("oc not found on PATH")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "oc", args...).CombinedOutput()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("oc %s timed out after 30s", strings.Join(args, " "))
+		}
+		return "", fmt.Errorf("oc %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// IsAcmInstalled checks if ACM is installed and if it is running.
+// returns: isAcmInstalled, isAcmRunning, error
+func IsAcmInstalled() (bool, bool, error) {
+	if !BinaryExistsOnPath("oc") {
+		return false, false, fmt.Errorf("oc not found on PATH")
+	}
+	cmd := exec.Command("oc", "get", "multiclusterhub", "-A")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, false, fmt.Errorf("error getting multiclusterhub: %w, %s", err, string(output))
+	}
+	outputString := string(output)
+	if outputString == "error: the server doesn't have a resource type \"multiclusterhub\"" {
+		return false, false, fmt.Errorf("ACM is not installed: %s", outputString)
+	}
+	if strings.Contains(outputString, "Running") || strings.Contains(outputString, "Paused") {
+		logrus.Infof("The cluster has ACM installed and ACM is Running")
+		return true, true, nil
+	} else {
+		logrus.Infof("The cluster has ACM installed and ACM is not Running. Status: %s", outputString)
+		return true, false, nil
+	}
+}
+
+// NewTestApiServer creates a new test server and returns the server and the listener listening on localhost's next available port.
+func NewTestApiServer(log logrus.FieldLogger, cfg *config.Config, db *gorm.DB, ca *crypto.CAClient, serverCerts *crypto.TLSCertificateConfig, queuesProvider queues.Provider) (*apiserver.Server, net.Listener, error) {
+
+	// create a listener using the next available port
+	tlsConfig, _, err := crypto.TLSConfigForServer(ca.GetCABundleX509(), serverCerts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("NewTestServer: error creating TLS certs: %w", err)
+	}
+
+	// create a listener using the next available port
+	listener, err := middleware.NewTLSListener("", tlsConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("NewTLSListener: error creating TLS certs: %w", err)
+	}
+
+	return apiserver.New(log, cfg, db, ca, listener, queuesProvider, nil), listener, nil
+}
+
+// NewTestAgentServer creates a new test server and returns the server and the listener listening on localhost's next available port.
+func NewTestAgentServer(ctx context.Context, log logrus.FieldLogger, cfg *config.Config, db *gorm.DB, ca *crypto.CAClient, serverCerts *crypto.TLSCertificateConfig, queuesProvider queues.Provider) (*agentserver.AgentServer, net.Listener, error) {
+	// create a listener using the next available port
+	_, tlsConfig, err := crypto.TLSConfigForServer(ca.GetCABundleX509(), serverCerts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("NewTestAgentServer: error creating TLS certs: %w", err)
+	}
+
+	// create a listener using the next available port
+	listener, err := net.Listen("tcp", "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("NewTestAgentServer: error creating TLS certs: %w", err)
+	}
+
+	agentServer, err := agentserver.New(ctx, log, cfg, db, ca, listener, queuesProvider, tlsConfig)
+	if err != nil {
+		_ = listener.Close()
+		return nil, nil, fmt.Errorf("NewTestAgentServer: error creating agent server: %w", err)
+	}
+	return agentServer, listener, nil
+}
+
+// NewTestCerts creates new test certificates in the service certstore and returns the CA, server certificate, and enrollment certificate.
+func NewTestCerts(cfg *config.Config) (*crypto.CAClient, *crypto.TLSCertificateConfig, *crypto.TLSCertificateConfig, error) {
+	ctx := context.Background()
+
+	ca, _, err := crypto.EnsureCA(cfg.CA)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("NewTestCerts: Ensuring CA: %w", err)
+	}
+
+	// default certificate hostnames to localhost if nothing else is configured
+	if len(cfg.Service.AltNames) == 0 {
+		cfg.Service.AltNames = []string{"localhost", "127.0.0.1", "::"}
+	}
+
+	serverCerts, _, err := ca.EnsureServerCertificate(ctx, crypto.CertStorePath("server.crt", cfg.Service.CertStore), crypto.CertStorePath("server.key", cfg.Service.CertStore), cfg.Service.AltNames, serverCertValidityDays)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("NewTestCerts: Ensuring server certificate: %w", err)
+	}
+
+	// Create enrollment certificate with organization ID extension
+	// Use the default organization ID for test certificates
+	orgCtx := util.WithOrganizationID(ctx, org.DefaultID)
+	enrollmentCerts, _, err := ca.EnsureClientCertificate(orgCtx, crypto.CertStorePath("client-enrollment.crt", cfg.Service.CertStore), crypto.CertStorePath("client-enrollment.key", cfg.Service.CertStore), clientBootstrapCertName, clientBootStrapValidityDays)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("NewTestCerts: Ensuring client enrollment certificate: %w", err)
+	}
+
+	return ca, serverCerts, enrollmentCerts, nil
+}
+
+// NewClient creates a new client with the given server URL and certificates. If the certs are nil a http client will be created.
+func NewClient(serverUrl string, caBundle []*x509.Certificate) (*client.ClientWithResponses, error) {
+	httpClient, err := NewBareHTTPsClient(caBundle, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating TLS config: %v", err)
+	}
+
+	return client.NewClientWithResponses(serverUrl, client.WithHTTPClient(httpClient))
+}
+
+// NewClient creates a new client with the given server URL and certificates. If the certs are nil a http client will be created.
+func NewAgentClient(serverUrl string, caBundle []*x509.Certificate, clientCert *crypto.TLSCertificateConfig) (*agentclient.ClientWithResponses, error) {
+	httpClient, err := NewBareHTTPsClient(caBundle, clientCert)
+	if err != nil {
+		return nil, fmt.Errorf("creating TLS config: %v", err)
+	}
+
+	return agentclient.NewClientWithResponses(serverUrl, agentclient.WithHTTPClient(httpClient))
+}
+
+func NewBareHTTPsClient(caBundle []*x509.Certificate, clientCert *crypto.TLSCertificateConfig) (*http.Client, error) {
+
+	httpClient := &http.Client{}
+	if len(caBundle) > 0 || clientCert != nil {
+		tlsConfig, err := crypto.TLSConfigForClient(caBundle, clientCert)
+		if err != nil {
+			return nil, fmt.Errorf("creating TLS config: %v", err)
+		}
+		httpClient.Transport = &http.Transport{
+			TLSClientConfig: tlsConfig,
+		}
+	}
+
+	return httpClient, nil
+
+}
+
+type TestOrgCache struct {
+	orgs map[uuid.UUID]*model.Organization
+	mu   sync.Mutex
+}
+
+func (c *TestOrgCache) Get(id uuid.UUID) *model.Organization {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.orgs[id]
+}
+
+func (c *TestOrgCache) Set(id uuid.UUID, org *model.Organization) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.orgs[id] = org
+}
+
+func TestEnrollmentApproval() *v1beta1.EnrollmentRequestApproval {
+	return &v1beta1.EnrollmentRequestApproval{
+		Approved: true,
+		Labels:   &map[string]string{"label": "value"},
+	}
+}
+
+// TestTempEnv sets one or more environment variables and returns a cleanup
+// function that restores their original values.
+func TestTempEnv(kv ...string) func() {
+	if len(kv)%2 != 0 {
+		panic("TestTempEnv requires even number of arguments: key, value pairs")
+	}
+
+	type original struct {
+		key    string
+		value  string
+		exists bool
+	}
+
+	originals := make([]original, 0, len(kv)/2)
+
+	for i := 0; i < len(kv); i += 2 {
+		key, value := kv[i], kv[i+1]
+		origVal, exists := os.LookupEnv(key)
+		originals = append(originals, original{
+			key:    key,
+			value:  origVal,
+			exists: exists,
+		})
+		_ = os.Setenv(key, value)
+	}
+
+	return func() {
+		for _, o := range originals {
+			if o.exists {
+				_ = os.Setenv(o.key, o.value)
+			} else {
+				_ = os.Unsetenv(o.key)
+			}
+		}
+	}
+}
+
+// GetEnrollmentIdFromText returns the enrollment ID from the given text.
+// The enrollment ID is expected to be part of url path like https://example.com/enroll/1234
+func GetEnrollmentIdFromText(text string) string {
+	valuesRe := regexp.MustCompile(`/enroll/(\w+)`)
+	if valuesRe.MatchString(text) {
+		return valuesRe.FindStringSubmatch(text)[1]
+	}
+	return ""
+}
+
+// RandString generates a random string of length 'n' using lowercase alphabetic characters.
+func RandString(n int) (string, error) {
+	const alphanum = "abcdefghijklmnopqrstuvwxyz"
+	var bytes = make([]byte, n)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", fmt.Errorf("failed to generate random string: %w", err)
+	}
+	for i, b := range bytes {
+		bytes[i] = alphanum[b%byte(len(alphanum))]
+	}
+	return string(bytes), nil
+}
+
+// GetCurrentYearBounds returns start of current and next year in RFC3339 format.
+func GetCurrentYearBounds() (string, string) {
+	now := time.Now()
+	startOfYear := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+	endOfYear := time.Date(now.Year()+1, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	return startOfYear.Format(time.RFC3339), endOfYear.Format(time.RFC3339)
+}
+
+// RunTable runs a table of test cases with the given run function.
+// Each test case has a description and parameters of type T.
+type TestCase[T any] struct {
+	Description string
+	Params      T
+}
+
+func Cases[T any](items ...TestCase[T]) []TestCase[T] {
+	return items
+}
+
+// RunTable executes the provided run function for each test case in the cases slice.
+func RunTable[T any](cases []TestCase[T], runFunc func(T)) {
+	for _, tc := range cases {
+		By("Case: " + tc.Description)
+		runFunc(tc.Params)
+	}
+}
+
+func EventuallySlow(actual any) types.AsyncAssertion {
+	return Eventually(actual).WithTimeout(LONG_TIMEOUT).WithPolling(LONG_POLLING)
+}
+
+// CopyFile copies a file from src to dst, creating the destination directory if it does not exist.
+func CopyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("opening source file: %w", err)
+	}
+	defer srcFile.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("creating destination directory: %w", err)
+	}
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("creating destination file: %w", err)
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return fmt.Errorf("copying file contents: %w", err)
+	}
+
+	return nil
+}
+
+// ValidateStructuredError checks that a structured error message contains the expected
+// phase, component, and at least one of the given status messages. The message is expected
+// to start with a timestamp in brackets in the agent's format ("YYYY-MM-DD HH:MM:SS").
+func ValidateStructuredError(msg, phase, component string, statusMsgs ...string) error {
+	var errs []string
+
+	closeBracket := strings.Index(msg, "]")
+	if !strings.HasPrefix(msg, "[") || closeBracket < 1 {
+		errs = append(errs, "missing timestamp in brackets")
+	} else if !parseStructuredErrorTimestamp(msg[1:closeBracket]) {
+		errs = append(errs, fmt.Sprintf("invalid timestamp %q", msg[1:closeBracket]))
+	}
+
+	if !strings.Contains(msg, "While "+phase) {
+		errs = append(errs, fmt.Sprintf("missing phase 'While %s'", phase))
+	}
+
+	if !strings.Contains(msg, component) {
+		errs = append(errs, fmt.Sprintf("missing component %q", component))
+	}
+
+	if len(statusMsgs) > 0 {
+		found := false
+		for _, sm := range statusMsgs {
+			if strings.Contains(msg, sm) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			errs = append(errs, fmt.Sprintf("missing status message, expected one of %v", statusMsgs))
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("structured error validation failed for %q: %s", msg, strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// parseStructuredErrorTimestamp validates the timestamp format used by the agent in structured
+// error messages (internal/agent/device/errors/structured.go): "2006-01-02 15:04:05".
+func parseStructuredErrorTimestamp(s string) bool {
+	_, err := time.Parse("2006-01-02 15:04:05", strings.TrimSpace(s))
+	return err == nil
+}

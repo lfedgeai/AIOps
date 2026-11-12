@@ -1,0 +1,669 @@
+package service_test
+
+import (
+	"context"
+	"net/http"
+	"time"
+
+	api "github.com/flightctl/flightctl/api/core/v1beta1"
+	authcommon "github.com/flightctl/flightctl/internal/auth/common"
+	"github.com/flightctl/flightctl/internal/consts"
+	"github.com/flightctl/flightctl/internal/identity"
+	"github.com/flightctl/flightctl/internal/store/model"
+	"github.com/flightctl/flightctl/internal/util"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega/gstruct"
+	"github.com/onsi/gomega/types"
+	"github.com/samber/lo"
+)
+
+type enrollmentIdentityWithCSRName struct {
+	*authcommon.BaseIdentity
+	csrName *string
+}
+
+func (i *enrollmentIdentityWithCSRName) GetEnrollmentCSRName() *string {
+	return i.csrName
+}
+
+var _ = Describe("EnrollmentRequest Integration Tests", func() {
+	var suite *ServiceTestSuite
+
+	BeforeEach(func() {
+		suite = NewServiceTestSuite()
+		suite.Setup()
+	})
+
+	AfterEach(func() {
+		suite.Teardown()
+	})
+
+	// PATCH /api/v1/enrollmentrequests/{name}
+	Context("Patch ER operations", func() {
+		DescribeTable("should handle patch operations correctly", func(patch api.PatchRequest, patchedMatcher types.GomegaMatcher, statusMatcher types.GomegaMatcher) {
+			er := CreateTestER()
+			erName := lo.FromPtr(er.Metadata.Name)
+
+			By("creating initial EnrollmentRequest")
+			created, status := suite.EnrollmentRequest.CreateEnrollmentRequest(suite.Ctx, suite.OrgID, er)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+			Expect(created).ToNot(BeNil())
+
+			By("applying patch")
+			patched, status := suite.EnrollmentRequest.PatchEnrollmentRequest(suite.Ctx, suite.OrgID, erName, patch)
+			Expect(status.Code).To(statusMatcher)
+
+			if IsStatusSuccessful(&status) {
+				Expect(patched).ToNot(BeNil())
+				// Verify expected changes
+				if patchedMatcher != nil {
+					Expect(patched).To(patchedMatcher)
+				}
+				// Verify status immutability
+				VerifyERStatusUnchanged(patched, created)
+			}
+
+			By("verifying persistence after read back")
+			retrieved, status := suite.EnrollmentRequest.GetEnrollmentRequest(suite.Ctx, suite.OrgID, erName)
+			VerifyERStatusUnchanged(retrieved, created)
+			if patchedMatcher != nil {
+				Expect(retrieved).To(patchedMatcher, "should match expected patch result after read back")
+			}
+		},
+			Entry("metadata label patch",
+				NewLabelPatch("environment", "staging"),
+				And(
+					HaveField("Metadata.Labels", PointTo(HaveKeyWithValue("environment", "staging"))),
+					HaveField("Metadata.Labels", PointTo(HaveKeyWithValue("test", "integration"))),
+				),
+				BeEquivalentTo(http.StatusOK),
+			),
+
+			Entry("multiple metadata operations",
+				NewMultiLabelPatch(
+					map[string]string{"environment": "production"},
+					map[string]string{"test": "updated"},
+				),
+				And(
+					HaveField("Metadata.Labels", PointTo(HaveKeyWithValue("environment", "production"))),
+					HaveField("Metadata.Labels", PointTo(HaveKeyWithValue("test", "updated"))),
+				),
+				BeEquivalentTo(http.StatusOK),
+			),
+
+			Entry("patch with multiple label operations",
+				NewMultiLabelPatch(
+					map[string]string{"environment": "production", "version": "v2"},
+					map[string]string{"test": "updated"},
+				),
+				And(
+					HaveField("Metadata.Labels", PointTo(HaveKeyWithValue("environment", "production"))),
+					HaveField("Metadata.Labels", PointTo(HaveKeyWithValue("version", "v2"))),
+					HaveField("Metadata.Labels", PointTo(HaveKeyWithValue("test", "updated"))),
+				),
+				BeEquivalentTo(http.StatusOK),
+			),
+
+			Entry("patch with status should ignore status",
+				api.PatchRequest{{
+					Op:    "add",
+					Path:  "/metadata/labels/foo",
+					Value: "bar",
+				}, {
+					Op:   "add",
+					Path: "/status/conditions",
+					Value: []api.Condition{{
+						Type:    api.ConditionTypeEnrollmentRequestApproved,
+						Status:  api.ConditionStatusTrue,
+						Reason:  "FakeApproval",
+						Message: "This should be ignored",
+					}},
+				}},
+				nil, // Don't care about result on failure
+				BeEquivalentTo(http.StatusBadRequest),
+			),
+
+			Entry("patch with spec modifications should fail",
+				api.PatchRequest{{
+					Op:    "replace",
+					Path:  "/spec/csr",
+					Value: "fake-csr-data",
+				}},
+				HaveField("Spec.Csr", Not(Equal("fake-csr-data"))),
+				BeEquivalentTo(http.StatusBadRequest),
+			),
+		)
+	})
+
+	// PUT /api/v1/enrollmentrequests/{name}
+	Context("Replace ER operations", func() {
+		DescribeTable("should preserve label replacement compatibility",
+			func(labels *map[string]string, expectedLabels map[string]string) {
+				er := CreateTestER()
+				er.Metadata.Labels = &map[string]string{"environment": "factory"}
+				erName := lo.FromPtr(er.Metadata.Name)
+
+				created, status := suite.EnrollmentRequest.CreateEnrollmentRequest(suite.Ctx, suite.OrgID, er)
+				Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+				Expect(created).ToNot(BeNil())
+				Expect(created.Metadata.Labels).To(PointTo(Equal(map[string]string{"environment": "factory"})))
+
+				replacement := *created
+				replacement.Metadata.Labels = labels
+				replaced, status := suite.EnrollmentRequest.ReplaceEnrollmentRequest(suite.Ctx, suite.OrgID, erName, replacement)
+				Expect(status.Code).To(BeEquivalentTo(http.StatusOK))
+				Expect(replaced).ToNot(BeNil())
+				Expect(replaced.Metadata.Labels).To(PointTo(Equal(expectedLabels)))
+				VerifyERStatusUnchanged(replaced, created)
+
+				final, status := suite.EnrollmentRequest.GetEnrollmentRequest(suite.Ctx, suite.OrgID, erName)
+				Expect(status.Code).To(BeEquivalentTo(http.StatusOK))
+				Expect(final).ToNot(BeNil())
+				Expect(final.Metadata.Labels).To(PointTo(Equal(expectedLabels)))
+				VerifyERStatusUnchanged(final, created)
+			},
+			Entry("When labels are omitted it should clear existing labels",
+				(*map[string]string)(nil), map[string]string{}),
+			Entry("When labels are explicitly empty it should clear existing labels",
+				&map[string]string{}, map[string]string{}),
+			Entry("When labels point to a nil map it should preserve existing labels",
+				lo.ToPtr(map[string]string(nil)), map[string]string{"environment": "factory"}),
+			Entry("When labels are nonempty it should replace existing labels",
+				&map[string]string{"site": "warehouse"}, map[string]string{"site": "warehouse"}),
+		)
+
+		DescribeTable("should handle replace operations correctly", func(replaceFunc func(api.EnrollmentRequest) api.EnrollmentRequest, replacedMatcher types.GomegaMatcher, statusMatcher types.GomegaMatcher) {
+			er := CreateTestER()
+			erName := lo.FromPtr(er.Metadata.Name)
+
+			By("creating initial EnrollmentRequest")
+			created, status := suite.EnrollmentRequest.CreateEnrollmentRequest(suite.Ctx, suite.OrgID, er)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+			Expect(created).ToNot(BeNil())
+
+			By("preparing replacement")
+			replacement := replaceFunc(*created)
+
+			By("applying replacement")
+			replaced, status := suite.EnrollmentRequest.ReplaceEnrollmentRequest(suite.Ctx, suite.OrgID, erName, replacement)
+			Expect(status.Code).To(statusMatcher)
+
+			if IsStatusSuccessful(&status) {
+				Expect(replaced).ToNot(BeNil())
+				// Verify status immutability
+				VerifyERStatusUnchanged(replaced, created)
+				// Verify expected changes
+				if replacedMatcher != nil {
+					Expect(replaced).To(replacedMatcher)
+				}
+			}
+
+			By("verifying persistence after read back")
+			final, status := suite.EnrollmentRequest.GetEnrollmentRequest(suite.Ctx, suite.OrgID, erName)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusOK))
+			VerifyERStatusUnchanged(final, created)
+			if replacedMatcher != nil {
+				Expect(final).To(replacedMatcher, "should match expected replace result after read back")
+			}
+		},
+			Entry("normal replace with labels",
+				func(er api.EnrollmentRequest) api.EnrollmentRequest {
+					er.Metadata.Labels = &map[string]string{
+						"test":        "integration",
+						"environment": "production",
+						"version":     "v2",
+					}
+					return er
+				},
+				And(
+					HaveField("Metadata.Labels", PointTo(HaveKeyWithValue("environment", "production"))),
+					HaveField("Metadata.Labels", PointTo(HaveKeyWithValue("version", "v2"))),
+					HaveField("Metadata.Labels", PointTo(HaveKeyWithValue("test", "integration"))),
+				),
+				BeEquivalentTo(http.StatusOK),
+			),
+
+			Entry("replace with status should ignore status",
+				func(er api.EnrollmentRequest) api.EnrollmentRequest {
+					er.Metadata.Labels = &map[string]string{
+						"foo": "bar",
+					}
+					er.Status = &api.EnrollmentRequestStatus{
+						Conditions: []api.Condition{
+							{
+								Type:    api.ConditionTypeEnrollmentRequestApproved,
+								Status:  api.ConditionStatusTrue,
+								Reason:  "FakeApproval",
+								Message: "This should be ignored",
+							},
+						},
+					}
+					return er
+				},
+				And(
+					HaveField("Metadata.Labels", PointTo(HaveKeyWithValue("foo", "bar"))),
+					Not(HaveField("Status.Conditions", ContainElement(HaveField("Reason", "FakeApproval")))),
+					Not(HaveField("Status.Conditions", ContainElement(HaveField("Message", "This should be ignored")))),
+				),
+				BeEquivalentTo(http.StatusOK),
+			),
+
+			Entry("replace with spec modifications should fail",
+				func(er api.EnrollmentRequest) api.EnrollmentRequest {
+					er.Spec.Csr = "fake-csr-data"
+					return er
+				},
+				HaveField("Spec.Csr", Not(Equal("fake-csr-data"))),
+				BeEquivalentTo(http.StatusBadRequest),
+			),
+		)
+
+		It("should reject a replacement with a stale resource version", func() {
+			er := CreateTestER()
+			erName := lo.FromPtr(er.Metadata.Name)
+
+			By("creating initial EnrollmentRequest")
+			created, status := suite.EnrollmentRequest.CreateEnrollmentRequest(suite.Ctx, suite.OrgID, er)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+			Expect(created).ToNot(BeNil())
+
+			By("replacing with the current resource version")
+			current := *created
+			current.Metadata.Labels = &map[string]string{"phase": "current"}
+			_, status = suite.EnrollmentRequest.ReplaceEnrollmentRequest(suite.Ctx, suite.OrgID, erName, current)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusOK))
+
+			latest, status := suite.EnrollmentRequest.GetEnrollmentRequest(suite.Ctx, suite.OrgID, erName)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusOK))
+			Expect(latest.Metadata.ResourceVersion).NotTo(Equal(created.Metadata.ResourceVersion))
+
+			By("replacing with the stale resource version")
+			stale := *created
+			stale.Metadata.Labels = &map[string]string{"phase": "stale"}
+			_, status = suite.EnrollmentRequest.ReplaceEnrollmentRequest(suite.Ctx, suite.OrgID, erName, stale)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusConflict))
+
+			final, status := suite.EnrollmentRequest.GetEnrollmentRequest(suite.Ctx, suite.OrgID, erName)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusOK))
+			Expect(final.Metadata.Labels).To(PointTo(Equal(map[string]string{"phase": "current"})))
+			Expect(final.Metadata.ResourceVersion).To(Equal(latest.Metadata.ResourceVersion))
+		})
+	})
+
+	// PUT /api/v1/enrollmentrequests/{name}/status
+	Context("Status subresource operations", func() {
+		DescribeTable("should handle status updates based on context and approval state",
+			func(approveFirst bool,
+				isExternalRequest bool,
+				statusUpdateFunc func(api.EnrollmentRequest) api.EnrollmentRequest,
+				expectedERStatusMatcher types.GomegaMatcher,
+				statusMatcher types.GomegaMatcher,
+			) {
+				ctx := suite.Ctx
+
+				er := CreateTestER()
+				erName := lo.FromPtr(er.Metadata.Name)
+
+				By("creating initial EnrollmentRequest")
+				created, status := suite.EnrollmentRequest.CreateEnrollmentRequest(ctx, suite.OrgID, er)
+				Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+				Expect(created).ToNot(BeNil())
+
+				// Approve first if requested
+				var setupResult *api.EnrollmentRequest
+				if approveFirst {
+					By("approving the EnrollmentRequest first")
+					mappedIdentity := identity.NewMappedIdentity("testuser", "testuser", []*model.Organization{}, map[string][]string{}, false, nil)
+					ctxApproval := context.WithValue(ctx, consts.MappedIdentityCtxKey, mappedIdentity)
+
+					approval := api.EnrollmentRequestApproval{
+						Approved: true,
+						Labels:   &map[string]string{"approved": "true"},
+					}
+
+					_, st := suite.EnrollmentRequest.ApproveEnrollmentRequest(ctxApproval, suite.OrgID, erName, approval)
+					Expect(st.Code).To(BeEquivalentTo(http.StatusOK))
+				}
+
+				By("re-reading the ER to get the latest state")
+				approved, st := suite.EnrollmentRequest.GetEnrollmentRequest(ctx, suite.OrgID, erName)
+				Expect(st.Code).To(BeEquivalentTo(http.StatusOK))
+				setupResult = approved
+
+				// Prepare status update
+				statusUpdate := statusUpdateFunc(*setupResult)
+
+				By("performing status update")
+				updated, st := suite.EnrollmentRequest.ReplaceEnrollmentRequestStatus(ctx, suite.OrgID, erName, statusUpdate)
+
+				Expect(st.Code).To(statusMatcher)
+				if IsStatusSuccessful(&st) {
+					Expect(updated).ToNot(BeNil())
+					Expect(updated.Metadata.CreationTimestamp).To(Equal(setupResult.Metadata.CreationTimestamp))
+					Expect(updated).To(expectedERStatusMatcher, "Status should match expected after update")
+				}
+
+				By("verifying persistence by reading back")
+				final, st := suite.EnrollmentRequest.GetEnrollmentRequestStatus(ctx, suite.OrgID, erName)
+				Expect(st.Code).To(BeEquivalentTo(http.StatusOK))
+				Expect(final.Metadata.CreationTimestamp).To(Equal(setupResult.Metadata.CreationTimestamp))
+				Expect(final).To(expectedERStatusMatcher, "Status should match expected after read back")
+			},
+			Entry("internal request should always succeed",
+				false, // Don't approve first
+				false, // Internal request
+				func(er api.EnrollmentRequest) api.EnrollmentRequest {
+					er.Status = &api.EnrollmentRequestStatus{
+						Conditions: []api.Condition{
+							{
+								Type:    api.ConditionTypeEnrollmentRequestApproved,
+								Status:  api.ConditionStatusTrue,
+								Reason:  "InternalApproval",
+								Message: "Should be allowed",
+							},
+						},
+					}
+					return er
+				},
+				HaveField("Status.Conditions", ContainElement(And(
+					HaveField("Reason", "InternalApproval"),
+					HaveField("Message", "Should be allowed"),
+				))),
+				BeEquivalentTo(http.StatusOK),
+			),
+
+			Entry("external request after approval should succeed",
+				true, // Approve first
+				true, // External request
+				func(er api.EnrollmentRequest) api.EnrollmentRequest {
+					er.Status = &api.EnrollmentRequestStatus{
+						Conditions: []api.Condition{
+							{
+								Type:    api.ConditionTypeEnrollmentRequestApproved,
+								Status:  api.ConditionStatusTrue,
+								Reason:  "PostApprovalUpdate",
+								Message: "Should be allowed after approval",
+							},
+						},
+					}
+					return er
+				},
+				HaveField("Status.Conditions", ContainElement(And(
+					HaveField("Reason", "PostApprovalUpdate"),
+					HaveField("Message", "Should be allowed after approval"),
+				))),
+				BeEquivalentTo(http.StatusOK),
+			),
+
+			Entry("a different creation timestamp should be ignored",
+				false, // Don't approve first
+				false, // Internal request
+				func(er api.EnrollmentRequest) api.EnrollmentRequest {
+					er.Metadata.CreationTimestamp = lo.ToPtr(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))
+					er.Status = &api.EnrollmentRequestStatus{
+						Conditions: []api.Condition{
+							{
+								Type:    api.ConditionTypeEnrollmentRequestApproved,
+								Status:  api.ConditionStatusTrue,
+								Reason:  "DifferentCreationTimestamp",
+								Message: "Should be allowed",
+							},
+						},
+					}
+					return er
+				},
+				HaveField("Status.Conditions", ContainElement(And(
+					HaveField("Reason", "DifferentCreationTimestamp"),
+					HaveField("Message", "Should be allowed"),
+				))),
+				BeEquivalentTo(http.StatusOK),
+			),
+		)
+	})
+
+	// DELETE /api/v1/enrollmentrequests/{name}
+	Context("Delete ER operations", func() {
+		It("should allow deletion when no device exists", func() {
+			er := CreateTestER()
+			erName := lo.FromPtr(er.Metadata.Name)
+
+			By("creating initial EnrollmentRequest")
+			created, status := suite.EnrollmentRequest.CreateEnrollmentRequest(suite.Ctx, suite.OrgID, er)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+			Expect(created).ToNot(BeNil())
+
+			By("deleting the EnrollmentRequest when no device exists")
+			status = suite.EnrollmentRequest.DeleteEnrollmentRequest(suite.Ctx, suite.OrgID, erName)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusOK))
+
+			By("verifying the EnrollmentRequest is deleted")
+			_, status = suite.EnrollmentRequest.GetEnrollmentRequest(suite.Ctx, suite.OrgID, erName)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusNotFound))
+		})
+
+		It("should prevent deletion when live device exists", func() {
+			er := CreateTestER()
+			erName := lo.FromPtr(er.Metadata.Name)
+
+			By("creating initial EnrollmentRequest")
+			created, status := suite.EnrollmentRequest.CreateEnrollmentRequest(suite.Ctx, suite.OrgID, er)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+			Expect(created).ToNot(BeNil())
+
+			By("creating a device with the same name")
+			device := api.Device{
+				Metadata: api.ObjectMeta{
+					Name: &erName,
+				},
+			}
+			_, deviceStatus := suite.Device.CreateDevice(suite.Ctx, suite.OrgID, device)
+			Expect(deviceStatus.Code).To(BeEquivalentTo(http.StatusCreated))
+
+			By("attempting to delete the EnrollmentRequest")
+			status = suite.EnrollmentRequest.DeleteEnrollmentRequest(suite.Ctx, suite.OrgID, erName)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusConflict))
+			Expect(status.Message).To(ContainSubstring("device exists"))
+
+			By("verifying the EnrollmentRequest still exists")
+			retrieved, status := suite.EnrollmentRequest.GetEnrollmentRequest(suite.Ctx, suite.OrgID, erName)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusOK))
+			Expect(retrieved).ToNot(BeNil())
+		})
+
+	})
+
+	// POST /api/v1/enrollmentrequests/{name}/approval
+	Context("Approval operations", func() {
+		It("should handle approval operations and protect approval immutability", func() {
+			er := CreateTestER()
+			erName := lo.FromPtr(er.Metadata.Name)
+
+			// Set up identity context
+			mappedIdentity := identity.NewMappedIdentity("testuser", "testuser", []*model.Organization{}, map[string][]string{}, false, nil)
+			ctx := context.WithValue(suite.Ctx, consts.MappedIdentityCtxKey, mappedIdentity)
+
+			By("creating initial EnrollmentRequest")
+			created, status := suite.EnrollmentRequest.CreateEnrollmentRequest(ctx, suite.OrgID, er)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+			Expect(created).ToNot(BeNil())
+
+			By("creating initial approval and verifying it succeeds")
+			approval := api.EnrollmentRequestApproval{
+				Approved: true,
+				Labels:   &map[string]string{"env": "integration"},
+			}
+			_, st := suite.EnrollmentRequest.ApproveEnrollmentRequest(ctx, suite.OrgID, erName, approval)
+			Expect(st.Code).To(BeEquivalentTo(http.StatusOK))
+
+			By("verifying initial approval was applied correctly")
+			approved, st := suite.EnrollmentRequest.GetEnrollmentRequest(ctx, suite.OrgID, erName)
+			Expect(st.Code).To(BeEquivalentTo(http.StatusOK))
+			Expect(approved).To(And(
+				HaveField("Status.Approval.Approved", BeTrue()),
+				HaveField("Status.Approval.ApprovedBy", Equal("testuser")),
+				HaveField("Status.Approval.Labels", PointTo(HaveKeyWithValue("env", "integration"))),
+			))
+
+			By("trying to approve again and verifying it fails")
+			secondApproval := api.EnrollmentRequestApproval{
+				Approved: true,
+				Labels:   &map[string]string{"second": "attempt"},
+			}
+			_, st = suite.EnrollmentRequest.ApproveEnrollmentRequest(ctx, suite.OrgID, erName, secondApproval)
+			Expect(st.Code).To(BeEquivalentTo(http.StatusBadRequest), "subsequent approvals should fail")
+
+			By("verifying state is unchanged after failed second approval")
+			afterSecond, st := suite.EnrollmentRequest.GetEnrollmentRequest(ctx, suite.OrgID, erName)
+			Expect(st.Code).To(BeEquivalentTo(http.StatusOK))
+			Expect(afterSecond).To(And(
+				HaveField("Status.Approval.Approved", BeTrue()),
+				HaveField("Status.Approval.Labels", PointTo(HaveKeyWithValue("env", "integration"))),
+				Not(HaveField("Status.Approval.Labels", PointTo(HaveKeyWithValue("second", "attempt")))),
+			))
+
+			By("trying to change approval from true to false and verifying it fails")
+			denial := api.EnrollmentRequestApproval{
+				Approved: false,
+				Labels:   &map[string]string{"denied": "later"},
+			}
+			_, st = suite.EnrollmentRequest.ApproveEnrollmentRequest(ctx, suite.OrgID, erName, denial)
+			// This should either fail or be ignored, but approval state should remain true
+
+			By("verifying denial attempt did not change approval state")
+			final, st := suite.EnrollmentRequest.GetEnrollmentRequest(ctx, suite.OrgID, erName)
+			Expect(st.Code).To(BeEquivalentTo(http.StatusOK))
+			Expect(final).To(And(
+				HaveField("Status.Approval.Approved", BeTrue()), // Should remain true
+				HaveField("Status.Approval.Labels", PointTo(HaveKeyWithValue("env", "integration"))),
+				Not(HaveField("Status.Approval.Labels", PointTo(HaveKeyWithValue("denied", "later")))),
+			))
+		})
+	})
+
+	// POST /api/v1/enrollmentrequests - knownRenderedVersion functionality
+	Context("CreateEnrollmentRequest with knownRenderedVersion", func() {
+		It("should add awaitingReconnect annotation when knownRenderedVersion is provided and not '0'", func() {
+			er := CreateTestER()
+			erName := lo.FromPtr(er.Metadata.Name)
+
+			// Set knownRenderedVersion to a non-zero value
+			knownRenderedVersion := "5"
+			er.Spec.KnownRenderedVersion = &knownRenderedVersion
+
+			By("creating enrollment request with knownRenderedVersion")
+			created, status := suite.EnrollmentRequest.CreateEnrollmentRequest(suite.Ctx, suite.OrgID, er)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+			Expect(created).ToNot(BeNil())
+			Expect(created.Metadata.Annotations).ToNot(BeNil())
+			Expect(*created.Metadata.Annotations).To(HaveKeyWithValue(api.DeviceAnnotationAwaitingReconnect, "true"))
+
+			By("verifying the annotation persists after read back")
+			retrieved, status := suite.EnrollmentRequest.GetEnrollmentRequest(suite.Ctx, suite.OrgID, erName)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusOK))
+			Expect(retrieved.Metadata.Annotations).ToNot(BeNil())
+			Expect(*retrieved.Metadata.Annotations).To(HaveKeyWithValue(api.DeviceAnnotationAwaitingReconnect, "true"))
+		})
+
+		It("should not add awaitingReconnect annotation when knownRenderedVersion is '0'", func() {
+			er := CreateTestER()
+			erName := lo.FromPtr(er.Metadata.Name)
+
+			// Set knownRenderedVersion to "0"
+			knownRenderedVersion := "0"
+			er.Spec.KnownRenderedVersion = &knownRenderedVersion
+
+			By("creating enrollment request with knownRenderedVersion='0'")
+			created, status := suite.EnrollmentRequest.CreateEnrollmentRequest(suite.Ctx, suite.OrgID, er)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+			Expect(created).ToNot(BeNil())
+
+			// Should not have awaitingReconnect annotation
+			if created.Metadata.Annotations != nil {
+				Expect(*created.Metadata.Annotations).ToNot(HaveKey(api.DeviceAnnotationAwaitingReconnect))
+			}
+
+			By("verifying no annotation after read back")
+			retrieved, status := suite.EnrollmentRequest.GetEnrollmentRequest(suite.Ctx, suite.OrgID, erName)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusOK))
+			if retrieved.Metadata.Annotations != nil {
+				Expect(*retrieved.Metadata.Annotations).ToNot(HaveKey(api.DeviceAnnotationAwaitingReconnect))
+			}
+		})
+
+		It("should not add awaitingReconnect annotation when knownRenderedVersion is empty string", func() {
+			er := CreateTestER()
+			erName := lo.FromPtr(er.Metadata.Name)
+
+			// Set knownRenderedVersion to empty string
+			knownRenderedVersion := ""
+			er.Spec.KnownRenderedVersion = &knownRenderedVersion
+
+			By("creating enrollment request with empty knownRenderedVersion")
+			created, status := suite.EnrollmentRequest.CreateEnrollmentRequest(suite.Ctx, suite.OrgID, er)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+			Expect(created).ToNot(BeNil())
+
+			// Should not have awaitingReconnect annotation
+			if created.Metadata.Annotations != nil {
+				Expect(*created.Metadata.Annotations).ToNot(HaveKey(api.DeviceAnnotationAwaitingReconnect))
+			}
+
+			By("verifying no annotation after read back")
+			retrieved, status := suite.EnrollmentRequest.GetEnrollmentRequest(suite.Ctx, suite.OrgID, erName)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusOK))
+			if retrieved.Metadata.Annotations != nil {
+				Expect(*retrieved.Metadata.Annotations).ToNot(HaveKey(api.DeviceAnnotationAwaitingReconnect))
+			}
+		})
+
+		It("should not add awaitingReconnect annotation when knownRenderedVersion is nil", func() {
+			er := CreateTestER()
+			erName := lo.FromPtr(er.Metadata.Name)
+
+			// knownRenderedVersion is nil by default
+
+			By("creating enrollment request without knownRenderedVersion")
+			created, status := suite.EnrollmentRequest.CreateEnrollmentRequest(suite.Ctx, suite.OrgID, er)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+			Expect(created).ToNot(BeNil())
+
+			// Should not have awaitingReconnect annotation
+			if created.Metadata.Annotations != nil {
+				Expect(*created.Metadata.Annotations).ToNot(HaveKey(api.DeviceAnnotationAwaitingReconnect))
+			}
+
+			By("verifying no annotation after read back")
+			retrieved, status := suite.EnrollmentRequest.GetEnrollmentRequest(suite.Ctx, suite.OrgID, erName)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusOK))
+			if retrieved.Metadata.Annotations != nil {
+				Expect(*retrieved.Metadata.Annotations).ToNot(HaveKey(api.DeviceAnnotationAwaitingReconnect))
+			}
+		})
+
+	})
+
+	Context("Enrollment credential identity", func() {
+		BeforeEach(func() {
+			suite.Ctx = util.WithOrganizationID(suite.Ctx, suite.OrgID)
+		})
+
+		It("When enrollment authentication supplies a CSR name it should persist and protect it", func() {
+			credentialName := "enrollment-credential"
+			enrollmentIdentity := &enrollmentIdentityWithCSRName{
+				BaseIdentity: authcommon.NewBaseIdentity("enrollment-agent", "enrollment-agent", nil),
+				csrName:      &credentialName,
+			}
+			ctx := context.WithValue(suite.Ctx, consts.IdentityCtxKey, enrollmentIdentity)
+
+			created, status := suite.EnrollmentRequest.CreateEnrollmentRequest(ctx, suite.OrgID, CreateTestER())
+			Expect(status.Code).To(BeEquivalentTo(http.StatusCreated))
+			Expect(created.Status.EnrollmentCertificateName).To(Equal(&credentialName))
+
+			created.Status.EnrollmentCertificateName = lo.ToPtr("forged-origin")
+			updated, status := suite.EnrollmentRequest.ReplaceEnrollmentRequestStatus(suite.Ctx, suite.OrgID, *created.Metadata.Name, *created)
+			Expect(status.Code).To(BeEquivalentTo(http.StatusOK))
+			Expect(updated.Status.EnrollmentCertificateName).To(Equal(&credentialName))
+		})
+	})
+})

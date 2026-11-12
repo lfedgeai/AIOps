@@ -1,0 +1,85 @@
+import * as React from 'react';
+import { Alert, Spinner } from '@patternfly/react-core';
+
+import type { Device, PatchRequest } from '@flightctl/types';
+import { useFetch } from '../../../hooks/useFetch';
+import { ROUTE, useNavigate } from '../../../hooks/useNavigate';
+import { useTranslation } from '../../../hooks/useTranslation';
+import { useDeviceOwnerFleet } from '../../../hooks/useDeviceOwnerFleet';
+import { getErrorMessage } from '../../../utils/error';
+import ResourceCatalogPage from '../../Catalog/ResourceCatalog/ResourceCatalogPage';
+
+type DeviceDetailsCatalogProps = {
+  device: Device;
+  refetch: VoidFunction;
+  canEdit: boolean;
+};
+
+const DeviceDetailsCatalog = ({ device, refetch, canEdit }: DeviceDetailsCatalogProps) => {
+  const { patch } = useFetch();
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const onPatch = React.useCallback(
+    async (allPatches: PatchRequest) => {
+      await patch(`devices/${device.metadata.name}`, allPatches);
+      refetch();
+    },
+    [refetch, patch, device.metadata.name],
+  );
+
+  const [hasOwnerFleet, ownerFleet, ownerFleetLoading, ownerFleetError] = useDeviceOwnerFleet(device.metadata.owner);
+
+  if (ownerFleetLoading) {
+    return <Spinner />;
+  }
+  if (ownerFleetError) {
+    return (
+      <Alert isInline variant="danger" title={t('Failed to fetch owner fleet')}>
+        {getErrorMessage(ownerFleetError)}
+      </Alert>
+    );
+  }
+
+  return hasOwnerFleet ? (
+    <ResourceCatalogPage
+      targetFleet={ownerFleet}
+      canEdit={false}
+      onPatch={async () => {}}
+      onEdit={() => {}}
+      onInstall={() => {}}
+    />
+  ) : (
+    <ResourceCatalogPage
+      targetDevice={device}
+      canEdit={canEdit}
+      onPatch={onPatch}
+      onEdit={(id, mode) => {
+        const params = new URLSearchParams({
+          mode,
+        });
+        if (id.appName) {
+          params.set('appName', id.appName);
+        }
+        const path = `${device.metadata.name}/${id.ref.catalog}/${id.ref.item}?${params.toString()}`;
+        navigate({
+          route: ROUTE.CATALOG_DEVICE_EDIT,
+          postfix: path,
+        });
+      }}
+      onInstall={({ item, version, channel }) => {
+        const params = new URLSearchParams({
+          version,
+          channel,
+        });
+
+        const path = `${device.metadata.name}/${item.metadata.catalog}/${item.metadata.name}?${params.toString()}`;
+        navigate({
+          route: ROUTE.CATALOG_DEVICE_EDIT,
+          postfix: path,
+        });
+      }}
+    />
+  );
+};
+
+export default DeviceDetailsCatalog;

@@ -1,0 +1,138 @@
+{
+  "realm": "flightctl",
+  "enabled": true,
+  "requiredActions": [
+    {
+      "alias": "VERIFY_PROFILE",
+      "name": "Verify Profile",
+      "providerId": "VERIFY_PROFILE",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 50,
+      "config": {}
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "flightctl-client",
+      "name": "flightctl-client",
+      "enabled": true,
+      "redirectUris": [
+        "http://localhost:*",
+        "http://localhost:*/callback",
+        "http://127.0.0.1:*",
+        "http://127.0.0.1:*/callback"
+      ],
+      "webOrigins": ["+"],
+      "publicClient": false,
+      "secret": "e2e-flightctl-client-secret",
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "flightctl-client-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "flightctl-client",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "flightctl-oauth2-client",
+      "name": "flightctl-oauth2-client",
+      "enabled": true,
+      "redirectUris": [
+        "http://localhost:*",
+        "http://localhost:*/callback",
+        "http://127.0.0.1:*",
+        "http://127.0.0.1:*/callback"
+      ],
+      "webOrigins": ["+"],
+      "publicClient": false,
+      "secret": "e2e-flightctl-oauth2-client-secret",
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "flightctl-oauth2-client-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "flightctl-oauth2-client",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "flightctl-catalog-collector",
+      "name": "flightctl-catalog-collector",
+      "description": "Confidential client used by the catalog collector e2e suite to obtain tokens with the OAuth2 client-credentials grant.",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "e2e-flightctl-catalog-collector-secret",
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "flightctl-catalog-collector-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "flightctl-catalog-collector",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-flightctl-catalog-collector",
+      "enabled": true,
+      "email": "service-account-flightctl-catalog-collector@e2e.example.com",
+      "serviceAccountClientId": "flightctl-catalog-collector",
+      "groups": ["/org-default"],
+      "realmRoles": ["default-roles-flightctl"]
+    },
+    {
+      "username": "testuser",
+      "enabled": true,
+      "email": "testuser@e2e.example.com",
+      "firstName": "Test",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "testpass",
+          "temporary": false
+        }
+      ],
+      "groups": ["/org-default"],
+      "realmRoles": ["default-roles-flightctl"]
+    }
+  ],
+  "groups": [
+    {
+      "name": "org-default",
+      "path": "/org-default"
+    }
+  ],
+  "defaultRoles": ["default-roles-flightctl"]
+}

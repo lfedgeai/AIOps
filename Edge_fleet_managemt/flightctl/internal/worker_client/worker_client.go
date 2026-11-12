@@ -1,0 +1,214 @@
+package worker_client
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/flightctl/flightctl/internal/consts"
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/pkg/queues"
+	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
+)
+
+type WorkerClient interface {
+	EmitEvent(ctx context.Context, orgId uuid.UUID, event *domain.Event)
+}
+
+// ReliableWorkerClient is implemented by the concrete client when callers
+// need to observe publication failures instead of only logging them.
+type ReliableWorkerClient interface {
+	WorkerClient
+	EmitEventWithError(ctx context.Context, orgId uuid.UUID, event *domain.Event) error
+}
+
+type EventWithOrgId struct {
+	OrgId uuid.UUID    `json:"orgId"`
+	Event domain.Event `json:"event"`
+}
+
+type ClientOption func(*workerClient)
+
+type workerClient struct {
+	publisher                queues.QueueProducer
+	labelSyncPublisher       queues.QueueProducer
+	deltaPublisher           queues.QueueProducer
+	deltaCompletionPublisher queues.QueueProducer
+	log                      logrus.FieldLogger
+}
+
+func QueuePublisher(ctx context.Context, queuesProvider queues.Provider) (queues.QueueProducer, error) {
+	publisher, err := queuesProvider.NewQueueProducer(ctx, consts.TaskQueue)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create publisher: %w", err)
+	}
+	return publisher, nil
+}
+
+// LabelSyncQueuePublisher returns a producer for device label reconciliation requests.
+func LabelSyncQueuePublisher(ctx context.Context, queuesProvider queues.Provider) (queues.QueueProducer, error) {
+	return queuesProvider.NewQueueProducer(ctx, consts.DeviceLabelSyncTaskQueue)
+}
+
+// WithLabelSyncPublisher routes DeviceLabelReconciliationRequested events to the label sync queue.
+func WithLabelSyncPublisher(p queues.QueueProducer) ClientOption {
+	return func(c *workerClient) {
+		c.labelSyncPublisher = p
+	}
+}
+
+// DeltaQueuePublisher returns a producer for the delta-generation task queue.
+func DeltaQueuePublisher(ctx context.Context, queuesProvider queues.Provider) (queues.QueueProducer, error) {
+	publisher, err := queuesProvider.NewQueueProducer(ctx, consts.DeltaGenerationTaskQueue)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create delta publisher: %w", err)
+	}
+	return publisher, nil
+}
+
+// DeltaCompletionQueuePublisher returns a producer for the dedicated
+// delta-generation completion queue.
+func DeltaCompletionQueuePublisher(ctx context.Context, queuesProvider queues.Provider) (queues.QueueProducer, error) {
+	publisher, err := queuesProvider.NewQueueProducer(ctx, consts.DeltaGenerationCompletionQueue)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create delta completion publisher: %w", err)
+	}
+	return publisher, nil
+}
+
+// WithDeltaPublisher configures a worker client to publish delta-generation events.
+func WithDeltaPublisher(p queues.QueueProducer) ClientOption {
+	return func(c *workerClient) {
+		c.deltaPublisher = p
+	}
+}
+
+// WithDeltaCompletionPublisher configures a worker client to publish
+// delta-generation completion events to their dedicated queue.
+func WithDeltaCompletionPublisher(p queues.QueueProducer) ClientOption {
+	return func(c *workerClient) {
+		c.deltaCompletionPublisher = p
+	}
+}
+
+func NewWorkerClient(publisher queues.QueueProducer, log logrus.FieldLogger, opts ...ClientOption) WorkerClient {
+	c := &workerClient{
+		publisher: publisher,
+		log:       log,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+func (t *workerClient) EmitEvent(ctx context.Context, orgId uuid.UUID, event *domain.Event) {
+	if event != nil {
+		if _, isDelta := deltaEventReasons[event.Reason]; isDelta && t.deltaPublisher == nil &&
+			!(event.Reason == domain.EventReasonDeltaGenerationComplete && t.deltaCompletionPublisher != nil) {
+			t.log.WithFields(logrus.Fields{
+				"orgId":  orgId,
+				"reason": event.Reason,
+			}).Warn("delta-generation publisher is not configured; dropping event")
+			return
+		}
+	}
+	if err := t.EmitEventWithError(ctx, orgId, event); err != nil {
+		t.log.WithError(err).Error("failed to emit event for workers")
+	}
+}
+
+// EmitEventWithError publishes an event and returns queue or configuration
+// failures to callers that have a retryable path.
+func (t *workerClient) EmitEventWithError(ctx context.Context, orgId uuid.UUID, event *domain.Event) error {
+	if event == nil {
+		return nil
+	}
+	if IsDeviceLabelSyncQueueEvent(*event) && t.labelSyncPublisher != nil {
+		return t.enqueueWithError(ctx, orgId, event, t.labelSyncPublisher)
+	}
+	if event.Reason == domain.EventReasonDeltaGenerationComplete && t.deltaCompletionPublisher != nil {
+		return t.enqueueWithError(ctx, orgId, event, t.deltaCompletionPublisher)
+	}
+	if _, isDelta := deltaEventReasons[event.Reason]; isDelta {
+		if t.deltaPublisher == nil {
+			return fmt.Errorf("delta-generation publisher is not configured for %s/%s", orgId, event.Reason)
+		}
+		return t.enqueueWithError(ctx, orgId, event, t.deltaPublisher)
+	}
+	if !shouldEmitEvent(event.Reason) {
+		return nil
+	}
+	return t.enqueueWithError(ctx, orgId, event, t.publisher)
+}
+
+func (t *workerClient) enqueueWithError(ctx context.Context, orgId uuid.UUID, event *domain.Event, producer queues.QueueProducer) error {
+	if producer == nil {
+		return fmt.Errorf("worker queue publisher is not configured")
+	}
+	b, err := json.Marshal(EventWithOrgId{
+		OrgId: orgId,
+		Event: *event,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal event for workers: %w", err)
+	}
+	var timestamp int64
+	if event.Metadata.CreationTimestamp != nil {
+		timestamp = event.Metadata.CreationTimestamp.UnixMicro()
+	} else {
+		timestamp = time.Now().UnixMicro()
+	}
+	if err = producer.Enqueue(ctx, b, timestamp); err != nil {
+		return fmt.Errorf("failed to enqueue event for workers: %w", err)
+	}
+	return nil
+}
+
+var eventReasons = map[domain.EventReason]struct{}{
+	domain.EventReasonEnrollmentCredentialRevoked:        {},
+	domain.EventReasonResourceCreated:                    {},
+	domain.EventReasonResourceUpdated:                    {},
+	domain.EventReasonDeviceLabelReconciliationRequested: {},
+	domain.EventReasonResourceDeleted:                    {},
+	domain.EventReasonFleetRolloutStarted:                {},
+	domain.EventReasonReferencedRepositoryUpdated:        {},
+	domain.EventReasonDependencyChangeDetected:           {},
+	domain.EventReasonFleetRolloutDeviceSelected:         {},
+	domain.EventReasonFleetRolloutBatchDispatched:        {},
+	domain.EventReasonDeviceConflictResolved:             {},
+	domain.EventReasonDeviceDecommissioned:               {},
+	domain.EventReasonApplicationLifecycleChanged:        {},
+	domain.EventReasonDeltaGenerationCompleted:           {},
+	domain.EventReasonEnrollmentRequestApproved:          {},
+}
+
+var deltaEventReasons = map[domain.EventReason]struct{}{
+	domain.EventReasonPrepareDeltas:        {},
+	domain.EventReasonGenerateDelta:        {},
+	domain.EventReasonDeltaPrepareComplete: {},
+}
+
+// IsDeltaGenerationQueueEvent reports whether reason belongs on DeltaGenerationTaskQueue.
+func IsDeltaGenerationQueueEvent(reason domain.EventReason) bool {
+	_, ok := deltaEventReasons[reason]
+	return ok
+}
+
+// IsDeltaGenerationCompletionQueueEvent reports whether reason belongs on the
+// dedicated delta-generation completion queue.
+func IsDeltaGenerationCompletionQueueEvent(reason domain.EventReason) bool {
+	return reason == domain.EventReasonDeltaGenerationComplete
+}
+
+// IsDeviceLabelSyncQueueEvent identifies requests for device label reconciliation.
+func IsDeviceLabelSyncQueueEvent(event domain.Event) bool {
+	return event.InvolvedObject.Kind == domain.DeviceKind && event.Reason == domain.EventReasonDeviceLabelReconciliationRequested
+}
+
+func shouldEmitEvent(reason domain.EventReason) bool {
+	_, contains := eventReasons[reason]
+	return contains
+}

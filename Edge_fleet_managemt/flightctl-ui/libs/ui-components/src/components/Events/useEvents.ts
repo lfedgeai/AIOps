@@ -1,0 +1,200 @@
+import * as React from 'react';
+import { type TFunction } from 'react-i18next';
+
+import { Event, type EventList, type ObjectReference, ResourceKind } from '@flightctl/types';
+import { useFetchPeriodically } from '../../hooks/useFetchPeriodically';
+import { EVENT_PAGE_SIZE } from '../../constants';
+import { getDateDisplay } from '../../utils/dates';
+import * as queryUtils from '../../utils/query';
+
+const getTimeout = (kind?: ResourceKind) => {
+  switch (kind) {
+    case ResourceKind.DEVICE:
+      return 180000; // 3 minutes
+    case ResourceKind.FLEET:
+      return 300000; // 5 minutes
+    case ResourceKind.REPOSITORY:
+    default:
+      return 600000; // 10 minutes
+  }
+};
+
+type UseEventsResult = [
+  DisplayEvent[] | undefined, // Event list
+  boolean, // isLoading
+  VoidFunction, // refetch
+  boolean, // isUpdating
+  number, // Last update timestamp
+];
+
+export type SelectableEventType = Event.type | 'all';
+
+// Reduced Event object. All fields should be ready to be displayed in the UI.
+export type DisplayEvent = Pick<Event, 'type' | 'message'> & {
+  name: string;
+  dateText: string;
+  reasonText: string;
+};
+
+export type EventSearchCriteria = Partial<ObjectReference> & {
+  type: SelectableEventType;
+};
+
+const getEventReasonTitles = (t: TFunction, kindType: string): Record<Event.reason, string> => {
+  const params = { resourceType: kindType };
+  return {
+    // Generic resource events
+    [Event.reason.RESOURCE_CREATED]: t('{{ resourceType }} was created successfully', params),
+    [Event.reason.RESOURCE_CREATION_FAILED]: t('{{ resourceType }} could not be created', params),
+    [Event.reason.RESOURCE_DELETED]: t('{{ resourceType }} was deleted successfully', params),
+    [Event.reason.RESOURCE_DELETION_FAILED]: t('{{ resourceType }} could not be deleted', params),
+    [Event.reason.RESOURCE_UPDATED]: t('{{ resourceType }} was updated successfully', params),
+    [Event.reason.RESOURCE_UPDATE_FAILED]: t('{{ resourceType }} could not be updated', params),
+    [Event.reason.SYSTEM_RESTORED]: t('The system was restored from a backup'),
+    // Device events
+    [Event.reason.DEVICE_DECOMMISSIONED]: t('Device decommissioned successfully'),
+    [Event.reason.DEVICE_DECOMMISSION_FAILED]: t('Device could not be decommissioned'),
+    [Event.reason.DEVICE_CPUNORMAL]: t('CPU utilization has returned to normal'),
+    [Event.reason.DEVICE_CPUWARNING]: t('CPU utilization has reached a warning level'),
+    [Event.reason.DEVICE_CPUCRITICAL]: t('CPU utilization has reached a critical level'),
+    [Event.reason.DEVICE_MEMORY_NORMAL]: t('Memory utilization has returned to normal'),
+    [Event.reason.DEVICE_MEMORY_WARNING]: t('Memory utilization has reached a warning level'),
+    [Event.reason.DEVICE_MEMORY_CRITICAL]: t('Memory utilization has reached a critical level'),
+    [Event.reason.DEVICE_DISK_NORMAL]: t('Disk utilization has returned to normal'),
+    [Event.reason.DEVICE_DISK_WARNING]: t('Disk utilization has reached a warning level'),
+    [Event.reason.DEVICE_DISK_CRITICAL]: t('Disk utilization has reached a critical level'),
+    [Event.reason.DEVICE_APPLICATION_HEALTHY]: t('All application workloads are healthy'),
+    [Event.reason.DEVICE_APPLICATION_DEGRADED]: t('Some applications workloads are degraded'),
+    [Event.reason.DEVICE_APPLICATION_ERROR]: t('Some application workloads are in error state'),
+    [Event.reason.DEVICE_CONNECTED]: t('Device reconnected'),
+    [Event.reason.DEVICE_DISCONNECTED]: t('Device is disconnected'),
+    [Event.reason.DEVICE_IS_REBOOTING]: t('Device is rebooting'),
+    [Event.reason.DEVICE_CONTENT_UP_TO_DATE]: t('Device returned to being up-to-date'),
+    [Event.reason.DEVICE_CONTENT_UPDATING]: t('Device is updating'),
+    [Event.reason.DEVICE_CONTENT_OUT_OF_DATE]: t('Device is out-of-date'),
+    [Event.reason.DEVICE_UPDATE_FAILED]: t('Device update failed'),
+    [Event.reason.DEVICE_MULTIPLE_OWNERS_DETECTED]: t('Detected device ownership conflict'),
+    [Event.reason.DEVICE_MULTIPLE_OWNERS_RESOLVED]: t('Device ownership conflict has been resolved'),
+    [Event.reason.DEVICE_SPEC_VALID]: t('Device specification has returned to a valid state'),
+    [Event.reason.DEVICE_SPEC_INVALID]: t('Device specification is invalid'),
+    [Event.reason.DEVICE_CONFLICT_PAUSED]: t('Device is paused after database restore'),
+    [Event.reason.DEVICE_CONFLICT_RESOLVED]: t('Device conflict has been resolved'),
+    [Event.reason.DEVICE_OSIMAGE_CHANGED]: t('Device OS image has changed'),
+    // Device vulnerability events
+    [Event.reason.DEVICE_VULNERABILITY_CVECRITICAL]: t('Critical vulnerability detected'),
+    [Event.reason.DEVICE_VULNERABILITY_CVEWARNING]: t('Moderate vulnerability detected'),
+    [Event.reason.DEVICE_VULNERABILITY_CVERESOLVED]: t('Vulnerability resolved'),
+    // Enrollment request events
+    [Event.reason.ENROLLMENT_REQUEST_APPROVED]: t('Enrollment request was approved'),
+    [Event.reason.ENROLLMENT_REQUEST_APPROVAL_FAILED]: t('Enrollment request approval failed'),
+    // Internal task events
+    [Event.reason.INTERNAL_TASK_FAILED]: t('Internal task failed'),
+    [Event.reason.INTERNAL_TASK_PERMANENTLY_FAILED]: t('Internal task permanently failed'),
+    // Repository events
+    [Event.reason.REPOSITORY_ACCESSIBLE]: t('Repository is available'),
+    [Event.reason.REPOSITORY_INACCESSIBLE]: t('Repository is not available'),
+    [Event.reason.REFERENCED_REPOSITORY_UPDATED]: t('Referenced repository was updated'),
+    // Fleet events
+    [Event.reason.FLEET_VALID]: t('Fleet specification is valid'),
+    [Event.reason.FLEET_INVALID]: t('Fleet specification is invalid'),
+    [Event.reason.FLEET_ROLLOUT_STARTED]: t('Fleet rollout started'),
+    [Event.reason.FLEET_ROLLOUT_CREATED]: t('Fleet rollout created'),
+    [Event.reason.FLEET_ROLLOUT_FAILED]: t('Fleet rollout failed'),
+    [Event.reason.FLEET_ROLLOUT_COMPLETED]: t('Fleet rollout completed'),
+    [Event.reason.FLEET_ROLLOUT_BATCH_DISPATCHED]: t('Fleet rollout batch dispatched'),
+    [Event.reason.FLEET_ROLLOUT_DEVICE_SELECTED]: t('Fleet rollout device selected'),
+    [Event.reason.FLEET_ROLLOUT_BATCH_COMPLETED]: t('Fleet rollout batch completed'),
+    // Resource sync events
+    [Event.reason.RESOURCE_SYNC_SYNCED]: t('Resourcesync synchronization completed'),
+    [Event.reason.RESOURCE_SYNC_SYNC_FAILED]: t('Resourcesync synchronization failed'),
+    [Event.reason.RESOURCE_SYNC_PARSED]: t('Resourcesync parsed successfully'),
+    [Event.reason.RESOURCE_SYNC_PARSING_FAILED]: t('Resourcesync parsing failed'),
+    [Event.reason.RESOURCE_SYNC_ACCESSIBLE]: t('Resourcesync is available'),
+    [Event.reason.RESOURCE_SYNC_INACCESSIBLE]: t('Resourcesync is not available'),
+    [Event.reason.RESOURCE_SYNC_COMMIT_DETECTED]: t('Resourcesync new commit detected'),
+    // Encryption migration events
+    [Event.reason.ENCRYPTION_MIGRATION_STARTED]: t('Encryption migration started'),
+    [Event.reason.ENCRYPTION_MIGRATION_COMPLETED]: t('Encryption migration completed'),
+    // Dependency sync events
+    [Event.reason.DEPENDENCY_SYNC_PROBE_FAILED]: t('Dependency sync probe failed'),
+    [Event.reason.DEPENDENCY_CHANGE_DETECTED]: t('Dependency change detected'),
+    // Application lifecycle events
+    [Event.reason.APPLICATION_LIFECYCLE_CHANGED]: t('Application lifecycle changed'),
+    // Delta generation events
+    [Event.reason.PREPARE_DELTAS]: t('Preparing delta updates'),
+    [Event.reason.DELTA_GENERATION_PROGRESS]: t('Delta updates are being generated'),
+    [Event.reason.DELTA_GENERATION_SUCCEEDED]: t('Delta updates were generated successfully'),
+    [Event.reason.DELTA_GENERATION_FAILED]: t('Delta update generation failed'),
+    [Event.reason.DELTA_GENERATION_REJECTED]: t('Delta update generation was rejected'),
+    [Event.reason.DELTA_GENERATION_COMPLETED]: t('Delta updates generation is complete'),
+    // Enrollment hook events
+    [Event.reason.ENROLLMENT_HOOK_SUCCEEDED]: t('Enrollment hook succeeded'),
+    [Event.reason.ENROLLMENT_HOOK_FAILED]: t('Enrollment hook failed'),
+    [Event.reason.ENROLLMENT_HOOK_NOTIFY_FAILED]: t('Enrollment hook notify failed'),
+    [Event.reason.ENROLLMENT_HOOK_MANUAL_OVERRIDE]: t('Enrollment hook has manual override'),
+  };
+};
+
+const redundantMessageReasons = [
+  Event.reason.RESOURCE_CREATED, // <kind> <name> created successfully
+  Event.reason.RESOURCE_UPDATED, // <kind> <name> updated successfully
+  Event.reason.RESOURCE_DELETED, // <kind> <name> deleted successfully
+];
+
+const displayEventMapper = (event: Event, reasonTxt: string): DisplayEvent => ({
+  name: event.metadata.name as string,
+  type: event.type,
+  dateText: getDateDisplay(event.metadata.creationTimestamp || ''),
+  reasonText: reasonTxt || event.reason,
+  message: redundantMessageReasons.includes(event.reason) ? '' : event.message,
+});
+
+const buildEndpoint = (criteria: EventSearchCriteria) => {
+  const params = new URLSearchParams({
+    limit: `${EVENT_PAGE_SIZE}`,
+  });
+  const fieldSelectors: string[] = [];
+  if (criteria.kind) {
+    queryUtils.addQueryConditions(fieldSelectors, 'involvedObject.kind', [criteria.kind]);
+  }
+  if (criteria.name) {
+    queryUtils.addQueryConditions(fieldSelectors, 'involvedObject.name', [criteria.name]);
+  }
+  if (criteria.type !== 'all') {
+    queryUtils.addQueryConditions(fieldSelectors, 'type', [criteria.type]);
+  }
+
+  if (fieldSelectors.length > 0) {
+    params.set('fieldSelector', fieldSelectors.join(','));
+  }
+  return `events?${params.toString()}`;
+};
+
+const useEvents = (criteria: EventSearchCriteria, t: TFunction): UseEventsResult => {
+  const [events, setEvents] = React.useState<DisplayEvent[]>();
+  const [lastDate, setLastDate] = React.useState<number>(0);
+  const timeout = getTimeout(criteria.kind as ResourceKind | undefined);
+
+  const [eventList, isLoading, , refetch, isUpdating] = useFetchPeriodically<EventList>({
+    endpoint: buildEndpoint(criteria),
+    timeout,
+  });
+
+  const eventReasonTitles = React.useMemo(() => {
+    return getEventReasonTitles(t, criteria.kind || t('Resource'));
+  }, [t, criteria.kind]);
+
+  React.useEffect(() => {
+    setEvents(() => {
+      return (eventList?.items || []).map((event) => {
+        const reason = eventReasonTitles[event.reason];
+        return displayEventMapper(event, reason);
+      });
+    });
+    setLastDate(Date.now());
+  }, [criteria, eventList?.items, eventReasonTitles]);
+
+  return [events, isLoading, refetch, isUpdating, lastDate];
+};
+
+export default useEvents;

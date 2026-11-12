@@ -1,0 +1,25 @@
+[Unit]
+Description=Flight Control Database service
+PartOf=flightctl.target
+
+[Container]
+ContainerName=flightctl-db
+Environment=POSTGRESQL_DATABASE=flightctl POSTGRESQL_USER=flightctl_app POSTGRESQL_MASTER_USER=admin
+Environment=POSTGRESQL_MAX_CONNECTIONS=200
+Image={{ .Db.Image }}:{{ .Db.Tag }}
+Pull=missing
+Network=flightctl.network
+AddHost=%H:host-gateway
+Volume=flightctl-db:/var/lib/pgsql/data:Z
+Secret=flightctl-postgresql-password,type=env,target=PGPASSWORD
+Secret=flightctl-postgresql-master-password,type=env,target=POSTGRESQL_MASTER_PASSWORD
+Secret=flightctl-postgresql-user-password,type=env,target=POSTGRESQL_PASSWORD
+Volume=/usr/share/flightctl/flightctl-db/enable-superuser.sh:/usr/share/container-scripts/postgresql/start/enable-superuser.sh
+
+[Service]
+ExecStartPre=/usr/share/flightctl/init_db.sh
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=flightctl.target

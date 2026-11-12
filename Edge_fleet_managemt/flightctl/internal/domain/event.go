@@ -1,0 +1,279 @@
+package domain
+
+import (
+	"context"
+	"strconv"
+
+	v1beta1 "github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/consts"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
+	"github.com/samber/lo"
+)
+
+// ========== Resource Types ==========
+
+type Event = v1beta1.Event
+type EventList = v1beta1.EventList
+type EventSource = v1beta1.EventSource
+type EventDetails = v1beta1.EventDetails
+
+// ========== Event Enums ==========
+
+type EventReason = v1beta1.EventReason
+type EventType = v1beta1.EventType
+
+// Event type constants
+const (
+	EventTypeNormal  = v1beta1.Normal
+	EventTypeWarning = v1beta1.Warning
+
+	// Direct aliases for compatibility
+	Normal  = v1beta1.Normal
+	Warning = v1beta1.Warning
+)
+
+// Event reason constants
+const (
+	EventReasonDeviceApplicationDegraded          = v1beta1.EventReasonDeviceApplicationDegraded
+	EventReasonDeviceApplicationError             = v1beta1.EventReasonDeviceApplicationError
+	EventReasonDeviceApplicationHealthy           = v1beta1.EventReasonDeviceApplicationHealthy
+	EventReasonDeviceCPUCritical                  = v1beta1.EventReasonDeviceCPUCritical
+	EventReasonDeviceCPUNormal                    = v1beta1.EventReasonDeviceCPUNormal
+	EventReasonDeviceCPUWarning                   = v1beta1.EventReasonDeviceCPUWarning
+	EventReasonDeviceConflictPaused               = v1beta1.EventReasonDeviceConflictPaused
+	EventReasonDeviceConflictResolved             = v1beta1.EventReasonDeviceConflictResolved
+	EventReasonDeviceConnected                    = v1beta1.EventReasonDeviceConnected
+	EventReasonDeviceContentOutOfDate             = v1beta1.EventReasonDeviceContentOutOfDate
+	EventReasonDeviceContentUpToDate              = v1beta1.EventReasonDeviceContentUpToDate
+	EventReasonDeviceContentUpdating              = v1beta1.EventReasonDeviceContentUpdating
+	EventReasonDeviceDecommissionFailed           = v1beta1.EventReasonDeviceDecommissionFailed
+	EventReasonDeviceDecommissioned               = v1beta1.EventReasonDeviceDecommissioned
+	EventReasonDeviceDisconnected                 = v1beta1.EventReasonDeviceDisconnected
+	EventReasonDeviceDiskCritical                 = v1beta1.EventReasonDeviceDiskCritical
+	EventReasonDeviceDiskNormal                   = v1beta1.EventReasonDeviceDiskNormal
+	EventReasonDeviceDiskWarning                  = v1beta1.EventReasonDeviceDiskWarning
+	EventReasonDeviceIsRebooting                  = v1beta1.EventReasonDeviceIsRebooting
+	EventReasonDeviceMemoryCritical               = v1beta1.EventReasonDeviceMemoryCritical
+	EventReasonDeviceMemoryNormal                 = v1beta1.EventReasonDeviceMemoryNormal
+	EventReasonDeviceMemoryWarning                = v1beta1.EventReasonDeviceMemoryWarning
+	EventReasonDeviceMultipleOwnersDetected       = v1beta1.EventReasonDeviceMultipleOwnersDetected
+	EventReasonDeviceMultipleOwnersResolved       = v1beta1.EventReasonDeviceMultipleOwnersResolved
+	EventReasonDeviceSpecInvalid                  = v1beta1.EventReasonDeviceSpecInvalid
+	EventReasonDeviceSpecValid                    = v1beta1.EventReasonDeviceSpecValid
+	EventReasonDeviceUpdateFailed                 = v1beta1.EventReasonDeviceUpdateFailed
+	EventReasonDeviceVulnerabilityCVECritical     = v1beta1.EventReasonDeviceVulnerabilityCVECritical
+	EventReasonDeviceVulnerabilityCVEResolved     = v1beta1.EventReasonDeviceVulnerabilityCVEResolved
+	EventReasonDeviceVulnerabilityCVEWarning      = v1beta1.EventReasonDeviceVulnerabilityCVEWarning
+	EventReasonDeviceOSImageChanged               = v1beta1.EventReasonDeviceOSImageChanged
+	EventReasonDeviceLabelReconciliationRequested = v1beta1.EventReasonDeviceLabelReconciliationRequested
+	EventReasonEnrollmentCredentialRevoked        = v1beta1.EventReasonEnrollmentCredentialRevoked
+	EventReasonEnrollmentRequestApprovalFailed    = v1beta1.EventReasonEnrollmentRequestApprovalFailed
+	EventReasonEnrollmentRequestApproved          = v1beta1.EventReasonEnrollmentRequestApproved
+	EventReasonFleetInvalid                       = v1beta1.EventReasonFleetInvalid
+	EventReasonFleetRolloutBatchCompleted         = v1beta1.EventReasonFleetRolloutBatchCompleted
+	EventReasonFleetRolloutBatchDispatched        = v1beta1.EventReasonFleetRolloutBatchDispatched
+	EventReasonFleetRolloutCompleted              = v1beta1.EventReasonFleetRolloutCompleted
+	EventReasonFleetRolloutCreated                = v1beta1.EventReasonFleetRolloutCreated
+	EventReasonFleetRolloutDeviceSelected         = v1beta1.EventReasonFleetRolloutDeviceSelected
+	EventReasonFleetRolloutFailed                 = v1beta1.EventReasonFleetRolloutFailed
+	EventReasonFleetRolloutStarted                = v1beta1.EventReasonFleetRolloutStarted
+	EventReasonFleetValid                         = v1beta1.EventReasonFleetValid
+	EventReasonInternalTaskFailed                 = v1beta1.EventReasonInternalTaskFailed
+	EventReasonInternalTaskPermanentlyFailed      = v1beta1.EventReasonInternalTaskPermanentlyFailed
+	EventReasonDependencyChangeDetected           = v1beta1.EventReasonDependencyChangeDetected
+	EventReasonDependencySyncProbeFailed          = v1beta1.EventReasonDependencySyncProbeFailed
+	EventReasonReferencedRepositoryUpdated        = v1beta1.EventReasonReferencedRepositoryUpdated
+	EventReasonRepositoryAccessible               = v1beta1.EventReasonRepositoryAccessible
+	EventReasonRepositoryInaccessible             = v1beta1.EventReasonRepositoryInaccessible
+	EventReasonResourceCreated                    = v1beta1.EventReasonResourceCreated
+	EventReasonResourceCreationFailed             = v1beta1.EventReasonResourceCreationFailed
+	EventReasonResourceDeleted                    = v1beta1.EventReasonResourceDeleted
+	EventReasonResourceDeletionFailed             = v1beta1.EventReasonResourceDeletionFailed
+	EventReasonResourceSyncAccessible             = v1beta1.EventReasonResourceSyncAccessible
+	EventReasonResourceSyncCommitDetected         = v1beta1.EventReasonResourceSyncCommitDetected
+	EventReasonResourceSyncInaccessible           = v1beta1.EventReasonResourceSyncInaccessible
+	EventReasonResourceSyncParsed                 = v1beta1.EventReasonResourceSyncParsed
+	EventReasonResourceSyncParsingFailed          = v1beta1.EventReasonResourceSyncParsingFailed
+	EventReasonResourceSyncSyncFailed             = v1beta1.EventReasonResourceSyncSyncFailed
+	EventReasonResourceSyncSynced                 = v1beta1.EventReasonResourceSyncSynced
+	EventReasonResourceUpdateFailed               = v1beta1.EventReasonResourceUpdateFailed
+	EventReasonResourceUpdated                    = v1beta1.EventReasonResourceUpdated
+	EventReasonSystemRestored                     = v1beta1.EventReasonSystemRestored
+	EventReasonEncryptionMigrationStarted         = v1beta1.EventReasonEncryptionMigrationStarted
+	EventReasonEncryptionMigrationCompleted       = v1beta1.EventReasonEncryptionMigrationCompleted
+	EventReasonApplicationLifecycleChanged        = v1beta1.EventReasonApplicationLifecycleChanged
+	EventReasonPrepareDeltas                      = v1beta1.EventReasonPrepareDeltas
+	EventReasonDeltaGenerationProgress            = v1beta1.EventReasonDeltaGenerationProgress
+	EventReasonDeltaGenerationSucceeded           = v1beta1.EventReasonDeltaGenerationSucceeded
+	EventReasonDeltaGenerationFailed              = v1beta1.EventReasonDeltaGenerationFailed
+	EventReasonDeltaGenerationRejected            = v1beta1.EventReasonDeltaGenerationRejected
+	EventReasonDeltaGenerationCompleted           = v1beta1.EventReasonDeltaGenerationCompleted
+	EventReasonEnrollmentHookSucceeded            = v1beta1.EventReasonEnrollmentHookSucceeded
+	EventReasonEnrollmentHookFailed               = v1beta1.EventReasonEnrollmentHookFailed
+	EventReasonEnrollmentHookNotifyFailed         = v1beta1.EventReasonEnrollmentHookNotifyFailed
+	EventReasonEnrollmentHookManualOverride       = v1beta1.EventReasonEnrollmentHookManualOverride
+)
+
+const EventReasonGenerateDelta EventReason = "GenerateDelta"
+const EventReasonDeltaGenerationComplete EventReason = "DeltaGenerationComplete"
+const EventReasonDeltaPrepareComplete EventReason = "DeltaPrepareComplete"
+
+// ========== Event Details Types ==========
+
+type InternalTaskFailedDetails = v1beta1.InternalTaskFailedDetails
+type InternalTaskFailedDetailsDetailType = v1beta1.InternalTaskFailedDetailsDetailType
+type InternalTaskPermanentlyFailedDetails = v1beta1.InternalTaskPermanentlyFailedDetails
+type InternalTaskPermanentlyFailedDetailsDetailType = v1beta1.InternalTaskPermanentlyFailedDetailsDetailType
+type DependencyChangeDetectedDetails = v1beta1.DependencyChangeDetectedDetails
+type DependencyChangeDetectedDetailsDetailType = v1beta1.DependencyChangeDetectedDetailsDetailType
+type ReferencedRepositoryUpdatedDetails = v1beta1.ReferencedRepositoryUpdatedDetails
+type ReferencedRepositoryUpdatedDetailsDetailType = v1beta1.ReferencedRepositoryUpdatedDetailsDetailType
+type ResourceUpdatedDetails = v1beta1.ResourceUpdatedDetails
+type ResourceUpdatedDetailsDetailType = v1beta1.ResourceUpdatedDetailsDetailType
+type ResourceUpdatedDetailsUpdatedFields = v1beta1.ResourceUpdatedDetailsUpdatedFields
+type DeviceVulnerabilityCveDetails = v1beta1.DeviceVulnerabilityCveDetails
+type DeviceVulnerabilityCveDetailsDetailType = v1beta1.DeviceVulnerabilityCveDetailsDetailType
+type DependencySyncProbeFailedDetails = v1beta1.DependencySyncProbeFailedDetails
+type DependencySyncProbeFailedDetailsDetailType = v1beta1.DependencySyncProbeFailedDetailsDetailType
+type ApplicationLifecycleChangedDetails = v1beta1.ApplicationLifecycleChangedDetails
+type ApplicationLifecycleChangedDetailsDetailType = v1beta1.ApplicationLifecycleChangedDetailsDetailType
+type ApplicationLifecycleChangedDetailsAction = v1beta1.ApplicationLifecycleChangedDetailsAction
+type PrepareDeltasDetails = v1beta1.PrepareDeltasDetails
+type PrepareDeltasDetailsDetailType = v1beta1.PrepareDeltasDetailsDetailType
+type DeltaGenerationProgressDetails = v1beta1.DeltaGenerationProgressDetails
+type DeltaGenerationProgressDetailsDetailType = v1beta1.DeltaGenerationProgressDetailsDetailType
+type DeltaGenerationProgressDetailsGenerationStatus = v1beta1.DeltaGenerationProgressDetailsGenerationStatus
+
+const (
+	InternalTaskFailed                = v1beta1.InternalTaskFailed
+	InternalTaskPermanentlyFailed     = v1beta1.InternalTaskPermanentlyFailed
+	DependencyChangeDetected          = v1beta1.DependencyChangeDetected
+	DependencySyncProbeFailedDT       = v1beta1.DependencySyncProbeFailed
+	ReferencedRepositoryUpdated       = v1beta1.ReferencedRepositoryUpdated
+	ResourceUpdated                   = v1beta1.ResourceUpdated
+	ApplicationLifecycleChangedDT     = v1beta1.ApplicationLifecycleChangedDetailType
+	DeltaGenerationProgress           = v1beta1.DeltaGenerationProgress
+	DeltaGenerationProgressInProgress = v1beta1.DeltaGenerationProgressInProgress
+	DeltaGenerationProgressSucceeded  = v1beta1.DeltaGenerationProgressSucceeded
+	DeltaGenerationProgressFailed     = v1beta1.DeltaGenerationProgressFailed
+	DeltaGenerationProgressRejected   = v1beta1.DeltaGenerationProgressRejected
+
+	// Application lifecycle action constants
+	ApplicationLifecycleActionStop    = v1beta1.ApplicationLifecycleActionStop
+	ApplicationLifecycleActionStart   = v1beta1.ApplicationLifecycleActionStart
+	ApplicationLifecycleActionRestart = v1beta1.ApplicationLifecycleActionRestart
+
+	// Updated field constants with prefix (descriptive)
+	UpdatedFieldLabels                   = v1beta1.Labels
+	UpdatedFieldOwner                    = v1beta1.Owner
+	UpdatedFieldSpec                     = v1beta1.Spec
+	UpdatedFieldSpecSelector             = v1beta1.SpecSelector
+	UpdatedFieldSpecTemplate             = v1beta1.SpecTemplate
+	UpdatedFieldEnrollmentHooksCondition = v1beta1.StatusConditionsEnrollmentHooks
+
+	// Direct aliases for compatibility
+	Labels       = v1beta1.Labels
+	Owner        = v1beta1.Owner
+	Spec         = v1beta1.Spec
+	SpecSelector = v1beta1.SpecSelector
+	SpecTemplate = v1beta1.SpecTemplate
+)
+
+// ========== Utility Functions ==========
+
+// warningReasons contains all event reasons that should result in Warning events
+var warningReasons = map[EventReason]struct{}{
+	EventReasonResourceCreationFailed:          {},
+	EventReasonResourceUpdateFailed:            {},
+	EventReasonResourceDeletionFailed:          {},
+	EventReasonDeviceDecommissionFailed:        {},
+	EventReasonEnrollmentRequestApprovalFailed: {},
+	EventReasonDeviceApplicationDegraded:       {},
+	EventReasonDeviceApplicationError:          {},
+	EventReasonDeviceCPUCritical:               {},
+	EventReasonDeviceCPUWarning:                {},
+	EventReasonDeviceMemoryCritical:            {},
+	EventReasonDeviceMemoryWarning:             {},
+	EventReasonDeviceDiskCritical:              {},
+	EventReasonDeviceDiskWarning:               {},
+	EventReasonDeviceVulnerabilityCVECritical:  {},
+	EventReasonDeviceVulnerabilityCVEWarning:   {},
+	EventReasonDeviceDisconnected:              {},
+	EventReasonDeviceConflictPaused:            {},
+	EventReasonDeviceSpecInvalid:               {},
+	EventReasonFleetInvalid:                    {},
+	EventReasonDeviceMultipleOwnersDetected:    {},
+	EventReasonDeviceUpdateFailed:              {},
+	EventReasonInternalTaskFailed:              {},
+	EventReasonInternalTaskPermanentlyFailed:   {},
+	EventReasonResourceSyncInaccessible:        {},
+	EventReasonResourceSyncParsingFailed:       {},
+	EventReasonResourceSyncSyncFailed:          {},
+	EventReasonFleetRolloutFailed:              {},
+	EventReasonDependencySyncProbeFailed:       {},
+	EventReasonEnrollmentHookFailed:            {},
+	EventReasonEnrollmentHookNotifyFailed:      {},
+	EventReasonDeltaGenerationFailed:           {},
+}
+
+// GetEventType determines the event type based on the event reason
+func GetEventType(reason EventReason) EventType {
+	if _, contains := warningReasons[reason]; contains {
+		return EventTypeWarning
+	}
+	return EventTypeNormal
+}
+
+// GetBaseEvent creates a base event with common fields
+func GetBaseEvent(ctx context.Context, resourceKind ResourceKind, resourceName string, reason EventReason, message string, details *EventDetails) *Event {
+	var actorStr string
+	if actor := ctx.Value(consts.EventActorCtxKey); actor != nil {
+		actorStr = actor.(string)
+	}
+
+	var componentStr string
+	if component := ctx.Value(consts.EventSourceComponentCtxKey); component != nil {
+		componentStr = component.(string)
+	}
+
+	// Generate a UUID for the event name to ensure k8s compliance
+	eventName := uuid.New().String()
+
+	event := Event{
+		Metadata: ObjectMeta{
+			Name: lo.ToPtr(eventName),
+		},
+		InvolvedObject: ObjectReference{
+			Kind: string(resourceKind),
+			Name: resourceName,
+		},
+		Source: EventSource{
+			Component: componentStr,
+		},
+		Actor: actorStr,
+	}
+
+	// Add request ID to the event for correlation
+	if reqID := ctx.Value(middleware.RequestIDKey); reqID != nil {
+		event.Metadata.Annotations = &map[string]string{EventAnnotationRequestID: reqID.(string)}
+	}
+
+	event.Reason = reason
+	event.Message = message
+	event.Type = GetEventType(reason)
+	event.Details = details
+
+	return &event
+}
+
+// GetDeviceDeltaGenerationCompletedEvent identifies the spec generation whose
+// preparation completed, so a queued notification cannot resume a newer spec.
+func GetDeviceDeltaGenerationCompletedEvent(ctx context.Context, name string, generation int64) *Event {
+	event := GetBaseEvent(ctx, DeviceKind, name, EventReasonDeltaGenerationCompleted, "Delta generation completed.", nil)
+	if event.Metadata.Annotations == nil {
+		event.Metadata.Annotations = &map[string]string{}
+	}
+	(*event.Metadata.Annotations)[EventAnnotationDeltaGeneration] = strconv.FormatInt(generation, 10)
+	return event
+}

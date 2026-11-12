@@ -1,0 +1,70 @@
+{{- range .Values.deployments }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-{{ .name }}
+  labels:
+    app.kubernetes.io/name: {{ $.Chart.Name }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ .name }}
+spec:
+  replicas: {{ .replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $.Chart.Name }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ .name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $.Chart.Name }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        app.kubernetes.io/component: {{ .name }}
+    spec:
+      {{ if $.Values.initContainer.enabled }}
+      initContainers:
+        - name: {{ $.Chart.Name }}-init
+          image: {{ $.Values.initContainer.image | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          {{- include "test-app.containerSecurityContext" $ | nindent 10 }}
+          command: ["sh", "-c", "echo init complete"]
+      {{ end }}
+      containers:
+        - name: {{ $.Chart.Name }}
+          {{- $image := "" }}
+          {{- if $.Values.image.digest }}
+          {{- $image = printf "%s@%s" $.Values.image.repository $.Values.image.digest }}
+          {{- else }}
+          {{- $image = printf "%s:%s" $.Values.image.repository $.Values.image.tag }}
+          {{- end }}
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          {{- include "test-app.containerSecurityContext" $ | nindent 10 }}
+          env:
+            - name: MESSAGE
+              value: {{ quote .message }}
+          command:
+            - sh
+            - -c
+            {{- if .failOnStart }}
+            {{- if and .delayBeforeFail (gt (int .delayBeforeFail) 0) }}
+            - echo "$MESSAGE" && sleep {{ .delayBeforeFail }} && exit 1
+            {{- else }}
+            - echo "$MESSAGE" && exit 1
+            {{- end }}
+            {{- else }}
+            - echo "$MESSAGE" && sleep infinity
+            {{- end }}
+          {{- with .resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{ if $.Values.sidecar.enabled }}
+        - name: {{ $.Chart.Name }}-sidecar
+          image: {{ $.Values.sidecar.image | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          {{- include "test-app.containerSecurityContext" $ | nindent 10 }}
+          command: ["sh", "-c", "sleep infinity"]
+      {{ end }}
+{{- end }}

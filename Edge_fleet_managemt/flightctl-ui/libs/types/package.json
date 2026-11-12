@@ -1,0 +1,42 @@
+{
+  "name": "@flightctl/types",
+  "version": "0.0.0",
+  "description": "Types for Flightctl UI",
+  "repository": "https://github.com/flightctl/flightctl-ui.git",
+  "homepage": "https://github.com/flightctl/flightctl-ui.git",
+  "license": "MIT",
+  "private": false,
+  "exports": {
+    ".": {
+      "source": "./index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./imagebuilder": {
+      "source": "./imagebuilder/index.ts",
+      "types": "./dist/imagebuilder/index.d.ts",
+      "default": "./dist/imagebuilder/index.js"
+    },
+    "./alpha": {
+      "source": "./alpha/index.ts",
+      "types": "./dist/alpha/index.d.ts",
+      "default": "./dist/alpha/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "index.ts",
+    "imagebuilder"
+  ],
+  "scripts": {
+    "prebuild": "tsc --noEmit && rimraf dist",
+    "build": "tsc --build",
+    "gen-types": "node ./scripts/openapi-typescript.js && npm run build",
+    "fix-condition-type": "node ./scripts/fix-condition-type.js",
+    "fix-device-system-info": "node ./scripts/fix-device-system-info.js",
+    "ts-node": "ts-node -O '{\"module\":\"commonjs\"}'"
+  },
+  "devDependencies": {
+    "openapi-typescript-codegen": "^0.27.0"
+  }
+}

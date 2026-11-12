@@ -1,0 +1,565 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/flterrors"
+	"github.com/flightctl/flightctl/internal/store/model"
+	"github.com/google/uuid"
+	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+type IntegrationTestCallback func()
+
+// extInt requires P to be a pointer to M and to implement model.ResourceInterface,
+// so any model whose pointer implements model.ResourceInterface can be used here
+// without modifying this file.
+type extInt[M any] interface {
+	model.ResourceInterface
+	*M
+}
+
+// GenericStore provides generic CRUD operations for resources
+// P is a pointer to a model, for example: *model.Device
+// M is the model, for example: model.Device
+// A is the API resource, for example: domain.Device
+// AL is the API list, for example: domain.DeviceList
+type GenericStore[P extInt[M], M any, A any, AL any] struct {
+	dbHandler *gorm.DB
+	log       logrus.FieldLogger
+
+	// Conversion functions between API and model types
+	apiToModelPtr  func(*A) (P, error)
+	modelPtrToAPI  func(P, ...model.APIResourceOption) (*A, error)
+	listModelToAPI func([]M, *string, *int64) (AL, error)
+
+	// Callback for integration tests to inject logic
+	IntegrationTestCreateOrUpdateCallback IntegrationTestCallback
+}
+
+type Resource struct {
+	Table string
+	OrgID string
+	Name  string
+}
+
+func NewGenericStore[P extInt[M], M any, A any, AL any](
+	db *gorm.DB,
+	log logrus.FieldLogger,
+	apiToModelPtr func(*A) (P, error),
+	modelPtrToAPI func(P, ...model.APIResourceOption) (*A, error),
+	listModelToAPI func([]M, *string, *int64) (AL, error),
+) *GenericStore[P, M, A, AL] {
+	return &GenericStore[P, M, A, AL]{
+		dbHandler:                             db,
+		log:                                   log,
+		apiToModelPtr:                         apiToModelPtr,
+		modelPtrToAPI:                         modelPtrToAPI,
+		listModelToAPI:                        listModelToAPI,
+		IntegrationTestCreateOrUpdateCallback: func() {},
+	}
+}
+
+func (s *GenericStore[P, M, A, AL]) getDB(ctx context.Context) *gorm.DB {
+	return DB(ctx, s.dbHandler)
+}
+
+// Mutate runs the shared read-modify-write loop: load (or use previous once),
+// Wrap into ResourceMutation, Clone on update, apply, then PersistCreate or PersistUpdate.
+// Handlers should call type-store Mutate wrappers, not this method directly.
+func (s *GenericStore[P, M, A, AL]) Mutate(
+	ctx context.Context,
+	orgId uuid.UUID,
+	name string,
+	previous *A,
+	hooks MutateHooks[A],
+	apply ApplyFunc[A],
+) (updated *A, before *A, created bool, err error) {
+	if apply == nil {
+		return nil, nil, false, fmt.Errorf("mutate apply is required")
+	}
+	if hooks.Wrap == nil {
+		return nil, nil, false, fmt.Errorf("mutate Wrap hook is required")
+	}
+	if hooks.PersistUpdate == nil {
+		return nil, nil, false, fmt.Errorf("mutate PersistUpdate hook is required")
+	}
+	persistCreate := hooks.PersistCreate
+	if persistCreate == nil {
+		persistCreate = func(ctx context.Context, orgId uuid.UUID, m ResourceMutation[A]) (*A, error) {
+			return s.Create(ctx, orgId, m.Resource())
+		}
+	}
+
+	attempt := 0
+	err = RetryUpdate(func() (bool, error) {
+		usePrevious := attempt == 0 && previous != nil
+		attempt++
+		created = false
+
+		var current *A
+		creating := false
+		if usePrevious {
+			current = previous
+		} else if hooks.Load != nil {
+			apiResource, loadErr := hooks.Load(ctx, orgId, name)
+			if loadErr != nil {
+				return false, loadErr
+			}
+			if apiResource == nil {
+				creating = true
+				before = nil
+				current = nil
+			} else {
+				current = apiResource
+			}
+		} else {
+			existing, getErr := s.loadByName(ctx, orgId, name)
+			if getErr != nil {
+				return false, getErr
+			}
+			if existing == nil {
+				creating = true
+				before = nil
+				current = nil
+			} else {
+				apiResource, loadErr := s.modelPtrToAPI(existing)
+				if loadErr != nil {
+					return false, loadErr
+				}
+				current = apiResource
+			}
+		}
+
+		mutation := hooks.Wrap(current)
+		if mutation == nil {
+			return false, fmt.Errorf("mutate Wrap returned nil")
+		}
+		if !creating {
+			// Snapshot before via typed Clone so fields tagged json:"-" (e.g. Device
+			// Status.LastSeen) survive; CloneJSON alone would drop them and event
+			// callbacks would see a poisoned pre-mutation snapshot.
+			beforeMutation, snapErr := mutation.Clone()
+			if snapErr != nil {
+				return false, snapErr
+			}
+			before = beforeMutation.Resource()
+
+			cloned, cloneErr := mutation.Clone()
+			if cloneErr != nil {
+				return false, cloneErr
+			}
+			mutation = cloned
+		}
+
+		if applyErr := apply(mutation); applyErr != nil {
+			if errors.Is(applyErr, ErrMutateSkipWrite) {
+				updated = mutation.Resource()
+				return false, nil
+			}
+			return false, applyErr
+		}
+
+		s.IntegrationTestCreateOrUpdateCallback()
+
+		if creating {
+			if mutation.Resource() == nil {
+				return false, flterrors.ErrResourceIsNil
+			}
+			createdResource, createErr := persistCreate(ctx, orgId, mutation)
+			if createErr != nil {
+				if errors.Is(createErr, flterrors.ErrDuplicateName) {
+					return true, createErr
+				}
+				return false, createErr
+			}
+			updated = createdResource
+			created = true
+			return false, nil
+		}
+
+		retry, persistErr := hooks.PersistUpdate(ctx, orgId, name, before, mutation)
+		if persistErr != nil {
+			return retry, persistErr
+		}
+		updated = mutation.Resource()
+		return false, nil
+	}, lo.FromPtrOr(hooks.MaxRetries, retryIterations-1))
+	return updated, before, created, err
+}
+
+func (s *GenericStore[P, M, A, AL]) loadByName(ctx context.Context, orgId uuid.UUID, name string) (P, error) {
+	var existing M
+	result := s.getDB(ctx).Where("org_id = ? AND name = ?", orgId, name).Take(&existing)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, ErrorFromGormError(result.Error)
+	}
+	return &existing, nil
+}
+
+func (s *GenericStore[P, M, A, AL]) Create(ctx context.Context, orgId uuid.UUID, resource *A) (*A, error) {
+	updated, _, _, _, err := s.createOrUpdate(ctx, orgId, resource, nil, ModeCreateOnly, nil)
+	return updated, err
+}
+
+func (s *GenericStore[P, M, A, AL]) Update(ctx context.Context, orgId uuid.UUID, resource *A, fieldsToUnset []string, validationCallback func(ctx context.Context, before, after *A) error) (*A, *A, error) {
+	updated, before, _, err := retryCreateOrUpdate(func() (*A, *A, bool, bool, error) {
+		return s.createOrUpdate(ctx, orgId, resource, fieldsToUnset, ModeUpdateOnly, validationCallback)
+	})
+	return updated, before, err
+}
+
+func (s *GenericStore[P, M, A, AL]) CreateOrUpdate(ctx context.Context, orgId uuid.UUID, resource *A, fieldsToUnset []string, validationCallback func(ctx context.Context, before, after *A) error) (*A, *A, bool, error) {
+	return retryCreateOrUpdate(func() (*A, *A, bool, bool, error) {
+		return s.createOrUpdate(ctx, orgId, resource, fieldsToUnset, ModeCreateOrUpdate, validationCallback)
+	})
+}
+
+func (s *GenericStore[P, M, A, AL]) createOrUpdate(ctx context.Context, orgId uuid.UUID, resource *A, fieldsToUnset []string, mode CreateOrUpdateMode, validationCallback func(ctx context.Context, before, after *A) error) (*A, *A, bool, bool, error) {
+	if resource == nil {
+		return nil, nil, false, false, flterrors.ErrResourceIsNil
+	}
+
+	modelInst, err := s.apiToModelPtr(resource)
+	if err != nil {
+		return nil, nil, false, false, err
+	}
+	modelInst.SetOrgID(orgId)
+
+	existing, err := s.getExistingResource(ctx, orgId, modelInst)
+	if err != nil {
+		return nil, nil, false, false, err
+	}
+	exists := existing != nil
+	creating := !exists || P(existing).HasNilSpec()
+
+	var existingAPIResource *A
+	if existing != nil {
+		existingAPIResource, err = s.modelPtrToAPI(existing)
+		if err != nil {
+			return nil, nil, creating, false, err
+		}
+	}
+
+	if validationCallback != nil {
+		modifiedAPIResource, err := s.modelPtrToAPI(modelInst)
+		if err != nil {
+			return nil, nil, creating, false, err
+		}
+
+		err = validationCallback(ctx, existingAPIResource, modifiedAPIResource)
+		if err != nil {
+			return nil, nil, creating, false, err
+		}
+	}
+
+	if !creating && mode == ModeCreateOnly {
+		return nil, nil, creating, false, flterrors.ErrDuplicateName
+	}
+
+	if creating && mode == ModeUpdateOnly {
+		return nil, existingAPIResource, creating, false, flterrors.ErrResourceNotFound
+	}
+
+	s.IntegrationTestCreateOrUpdateCallback()
+
+	var retry bool
+	if !exists {
+		retry, err = s.createResource(ctx, modelInst)
+	} else {
+		retry, err = s.updateResource(ctx, existing, modelInst, fieldsToUnset)
+	}
+	if err != nil {
+		return nil, existingAPIResource, creating, retry, err
+	}
+
+	apiResource, err := s.modelPtrToAPI(modelInst)
+
+	return apiResource, existingAPIResource, creating, false, err
+}
+
+func (s *GenericStore[P, M, A, AL]) getExistingResource(ctx context.Context, orgId uuid.UUID, resource P) (*M, error) {
+	var existingResource M
+	query := s.getDB(ctx).Where("org_id = ?", orgId)
+	// TemplateVersion has a composite primary key (org_id, name, fleet_name); use all three for lookup.
+	if tv, ok := any(resource).(*model.TemplateVersion); ok {
+		query = query.Where("name = ? AND fleet_name = ?", tv.Name, tv.FleetName)
+	} else {
+		query = query.Where("name = ?", resource.GetName())
+	}
+	if err := query.Take(&existingResource).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, ErrorFromGormError(err)
+	}
+	return &existingResource, nil
+}
+
+func (s *GenericStore[P, M, A, AL]) createResource(ctx context.Context, resource P) (bool, error) {
+	resource.SetGeneration(lo.ToPtr(int64(1)))
+	resource.SetResourceVersion(lo.ToPtr(int64(1)))
+
+	result := s.getDB(ctx).Clauses(clause.Returning{}).Create(resource)
+	if result.Error != nil {
+		err := ErrorFromGormError(result.Error)
+		return err == flterrors.ErrDuplicateName || err == flterrors.ErrDuplicateOIDCProvider || err == flterrors.ErrDuplicateOAuth2Provider, err
+	}
+	return false, nil
+}
+
+func (s *GenericStore[P, M, A, AL]) updateResource(ctx context.Context, existing, resource P, fieldsToUnset []string) (bool, error) {
+	sameSpec := resource.HasSameSpecAs(existing)
+	if !sameSpec {
+		// Update the generation if the spec was updated
+		resource.SetGeneration(lo.ToPtr(lo.FromPtr(existing.GetGeneration()) + 1))
+	}
+
+	if resource.GetResourceVersion() != nil &&
+		lo.FromPtr(existing.GetResourceVersion()) != lo.FromPtr(resource.GetResourceVersion()) {
+		return false, flterrors.ErrResourceVersionConflict
+	}
+
+	resource.SetResourceVersion(lo.ToPtr(lo.FromPtr(existing.GetResourceVersion()) + 1))
+
+	selectFields := []string{"spec"}
+	if resource.GetKind() == domain.DeviceKind {
+		selectFields = append(selectFields, "alias")
+	}
+	selectFields = append(selectFields, resource.GetNonNilFieldsFromResource()...)
+	selectFields = append(selectFields, fieldsToUnset...)
+
+	query := s.getDB(ctx).Model(resource).
+		Where("org_id = ? AND name = ? AND (resource_version IS NULL OR resource_version = ?)",
+			resource.GetOrgID(),
+			resource.GetName(),
+			lo.FromPtr(existing.GetResourceVersion())).
+		Select(selectFields)
+
+	result := query.Clauses(clause.Returning{}).Updates(resource)
+	if result.Error != nil {
+		return false, ErrorFromGormError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return true, flterrors.ErrNoRowsUpdated
+	}
+
+	// Merge preserved fields from existing into resource
+	// Fields that are nil in resource weren't included in the update (not in selectFields),
+	// so they're preserved from existing. Copy them to resource so the returned model
+	// accurately reflects the database state.
+	// However, don't preserve fields that are explicitly being unset via fieldsToUnset.
+	if resource.GetOwner() == nil && !lo.Contains(fieldsToUnset, "owner") {
+		resource.SetOwner(existing.GetOwner())
+	}
+	// Preserve annotations if they were nil (not updated)
+	if resource.GetAnnotations() == nil && !lo.Contains(fieldsToUnset, "annotations") {
+		resource.SetAnnotations(existing.GetAnnotations())
+	}
+	if resource.GetLabels() == nil && !lo.Contains(fieldsToUnset, "labels") {
+		resource.SetLabels(existing.GetLabels())
+	}
+
+	return false, nil
+}
+
+func (s *GenericStore[P, M, A, AL]) Get(ctx context.Context, orgId uuid.UUID, name string) (*A, error) {
+	var resource M
+	result := s.getDB(ctx).Where("org_id = ? AND name = ? AND spec IS NOT NULL", orgId, name).Take(&resource)
+	if result.Error != nil {
+		return nil, ErrorFromGormError(result.Error)
+	}
+
+	apiResource, err := s.modelPtrToAPI(&resource)
+	return apiResource, err
+}
+
+func (s *GenericStore[P, M, A, AL]) Delete(ctx context.Context, resource M, associatedResources ...Resource) (bool, error) {
+	var deleted bool
+	var err error
+
+	if len(associatedResources) == 0 {
+		deleted, err = s.delete(ctx, resource)
+	} else {
+		deleted, err = s.deleteWithAssociated(ctx, resource, associatedResources...)
+	}
+	if err != nil {
+		return false, err
+	}
+
+	return deleted, nil
+}
+
+func (s *GenericStore[P, M, A, AL]) delete(ctx context.Context, resource M) (bool, error) {
+	result := s.getDB(ctx).Unscoped().Where("spec IS NOT NULL").Delete(&resource)
+	if result.Error != nil {
+		return false, ErrorFromGormError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func (s *GenericStore[P, M, A, AL]) deleteWithAssociated(ctx context.Context, resource M, associatedResources ...Resource) (bool, error) {
+	deleted := false
+	err := s.getDB(ctx).Transaction(func(innerTx *gorm.DB) (err error) {
+		result := innerTx.Unscoped().Delete(&resource)
+		if result.Error != nil {
+			return ErrorFromGormError(result.Error)
+		}
+		if result.RowsAffected != 0 {
+			deleted = true
+		}
+
+		for _, associatedResource := range associatedResources {
+			if err := innerTx.Unscoped().
+				Table(associatedResource.Table).
+				Where("org_id = ? AND name = ? AND spec IS NOT NULL", associatedResource.OrgID, associatedResource.Name).
+				Delete(nil).Error; err != nil {
+				return ErrorFromGormError(err)
+			}
+		}
+
+		return nil
+	})
+
+	return deleted, err
+}
+
+func (s *GenericStore[P, M, A, AL]) UpdateStatus(ctx context.Context, orgId uuid.UUID, resource *A) (*A, error) {
+	if resource == nil {
+		return nil, flterrors.ErrResourceIsNil
+	}
+
+	model, err := s.apiToModelPtr(resource)
+	if err != nil {
+		return nil, err
+	}
+
+	json, err := model.GetStatusAsJson()
+	if err != nil {
+		return nil, err
+	}
+
+	result := s.getDB(ctx).Model(model).Where("org_id = ? AND name = ?", orgId, model.GetName()).Clauses(clause.Returning{}).Updates(
+		map[string]interface{}{
+			"status":           json,
+			"resource_version": gorm.Expr("resource_version + 1"),
+		})
+	if err := ErrorFromGormError(result.Error); err != nil {
+		return nil, err
+	}
+
+	apiResource, err := s.modelPtrToAPI(model)
+	if err != nil {
+		return nil, err
+	}
+	return apiResource, nil
+}
+
+func hasSpecColumn[M any]() bool {
+	switch any(new(M)).(type) {
+	case *model.Event:
+		return false
+	default:
+		return true
+	}
+}
+
+// ListQueryModifier adds resource-specific predicates to a generic list query.
+// The modifier is applied to both the result query and the count query used for
+// continuation tokens.
+type ListQueryModifier func(*gorm.DB) *gorm.DB
+
+func (s *GenericStore[P, M, A, AL]) List(ctx context.Context, orgId uuid.UUID, listParams ListParams) (*AL, error) {
+	return s.ListWithQuery(ctx, orgId, listParams, nil)
+}
+
+func (s *GenericStore[P, M, A, AL]) ListWithQuery(ctx context.Context, orgId uuid.UUID, listParams ListParams, modify ListQueryModifier) (*AL, error) {
+	var resourceList []M
+	var nextContinue *string
+	var numRemaining *int64
+
+	var resource M
+	query, err := ListQuery(&resource).Build(ctx, s.getDB(ctx), orgId, listParams)
+	if err != nil {
+		return nil, err
+	}
+
+	if listParams.Limit > 0 {
+		// Request 1 more than the user asked for to see if we need to return "continue"
+		query = AddPaginationToQuery(query, listParams.Limit+1, listParams.Continue, listParams)
+	}
+	if hasSpecColumn[M]() {
+		query = query.Where("spec IS NOT NULL")
+	}
+	if modify != nil {
+		query = modify(query)
+	}
+
+	result := query.Find(&resourceList)
+	if result.Error != nil {
+		return nil, ErrorFromGormError(result.Error)
+	}
+
+	// If we got more than the user requested, remove one record and calculate "continue"
+	if listParams.Limit > 0 && len(resourceList) > listParams.Limit {
+		lastIndex := len(resourceList) - 1
+		lastItem := resourceList[lastIndex]
+		columns, _, _ := getSortColumns(listParams)
+
+		// Build values for continue token
+		continueValues := make([]string, len(columns))
+		for i, col := range columns {
+			switch col {
+			case SortByName:
+				continueValues[i] = P(&lastItem).GetName()
+			case SortByCreatedAt:
+				continueValues[i] = P(&lastItem).GetTimestamp().Format(time.RFC3339Nano)
+			default:
+				// Handle unsupported columns
+				continueValues[i] = ""
+			}
+		}
+
+		resourceList = resourceList[:lastIndex]
+
+		var numRemainingVal int64
+		if listParams.Continue != nil {
+			numRemainingVal = listParams.Continue.Count - int64(listParams.Limit)
+			if numRemainingVal < 1 {
+				numRemainingVal = 1
+			}
+		} else {
+			countQuery, err := ListQuery(&resource).Build(ctx, s.getDB(ctx), orgId, listParams)
+			if err != nil {
+				return nil, err
+			}
+			if hasSpecColumn[M]() {
+				countQuery = countQuery.Where("spec IS NOT NULL")
+			}
+			if modify != nil {
+				countQuery = modify(countQuery)
+			}
+			numRemainingVal = CountRemainingItems(countQuery, continueValues, listParams)
+		}
+
+		nextContinue = BuildContinueString(continueValues, numRemainingVal)
+		numRemaining = &numRemainingVal
+	}
+
+	apiList, err := s.listModelToAPI(resourceList, nextContinue, numRemaining)
+	return &apiList, err
+}

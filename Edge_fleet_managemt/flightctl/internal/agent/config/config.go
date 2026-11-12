@@ -1,0 +1,721 @@
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"maps"
+	"net"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/flightctl/flightctl/internal/agent/client"
+	mgmtcertcommon "github.com/flightctl/flightctl/internal/agent/device/certmanager/provider/management/common"
+	"github.com/flightctl/flightctl/internal/agent/device/fileio"
+	"github.com/flightctl/flightctl/internal/agent/device/spec/audit"
+	systeminfocommon "github.com/flightctl/flightctl/internal/agent/device/systeminfo/common"
+	baseclient "github.com/flightctl/flightctl/internal/client"
+	"github.com/flightctl/flightctl/internal/config"
+	"github.com/flightctl/flightctl/internal/util"
+	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
+	"sigs.k8s.io/yaml"
+)
+
+const (
+	// DefaultSpecFetchInterval is the default interval between two reads of the remote device spec
+	DefaultSpecFetchInterval = util.Duration(60 * time.Second)
+	// DefaultStatusUpdateInterval is the default interval between two status updates
+	DefaultStatusUpdateInterval = util.Duration(60 * time.Second)
+	// DefaultSpecFetchErrorBaseDelay is the initial backoff after a failed /rendered poll
+	DefaultSpecFetchErrorBaseDelay = util.Duration(5 * time.Second)
+	// DefaultSpecFetchErrorMaxDelay caps exponential backoff after failed /rendered polls
+	DefaultSpecFetchErrorMaxDelay = util.Duration(5 * time.Minute)
+	// DefaultEnrollmentVerifyInterval is the default initial interval between checks for
+	// enrollment approval while the agent waits to be enrolled.
+	DefaultEnrollmentVerifyInterval = util.Duration(10 * time.Second)
+	// DefaultEnrollmentVerifyCap is the default maximum interval the enrollment-verify
+	// backoff can grow to (see agent.go's enrollment backoff). Matches the pre-config
+	// hardcoded Cap of 1m.
+	DefaultEnrollmentVerifyCap = util.Duration(1 * time.Minute)
+	// DefaultEnrollmentVerifySteps is the default number of enrollment-verify backoff
+	// steps attempted before the agent gives up waiting for enrollment approval and
+	// lets systemd restart it (see agent.go's enrollment backoff). Matches the
+	// pre-config hardcoded Steps of 6.
+	DefaultEnrollmentVerifySteps = 6
+
+	// DefaultPreEnrollmentFailurePolicy is the default failure policy for pre-enrollment hooks.
+	DefaultPreEnrollmentFailurePolicy = "Continue"
+	// DefaultSystemInfoTimeout is the default timeout for collecting system info
+	DefaultSystemInfoTimeout = util.Duration(2 * time.Minute)
+	// MaxSystemInfoTimeout is the maximum timeout for collecting system info
+	MaxSystemInfoTimeout = util.Duration(2 * time.Minute)
+	// DefaultPullRetrySteps is the default retry attempts are allowed for pulling an OCI target.
+	DefaultPullRetrySteps = 6
+	// DefaultPullTimeout is the default timeout for pulling a single OCI
+	// targets. Pull Timeout can not be greater that the prefetch timeout.
+	DefaultPullTimeout = util.Duration(10 * time.Minute)
+	// MinSyncInterval is the minimum interval allowed for the spec fetch and status update
+	MinSyncInterval = util.Duration(2 * time.Second)
+	// DefaultConfigDir is the default directory where the device's configuration is stored
+	DefaultConfigDir = "/etc/flightctl"
+	// DefaultConfigFile is the default path to the agent's configuration file
+	DefaultConfigFile = DefaultConfigDir + "/config.yaml"
+	// DefaultDataDir is the default directory where the device's data is stored
+	DefaultDataDir = "/var/lib/flightctl"
+	// SystemInfoCustomScriptDir is the directory where custom system info scripts are stored.
+	SystemInfoCustomScriptDir = "/usr/lib/flightctl/custom-info.d"
+	// DefaultCertsDir is the default directory where the device's certificates are stored
+	DefaultCertsDirName = "certs"
+	// DefaultManagementEndpoint is the default address of the device management server
+	DefaultManagementEndpoint = "https://localhost:7443"
+	// DefaultRemoteAccessEndpoint is the default address of the flightctl-remote-access gRPC server
+	DefaultRemoteAccessEndpoint = "https://localhost:7444"
+	// name of the CA bundle file
+	CacertFile = "ca.crt"
+	// GeneratedCertFile is the name of the cert file which is generated as the result of enrollment
+	GeneratedCertFile = "agent.crt"
+	// name of the agent's key file
+	KeyFile = "agent.key"
+	// CSRFile is the name of the persisted CSR file (temporary, deleted after enrollment)
+	CSRFile = "agent.csr"
+	// name of the enrollment certificate file
+	EnrollmentCertFile = "client-enrollment.crt"
+	// name of the enrollment key file
+	EnrollmentKeyFile = "client-enrollment.key"
+	// DefaultTPMDevicePath is the default TPM device path
+	DefaultTPMDevicePath = "/dev/tpm0"
+	// DefaultTPMKeyFile is the default filename for TPM key persistence
+	DefaultTPMKeyFile = "tpm-blob.yaml"
+	// TestRootDirEnvKey is the environment variable key used to set the file system root when testing.
+	TestRootDirEnvKey = "FLIGHTCTL_TEST_ROOT_DIR"
+	// DefaultMetricsEnabled controls whether Prometheus metrics are enabled by default.
+	DefaultMetricsEnabled = false
+	// DefaultProfilingEnabled controls whether runtime profiling (pprof) is enabled by default.
+	DefaultProfilingEnabled = false
+)
+
+var testRootDirWarningOnce sync.Once
+
+type Config struct {
+	config.ServiceConfig
+
+	// ConfigDir is the directory where the device's configuration is stored
+	ConfigDir string `json:"-"`
+	// DataDir is the directory where the device's data is stored
+	DataDir string `json:"-"`
+
+	// SpecFetchInterval is the interval between two reads of the remote device spec
+	// This field is deprecated and will be removed in a future release. The functionality
+	// is controlled by the server rendered wait timeout.
+	SpecFetchInterval util.Duration `json:"spec-fetch-interval,omitempty"`
+	// SpecFetchErrorBaseDelay is the initial delay after a failed /rendered poll before retrying.
+	// Subsequent failures double this delay up to SpecFetchErrorMaxDelay.
+	SpecFetchErrorBaseDelay util.Duration `json:"spec-fetch-error-base-delay,omitempty"`
+	// SpecFetchErrorMaxDelay is the maximum delay between /rendered retries after repeated failures.
+	SpecFetchErrorMaxDelay util.Duration `json:"spec-fetch-error-max-delay,omitempty"`
+	// StatusUpdateInterval is the interval between two status updates
+	StatusUpdateInterval util.Duration `json:"status-update-interval,omitempty"`
+	// StatusUpdateJitter is the maximum random delay before the first status push after
+	// agent start. The delay is chosen uniformly in [0, StatusUpdateJitter). Zero disables
+	// jitter (immediate first push). Nil means omitted; Complete() sets it from
+	// StatusUpdateInterval. A pointer preserves explicit zero through drop-in merges.
+	StatusUpdateJitter *util.Duration `json:"status-update-jitter,omitempty"`
+	// EnrollmentVerifyInterval is the initial interval between checks for enrollment
+	// approval. Retries back off from this value (see agent.go's enrollment backoff).
+	EnrollmentVerifyInterval util.Duration `json:"enrollment-verify-interval,omitempty"`
+	// EnrollmentVerifyCap is the maximum interval the enrollment-verify backoff can
+	// grow to (see agent.go's enrollment backoff).
+	EnrollmentVerifyCap util.Duration `json:"enrollment-verify-cap,omitempty"`
+	// EnrollmentVerifySteps is the number of enrollment-verify backoff steps
+	// attempted before the agent gives up waiting for enrollment approval and lets
+	// systemd restart it (see agent.go's enrollment backoff).
+	EnrollmentVerifySteps int `json:"enrollment-verify-steps,omitempty"`
+
+	// TPM holds all TPM-related configuration
+	TPM TPM `json:"tpm,omitempty"`
+
+	// AuditLog holds all audit logging configuration
+	AuditLog audit.AuditConfig `json:"audit,omitempty"`
+
+	// LogLevel is the level of logging. can be:  "panic", "fatal", "error", "warn"/"warning",
+	// "info", "debug" or "trace", any other will be treated as "info"
+	LogLevel string `json:"log-level,omitempty"`
+	// LogPrefix is the log prefix used for testing
+	LogPrefix string `json:"log-prefix,omitempty"`
+
+	// testRootDir is the root directory of the test agent
+	testRootDir string
+	// enrollmentMetricsCallback is a callback to report metrics about the enrollment process.
+	enrollmentMetricsCallback client.RPCMetricsCallback
+
+	// managementMetricsCallback is a callback to report metrics about the management process.
+	managementMetricsCallback client.RPCMetricsCallback
+
+	// managementCertMetricsCallback observes management certificate events for metrics.
+	managementCertMetricsCallback mgmtcertcommon.ManagementCertMetricsCallback
+
+	// DefaultLabels are automatically applied to this device when the agent is enrolled in a service
+	DefaultLabels map[string]string `json:"default-labels,omitempty"`
+
+	// LabelFromSystemInfo maps label names to systemInfo field names.
+	// Labels are populated at enrollment time from the device systemInfo.
+	// Supports both built-in fields and customInfo fields.
+	// Format: {"labelName": "fieldName"} for built-in, {"labelName": "customInfo.fieldName"} for custom.
+	// Example: {"alias": "hostname", "arch": "architecture", "site": "customInfo.siteId"}
+	// These labels are merged with DefaultLabels, with DefaultLabels taking precedence on conflicts.
+	// If no label with key "alias" is specified, the agent automatically adds alias=hostname.
+	LabelFromSystemInfo map[string]string `json:"label-from-systeminfo,omitempty"`
+
+	// SystemInfo lists built-in system information keys to collect.
+	SystemInfo []string `json:"system-info,omitempty"`
+
+	// SystemInfoCustom defines keys used to collect custom system information.
+	// A nil slice discovers all executable scripts; an empty slice disables custom
+	// collection; a wildcard discovers all scripts; other values select named keys.
+	// Each key should match the name of an executable script in the custom info directory.
+	// The script must output a single string, which will be included in device.status.systemInfo.CustomInfo.
+	//
+	// Keys must be camelCase with no spaces or special characters.
+	// Script filenames may be camelCase or lowercase.
+	SystemInfoCustom []string `json:"system-info-custom,omitempty"`
+
+	// SystemInfoTimeout is the timeout for collecting system info.
+	SystemInfoTimeout util.Duration `json:"system-info-timeout,omitempty"`
+
+	// SystemInfoPeriodic configures independent periodic systeminfo collection.
+	SystemInfoPeriodic SystemInfoPeriodicConfig `json:"system-info-periodic,omitempty"`
+
+	// PullTimeout is the max duration a single OCI target will try to pull.
+	PullTimeout util.Duration `json:"pull-timeout,omitempty"`
+
+	// PullRetrySteps defines how many retry attempts are allowed for pulling an OCI target.
+	PullRetrySteps int `json:"pull-retry-steps,omitempty"`
+
+	// MetricsEnabled enables the loopback-only Prometheus /metrics endpoint for local observability.
+	MetricsEnabled bool `json:"metrics-enabled,omitempty"`
+
+	// ProfilingEnabled turns on the loopback-only pprof server for local debugging.
+	ProfilingEnabled bool `json:"profiling-enabled,omitempty"`
+
+	// ImagePruning holds all image/artifact pruning-related configuration
+	ImagePruning ImagePruning `json:"image-pruning,omitempty"`
+
+	// Enrollment holds enrollment-related agent settings.
+	Enrollment EnrollmentConfig `json:"enrollment,omitempty"`
+
+	// Warnings collects non-fatal issues encountered during config loading
+	// (e.g., skipped drop-ins) so they can be surfaced in device status.
+	Warnings []string `json:"-"`
+
+	readWriter fileio.ReadWriter
+}
+
+type TPM struct {
+	// Enabled indicates whether to use TPM for device identity.
+	Enabled bool `json:"enabled,omitempty"`
+	// DevicePath is the path to the TPM device.
+	DevicePath string `json:"device-path,omitempty"`
+	// Auth indicates whether the TPM owner hierarchy will be set by password.
+	AuthEnabled bool `json:"auth-enabled,omitempty"`
+	// StorageFilePath specifies the file path for TPM key storage.
+	StorageFilePath string `json:"storage-file-path,omitempty"`
+}
+
+type ImagePruning struct {
+	// Enabled controls whether automatic pruning is enabled.
+	// Default: false
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// PreEnrollmentConfig holds pre-enrollment hook behavior settings.
+type PreEnrollmentConfig struct {
+	// FailurePolicy controls behavior when BeforeEnrolling hooks fail.
+	// "Continue" (default): submit ER with preEnrollment.success=false.
+	// "Block": retry hooks with backoff (cap 5m); never submit ER until success.
+	FailurePolicy string `json:"failurePolicy,omitempty"`
+}
+
+// EnrollmentConfig groups enrollment-related agent settings.
+type EnrollmentConfig struct {
+	PreEnrollment PreEnrollmentConfig `json:"preEnrollment,omitempty"`
+}
+
+// SystemInfoPeriodicConfig configures periodic systeminfo collection.
+type SystemInfoPeriodicConfig struct {
+	// Interval is the collection interval for periodic systeminfo gathering.
+	// When zero or absent, the agent falls back to StatusUpdateInterval.
+	Interval util.Duration `json:"interval,omitempty"`
+}
+
+// DefaultSystemInfo defines the list of system information keys that are included
+// in the default system info status report generated by the agent.
+var DefaultSystemInfo = append([]string{
+	systeminfocommon.HostnameKey,
+	systeminfocommon.KernelKey,
+	systeminfocommon.DistroNameKey,
+	systeminfocommon.DistroVersionKey,
+	systeminfocommon.DistroIdKey,
+	systeminfocommon.ProductNameKey,
+	systeminfocommon.ProductUUIDKey,
+	systeminfocommon.ProductSerialKey,
+	systeminfocommon.NetInterfaceDefaultKey,
+	systeminfocommon.NetIPDefaultKey,
+	systeminfocommon.NetMACDefaultKey,
+}, systeminfocommon.RuntimeKeys()...)
+
+func NewDefault() *Config {
+	c := &Config{
+		ConfigDir:                DefaultConfigDir,
+		DataDir:                  DefaultDataDir,
+		StatusUpdateInterval:     DefaultStatusUpdateInterval,
+		SpecFetchInterval:        DefaultSpecFetchInterval,
+		SpecFetchErrorBaseDelay:  DefaultSpecFetchErrorBaseDelay,
+		SpecFetchErrorMaxDelay:   DefaultSpecFetchErrorMaxDelay,
+		EnrollmentVerifyInterval: DefaultEnrollmentVerifyInterval,
+		EnrollmentVerifyCap:      DefaultEnrollmentVerifyCap,
+		EnrollmentVerifySteps:    DefaultEnrollmentVerifySteps,
+		readWriter:               fileio.NewReadWriter(fileio.NewReader(), fileio.NewWriter()),
+		LogLevel:                 logrus.InfoLevel.String(),
+		DefaultLabels:            make(map[string]string),
+		LabelFromSystemInfo:      make(map[string]string),
+		ServiceConfig:            config.NewServiceConfig(),
+		SystemInfo:               DefaultSystemInfo,
+		SystemInfoTimeout:        DefaultSystemInfoTimeout,
+		PullTimeout:              DefaultPullTimeout,
+		PullRetrySteps:           DefaultPullRetrySteps,
+		MetricsEnabled:           DefaultMetricsEnabled,
+		ProfilingEnabled:         DefaultProfilingEnabled,
+		TPM: TPM{
+			Enabled:         false,
+			AuthEnabled:     false,
+			DevicePath:      DefaultTPMDevicePath,
+			StorageFilePath: filepath.Join(DefaultDataDir, DefaultTPMKeyFile),
+		},
+		AuditLog: *audit.NewDefaultAuditConfig(),
+		ImagePruning: ImagePruning{
+			Enabled: lo.ToPtr(false),
+		},
+	}
+
+	if value := os.Getenv(TestRootDirEnvKey); value != "" {
+		testRootDirWarningOnce.Do(func() {
+			fmt.Fprintf(os.Stderr, "WARNING: Setting testRootDir is intended for testing only. Do not use in production.\n")
+		})
+		c.testRootDir = filepath.Clean(value)
+	}
+
+	c.readWriter = fileio.NewReadWriter(
+		fileio.NewReader(fileio.WithReaderRootDir(c.testRootDir)),
+		fileio.NewWriter(fileio.WithWriterRootDir(c.testRootDir)),
+	)
+
+	return c
+}
+
+func (cfg *Config) GetTestRootDir() string {
+	return cfg.testRootDir
+}
+
+// Some files are handled from the crypto modules that don't work with our device fileio
+// and need to know the real paths
+// TODO: potentially unify all file writer/readers under some mockable interface
+func (cfg *Config) PathFor(filePath string) string {
+	return path.Join(cfg.testRootDir, filePath)
+}
+
+func (cfg *Config) SetEnrollmentMetricsCallback(cb client.RPCMetricsCallback) {
+	cfg.enrollmentMetricsCallback = cb
+}
+
+func (cfg *Config) GetEnrollmentMetricsCallback() client.RPCMetricsCallback {
+	return cfg.enrollmentMetricsCallback
+}
+
+func (cfg *Config) SetManagementMetricsCallback(cb client.RPCMetricsCallback) {
+	cfg.managementMetricsCallback = cb
+}
+
+func (cfg *Config) GetManagementMetricsCallback() client.RPCMetricsCallback {
+	return cfg.managementMetricsCallback
+}
+
+func (cfg *Config) SetManagementCertMetricsCallback(cb mgmtcertcommon.ManagementCertMetricsCallback) {
+	cfg.managementCertMetricsCallback = cb
+}
+
+func (cfg *Config) GetManagementCertMetricsCallback() mgmtcertcommon.ManagementCertMetricsCallback {
+	return cfg.managementCertMetricsCallback
+}
+
+// SystemInfoCollectionInterval returns the effective collection interval
+// for periodic systeminfo gathering. If system-info-periodic.interval is
+// configured, it is used; otherwise StatusUpdateInterval is the fallback.
+func (cfg *Config) SystemInfoCollectionInterval() util.Duration {
+	if cfg.SystemInfoPeriodic.Interval > 0 {
+		return cfg.SystemInfoPeriodic.Interval
+	}
+	return cfg.StatusUpdateInterval
+}
+
+// Complete fills in defaults for fields not set by the config file
+func (cfg *Config) Complete() error {
+	// If the enrollment service hasn't been specified, attempt using the default local dev env.
+	emptyEnrollmentService := config.EnrollmentService{}
+	if cfg.EnrollmentService.Equal(&emptyEnrollmentService) {
+		cfg.EnrollmentService = config.EnrollmentService{Config: *baseclient.NewDefault()}
+		cfg.EnrollmentService.Service = baseclient.Service{
+			Server:               DefaultManagementEndpoint,
+			CertificateAuthority: filepath.Join(cfg.ConfigDir, DefaultCertsDirName, CacertFile),
+		}
+		cfg.EnrollmentService.AuthInfo = baseclient.AuthInfo{
+			ClientCertificate: filepath.Join(cfg.DataDir, DefaultCertsDirName, EnrollmentCertFile),
+			ClientKey:         filepath.Join(cfg.DataDir, DefaultCertsDirName, EnrollmentKeyFile),
+		}
+		cfg.EnrollmentService.EnrollmentUIEndpoint = DefaultManagementEndpoint
+	}
+	// If the enrollment UI endpoint hasn't been specified, attempt using the same endpoint as the enrollment service.
+	if cfg.EnrollmentService.EnrollmentUIEndpoint == "" {
+		cfg.EnrollmentService.EnrollmentUIEndpoint = cfg.EnrollmentService.Config.Service.Server
+	}
+	// If the management service hasn't been specified, attempt using the same endpoint as the enrollment service,
+	// but clear the auth info.
+	emptyManagementService := config.ManagementService{}
+	if cfg.ManagementService.Equal(&emptyManagementService) {
+		cfg.ManagementService.Config = *cfg.EnrollmentService.Config.DeepCopy()
+		cfg.ManagementService.Config.AuthInfo = baseclient.AuthInfo{}
+	}
+	// If the remote-access service hasn't been specified, derive it from the enrollment service,
+	// keeping the same TLS config.
+	emptyRemoteAccessService := config.RemoteAccessService{}
+	if cfg.RemoteAccessService.Equal(&emptyRemoteAccessService) {
+		remoteAccessServer, err := deriveRemoteAccessServer(cfg.EnrollmentService.Config.Service.Server)
+		if err != nil {
+			return fmt.Errorf("deriving remote-access service endpoint: %w", err)
+		}
+		cfg.RemoteAccessService.Config = *cfg.EnrollmentService.Config.DeepCopy()
+		cfg.RemoteAccessService.Config.AuthInfo = baseclient.AuthInfo{}
+		cfg.RemoteAccessService.Config.Service.Server = remoteAccessServer
+	}
+	if cfg.StatusUpdateJitter == nil {
+		jitter := cfg.StatusUpdateInterval
+		cfg.StatusUpdateJitter = &jitter
+	}
+	if cfg.Enrollment.PreEnrollment.FailurePolicy == "" {
+		cfg.Enrollment.PreEnrollment.FailurePolicy = DefaultPreEnrollmentFailurePolicy
+	}
+	switch cfg.Enrollment.PreEnrollment.FailurePolicy {
+	case "Continue", "Block":
+	default:
+		return fmt.Errorf("invalid enrollment.preEnrollment.failurePolicy %q: must be Continue or Block", cfg.Enrollment.PreEnrollment.FailurePolicy)
+	}
+	return nil
+}
+
+// deriveRemoteAccessServer derives the flightctl-remote-access gRPC URL from the enrollment
+// service URL.
+//
+// When the hostname doesn't have the agent-api prefix (Podman/Quadlet, where agent-api and
+// remote-access share one hostname on distinct hardcoded ports), the port always becomes the
+// remote-access gRPC port (7444).
+//
+// When the hostname has the agent-api prefix (Kubernetes Route/Gateway deployments), it's
+// swapped for agent-remote-access and the port is left as-is, since both hostnames are routed
+// purely by hostname/SNI through the very same external listener/port — except in nodePort
+// mode, where the enrollment port is the well-known agent NodePort (7443) and
+// flightctl-remote-access-agent is a distinct NodePort service on 7444.
+func deriveRemoteAccessServer(enrollmentServer string) (string, error) {
+	const nodePortAgentPort = "7443"
+	const remoteAccessAgentPort = "7444"
+
+	u, err := url.Parse(enrollmentServer)
+	if err != nil {
+		return "", fmt.Errorf("parsing enrollment server URL %q: %w", enrollmentServer, err)
+	}
+	u.Path = ""
+
+	hostname := u.Hostname()
+	if !strings.HasPrefix(hostname, "agent-api.") {
+		u.Host = net.JoinHostPort(hostname, remoteAccessAgentPort)
+		return u.String(), nil
+	}
+
+	hostname = "agent-remote-access." + strings.TrimPrefix(hostname, "agent-api.")
+	port := u.Port()
+	if port == nodePortAgentPort {
+		port = remoteAccessAgentPort
+	}
+	if port == "" {
+		u.Host = hostname
+		return u.String(), nil
+	}
+	u.Host = net.JoinHostPort(hostname, port)
+	return u.String(), nil
+}
+
+// Validate checks that the required fields are set and ensures that the paths exist.
+func (cfg *Config) Validate() error {
+	if err := cfg.EnrollmentService.Validate(); err != nil {
+		return err
+	}
+	if err := cfg.ManagementService.Validate(); err != nil {
+		return err
+	}
+	if err := cfg.validateSyncIntervals(); err != nil {
+		return err
+	}
+
+	if cfg.SystemInfoTimeout > MaxSystemInfoTimeout {
+		return fmt.Errorf("system-info-timeout cannot exceed %s, got %s", MaxSystemInfoTimeout, cfg.SystemInfoTimeout)
+	}
+
+	if cfg.TPM.AuthEnabled && !cfg.TPM.Enabled {
+		return fmt.Errorf("cannot enable TPM password authentication when TPM device identity is disabled")
+	}
+
+	// Validate audit log configuration
+	if err := cfg.AuditLog.Validate(cfg.readWriter); err != nil {
+		return fmt.Errorf("audit log configuration validation failed: %w", err)
+	}
+
+	requiredFields := []struct {
+		value     string
+		name      string
+		checkPath bool
+	}{
+		{cfg.ConfigDir, "config-dir", true},
+		{cfg.DataDir, "data-dir", true},
+	}
+
+	for _, field := range requiredFields {
+		if field.value == "" {
+			return fmt.Errorf("%s is required", field.name)
+		}
+		if field.checkPath {
+			exists, err := cfg.readWriter.PathExists(field.value)
+			if err != nil {
+				return fmt.Errorf("%s: %w", field.name, err)
+			}
+			if !exists {
+				// ensure required paths exist
+				if err := cfg.readWriter.MkdirAll(field.value, fileio.DefaultDirectoryPermissions); err != nil {
+					return fmt.Errorf("creating %s: %w", field.name, err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// ParseConfigFile reads the config file and unmarshals it into the Config struct
+func (cfg *Config) ParseConfigFile(cfgFile string) error {
+	contents, err := cfg.readWriter.ReadFile(cfgFile)
+	if err != nil {
+		return fmt.Errorf("reading config file: %w", err)
+	}
+	if err := yaml.Unmarshal(contents, cfg); err != nil {
+		return fmt.Errorf("unmarshalling config file: %w", err)
+	}
+	baseDir := filepath.Dir(cfgFile)
+	cfg.EnrollmentService.Config.SetBaseDir(baseDir)
+	cfg.ManagementService.Config.SetBaseDir(baseDir)
+	cfg.RemoteAccessService.Config.SetBaseDir(baseDir)
+	return nil
+}
+
+func (cfg *Config) String() string {
+	contents, err := json.Marshal(cfg)
+	if err != nil {
+		return "<error>"
+	}
+	return string(contents)
+}
+
+// StringSanitized returns a JSON representation of the config with sensitive fields removed
+func (cfg *Config) StringSanitized() string {
+	contents, err := json.Marshal(cfg)
+	if err != nil {
+		return "<error>"
+	}
+
+	var configMap map[string]any
+	if err := json.Unmarshal(contents, &configMap); err != nil {
+		return "<error>"
+	}
+
+	delete(configMap, "enrollment-service")
+	delete(configMap, "management-service")
+
+	sanitized, err := json.Marshal(configMap)
+	if err != nil {
+		return "<error>"
+	}
+	return string(sanitized)
+}
+
+func (cfg *Config) validateSyncIntervals() error {
+	if cfg.SpecFetchInterval < MinSyncInterval {
+		return fmt.Errorf("minimum spec fetch interval is %s have %s", MinSyncInterval, cfg.SpecFetchInterval)
+	}
+	if cfg.StatusUpdateInterval < MinSyncInterval {
+		return fmt.Errorf("minimum status update interval is %s have %s", MinSyncInterval, cfg.StatusUpdateInterval)
+	}
+	if cfg.SystemInfoPeriodic.Interval != 0 && cfg.SystemInfoPeriodic.Interval < MinSyncInterval {
+		return fmt.Errorf("minimum system info periodic interval is %s have %s", MinSyncInterval, cfg.SystemInfoPeriodic.Interval)
+	}
+	if cfg.StatusUpdateJitter != nil && *cfg.StatusUpdateJitter < 0 {
+		return fmt.Errorf("status update jitter must be >= 0 have %s", *cfg.StatusUpdateJitter)
+	}
+	if cfg.StatusUpdateJitter != nil && *cfg.StatusUpdateJitter > cfg.StatusUpdateInterval {
+		return fmt.Errorf("status update jitter %s must be <= status update interval %s", *cfg.StatusUpdateJitter, cfg.StatusUpdateInterval)
+	}
+	if cfg.SpecFetchErrorBaseDelay < MinSyncInterval {
+		return fmt.Errorf("minimum spec fetch error base delay is %s have %s", MinSyncInterval, cfg.SpecFetchErrorBaseDelay)
+	}
+	if cfg.SpecFetchErrorMaxDelay < cfg.SpecFetchErrorBaseDelay {
+		return fmt.Errorf("spec fetch error max delay %s must be >= base delay %s", cfg.SpecFetchErrorMaxDelay, cfg.SpecFetchErrorBaseDelay)
+	}
+	if cfg.EnrollmentVerifyInterval < MinSyncInterval {
+		return fmt.Errorf("minimum enrollment verify interval is %s have %s", MinSyncInterval, cfg.EnrollmentVerifyInterval)
+	}
+	if cfg.EnrollmentVerifyCap < MinSyncInterval {
+		return fmt.Errorf("minimum enrollment verify cap is %s have %s", MinSyncInterval, cfg.EnrollmentVerifyCap)
+	}
+	if cfg.EnrollmentVerifySteps < 1 {
+		return fmt.Errorf("minimum enrollment verify steps is 1 have %d", cfg.EnrollmentVerifySteps)
+	}
+	return nil
+}
+
+func (cfg *Config) LoadWithOverrides(configFile string) error {
+	if err := cfg.ParseConfigFile(configFile); err != nil {
+		return err
+	}
+
+	confSubdir := filepath.Join(filepath.Dir(configFile), "conf.d")
+	entries, err := cfg.readWriter.ReadDir(confSubdir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err := cfg.Complete(); err != nil {
+				return err
+			}
+			return cfg.Validate()
+		}
+		return err
+	}
+
+	// Sort entries lexically to ensure deterministic order
+	var yamlFiles []string
+	re := regexp.MustCompile(`^.*\.ya?ml$`)
+	for _, entry := range entries {
+		if entry.IsDir() || !re.MatchString(entry.Name()) {
+			continue
+		}
+		yamlFiles = append(yamlFiles, entry.Name())
+	}
+	sort.Strings(yamlFiles)
+
+	// Apply drop-ins in order (later files override earlier ones).
+	// Invalid drop-ins are skipped with a warning so the agent can still
+	// start and perform spec rollback if needed.
+	for _, filename := range yamlFiles {
+		overrideCfg := &Config{}
+		overridePath := filepath.Join(confSubdir, filename)
+		contents, err := cfg.readWriter.ReadFile(overridePath)
+		if err != nil {
+			msg := fmt.Sprintf("Skipping unreadable override config %s: %v", overridePath, err)
+			logrus.Warn(msg)
+			cfg.Warnings = append(cfg.Warnings, msg)
+			continue
+		}
+		if err := yaml.Unmarshal(contents, overrideCfg); err != nil {
+			msg := fmt.Sprintf("Skipping invalid override config %s: %v", overridePath, err)
+			logrus.Warn(msg)
+			cfg.Warnings = append(cfg.Warnings, msg)
+			continue
+		}
+		mergeConfigs(cfg, overrideCfg)
+	}
+
+	if err := cfg.Complete(); err != nil {
+		return err
+	}
+	return cfg.Validate()
+}
+
+func mergeConfigs(base, override *Config) {
+	// log
+	overrideIfNotEmpty(&base.LogLevel, override.LogLevel)
+	overrideIfNotEmpty(&base.LogPrefix, override.LogPrefix)
+
+	overrideIfNotEmpty(&base.SpecFetchErrorBaseDelay, override.SpecFetchErrorBaseDelay)
+	overrideIfNotEmpty(&base.SpecFetchErrorMaxDelay, override.SpecFetchErrorMaxDelay)
+	if override.StatusUpdateJitter != nil {
+		base.StatusUpdateJitter = override.StatusUpdateJitter
+	}
+
+	// system info
+	overrideSliceIfNotNil(&base.SystemInfo, override.SystemInfo)
+	overrideSliceIfNotNil(&base.SystemInfoCustom, override.SystemInfoCustom)
+	overrideIfNotEmpty(&base.SystemInfoTimeout, override.SystemInfoTimeout)
+	overrideIfNotEmpty(&base.SystemInfoPeriodic.Interval, override.SystemInfoPeriodic.Interval)
+
+	// tpm
+	overrideIfNotEmpty(&base.TPM.Enabled, override.TPM.Enabled)
+	overrideIfNotEmpty(&base.TPM.AuthEnabled, override.TPM.AuthEnabled)
+	overrideIfNotEmpty(&base.TPM.DevicePath, override.TPM.DevicePath)
+	overrideIfNotEmpty(&base.TPM.StorageFilePath, override.TPM.StorageFilePath)
+
+	// audit log
+	overrideIfNotEmpty(&base.AuditLog.Enabled, override.AuditLog.Enabled)
+
+	// instrumentation
+	overrideIfNotEmpty(&base.MetricsEnabled, override.MetricsEnabled)
+	overrideIfNotEmpty(&base.ProfilingEnabled, override.ProfilingEnabled)
+
+	// pruning
+	// Always override pruning config from dropins when present.
+	// Since dropins are meant to override base config, we always apply the value.
+	// Note: This means a dropin without a pruning section won't change the base value,
+	// but a dropin with image-pruning.enabled: false will override to false.
+	overrideIfNotEmpty(&base.ImagePruning.Enabled, override.ImagePruning.Enabled)
+
+	// enrollment
+	overrideIfNotEmpty(&base.Enrollment.PreEnrollment.FailurePolicy, override.Enrollment.PreEnrollment.FailurePolicy)
+
+	maps.Copy(base.DefaultLabels, override.DefaultLabels)
+	maps.Copy(base.LabelFromSystemInfo, override.LabelFromSystemInfo)
+}
+
+func Load(configFile string) (*Config, error) {
+	cfg := NewDefault()
+	if err := cfg.LoadWithOverrides(configFile); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// overrideIfNotEmpty replaces dst with src only if src is not empty.
+func overrideIfNotEmpty[T any](dst *T, src T) {
+	var empty T
+	if !reflect.DeepEqual(empty, src) {
+		*dst = src
+	}
+}
+
+// overrideSliceIfNotNil replaces dst with src only if src is not nil.
+// This allows default values to remain when a field is omitted,
+// while supporting explicit empty lists (`system-info: []`) to disable features.
+func overrideSliceIfNotNil[T any](dst *[]T, src []T) {
+	if src != nil {
+		*dst = src
+	}
+}

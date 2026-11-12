@@ -1,0 +1,141 @@
+package vmrender_test
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/tasks"
+	flightlog "github.com/flightctl/flightctl/pkg/log"
+	containers "github.com/flightctl/flightctl/test/harness/containers"
+	"github.com/flightctl/flightctl/test/integration/integrationstack"
+	testutil "github.com/flightctl/flightctl/test/util"
+	"github.com/flightctl/flightctl/test/util/testdb"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/testcontainers/testcontainers-go"
+)
+
+const (
+	vmToQuadletImage = "quay.io/flightctl/vm-to-quadlet:2d2a64d59c10bbe33943e1c74835e5063177c3fb"
+)
+
+var (
+	suiteCtx      context.Context
+	redisHost     string
+	redisPort     uint
+	redisPassword domain.SecureString
+	redisCleanup  func()
+
+	vmConverter     tasks.VmConverterFn
+	vmBinaryPath    string
+	vmBinaryCleanup func()
+)
+
+func TestVmRender(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "VmRender Suite")
+}
+
+// SynchronizedBeforeSuite ensures the expensive binary extraction runs only
+// once (on proc 1). The resulting path is broadcast as []byte to all procs,
+// which each initialise their own vmConverter, Redis connection, and tracer.
+var _ = SynchronizedBeforeSuite(
+	// Proc 1 only: extract the vm-to-quadlet binary from a container.
+	func(ctx context.Context) []byte {
+		Expect(integrationstack.EnsureRunning(ctx)).To(Succeed())
+		binaryPath, cleanup, err := extractVmToQuadletBinary(ctx)
+		Expect(err).ToNot(HaveOccurred(), "failed to extract vm-to-quadlet binary")
+		vmBinaryCleanup = cleanup
+		return []byte(binaryPath)
+	},
+	// All procs: receive the shared binary path; set up per-process state.
+	func(ctx context.Context, binaryPathBytes []byte) {
+		suiteCtx = testutil.InitSuiteTracerForGinkgo("VmRender Suite")
+		Expect(integrationstack.EnsureRunning(ctx)).To(Succeed())
+
+		var err error
+		redisHost, redisPort, redisPassword, redisCleanup, err = testdb.CreateTestRedis(
+			suiteCtx, flightlog.InitLogs())
+		Expect(err).NotTo(HaveOccurred())
+
+		vmBinaryPath = string(binaryPathBytes)
+		vmConverter = tasks.NewVmConverter(vmBinaryPath, tasks.DefaultVmRenderOptions())
+	},
+)
+
+// SynchronizedAfterSuite mirrors the above: per-process cleanup first, then
+// proc-1 teardown (binary container + temp dir) last.
+var _ = SynchronizedAfterSuite(
+	func() {
+		if redisCleanup != nil {
+			redisCleanup()
+		}
+	},
+	func() {
+		if vmBinaryCleanup != nil {
+			vmBinaryCleanup()
+		}
+	},
+)
+
+// extractVmToQuadletBinary pulls the pre-built vm-to-quadlet image and copies
+// the binary out via CopyFileFromContainer into a temp directory. The container
+// is terminated immediately after extraction. Returns the absolute binary path
+// and a cleanup func.
+func extractVmToQuadletBinary(ctx context.Context) (string, func(), error) {
+	containers.ConfigureDockerHost()
+
+	req := testcontainers.ContainerRequest{
+		Image: vmToQuadletImage,
+		// Keep the container alive so CopyFileFromContainer can read from it.
+		Cmd: []string{"/bin/sh", "-c", "sleep infinity"},
+	}
+	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ProviderType:     containers.GetProviderType(),
+		ContainerRequest: req,
+		Started:          true,
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("start vm-to-quadlet container: %w", err)
+	}
+	cleanup := func() {
+		termCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = c.Terminate(termCtx)
+	}
+
+	rc, err := c.CopyFileFromContainer(ctx, "/usr/local/bin/vm-to-quadlet")
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("copy binary from container: %w", err)
+	}
+	data, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("read binary: %w", err)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "flightctl-vm-to-quadlet-*")
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("create temp dir: %w", err)
+	}
+	combinedCleanup := func() {
+		cleanup()
+		_ = os.RemoveAll(tmpDir)
+	}
+
+	binaryPath := filepath.Join(tmpDir, "vm-to-quadlet")
+	if err := os.WriteFile(binaryPath, data, 0700); err != nil { //nolint:gosec // executable binary requires execute permission
+		combinedCleanup()
+		return "", nil, fmt.Errorf("write binary: %w", err)
+	}
+	return binaryPath, combinedCleanup, nil
+}

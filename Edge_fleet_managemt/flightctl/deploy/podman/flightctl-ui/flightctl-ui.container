@@ -1,0 +1,26 @@
+[Unit]
+Description=Flight Control UI
+PartOf=flightctl.target
+After=flightctl-api.service flightctl-ui-init.service
+Wants=flightctl-ui-init.service
+
+[Container]
+ContainerName=flightctl-ui
+Image={{ .Ui.Image }}:{{ .Ui.Tag }}
+Pull=missing
+Network=flightctl.network
+AddHost=%H:host-gateway
+EnvironmentFile=/etc/flightctl/flightctl-ui/env
+
+Volume=flightctl-ui-certs:/app/certs:ro,z
+
+[Service]
+Restart=always
+RestartSec=30
+
+ExecStartPre=/usr/bin/flightctl-standalone render template --input-file /usr/share/flightctl/flightctl-ui/env.template --output-file /etc/flightctl/flightctl-ui/env
+
+ExecStartPost=bash -c '! systemctl is-active --quiet flightctl-gateway || podman exec flightctl-gateway nginx -s reload'
+
+[Install]
+WantedBy=flightctl.target

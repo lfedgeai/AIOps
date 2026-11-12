@@ -1,0 +1,114 @@
+name: "Code Quality"
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'release-*'
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: "ubuntu-24.04"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v46
+        with:
+          since_last_remote_commit: 'true'
+          files_ignore: |
+            .spelling
+            README.md
+            docs/**
+            .github/**
+            examples/**
+            packaging/rpm/**
+
+      - name: Free Disk Space (Ubuntu)
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          large-packages: true # disabling this will result in ~4.6 GB not freed, but will save 2-3 minutes of exec time
+
+      - name: Check commit message
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: hack/check-commits.sh
+
+      - name: Setup all dependencies
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        uses: ./.github/actions/setup-dependencies
+
+      # Always run when Go is available via setup-dependencies, otherwise use a
+      # lightweight setup-go so docs-only PRs still get the policy check.
+      - name: Setup Go for comment-artifact check
+        if: ${{ steps.changed-files.outputs.any_changed != 'true' }}
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Check Go comments for plan/design artifact markers
+        run: make lint-comment-artifacts
+
+      - name: Check that generated files have been updated and that go.mod is tidy
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: |
+          make generate
+          make tidy
+          git diff --exit-code
+
+      # Restore-only (see the paired "Save ..." step below). Unlike the standalone Go
+      # module/build cache elsewhere (keyed by hashFiles('**/go.sum') - see
+      # build-images-and-charts.yaml's "Save Go cache"), this volume set also holds
+      # golangci-lint's own analysis cache, which is invalidated by source file content
+      # and lint config, not go.sum - a go.sum-based key would leave it frozen at
+      # whatever it looked like right after the last go.sum change, however much source
+      # code changes in between. So instead this uses the same pattern as the buildah
+      # cache below: a fresh key every run (never an exact hit, cache-hit is always
+      # false) with restore-keys falling back to the newest entry, refreshing the
+      # snapshot on every main push regardless of go.sum. The "prune" job below keeps
+      # only the newest entry.
+      - name: Restore golangci-lint volumes cache
+        uses: actions/cache/restore@v4
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        with:
+          path: |
+            ~/.local/share/containers/storage/volumes/golangci-lint-cache
+            ~/.local/share/containers/storage/volumes/go-build-cache
+            ~/.local/share/containers/storage/volumes/go-mod-cache
+          key: lint-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            lint-cache-${{ runner.os }}-
+
+      - name: Running Linter
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: make lint
+
+      - name: Save golangci-lint volumes cache
+        uses: actions/cache/save@v4
+        # Main-only: this key is unique per run_id, so a save here always creates a new
+        # entry rather than updating an existing one - restricting to main (like the
+        # buildah cache) keeps PR/branch runs from leaving behind their own throwaway
+        # copy that nothing else can restore from and nothing else deletes.
+        if: ${{ always() && steps.changed-files.outputs.any_changed == 'true' && github.ref == 'refs/heads/main' }}
+        with:
+          path: |
+            ~/.local/share/containers/storage/volumes/golangci-lint-cache
+            ~/.local/share/containers/storage/volumes/go-build-cache
+            ~/.local/share/containers/storage/volumes/go-mod-cache
+          key: lint-cache-${{ runner.os }}-${{ github.run_id }}

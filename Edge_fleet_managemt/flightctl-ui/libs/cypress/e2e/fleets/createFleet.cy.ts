@@ -1,0 +1,95 @@
+import { FleetDetailsPage } from '../../pages/FleetDetailsPage';
+import { FleetsPage } from '../../pages/FleetsPage';
+import { CreateFleetWizardPage } from '../../pages/CreateFleetWizardPage';
+
+describe('Create fleet form', () => {
+  let fleetsPage: FleetsPage;
+  let createFleetWizardPage: CreateFleetWizardPage;
+  const newFleetName = 'sample-fleet';
+
+  beforeEach(() => {
+    cy.loadApiInterceptors();
+  });
+
+  beforeEach(() => {
+    FleetsPage.visit();
+
+    fleetsPage = new FleetsPage();
+  });
+
+  it('can be submitted to create a new fleet', () => {
+    fleetsPage.fleetRow(newFleetName).should('not.exist');
+
+    fleetsPage.openCreateFleetFormButton.click();
+    createFleetWizardPage = new CreateFleetWizardPage();
+
+    createFleetWizardPage.title.should('have.text', 'Create fleet');
+
+    // General info step
+    createFleetWizardPage.newFleetNameField.type(newFleetName);
+    createFleetWizardPage.nextFleetWizardButton.should('be.enabled').click();
+
+    // Device template step
+    createFleetWizardPage.newFleetSystemImageField.type('os-image');
+
+    createFleetWizardPage.addConfigurationButton.should('be.enabled').click();
+    createFleetWizardPage.newFleetSourceNameField.type('my-source');
+    createFleetWizardPage.newFleetSourceTypeField.click();
+    createFleetWizardPage.newFleetGitSourceTypeField.click();
+
+    createFleetWizardPage.newFleetTargetReferenceField.type('main');
+    createFleetWizardPage.newFleetRepositoryPathField.type('/file-path');
+    createFleetWizardPage.nextFleetWizardButton.should('be.enabled').click();
+
+    // Updates step
+    createFleetWizardPage.nextFleetWizardButton.should('be.enabled').click();
+
+    // Review and create step
+    createFleetWizardPage.createFleetFormSubmitButton.should('be.enabled').click();
+
+    cy.wait('@create-new-fleet').then(({ request }) => {
+      expect(request.body, 'Create fleet request').to.nested.include({
+        'metadata.name': newFleetName,
+      });
+      Cypress.expose('FLIGHTCTL_ADD_FLEET', newFleetName);
+    });
+
+    const fleetDetailsPage = new FleetDetailsPage();
+    fleetDetailsPage.title.should('have.text', 'sample-fleet');
+  });
+
+  it('allows navigating between previous and current step when there are validation errors', () => {
+    fleetsPage.openCreateFleetFormButton.click();
+    createFleetWizardPage = new CreateFleetWizardPage();
+
+    createFleetWizardPage.newFleetNameField.type('another-fleet');
+    createFleetWizardPage.nextFleetWizardButton.should('be.enabled').click();
+
+    createFleetWizardPage.newFleetSystemImageField.type('invalid!oci').blur();
+    createFleetWizardPage.nextFleetWizardButton.should('be.disabled');
+    createFleetWizardPage.backFleetWizardButton.click();
+    createFleetWizardPage.nextFleetWizardButton.should('be.enabled').click();
+
+    createFleetWizardPage.newFleetSystemImageField.should('be.visible').should('have.value', 'invalid!oci');
+  });
+
+  it('disables the create fleet button if a fleet with the same name exists', () => {
+    const existingFleetName = 'eu-west-prod-001';
+    fleetsPage.fleetRow(existingFleetName).should('exist');
+    fleetsPage.openCreateFleetFormButton.click();
+    createFleetWizardPage = new CreateFleetWizardPage();
+
+    createFleetWizardPage.newFleetNameField.type(existingFleetName).blur();
+
+    // Open the validation popover, and close it before continuing the test
+    createFleetWizardPage.toggleFleetRichValidationsPopover();
+    createFleetWizardPage.newFleetRichValidationsPopoverError.should('contain.text', 'Name must be unique');
+    createFleetWizardPage.toggleFleetRichValidationsPopover();
+
+    createFleetWizardPage.nextFleetWizardButton.should('be.disabled');
+
+    // Fix the duplicate fleet name and ensure that the form can now be submitted
+    createFleetWizardPage.newFleetNameField.clear().type(`${existingFleetName}-2`);
+    createFleetWizardPage.nextFleetWizardButton.should('be.enabled');
+  });
+});

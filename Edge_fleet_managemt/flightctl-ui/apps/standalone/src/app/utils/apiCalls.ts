@@ -1,0 +1,233 @@
+/* eslint-disable no-console */
+import { type PatchRequest } from '@flightctl/types';
+import {
+  getErrorMsgFromAlertsApiResponse,
+  getErrorMsgFromApiResponse,
+} from '@flightctl/ui-components/src/utils/apiCalls';
+import { getApiVersion } from '@flightctl/ui-components/src/constants';
+import { ORGANIZATION_STORAGE_KEY } from '@flightctl/ui-components/src/utils/organizationStorage';
+
+import { lastRefresh } from '../context/AuthContext';
+
+const apiPort = window.API_PORT || window.location.port;
+const apiServer = `${window.location.hostname}${apiPort ? `:${apiPort}` : ''}`;
+
+const uiProxy = `${window.location.protocol}//${apiServer}`;
+export const apiProxy = `${uiProxy}/api`;
+
+const imageBuilderPathRegex = /^image(builds|exports|promotions)/;
+const catalogPathRegex = /^(catalogs|catalogitems)/;
+const vulnerabilityPathRegex = /^vulnerabilities/;
+
+export const wsEndpoint = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${apiServer}`;
+
+// Helper function to add organization header to request options
+const addOrganizationHeader = (options: RequestInit): RequestInit => {
+  const orgId = localStorage.getItem(ORGANIZATION_STORAGE_KEY);
+  if (orgId) {
+    const headers = new Headers(options.headers || {});
+    headers.set('X-FlightCtl-Organization-ID', orgId);
+    return {
+      ...options,
+      headers,
+    };
+  }
+  return options;
+};
+
+export const fetchUiProxy = async (endpoint: string, requestInit: RequestInit): Promise<Response> => {
+  const baseOptions = {
+    credentials: 'include',
+    ...requestInit,
+  } as RequestInit;
+
+  const options = addOrganizationHeader(baseOptions);
+
+  return await fetch(`${apiProxy}/${endpoint}`, options);
+};
+
+type Api = 'flightctl' | 'imagebuilder' | 'alerts' | 'catalog' | 'vulnerability';
+
+const getFullApiUrl = (path: string): { api: Api; url: string } => {
+  if (path.startsWith('alerts')) {
+    return { api: 'alerts', url: `${apiProxy}/alerts/api/v2/${path}` };
+  }
+  if (imageBuilderPathRegex.test(path)) {
+    return { api: 'imagebuilder', url: `${apiProxy}/imagebuilder/api/v1/${path}` };
+  }
+
+  let apiName: Api = 'flightctl';
+  if (catalogPathRegex.test(path)) {
+    apiName = 'catalog';
+  } else if (vulnerabilityPathRegex.test(path)) {
+    apiName = 'vulnerability';
+  }
+  return { api: apiName, url: `${apiProxy}/flightctl/api/v1/${path}` };
+};
+
+export const logout = async () => {
+  const redirectBase = encodeURIComponent(window.location.origin);
+  const response = await fetch(`${apiProxy}/logout?redirect_base=${redirectBase}`, {
+    credentials: 'include',
+  });
+  const { url } = (await response.json()) as { url: string };
+  if (url) {
+    window.location.href = url;
+  } else {
+    window.location.reload();
+  }
+};
+
+export const redirectToLogin = () => {
+  window.location.href = '/login';
+};
+
+const handleApiJSONResponse = async <R>(api: Api, response: Response): Promise<R> => {
+  if (api === 'vulnerability') {
+    return handleVulnerabilityJSONResponse(response);
+  }
+  if (response.ok) {
+    const data = (await response.json()) as R;
+    return data;
+  }
+
+  if (response.status === 404) {
+    // We skip the response message for 404 errors, which is { message: '' }
+    throw new Error(`Error ${response.status}: ${response.statusText}`);
+  }
+
+  if (response.status === 401) {
+    redirectToLogin();
+  }
+
+  throw new Error(await getErrorMsgFromApiResponse(response));
+};
+
+const handleAlertsJSONResponse = async <R>(response: Response): Promise<R> => {
+  if (response.ok) {
+    const data = (await response.json()) as R;
+    return data;
+  }
+
+  if (response.status === 404) {
+    throw new Error(`Error ${response.status}: ${response.statusText}`);
+  }
+
+  // The UI proxy should convert alert errors 401 to 501, but we guard against 401 here as well.
+  const isAlertsDisabled = response.status === 500 || response.status === 501 || response.status === 401;
+  if (isAlertsDisabled) {
+    // Return the status code to correctly detect that alerts are disabled
+    throw new Error(`${response.status}`);
+  }
+
+  throw new Error(await getErrorMsgFromAlertsApiResponse(response));
+};
+
+const handleVulnerabilityJSONResponse = async <R>(response: Response): Promise<R> => {
+  if (response.ok) {
+    const data = (await response.json()) as R;
+    return data;
+  }
+
+  if (response.status === 404) {
+    throw new Error(`Error ${response.status}: ${response.statusText}`);
+  }
+
+  // API returns 501 for disabled vulnerabilities API.
+  if (response.status === 501) {
+    throw new Error(`${response.status}`);
+  }
+
+  throw new Error(await getErrorMsgFromApiResponse(response));
+};
+
+const fetchWithRetry = async <R>(path: string, init?: RequestInit): Promise<R> => {
+  const { api, url } = getFullApiUrl(path);
+
+  const options = addOrganizationHeader({ ...init });
+  const apiVersion = getApiVersion(api);
+  if (apiVersion) {
+    const headers = new Headers(options.headers);
+    headers.set('Flightctl-API-Version', apiVersion);
+    options.headers = headers;
+  }
+
+  const prevRefresh = lastRefresh;
+  let response = await fetch(url, options);
+  //if token refresh occured, lets try again
+  if (response.status === 401 && prevRefresh != lastRefresh) {
+    response = await fetch(url, options);
+  }
+  if (api === 'alerts') {
+    return handleAlertsJSONResponse(response);
+  }
+  return handleApiJSONResponse(api, response);
+};
+
+const putOrPostData = async <TRequest, TResponse = TRequest>(
+  kind: string,
+  data: TRequest,
+  method: 'PUT' | 'POST',
+): Promise<TResponse> => {
+  try {
+    return await fetchWithRetry<TResponse>(kind, {
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      method,
+      body: JSON.stringify(data),
+    });
+  } catch (error) {
+    console.error(`Error making ${method} request for ${kind}:`, error);
+    throw error;
+  }
+};
+
+export const postData = async <TRequest, TResponse = TRequest>(kind: string, data: TRequest): Promise<TResponse> =>
+  putOrPostData<TRequest, TResponse>(kind, data, 'POST');
+
+export const putData = async <TRequest>(kind: string, data: TRequest): Promise<TRequest> =>
+  putOrPostData<TRequest, TRequest>(kind, data, 'PUT');
+
+export const deleteData = async <R>(kind: string, abortSignal?: AbortSignal): Promise<R> => {
+  try {
+    return fetchWithRetry<R>(kind, {
+      method: 'DELETE',
+      credentials: 'include',
+      signal: abortSignal,
+    });
+  } catch (error) {
+    console.error('Error making DELETE request:', error);
+    throw error;
+  }
+};
+
+export const patchData = async <R>(kind: string, data: PatchRequest, abortSignal?: AbortSignal): Promise<R> => {
+  try {
+    return fetchWithRetry<R>(kind, {
+      headers: {
+        'Content-Type': 'application/json-patch+json',
+      },
+      method: 'PATCH',
+      credentials: 'include',
+      body: JSON.stringify(data),
+      signal: abortSignal,
+    });
+  } catch (error) {
+    console.error('Error making PATCH request:', error);
+    throw error;
+  }
+};
+
+export const fetchData = async <R>(path: string, abortSignal?: AbortSignal): Promise<R> => {
+  try {
+    return fetchWithRetry<R>(path, {
+      credentials: 'include',
+      signal: abortSignal,
+    });
+  } catch (error) {
+    console.error('Error making GET request:', error);
+    throw error;
+  }
+};

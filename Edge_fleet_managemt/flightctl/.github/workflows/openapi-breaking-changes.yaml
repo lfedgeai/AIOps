@@ -1,0 +1,88 @@
+name: "OpenAPI Breaking Changes Check"
+
+on:
+  pull_request:
+    paths:
+      - 'api/**/openapi.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  oasdiff-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Checkout base branch for comparison
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # TODO: checkout previously released version after 0.10 release
+          git fetch origin "${BASE_REF}"
+          mkdir -p base-api/core/v1beta1 base-api/agent/v1beta1
+          git show "origin/${BASE_REF}:api/core/v1beta1/openapi.yaml" > base-api/core/v1beta1/openapi.yaml || true
+          git show "origin/${BASE_REF}:api/agent/v1beta1/openapi.yaml" > base-api/agent/v1beta1/openapi.yaml || true
+
+      - name: Check if override label exists
+        id: check_override
+        uses: ./.github/actions/check-reviewer-override
+        with:
+          label-name: 'breaking-change-approved'
+
+      - name: Breaking Changes Check
+        run: |
+          echo "Checking for breaking API changes..."
+          echo "================================================"
+          echo ""
+
+      - name: Check breaking changes in core API
+        id: breaking_core
+        uses: oasdiff/oasdiff-action/breaking@main
+        with:
+          base: base-api/core/v1beta1/openapi.yaml
+          revision: api/core/v1beta1/openapi.yaml
+          fail-on: ERR
+        continue-on-error: true
+
+      - name: Check breaking changes in agent API
+        id: breaking_agent
+        uses: oasdiff/oasdiff-action/breaking@main
+        with:
+          base: base-api/agent/v1beta1/openapi.yaml
+          revision: api/agent/v1beta1/openapi.yaml
+          fail-on: ERR
+          allow-external-refs: true
+        continue-on-error: true
+
+      - name: Breaking Changes Summary
+        if: ${{ steps.check_override.outputs.override != 'true' && (steps.breaking_core.outcome == 'failure' || steps.breaking_agent.outcome == 'failure') }}
+        run: |
+          echo ""
+          echo "================================================"
+          echo "BREAKING CHANGES DETECTED"
+          echo "================================================"
+          echo ""
+          echo "This PR contains breaking changes to the API specification."
+          echo "See the detailed report above for specific changes."
+          echo ""
+          echo "To proceed with these changes:"
+          echo "- Have an admin add the 'breaking-change-approved' label to this PR"
+          echo ""
+          exit 1
+
+      - name: Log breaking changes override
+        if: ${{ steps.check_override.outputs.override == 'true' && (steps.breaking_core.outcome == 'failure' || steps.breaking_agent.outcome == 'failure') }}
+        run: |
+          echo ""
+          echo "================================================"
+          echo "BREAKING CHANGES DETECTED - OVERRIDE ACTIVE"
+          echo "================================================"
+          echo ""
+          echo "Breaking changes were detected (see report above)."
+          echo "The 'breaking-change-approved' label is present, so the check will pass."

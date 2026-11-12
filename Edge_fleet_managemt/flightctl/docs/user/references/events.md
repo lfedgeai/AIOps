@@ -1,0 +1,225 @@
+# Flight Control Events
+
+Flight Control generates events to track activities and state changes across edge devices and resources. These events provide visibility into system operations, device status, and resource lifecycles.
+
+## Overview
+
+Events are automatically created by Flight Control components and serve as a record of system activities. They can be used for:
+
+- **Monitoring and alerting** – Track device health, resource usage, and overall system status  
+- **Troubleshooting** – Identify what happened and when  
+- **Alert generation** – Events form the basis of system alerts (see [Alerts documentation](alerts.md))  
+
+## Event Structure
+
+Each event includes the following core properties:
+
+| Property              | Description                                                                                 |
+|-----------------------|---------------------------------------------------------------------------------------------|
+| `apiVersion`          | API version (e.g., `v1beta1`)                                                              |
+| `kind`                | Resource type (always `Event`)                                                              |
+| `metadata`            | Standard metadata (name, creation timestamp, annotations)                                   |
+| `reason`              | Short, machine-readable explanation of the event                                           |
+| `type`                | Event severity (`Normal` or `Warning`)                                                      |
+| `message`             | Human-readable description                                                                 |
+| `actor`               | User or service that triggered the event (`user:` or `service:` prefix)                     |
+| `source`              | Component that generated the event                                                          |
+| `involvedObject`      | Resource that the event is related to                                                       |
+| `details` (optional)  | Structured event-specific data                                                              |
+
+### Example Event
+
+```yaml
+apiVersion: v1beta1
+kind: Event
+metadata:
+  name: "660e8400-e29b-41d4-a716-446655440001"
+  creationTimestamp: "2024-01-15T11:30:00Z"
+  annotations:
+    flightctl.io/request-id: "req-12346"
+reason: "ResourceUpdated"
+type: "Normal"
+message: "Device 'edge-device-01' was updated"
+actor: "user:admin"
+source:
+  component: "api-server"
+involvedObject:
+  kind: "Device"
+  name: "edge-device-01"
+details:
+  detailType: "ResourceUpdated"
+  updatedFields: ["labels", "owner"]
+  newOwner: "production-fleet"
+  previousOwner: "staging-fleet"
+```
+
+## Event Types
+
+### Device Events
+
+| Category              | Event Reasons                                                                                     |
+|-----------------------|--------------------------------------------------------------------------------------------------|
+| **Label Reconciliation** | `DeviceLabelReconciliationRequested` |
+| **Connection Status** | `DeviceConnected`, `DeviceDisconnected`                                                          |
+| **Resource Monitoring** | `DeviceCPUCritical`, `DeviceCPUWarning`, `DeviceCPUNormal`, `DeviceMemoryCritical`, `DeviceMemoryWarning`, `DeviceMemoryNormal`, `DeviceDiskCritical`, `DeviceDiskWarning`, `DeviceDiskNormal` |
+| **Application Status** | `DeviceApplicationError`, `DeviceApplicationDegraded`, `DeviceApplicationHealthy`              |
+| **Device Lifecycle**  | `DeviceIsRebooting`, `DeviceDecommissioned`, `DeviceDecommissionFailed`, `DeviceMultipleOwnersDetected`, `DeviceMultipleOwnersResolved`, `DeviceSpecInvalid`, `DeviceSpecValid` |
+| **Content Management** | `DeviceContentUpdating`, `DeviceContentUpToDate`, `DeviceContentOutOfDate`                     |
+| **Vulnerability (CVE)** | `DeviceVulnerabilityCVEWarning`, `DeviceVulnerabilityCVECritical`, `DeviceVulnerabilityCVEResolved` *(see below)* |
+
+`DeviceLabelReconciliationRequested` records a request to reconcile dynamic labels after device status changes. The event is persisted for auditing before publication to the label sync queue. It does not indicate that labels changed or reconciliation succeeded. Changes only to the liveness timestamp (`LastSeen`) do not produce this event. Focused lifecycle events, such as `DeviceConnected`, are emitted independently.
+
+### Vulnerability (CVE) events
+
+When [vulnerability integration](../installing/configuring-vulnerability-integration.md) is enabled, Flight Control emits per-device lifecycle events for high-severity CVEs detected on OS images in use. Each event has `involvedObject.kind` set to `Device` and `involvedObject.name` set to the device name.
+
+The event `details` contain `detailType: DeviceVulnerabilityCVE` with the following fields:
+
+- `cveId` — the CVE identifier
+- `imageRef` — the human-readable image reference
+- `imageDigest` — the image digest the device is running
+
+### Resource Lifecycle Events
+
+| Category               | Event Reasons                                                                                  |
+|------------------------|------------------------------------------------------------------------------------------------|
+| **General**           | `ResourceCreated`, `ResourceCreationFailed`, `ResourceUpdated`, `ResourceUpdateFailed`, `ResourceDeleted`, `ResourceDeletionFailed` |
+| **Enrollment**        | `EnrollmentRequestApproved`, `EnrollmentRequestApprovalFailed`, `EnrollmentCredentialRevoked`  |
+| **Fleet Rollouts**    | `FleetRolloutCreated`, `FleetRolloutStarted`, `FleetRolloutBatchCompleted`                     |
+| **Repositories**      | `RepositoryAccessible`, `RepositoryInaccessible`                                              |
+| **ResourceSync**      | `ResourceSyncAccessible`, `ResourceSyncInaccessible`, `ResourceSyncCommitDetected`, `ResourceSyncParsed`, `ResourceSyncParsingFailed`, `ResourceSyncSynced`, `ResourceSyncSyncFailed`, `ResourceSyncCompleted` |
+
+### Dependency sync events
+
+When [auto-sync](../using/auto-syncing-dependencies.md) is active, Flight Control emits events to track dependency change detection and probe failures. Each event has `involvedObject.kind` set to `Fleet` or `Device` depending on what owns the dependency.
+
+| Event Reason | Type | Description |
+|-------------|------|-------------|
+| `DependencyChangeDetected` | Normal | A dependency fingerprint changed — triggers template version creation or device re-render. |
+| `DependencySyncProbeFailed` | Warning | A probe failed (git, HTTP, or secret informer error). |
+
+**`DependencyChangeDetected`** event details (`detailType: DependencyChangeDetected`):
+
+* `resourceKey` — the dependency identifier (for example, `git:my-repo/main`, `http:my-repo/path`)
+* `fingerprint` — the new fingerprint value
+
+**`DependencySyncProbeFailed`** event details (`detailType: DependencySyncProbeFailed`):
+
+* `resourceKey` — the dependency that failed
+* `errorMessage` — sanitized error description (credentials redacted)
+
+### Delta preparation events
+
+The following delta preparation and generation events identify the desired update in their `details`:
+
+- `PrepareDeltas`
+- `DeltaGenerationProgress`
+- `DeltaGenerationSucceeded`
+- `DeltaGenerationFailed`
+- `DeltaGenerationRejected`
+
+| Resource | Detail field | Meaning |
+|----------|--------------|---------|
+| Fleet | `templateVersion` | The fleet template version being prepared. |
+| Standalone device | `generation` | The device's `metadata.generation` when preparation started. |
+
+For standalone devices, generation identifies the desired spec even while rendering is delayed.
+A newer spec generation supersedes preparation for an older generation.
+Status and annotation updates do not change the spec generation.
+`PrepareDeltas` also carries `resourceVersion` to order prepare events.
+
+For standalone devices, `DeltaGenerationCompleted` resumes rendering only for the prepared spec generation.
+A delayed completion for an older generation does not resume rendering of a newer spec.
+`DeltaGenerationProgress` reports that a pair is in progress or has entered a phase.
+The terminal events use `DeltaGenerationSucceeded`, `DeltaGenerationFailed`, or `DeltaGenerationRejected`.
+`DeltaGenerationFailed` is a Warning event; the other delta generation events are Normal events.
+
+### Encryption Events
+
+| Event Reason | Type | Description |
+|-------------|------|-------------|
+| `EncryptionMigrationStarted` | Normal | Encryption migration started for a new active key. |
+| `EncryptionMigrationCompleted` | Normal | Encryption migration completed. Old keys can be retired after migration completes. |
+
+These events have `involvedObject.kind` set to `System` and `involvedObject.name` set to `encryption`.
+
+For more information about encryption key rotation and migration, see [Configuring encryption at rest](../installing/configuring-encryption.md).
+
+### System Events
+
+- `InternalTaskFailed`
+- `SystemRestored`
+
+## Event Severity
+
+- **Normal** – Standard operational events (e.g., resource creation, updates).  
+- **Warning** – Events that indicate potential issues or failures.  
+
+## Viewing Events
+
+Events are listed in descending order of creation time by default, showing the newest first.
+
+### Using the CLI
+
+```bash
+# List all events
+flightctl get events
+
+# Filter examples
+flightctl get events --field-selector="type=Warning"
+flightctl get events --field-selector="reason=DeviceDisconnected"
+flightctl get events --field-selector="involvedObject.kind=Device"
+flightctl get events --field-selector="actor=user:admin"
+
+# Combine filters
+flightctl get events --field-selector="involvedObject.kind=Device,type=Warning"
+
+# Limit results
+flightctl get events --limit=10
+
+# Output formats
+flightctl get events -o json
+flightctl get events -o yaml
+```
+
+### Using the API
+
+```bash
+# Get all events
+curl -H "Authorization: Bearer $TOKEN" "https://your-flightctl-server/api/v1/events"
+
+# Get filtered events
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://your-flightctl-server/api/v1/events?fieldSelector=type=Warning&limit=10"
+```
+
+## Filtering and Pagination
+
+### Supported Field Selectors
+
+- `reason` – Event reason (e.g., `DeviceDisconnected`)  
+- `type` – Event type (`Normal` or `Warning`)  
+- `actor` – Event actor (`user:admin`, `service:api-server`)  
+- `involvedObject.kind` – Kind of resource (`Device`, `Fleet`, …)  
+- `involvedObject.name` – Resource name  
+- `metadata.creationTimestamp` – Creation timestamp
+
+Supported operators: `=`, `!=`, `in` (e.g., `reason in (DeviceDisconnected,DeviceConnected)`)
+
+### Pagination
+
+```bash
+flightctl get events --limit=100
+flightctl get events --continue="<token>"
+```
+
+## Retention
+
+Events are retained for a configurable period (default: 7 days) and are automatically deleted afterward.
+
+Configure retention in the Flight Control service:
+
+```yaml
+service:
+  eventRetentionPeriod: "168h"  # 7 days (default)
+```

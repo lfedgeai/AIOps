@@ -1,0 +1,1138 @@
+package fleet
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"testing"
+
+	"github.com/flightctl/flightctl/internal/domain"
+	"github.com/flightctl/flightctl/internal/flterrors"
+	"github.com/flightctl/flightctl/internal/service/events"
+	"github.com/flightctl/flightctl/internal/store"
+	catalogstore "github.com/flightctl/flightctl/internal/store/catalog"
+	fleetstore "github.com/flightctl/flightctl/internal/store/fleet"
+	"github.com/google/uuid"
+	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+)
+
+func deepCopyFleet(src *domain.Fleet) *domain.Fleet {
+	if src == nil {
+		return nil
+	}
+	b, err := json.Marshal(src)
+	if err != nil {
+		panic(fmt.Sprintf("deepCopyFleet failed in test: %v", err))
+	}
+	var dst domain.Fleet
+	if err := json.Unmarshal(b, &dst); err != nil {
+		panic(fmt.Sprintf("deepCopyFleet failed in test: %v", err))
+	}
+	return &dst
+}
+
+const (
+	statusSuccessCode     = int32(200)
+	statusCreatedCode     = int32(201)
+	statusBadRequestCode  = int32(400)
+	statusNotFoundCode    = int32(404)
+	statusConflictCode    = int32(http.StatusConflict)
+	statusInternalErrCode = int32(500)
+)
+
+// fakeFleetStore is a small in-memory implementation of internal/store/fleet.Store,
+// adapted from the CRUD-over-a-slice / callback-invocation behavior of
+// internal/service/teststore_framework_test.go's DummyFleet (which cannot be imported
+// directly since it lives in a _test.go file in a different package). Unlike DummyFleet,
+// this fake implements every Store method (including UpdateStatus, UpdateConditions,
+// UpdateAnnotations, OverwriteRepositoryRefs, GetRepositoryRefs, and the rollout/disruption
+// list methods) so all 14 fleet.Service methods can be exercised directly.
+type fakeFleetStore struct {
+	fleets map[string]*domain.Fleet
+	err    error
+
+	rolloutSelectionResult *domain.FleetList
+	rolloutSelectionErr    error
+
+	disruptionBudgetResult *domain.FleetList
+	disruptionBudgetErr    error
+
+	repositoryRefs             map[string]*domain.RepositoryList
+	getRepositoryRefsErr       error
+	overwriteRepositoryRefsErr error
+	lastOverwrittenRepoNames   []string
+}
+
+func newFakeFleetStore() *fakeFleetStore {
+	return &fakeFleetStore{
+		fleets:         map[string]*domain.Fleet{},
+		repositoryRefs: map[string]*domain.RepositoryList{},
+	}
+}
+
+func (f *fakeFleetStore) InitialMigration(ctx context.Context) error { return f.err }
+
+func (f *fakeFleetStore) Create(ctx context.Context, orgId uuid.UUID, fleet *domain.Fleet) (*domain.Fleet, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	name := lo.FromPtr(fleet.Metadata.Name)
+	if _, exists := f.fleets[name]; exists {
+		return nil, flterrors.ErrDuplicateName
+	}
+	f.fleets[name] = deepCopyFleet(fleet)
+	return deepCopyFleet(fleet), nil
+}
+
+func (f *fakeFleetStore) Mutate(ctx context.Context, orgId uuid.UUID, name string, previous *domain.Fleet, apply fleetstore.FleetApplyFunc) (*domain.Fleet, *domain.Fleet, bool, error) {
+	if f.err != nil {
+		return nil, nil, false, f.err
+	}
+	old, exists := f.fleets[name]
+	creating := !exists
+	var before *domain.Fleet
+	var current *domain.Fleet
+	if !creating {
+		before = deepCopyFleet(old)
+		current = deepCopyFleet(old)
+	}
+	mutation := &fleetstore.FleetMutation{Fleet: current}
+	if apply != nil {
+		if err := apply(mutation); err != nil {
+			if errors.Is(err, store.ErrMutateSkipWrite) {
+				if mutation.Fleet == nil {
+					return nil, before, false, nil
+				}
+				return deepCopyFleet(mutation.Fleet), before, false, nil
+			}
+			return nil, nil, false, err
+		}
+	}
+	if mutation.Fleet == nil {
+		return nil, nil, false, flterrors.ErrResourceIsNil
+	}
+	f.fleets[name] = deepCopyFleet(mutation.Fleet)
+	return deepCopyFleet(mutation.Fleet), before, creating, nil
+}
+
+func (f *fakeFleetStore) UpdateStatus(ctx context.Context, orgId uuid.UUID, fleet *domain.Fleet) (*domain.Fleet, *domain.Fleet, error) {
+	name := lo.FromPtr(fleet.Metadata.Name)
+	updated, before, _, err := f.Mutate(ctx, orgId, name, nil, func(m *fleetstore.FleetMutation) error {
+		if err := m.RequireExisting(); err != nil {
+			return err
+		}
+		copied := deepCopyFleet(fleet)
+		m.Fleet.Status = copied.Status
+		return nil
+	})
+	return updated, before, err
+}
+
+func (f *fakeFleetStore) UpdateAnnotations(ctx context.Context, orgId uuid.UUID, name string, annotations map[string]string, deleteKeys []string) (*domain.Fleet, *domain.Fleet, error) {
+	updated, before, _, err := f.Mutate(ctx, orgId, name, nil, func(m *fleetstore.FleetMutation) error {
+		if err := m.RequireExisting(); err != nil {
+			return err
+		}
+		merged := store.MergeAnnotations(m.Fleet.Metadata.Annotations, annotations, deleteKeys)
+		m.Fleet.Metadata.Annotations = &merged
+		return nil
+	})
+	return updated, before, err
+}
+
+func (f *fakeFleetStore) Get(ctx context.Context, orgId uuid.UUID, name string, opts ...fleetstore.GetOption) (*domain.Fleet, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	fleet, ok := f.fleets[name]
+	if !ok {
+		return nil, flterrors.ErrResourceNotFound
+	}
+	return deepCopyFleet(fleet), nil
+}
+
+func (f *fakeFleetStore) List(ctx context.Context, orgId uuid.UUID, listParams store.ListParams, opts ...fleetstore.ListOption) (*domain.FleetList, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	items := make([]domain.Fleet, 0, len(f.fleets))
+	for _, fl := range f.fleets {
+		items = append(items, *fl)
+	}
+	return &domain.FleetList{Items: items}, nil
+}
+
+func (f *fakeFleetStore) Delete(ctx context.Context, orgId uuid.UUID, name string, eventCallback store.EventCallback) error {
+	old, exists := f.fleets[name]
+	if !exists {
+		return flterrors.ErrResourceNotFound
+	}
+	delete(f.fleets, name)
+	if eventCallback != nil {
+		eventCallback(ctx, domain.FleetKind, orgId, name, old, nil, false, nil)
+	}
+	return nil
+}
+
+func (f *fakeFleetStore) ListRolloutDeviceSelection(ctx context.Context, orgId uuid.UUID) (*domain.FleetList, error) {
+	if f.rolloutSelectionErr != nil {
+		return nil, f.rolloutSelectionErr
+	}
+	if f.rolloutSelectionResult != nil {
+		return f.rolloutSelectionResult, nil
+	}
+	return &domain.FleetList{}, nil
+}
+
+func (f *fakeFleetStore) ListDisruptionBudgetFleets(ctx context.Context, orgId uuid.UUID) (*domain.FleetList, error) {
+	if f.disruptionBudgetErr != nil {
+		return nil, f.disruptionBudgetErr
+	}
+	if f.disruptionBudgetResult != nil {
+		return f.disruptionBudgetResult, nil
+	}
+	return &domain.FleetList{}, nil
+}
+
+func (f *fakeFleetStore) UnsetOwner(ctx context.Context, tx *gorm.DB, orgId uuid.UUID, owner string) error {
+	return f.err
+}
+
+func (f *fakeFleetStore) UnsetOwnerByKind(ctx context.Context, tx *gorm.DB, orgId uuid.UUID, resourceKind string) error {
+	return f.err
+}
+
+func (f *fakeFleetStore) OverwriteRepositoryRefs(ctx context.Context, orgId uuid.UUID, name string, repositoryNames ...string) error {
+	if f.overwriteRepositoryRefsErr != nil {
+		return f.overwriteRepositoryRefsErr
+	}
+	f.lastOverwrittenRepoNames = repositoryNames
+	return nil
+}
+
+func (f *fakeFleetStore) GetRepositoryRefs(ctx context.Context, orgId uuid.UUID, name string) (*domain.RepositoryList, error) {
+	if f.getRepositoryRefsErr != nil {
+		return nil, f.getRepositoryRefsErr
+	}
+	if refs, ok := f.repositoryRefs[name]; ok {
+		return refs, nil
+	}
+	return &domain.RepositoryList{}, nil
+}
+
+func (f *fakeFleetStore) CountByRolloutStatus(ctx context.Context, orgId *uuid.UUID, _ *string) ([]fleetstore.CountByRolloutStatusResult, error) {
+	return nil, f.err
+}
+
+func (f *fakeFleetStore) ListFleetsByOsCatalogItemRef(ctx context.Context, orgId uuid.UUID, catalog string, item string, listParams store.ListParams) (*domain.FleetList, error) {
+	panic("not implemented")
+}
+
+func (f *fakeFleetStore) ListFleetsByAppCatalogItemRef(ctx context.Context, orgId uuid.UUID, catalog string, item string, listParams store.ListParams) (*domain.FleetList, error) {
+	panic("not implemented")
+}
+
+func (f *fakeFleetStore) ListFleetsByVolumeCatalogItemRef(ctx context.Context, orgId uuid.UUID, catalog string, item string, listParams store.ListParams) (*domain.FleetList, error) {
+	panic("not implemented")
+}
+
+// fakeEventsService is a recording fake for events.Service; embedding events.Service means
+// only the 2 generic methods Fleet's own event logic (EmitFleetUpdatedEvent, in events.go)
+// calls into need overriding. Fleet-specific decisions now live in this package, so tests
+// assert on the actual events recorded via CreateEvent rather than intercepting a
+// resource-specific callback.
+type fakeEventsService struct {
+	events.Service
+	created []*domain.Event
+	deleted []recordedCallback
+}
+
+type recordedCallback struct {
+	orgId   uuid.UUID
+	name    string
+	created bool
+	err     error
+}
+
+func (f *fakeEventsService) CreateEvent(ctx context.Context, orgId uuid.UUID, event *domain.Event) {
+	if event == nil {
+		return
+	}
+	f.created = append(f.created, event)
+}
+
+func (f *fakeEventsService) HandleGenericResourceDeletedEvents(ctx context.Context, resourceKind domain.ResourceKind, orgId uuid.UUID, name string, oldResource, newResource interface{}, created bool, err error) {
+	f.deleted = append(f.deleted, recordedCallback{orgId: orgId, name: name, created: created, err: err})
+}
+
+type fakeCatalogStore struct {
+	catalogstore.Store
+	items map[string]*domain.CatalogItem // key: "catalog/item"
+}
+
+func (s *fakeCatalogStore) GetItem(_ context.Context, _ uuid.UUID, catalogName string, itemName string) (*domain.CatalogItem, error) {
+	key := catalogName + "/" + itemName
+	item, ok := s.items[key]
+	if !ok {
+		return nil, flterrors.ErrResourceNotFound
+	}
+	return item, nil
+}
+
+func newTestHandler() (*ServiceHandler, *fakeFleetStore, *fakeEventsService) {
+	fakeStore := newFakeFleetStore()
+	fakeEvents := &fakeEventsService{}
+	return NewServiceHandler(fakeStore, nil, fakeEvents, logrus.New()), fakeStore, fakeEvents
+}
+
+func newTestHandlerWithCatalog() (*ServiceHandler, *fakeFleetStore, *fakeCatalogStore) {
+	fakeStore := newFakeFleetStore()
+	catalog := &fakeCatalogStore{items: map[string]*domain.CatalogItem{}}
+	return NewServiceHandler(fakeStore, catalog, &fakeEventsService{}, logrus.New()), fakeStore, catalog
+}
+
+func createTestFleet(name string, owner *string) domain.Fleet {
+	return domain.Fleet{
+		ApiVersion: "v1beta1",
+		Kind:       "Fleet",
+		Metadata: domain.ObjectMeta{
+			Name:   lo.ToPtr(name),
+			Labels: &map[string]string{"labelKey": "labelValue"},
+			Owner:  owner,
+		},
+		Spec: domain.FleetSpec{
+			Selector: &domain.LabelSelector{
+				MatchLabels: &map[string]string{"devKey": "devValue"},
+			},
+			Template: struct {
+				Metadata *domain.ObjectMeta "json:\"metadata,omitempty\""
+				Spec     domain.DeviceSpec  "json:\"spec\""
+			}{
+				Spec: domain.DeviceSpec{
+					Os: &domain.DeviceOsSpec{
+						Image: "img",
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestCreateFleet(t *testing.T) {
+	t.Run("When the fleet is valid it should create it and fire an updated callback", func(t *testing.T) {
+		h, fakeStore, fakeEvents := newTestHandler()
+		fleet := createTestFleet("f1", nil)
+
+		result, status := h.CreateFleet(context.Background(), uuid.New(), fleet)
+		require.Equal(t, statusCreatedCode, status.Code)
+		require.NotNil(t, result)
+		require.Contains(t, fakeStore.fleets, "f1")
+		require.Len(t, fakeEvents.created, 1)
+		require.Equal(t, domain.EventReasonResourceCreated, fakeEvents.created[0].Reason)
+	})
+
+	t.Run("When managed metadata fields are set by the caller CreateFleetFromUntrusted should clear them before creation", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fleet := createTestFleet("f2", nil)
+		fleet.Metadata.Owner = lo.ToPtr("someone")
+		fleet.Metadata.Generation = lo.ToPtr(int64(5))
+
+		_, status := CreateFleetFromUntrusted(context.Background(), h, uuid.New(), fleet)
+		require.Equal(t, statusCreatedCode, status.Code)
+		require.Nil(t, fakeStore.fleets["f2"].Metadata.Owner)
+		require.Nil(t, fakeStore.fleets["f2"].Metadata.Generation)
+	})
+
+	t.Run("When managed metadata fields are set by the caller CreateFleet (trusted) should preserve them", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fleet := createTestFleet("f2-trusted", nil)
+		fleet.Metadata.Owner = lo.ToPtr("someone")
+		fleet.Metadata.Generation = lo.ToPtr(int64(5))
+
+		_, status := h.CreateFleet(context.Background(), uuid.New(), fleet)
+		require.Equal(t, statusCreatedCode, status.Code)
+		require.Equal(t, "someone", lo.FromPtr(fakeStore.fleets["f2-trusted"].Metadata.Owner))
+		require.Equal(t, int64(5), lo.FromPtr(fakeStore.fleets["f2-trusted"].Metadata.Generation))
+	})
+
+	t.Run("When the store errors it should return an internal-server-error status", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fakeStore.err = errors.New("db down")
+
+		_, status := h.CreateFleet(context.Background(), uuid.New(), createTestFleet("f3", nil))
+		require.Equal(t, statusInternalErrCode, status.Code)
+	})
+}
+
+func TestListFleets(t *testing.T) {
+	t.Run("When the store succeeds it should return the list with StatusOK", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fl := createTestFleet("f1", nil)
+		fakeStore.fleets["f1"] = &fl
+
+		result, status := h.ListFleets(context.Background(), uuid.New(), domain.ListFleetsParams{})
+		require.Equal(t, domain.StatusOK(), status)
+		require.Len(t, result.Items, 1)
+	})
+
+	t.Run("When the field selector is invalid it should return a bad-request status", func(t *testing.T) {
+		h, _, _ := newTestHandler()
+		badSelector := "%%%invalid%%%"
+
+		_, status := h.ListFleets(context.Background(), uuid.New(), domain.ListFleetsParams{FieldSelector: &badSelector})
+		require.Equal(t, statusBadRequestCode, status.Code)
+	})
+}
+
+func TestGetFleet(t *testing.T) {
+	t.Run("When the fleet exists it should return it with StatusOK", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fl := createTestFleet("f1", nil)
+		fakeStore.fleets["f1"] = &fl
+
+		result, status := h.GetFleet(context.Background(), uuid.New(), "f1", domain.GetFleetParams{})
+		require.Equal(t, domain.StatusOK(), status)
+		require.Equal(t, "f1", lo.FromPtr(result.Metadata.Name))
+	})
+
+	t.Run("When the fleet does not exist it should return a not-found status", func(t *testing.T) {
+		h, _, _ := newTestHandler()
+
+		_, status := h.GetFleet(context.Background(), uuid.New(), "missing", domain.GetFleetParams{})
+		require.Equal(t, statusNotFoundCode, status.Code)
+	})
+}
+
+func TestReplaceFleet(t *testing.T) {
+	t.Run("When the fleet does not exist it should create it", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fleet := createTestFleet("new-fleet", nil)
+
+		result, status := h.ReplaceFleet(context.Background(), uuid.New(), "new-fleet", fleet, true)
+		require.Equal(t, statusCreatedCode, status.Code)
+		require.NotNil(t, result)
+		require.Contains(t, fakeStore.fleets, "new-fleet")
+	})
+
+	t.Run("When the name in the path does not match metadata.name it should return a bad-request status", func(t *testing.T) {
+		h, _, _ := newTestHandler()
+		fleet := createTestFleet("f1", nil)
+
+		_, status := h.ReplaceFleet(context.Background(), uuid.New(), "different-name", fleet, true)
+		require.Equal(t, statusBadRequestCode, status.Code)
+	})
+
+	t.Run("When the fleet exists it should update it and fire an updated callback", func(t *testing.T) {
+		h, fakeStore, fakeEvents := newTestHandler()
+		orgId := uuid.New()
+		fleet := createTestFleet("f1", nil)
+		_, status := h.CreateFleet(context.Background(), orgId, fleet)
+		require.Equal(t, statusCreatedCode, status.Code)
+
+		result, status := h.ReplaceFleet(context.Background(), orgId, "f1", fleet, true)
+		require.Equal(t, statusSuccessCode, status.Code)
+		require.NotNil(t, result)
+		require.Contains(t, fakeStore.fleets, "f1")
+		// Only the create produces a ResourceCreated event; replacing with identical
+		// metadata (no generation/labels/owner change) emits nothing further.
+		require.Len(t, fakeEvents.created, 1)
+		require.Equal(t, domain.EventReasonResourceCreated, fakeEvents.created[0].Reason)
+	})
+
+	t.Run("When managed metadata fields are set by the caller ReplaceFleetFromUntrusted should clear them before replacing", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		orgId := uuid.New()
+		fleet := createTestFleet("replace-untrusted", nil)
+		fleet.Metadata.Owner = lo.ToPtr("someone")
+		fleet.Metadata.Generation = lo.ToPtr(int64(5))
+
+		_, status := ReplaceFleetFromUntrusted(context.Background(), h, orgId, "replace-untrusted", fleet, true)
+		require.Equal(t, statusCreatedCode, status.Code)
+		require.Nil(t, fakeStore.fleets["replace-untrusted"].Metadata.Owner)
+		require.Nil(t, fakeStore.fleets["replace-untrusted"].Metadata.Generation)
+	})
+
+	t.Run("When managed metadata fields are set by the caller ReplaceFleet (trusted) should preserve them", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		orgId := uuid.New()
+		fleet := createTestFleet("replace-trusted", nil)
+		fleet.Metadata.Owner = lo.ToPtr("someone")
+		fleet.Metadata.Generation = lo.ToPtr(int64(5))
+
+		_, status := h.ReplaceFleet(context.Background(), orgId, "replace-trusted", fleet, true)
+		require.Equal(t, statusCreatedCode, status.Code)
+		require.Equal(t, "someone", lo.FromPtr(fakeStore.fleets["replace-trusted"].Metadata.Owner))
+		require.Equal(t, int64(5), lo.FromPtr(fakeStore.fleets["replace-trusted"].Metadata.Generation))
+	})
+}
+
+func TestReplaceFleetOwnership(t *testing.T) {
+	owner := "ResourceSync/my-resourcesync"
+
+	t.Run("When replacing an owned fleet with a changed spec it should return conflict", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		orgId := uuid.New()
+		existing := createTestFleet("owned-fleet", &owner)
+		fakeStore.fleets["owned-fleet"] = &existing
+
+		updated := createTestFleet("owned-fleet", nil)
+		updated.Spec.Template.Spec.Os.Image = "img-updated"
+
+		_, status := h.ReplaceFleet(context.Background(), orgId, "owned-fleet", updated, true)
+		require.Equal(t, statusConflictCode, status.Code)
+		require.Equal(t, flterrors.ErrUpdatingResourceWithOwnerNotAllowed.Error(), status.Message)
+		require.Equal(t, "img", fakeStore.fleets["owned-fleet"].Spec.Template.Spec.Os.Image)
+	})
+
+	t.Run("When replacing an owned fleet with changed labels it should return conflict", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		orgId := uuid.New()
+		existing := createTestFleet("owned-fleet", &owner)
+		fakeStore.fleets["owned-fleet"] = &existing
+
+		updated := createTestFleet("owned-fleet", nil)
+		updated.Metadata.Labels = &map[string]string{"labelKey": "changed"}
+
+		_, status := h.ReplaceFleet(context.Background(), orgId, "owned-fleet", updated, true)
+		require.Equal(t, statusConflictCode, status.Code)
+		require.Equal(t, flterrors.ErrUpdatingResourceWithOwnerNotAllowed.Error(), status.Message)
+	})
+
+	t.Run("When enforceOwnership is false it should allow updating an owned fleet", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		orgId := uuid.New()
+		existing := createTestFleet("owned-fleet", &owner)
+		fakeStore.fleets["owned-fleet"] = &existing
+
+		updated := createTestFleet("owned-fleet", nil)
+		updated.Spec.Template.Spec.Os.Image = "img-updated"
+
+		result, status := h.ReplaceFleet(context.Background(), orgId, "owned-fleet", updated, false)
+		require.Equal(t, statusSuccessCode, status.Code)
+		require.NotNil(t, result)
+		require.Equal(t, "img-updated", fakeStore.fleets["owned-fleet"].Spec.Template.Spec.Os.Image)
+		require.Equal(t, owner, lo.FromPtr(fakeStore.fleets["owned-fleet"].Metadata.Owner))
+	})
+
+	t.Run("When replacing an unowned fleet with a changed spec it should allow the update", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		orgId := uuid.New()
+		existing := createTestFleet("unowned-fleet", nil)
+		fakeStore.fleets["unowned-fleet"] = &existing
+
+		updated := createTestFleet("unowned-fleet", nil)
+		updated.Spec.Template.Spec.Os.Image = "img-updated"
+
+		result, status := h.ReplaceFleet(context.Background(), orgId, "unowned-fleet", updated, true)
+		require.Equal(t, statusSuccessCode, status.Code)
+		require.NotNil(t, result)
+		require.Equal(t, "img-updated", fakeStore.fleets["unowned-fleet"].Spec.Template.Spec.Os.Image)
+	})
+}
+
+func TestPatchFleetOwnership(t *testing.T) {
+	owner := "ResourceSync/my-resourcesync"
+
+	t.Run("When patching an owned fleet spec it should return conflict", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		existing := createTestFleet("owned-fleet", &owner)
+		fakeStore.fleets["owned-fleet"] = &existing
+
+		var valueIface interface{} = "img-updated"
+		patch := domain.PatchRequest{{Op: "replace", Path: "/spec/template/spec/os/image", Value: &valueIface}}
+
+		_, status := h.PatchFleet(context.Background(), uuid.New(), "owned-fleet", patch, true)
+		require.Equal(t, statusConflictCode, status.Code)
+		require.Equal(t, flterrors.ErrUpdatingResourceWithOwnerNotAllowed.Error(), status.Message)
+		require.Equal(t, "img", fakeStore.fleets["owned-fleet"].Spec.Template.Spec.Os.Image)
+	})
+
+	t.Run("When patching an owned fleet labels it should return conflict", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		existing := createTestFleet("owned-fleet", &owner)
+		fakeStore.fleets["owned-fleet"] = &existing
+
+		var valueIface interface{} = "changed"
+		patch := domain.PatchRequest{{Op: "replace", Path: "/metadata/labels/labelKey", Value: &valueIface}}
+
+		_, status := h.PatchFleet(context.Background(), uuid.New(), "owned-fleet", patch, true)
+		require.Equal(t, statusConflictCode, status.Code)
+		require.Equal(t, flterrors.ErrUpdatingResourceWithOwnerNotAllowed.Error(), status.Message)
+	})
+
+	t.Run("When enforceOwnership is false it should allow patching an owned fleet", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		existing := createTestFleet("owned-fleet", &owner)
+		fakeStore.fleets["owned-fleet"] = &existing
+
+		var valueIface interface{} = "img-updated"
+		patch := domain.PatchRequest{{Op: "replace", Path: "/spec/template/spec/os/image", Value: &valueIface}}
+
+		result, status := h.PatchFleet(context.Background(), uuid.New(), "owned-fleet", patch, false)
+		require.Equal(t, statusSuccessCode, status.Code)
+		require.NotNil(t, result)
+		require.Equal(t, "img-updated", fakeStore.fleets["owned-fleet"].Spec.Template.Spec.Os.Image)
+		require.Equal(t, owner, lo.FromPtr(fakeStore.fleets["owned-fleet"].Metadata.Owner))
+	})
+}
+
+func TestDeleteFleet(t *testing.T) {
+	owner := "ResourceSync/my-resourcesync"
+
+	tests := []struct {
+		name               string
+		fleetName          string
+		fleetOwner         *string
+		createFleet        bool
+		enforceOwnership   bool
+		expectedStatusCode int32
+		expectedError      error
+		expectFleetDeleted bool
+	}{
+		{
+			name:               "delete fleet without owner succeeds",
+			fleetName:          "test-fleet",
+			fleetOwner:         nil,
+			createFleet:        true,
+			enforceOwnership:   true,
+			expectedStatusCode: statusSuccessCode,
+			expectFleetDeleted: true,
+		},
+		{
+			name:               "delete non-existent fleet returns OK (idempotent)",
+			fleetName:          "nonexistent-fleet",
+			createFleet:        false,
+			enforceOwnership:   true,
+			expectedStatusCode: statusSuccessCode,
+			expectFleetDeleted: true,
+		},
+		{
+			name:               "delete fleet with owner fails with conflict",
+			fleetName:          "owned-fleet",
+			fleetOwner:         &owner,
+			createFleet:        true,
+			enforceOwnership:   true,
+			expectedStatusCode: statusConflictCode,
+			expectedError:      flterrors.ErrDeletingResourceWithOwnerNotAllowed,
+			expectFleetDeleted: false,
+		},
+		{
+			name:               "delete owned fleet succeeds when enforceOwnership is false",
+			fleetName:          "resourcesync-owned-fleet",
+			fleetOwner:         &owner,
+			createFleet:        true,
+			enforceOwnership:   false,
+			expectedStatusCode: statusSuccessCode,
+			expectFleetDeleted: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, fakeStore, fakeEvents := newTestHandler()
+			ctx := context.Background()
+			testOrgId := uuid.New()
+
+			if tt.createFleet {
+				fleet := createTestFleet(tt.fleetName, tt.fleetOwner)
+				fakeStore.fleets[tt.fleetName] = &fleet
+			}
+
+			status := h.DeleteFleet(ctx, testOrgId, tt.fleetName, tt.enforceOwnership)
+			require.Equal(t, tt.expectedStatusCode, status.Code)
+
+			if tt.expectedError != nil {
+				require.Equal(t, tt.expectedError.Error(), status.Message)
+			}
+
+			_, ok := fakeStore.fleets[tt.fleetName]
+			require.Equal(t, !tt.expectFleetDeleted, ok)
+
+			// Verify the deletion callback wiring survived extraction: a successful delete
+			// of a pre-existing fleet must invoke events.HandleGenericResourceDeletedEvents.
+			if tt.createFleet && tt.expectFleetDeleted {
+				require.Len(t, fakeEvents.deleted, 1)
+				require.Equal(t, tt.fleetName, fakeEvents.deleted[0].name)
+			} else {
+				require.Empty(t, fakeEvents.deleted)
+			}
+		})
+	}
+}
+
+func TestGetFleetStatus(t *testing.T) {
+	h, fakeStore, _ := newTestHandler()
+	fl := createTestFleet("f1", nil)
+	fakeStore.fleets["f1"] = &fl
+
+	result, status := h.GetFleetStatus(context.Background(), uuid.New(), "f1")
+	require.Equal(t, domain.StatusOK(), status)
+	require.Equal(t, "f1", lo.FromPtr(result.Metadata.Name))
+
+	_, status = h.GetFleetStatus(context.Background(), uuid.New(), "missing")
+	require.Equal(t, statusNotFoundCode, status.Code)
+}
+
+func TestReplaceFleetStatus(t *testing.T) {
+	t.Run("When the fleet exists it should update its status", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fl := createTestFleet("f1", nil)
+		fakeStore.fleets["f1"] = &fl
+
+		result, status := h.ReplaceFleetStatus(context.Background(), uuid.New(), "f1", fl)
+		require.Equal(t, statusSuccessCode, status.Code)
+		require.NotNil(t, result)
+	})
+
+	t.Run("When the fleet does not exist it should return a not-found status", func(t *testing.T) {
+		h, _, _ := newTestHandler()
+		fl := createTestFleet("missing", nil)
+
+		_, status := h.ReplaceFleetStatus(context.Background(), uuid.New(), "missing", fl)
+		require.Equal(t, statusNotFoundCode, status.Code)
+	})
+}
+
+func testFleetPatch(t *testing.T, patch domain.PatchRequest) (*domain.Fleet, domain.Fleet, domain.Status) {
+	require := require.New(t)
+	orig := createTestFleet("foo", nil)
+	orig.Status = &domain.FleetStatus{
+		Conditions: []domain.Condition{
+			{Type: "Approved", Status: "True"},
+		},
+	}
+
+	h, fakeStore, _ := newTestHandler()
+	fakeStore.fleets["foo"] = &orig
+
+	resp, status := h.PatchFleet(context.Background(), uuid.New(), "foo", patch, true)
+	require.NotEqual(int32(0), status.Code)
+	return resp, orig, status
+}
+
+func verifyFleetPatchFailed(t *testing.T, status domain.Status) {
+	require.Equal(t, statusBadRequestCode, status.Code)
+}
+
+func TestFleetPatchName(t *testing.T) {
+	var value interface{} = "bar"
+	pr := domain.PatchRequest{
+		{Op: "replace", Path: "/metadata/name", Value: &value},
+	}
+	_, _, status := testFleetPatch(t, pr)
+	verifyFleetPatchFailed(t, status)
+
+	pr = domain.PatchRequest{
+		{Op: "remove", Path: "/metadata/name"},
+	}
+	_, _, status = testFleetPatch(t, pr)
+	verifyFleetPatchFailed(t, status)
+}
+
+func TestFleetPatchKind(t *testing.T) {
+	var value interface{} = "bar"
+	pr := domain.PatchRequest{
+		{Op: "replace", Path: "/kind", Value: &value},
+	}
+	_, _, status := testFleetPatch(t, pr)
+	verifyFleetPatchFailed(t, status)
+}
+
+func TestFleetPatchAPIVersion(t *testing.T) {
+	var value interface{} = "bar"
+	pr := domain.PatchRequest{
+		{Op: "replace", Path: "/apiVersion", Value: &value},
+	}
+	_, _, status := testFleetPatch(t, pr)
+	verifyFleetPatchFailed(t, status)
+}
+
+func TestFleetPatchSpec(t *testing.T) {
+	value := "newimg"
+	var valueIface interface{} = value
+	pr := domain.PatchRequest{
+		{Op: "replace", Path: "/spec/template/spec/os/image", Value: &valueIface},
+	}
+	resp, orig, status := testFleetPatch(t, pr)
+	orig.Spec.Template.Spec.Os.Image = value
+	require.Equal(t, statusSuccessCode, status.Code)
+	require.Equal(t, orig, *resp)
+}
+
+func TestFleetPatchNonExistingPath(t *testing.T) {
+	var value interface{} = "foo"
+	pr := domain.PatchRequest{
+		{Op: "replace", Path: "/spec/doesnotexist", Value: &value},
+	}
+	_, _, status := testFleetPatch(t, pr)
+	verifyFleetPatchFailed(t, status)
+}
+
+func TestFleetPatchLabels(t *testing.T) {
+	addLabels := map[string]string{"labelKey": "labelValue1"}
+	var value interface{} = "labelValue1"
+	pr := domain.PatchRequest{
+		{Op: "replace", Path: "/metadata/labels/labelKey", Value: &value},
+	}
+
+	resp, orig, status := testFleetPatch(t, pr)
+	orig.Metadata.Labels = &addLabels
+	require.Equal(t, statusSuccessCode, status.Code)
+	require.Equal(t, orig, *resp)
+}
+
+func TestPatchFleetNonExistingResource(t *testing.T) {
+	h, _, _ := newTestHandler()
+	var value interface{} = "labelValue1"
+	pr := domain.PatchRequest{
+		{Op: "replace", Path: "/metadata/labels/labelKey", Value: &value},
+	}
+
+	resp, status := h.PatchFleet(context.Background(), uuid.New(), "doesnotexist", pr, true)
+	require.Equal(t, statusNotFoundCode, status.Code)
+	require.Nil(t, resp)
+}
+
+func TestListFleetRolloutDeviceSelection(t *testing.T) {
+	t.Run("When the store succeeds it should return the list", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fl := createTestFleet("f1", nil)
+		fakeStore.rolloutSelectionResult = &domain.FleetList{Items: []domain.Fleet{fl}}
+
+		result, status := h.ListFleetRolloutDeviceSelection(context.Background(), uuid.New())
+		require.Equal(t, domain.StatusOK(), status)
+		require.Len(t, result.Items, 1)
+	})
+
+	t.Run("When the store errors it should return an internal-server-error status", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fakeStore.rolloutSelectionErr = errors.New("db down")
+
+		_, status := h.ListFleetRolloutDeviceSelection(context.Background(), uuid.New())
+		require.Equal(t, statusInternalErrCode, status.Code)
+	})
+}
+
+func TestListDisruptionBudgetFleets(t *testing.T) {
+	t.Run("When the store succeeds it should return the list", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fl := createTestFleet("f1", nil)
+		fakeStore.disruptionBudgetResult = &domain.FleetList{Items: []domain.Fleet{fl}}
+
+		result, status := h.ListDisruptionBudgetFleets(context.Background(), uuid.New())
+		require.Equal(t, domain.StatusOK(), status)
+		require.Len(t, result.Items, 1)
+	})
+
+	t.Run("When the store errors it should return an internal-server-error status", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fakeStore.disruptionBudgetErr = errors.New("db down")
+
+		_, status := h.ListDisruptionBudgetFleets(context.Background(), uuid.New())
+		require.Equal(t, statusInternalErrCode, status.Code)
+	})
+}
+
+func TestUpdateFleetConditions(t *testing.T) {
+	t.Run("When the fleet exists it should update its conditions without emitting an unrelated event", func(t *testing.T) {
+		h, fakeStore, fakeEvents := newTestHandler()
+		fl := createTestFleet("f1", nil)
+		fakeStore.fleets["f1"] = &fl
+
+		status := h.UpdateFleetConditions(context.Background(), uuid.New(), "f1", []domain.Condition{
+			{Type: "Approved", Status: "True"},
+		})
+		require.Equal(t, statusSuccessCode, status.Code)
+		// A non-FleetValid condition change doesn't touch ObjectMeta and isn't the
+		// FleetValid condition emitFleetValidEvents watches, so no event is emitted.
+		require.Empty(t, fakeEvents.created)
+	})
+
+	t.Run("When the fleet does not exist it should return a not-found status", func(t *testing.T) {
+		h, _, _ := newTestHandler()
+
+		status := h.UpdateFleetConditions(context.Background(), uuid.New(), "missing", []domain.Condition{})
+		require.Equal(t, statusNotFoundCode, status.Code)
+	})
+}
+
+func TestUpdateFleetAnnotations(t *testing.T) {
+	t.Run("When the fleet exists it should update its annotations without emitting an unrelated event", func(t *testing.T) {
+		h, fakeStore, fakeEvents := newTestHandler()
+		fl := createTestFleet("f1", nil)
+		fakeStore.fleets["f1"] = &fl
+
+		status := h.UpdateFleetAnnotations(context.Background(), uuid.New(), "f1", map[string]string{"k": "v"}, nil)
+		require.Equal(t, statusSuccessCode, status.Code)
+		require.Equal(t, "v", (*fakeStore.fleets["f1"].Metadata.Annotations)["k"])
+		// Annotations aren't tracked by ComputeResourceUpdatedDetails, so no event is emitted.
+		require.Empty(t, fakeEvents.created)
+	})
+
+	t.Run("When the fleet does not exist it should return a not-found status", func(t *testing.T) {
+		h, _, _ := newTestHandler()
+
+		status := h.UpdateFleetAnnotations(context.Background(), uuid.New(), "missing", map[string]string{"k": "v"}, nil)
+		require.Equal(t, statusNotFoundCode, status.Code)
+	})
+}
+
+func TestSetDeltaPrepareIdentity(t *testing.T) {
+	t.Run("When the Fleet generation matches it should set the prepare identity", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fl := createTestFleet("f1", nil)
+		fl.Metadata.Generation = lo.ToPtr(int64(3))
+		fl.Metadata.ResourceVersion = lo.ToPtr("7")
+		fakeStore.fleets["f1"] = &fl
+
+		accepted, status := h.SetDeltaPrepareIdentity(context.Background(), uuid.New(), "f1", 7, 3)
+		require.Equal(t, statusSuccessCode, status.Code)
+		require.True(t, accepted)
+		annotations := lo.FromPtr(fakeStore.fleets["f1"].Metadata.Annotations)
+		assert.Equal(t, "7", annotations[domain.FleetAnnotationDeltaPrepareResourceVersion])
+		assert.Equal(t, "3", annotations[domain.FleetAnnotationDeltaPrepareGeneration])
+	})
+
+	t.Run("When the Fleet generation changed it should preserve the newer marker", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fl := createTestFleet("f1", nil)
+		fl.Metadata.Generation = lo.ToPtr(int64(4))
+		fl.Metadata.Annotations = &map[string]string{
+			domain.FleetAnnotationDeltaPrepareResourceVersion: "8",
+			domain.FleetAnnotationDeltaPrepareGeneration:      "4",
+		}
+		fakeStore.fleets["f1"] = &fl
+
+		accepted, status := h.SetDeltaPrepareIdentity(context.Background(), uuid.New(), "f1", 7, 3)
+		require.Equal(t, statusSuccessCode, status.Code)
+		assert.False(t, accepted)
+		annotations := lo.FromPtr(fakeStore.fleets["f1"].Metadata.Annotations)
+		assert.Equal(t, "8", annotations[domain.FleetAnnotationDeltaPrepareResourceVersion])
+		assert.Equal(t, "4", annotations[domain.FleetAnnotationDeltaPrepareGeneration])
+	})
+
+	t.Run("When an older resource version is set it should preserve the newer marker", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fl := createTestFleet("f1", nil)
+		fl.Metadata.Generation = lo.ToPtr(int64(3))
+		fl.Metadata.Annotations = &map[string]string{
+			domain.FleetAnnotationDeltaPrepareResourceVersion: "8",
+			domain.FleetAnnotationDeltaPrepareGeneration:      "3",
+		}
+		fakeStore.fleets["f1"] = &fl
+
+		accepted, status := h.SetDeltaPrepareIdentity(context.Background(), uuid.New(), "f1", 7, 3)
+		require.Equal(t, statusSuccessCode, status.Code)
+		assert.False(t, accepted)
+		annotations := lo.FromPtr(fakeStore.fleets["f1"].Metadata.Annotations)
+		assert.Equal(t, "8", annotations[domain.FleetAnnotationDeltaPrepareResourceVersion])
+	})
+}
+
+func TestOverwriteFleetRepositoryRefs(t *testing.T) {
+	t.Run("When the store succeeds it should overwrite the refs", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+
+		status := h.OverwriteFleetRepositoryRefs(context.Background(), uuid.New(), "f1", "repo-a", "repo-b")
+		require.Equal(t, statusSuccessCode, status.Code)
+		require.Equal(t, []string{"repo-a", "repo-b"}, fakeStore.lastOverwrittenRepoNames)
+	})
+
+	t.Run("When the store errors it should return an internal-server-error status", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fakeStore.overwriteRepositoryRefsErr = errors.New("db down")
+
+		status := h.OverwriteFleetRepositoryRefs(context.Background(), uuid.New(), "f1", "repo-a")
+		require.Equal(t, statusInternalErrCode, status.Code)
+	})
+}
+
+func TestGetFleetRepositoryRefs(t *testing.T) {
+	t.Run("When the store succeeds it should return the refs", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fakeStore.repositoryRefs["f1"] = &domain.RepositoryList{Items: []domain.Repository{
+			{Metadata: domain.ObjectMeta{Name: lo.ToPtr("repo-a")}},
+		}}
+
+		result, status := h.GetFleetRepositoryRefs(context.Background(), uuid.New(), "f1")
+		require.Equal(t, domain.StatusOK(), status)
+		require.Len(t, result.Items, 1)
+	})
+
+	t.Run("When the store errors it should return an internal-server-error status", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandler()
+		fakeStore.getRepositoryRefsErr = errors.New("db down")
+
+		_, status := h.GetFleetRepositoryRefs(context.Background(), uuid.New(), "f1")
+		require.Equal(t, statusInternalErrCode, status.Code)
+	})
+}
+
+func makeCatalogItem(itemType domain.CatalogItemType, versions ...string) *domain.CatalogItem {
+	var versionList []domain.CatalogItemVersion
+	for _, v := range versions {
+		versionList = append(versionList, domain.CatalogItemVersion{Version: v})
+	}
+	return &domain.CatalogItem{
+		Spec: domain.CatalogItemSpec{
+			Type:     itemType,
+			Versions: versionList,
+		},
+	}
+}
+
+func makeFleetAppSpec(t *testing.T, catalog, item, version string) domain.ApplicationProviderSpec {
+	t.Helper()
+	container := domain.ContainerApplication{
+		AppType: domain.AppTypeContainer,
+		Name:    lo.ToPtr("myapp"),
+	}
+	err := container.FromCatalogItemRefApplicationProviderSpec(domain.CatalogItemRefApplicationProviderSpec{
+		CatalogItemRef: domain.CatalogItemRefSpec{
+			Catalog: catalog,
+			Item:    item,
+			Version: version,
+		},
+	})
+	require.NoError(t, err)
+	var spec domain.ApplicationProviderSpec
+	err = spec.FromContainerApplication(container)
+	require.NoError(t, err)
+	return spec
+}
+
+func createFleetWithOSCatalogRef(name, catalog, item, version string) domain.Fleet {
+	fleet := createTestFleet(name, nil)
+	fleet.Spec.Template.Spec.Os = &domain.DeviceOsSpec{
+		CatalogItemRef: &domain.CatalogItemRefSpec{
+			Catalog: catalog,
+			Item:    item,
+			Version: version,
+		},
+	}
+	return fleet
+}
+
+func TestCreateFleet_CatalogItemRefValidation(t *testing.T) {
+	t.Run("When OS refs a valid catalog item version it should succeed", func(t *testing.T) {
+		h, _, catalog := newTestHandlerWithCatalog()
+		catalog.items["mycat/myitem"] = makeCatalogItem(domain.CatalogItemTypeOS, "1.0.0", "2.0.0")
+
+		fleet := createFleetWithOSCatalogRef("f1", "mycat", "myitem", "1.0.0")
+		_, status := h.CreateFleet(context.Background(), uuid.New(), fleet)
+		require.Equal(t, statusCreatedCode, status.Code)
+	})
+
+	t.Run("When OS refs a nonexistent catalog item it should return bad request", func(t *testing.T) {
+		h, _, _ := newTestHandlerWithCatalog()
+
+		fleet := createFleetWithOSCatalogRef("f1", "mycat", "missing", "1.0.0")
+		_, status := h.CreateFleet(context.Background(), uuid.New(), fleet)
+		require.Equal(t, statusBadRequestCode, status.Code)
+		require.Contains(t, status.Message, "mycat/missing")
+	})
+
+	t.Run("When OS refs a nonexistent version it should return bad request", func(t *testing.T) {
+		h, _, catalog := newTestHandlerWithCatalog()
+		catalog.items["mycat/myitem"] = makeCatalogItem(domain.CatalogItemTypeOS, "1.0.0")
+
+		fleet := createFleetWithOSCatalogRef("f1", "mycat", "myitem", "9.9.9")
+		_, status := h.CreateFleet(context.Background(), uuid.New(), fleet)
+		require.Equal(t, statusBadRequestCode, status.Code)
+		require.Contains(t, status.Message, "9.9.9")
+	})
+
+	t.Run("When an application refs a valid catalog item version it should succeed", func(t *testing.T) {
+		h, _, catalog := newTestHandlerWithCatalog()
+		catalog.items["mycat/myitem"] = makeCatalogItem(domain.CatalogItemTypeContainer, "1.0.0")
+
+		fleet := createTestFleet("f1", nil)
+		fleet.Spec.Template.Spec.Applications = &[]domain.ApplicationProviderSpec{
+			makeFleetAppSpec(t, "mycat", "myitem", "1.0.0"),
+		}
+		_, status := h.CreateFleet(context.Background(), uuid.New(), fleet)
+		require.Equal(t, statusCreatedCode, status.Code)
+	})
+
+	t.Run("When an application refs a nonexistent catalog item it should return bad request", func(t *testing.T) {
+		h, _, _ := newTestHandlerWithCatalog()
+
+		fleet := createTestFleet("f1", nil)
+		fleet.Spec.Template.Spec.Applications = &[]domain.ApplicationProviderSpec{
+			makeFleetAppSpec(t, "mycat", "missing", "1.0.0"),
+		}
+		_, status := h.CreateFleet(context.Background(), uuid.New(), fleet)
+		require.Equal(t, statusBadRequestCode, status.Code)
+		require.Contains(t, status.Message, "mycat/missing")
+	})
+
+	t.Run("When no catalog refs exist it should succeed without catalog lookups", func(t *testing.T) {
+		h, _, _ := newTestHandlerWithCatalog()
+
+		fleet := createTestFleet("f1", nil)
+		_, status := h.CreateFleet(context.Background(), uuid.New(), fleet)
+		require.Equal(t, statusCreatedCode, status.Code)
+	})
+
+	t.Run("When catalog store is nil validation is skipped", func(t *testing.T) {
+		h, _, _ := newTestHandler()
+
+		fleet := createFleetWithOSCatalogRef("f1", "mycat", "missing", "1.0.0")
+		_, status := h.CreateFleet(context.Background(), uuid.New(), fleet)
+		require.Equal(t, statusCreatedCode, status.Code)
+	})
+}
+
+func TestReplaceFleet_CatalogItemRefValidation(t *testing.T) {
+	t.Run("When OS refs a valid catalog item version it should succeed", func(t *testing.T) {
+		h, fakeStore, catalog := newTestHandlerWithCatalog()
+		catalog.items["mycat/myitem"] = makeCatalogItem(domain.CatalogItemTypeOS, "1.0.0")
+
+		existing := createTestFleet("f1", nil)
+		fakeStore.fleets["f1"] = &existing
+
+		fleet := createFleetWithOSCatalogRef("f1", "mycat", "myitem", "1.0.0")
+		_, status := h.ReplaceFleet(context.Background(), uuid.New(), "f1", fleet, true)
+		require.Equal(t, statusSuccessCode, status.Code)
+	})
+
+	t.Run("When OS refs a nonexistent catalog item it should return bad request", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandlerWithCatalog()
+
+		existing := createTestFleet("f1", nil)
+		fakeStore.fleets["f1"] = &existing
+
+		fleet := createFleetWithOSCatalogRef("f1", "mycat", "missing", "1.0.0")
+		_, status := h.ReplaceFleet(context.Background(), uuid.New(), "f1", fleet, true)
+		require.Equal(t, statusBadRequestCode, status.Code)
+		require.Contains(t, status.Message, "mycat/missing")
+	})
+}
+
+func TestPatchFleet_CatalogItemRefValidation(t *testing.T) {
+	t.Run("When patch introduces an invalid catalog item ref it should return bad request", func(t *testing.T) {
+		h, fakeStore, _ := newTestHandlerWithCatalog()
+
+		existing := createTestFleet("f1", nil)
+		fakeStore.fleets["f1"] = &existing
+
+		patch := domain.PatchRequest{
+			{Op: "replace", Path: "/spec/template/spec/os", Value: map[string]interface{}{
+				"catalogItemRef": map[string]interface{}{
+					"catalog": "mycat",
+					"item":    "missing",
+					"version": "1.0.0",
+				},
+			}},
+		}
+		_, status := h.PatchFleet(context.Background(), uuid.New(), "f1", patch, true)
+		require.Equal(t, statusBadRequestCode, status.Code)
+		require.Contains(t, status.Message, "mycat/missing")
+	})
+}

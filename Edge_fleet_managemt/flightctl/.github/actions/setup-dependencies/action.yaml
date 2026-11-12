@@ -1,0 +1,202 @@
+---
+name: 'Setup environment'
+description: 'Setup CI environment for testing'
+inputs:
+  setup_kvm:
+    description: 'Setup kvm in the VM'
+    required: false
+    default: ''
+  skip_package_install:
+    description: >-
+      Skip apt installs and tool downloads already baked into the custom
+      runner image (flightctl-ci-runner). Use on workflows that run on that
+      image so apt does not pull package upgrades every job. Leave false on
+      stock GitHub-hosted runners (e.g. ubuntu-24.04 Smoke).
+    required: false
+    default: 'false'
+runs:
+  using: "composite"
+  steps:
+      # Pin cache-dependency-path to the root go.sum. Left unset, setup-go
+      # resolves the cache key by searching for go.sum across the repo, and
+      # this repo has several (root plus tools/*/go.sum). That ambiguous
+      # resolution intermittently trips a runner-toolkit bug in setup-go's
+      # post-step cache save ("Index was out of range"), which fails the job
+      # even when all build/test steps pass. It surfaces on release branches
+      # (cold cache -> the save path actually runs) far more than on main
+      # (warm exact-key hit -> save skipped). Anchoring the key to a single
+      # file that exists on every branch makes resolution deterministic while
+      # keeping setup-go's built-in caching and its correct post-step save
+      # timing (after go install and the caller's make targets complete).
+      - name: Setup Go
+        if: ${{ inputs.skip_package_install != 'true' }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: go.sum
+
+      - name: Prepare apt cache directory
+        if: ${{ inputs.skip_package_install != 'true' }}
+        shell: bash
+        run: |
+          echo "APT_CACHE_DIR=${HOME}/.cache/apt-archives" >> "$GITHUB_ENV"
+          echo "APT_OPTS=-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20" >> "$GITHUB_ENV"
+          mkdir -p "${HOME}/.cache/apt-archives"
+
+      # GitHub-hosted images list azure.archive.ubuntu.com first. When that
+      # host hangs, apt retries it for every index file.
+      - name: Pin Ubuntu apt mirrors
+        if: ${{ inputs.skip_package_install != 'true' }}
+        shell: bash
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf 'https://archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://security.ubuntu.com/ubuntu/\tpriority:2\n' | sudo tee /etc/apt/apt-mirrors.txt
+          fi
+
+      # apt's default archive dir (/var/cache/apt/archives) is root-owned, so
+      # actions/cache — which runs as the unprivileged runner user — can't
+      # write restored .deb files back into it. Redirecting to a
+      # runner-owned directory via Dir::Cache::Archives sidesteps that: apt
+      # itself still runs via sudo so it can write there regardless of
+      # ownership, but actions/cache can too.
+      - name: Restore apt cache
+        id: restore-apt-cache
+        if: ${{ inputs.skip_package_install != 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.APT_CACHE_DIR }}
+          key: ${{ runner.os }}-${{ runner.arch }}-apt-${{ inputs.setup_kvm != '' && 'kvm' || 'base' }}-${{ hashFiles('.github/actions/setup-dependencies/action.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-apt-${{ inputs.setup_kvm != '' && 'kvm' || 'base' }}-
+            ${{ runner.os }}-${{ runner.arch }}-apt-
+
+      - name: Enable KVM group perms
+        shell: bash
+        if: ${{ inputs.setup_kvm != '' && inputs.skip_package_install != 'true' }}
+        run: |
+          echo "::group::Setting up KVM and virtualization tools"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo apt ${APT_OPTS} update -y
+          sudo apt ${APT_OPTS} -o Dir::Cache::Archives="${APT_CACHE_DIR}" install -y libvirt-clients libvirt-daemon-system libvirt-daemon \
+                              virtinst bridge-utils qemu-system-x86 qemu-kvm \
+                              swtpm apparmor-utils libguestfs-tools
+          sudo usermod -a -G kvm,libvirt,swtpm $USER
+          echo "::endgroup::"
+
+      - name: Install dependencies
+        if: ${{ inputs.skip_package_install != 'true' }}
+        shell: bash
+        run: |
+          echo "::group::Installing general dependencies"
+          sudo apt ${APT_OPTS} update -y
+          sudo apt ${APT_OPTS} -o Dir::Cache::Archives="${APT_CACHE_DIR}" install -y make python3-pip podman podman-compose libvirt-dev libpam0g-dev
+
+          # Ubuntu noble ships crun 1.14.1 which rejects OCI runtime spec v1.2.1
+          # version strings emitted by Podman 4.9+, causing "unknown version specified"
+          # errors on RUN --mount=type=cache steps. Pin to 1.14.3+ (the fix release).
+          # Overwrite /usr/bin/crun in place — Podman invokes that absolute path from
+          # its OCI runtime config, so /usr/local/bin alone does not take effect.
+          # See: https://github.com/containers/crun/issues/1485
+          CRUN_VERSION=1.14.3
+          ARCH=$(uname -m)
+          if [ "${ARCH}" = "x86_64" ]; then
+            CRUN_ARCH=amd64
+            CRUN_SHA256=80c5ab9422d4672f650f2bad3da933568349b64117d055486abc3534517be2af
+          elif [ "${ARCH}" = "aarch64" ]; then
+            CRUN_ARCH=arm64
+            CRUN_SHA256=0486629e1599c3bccded279f6555ff22691958cde56203ceca099af6f2407263
+          else
+            echo "Unsupported architecture: ${ARCH}" >&2
+            exit 1
+          fi
+          curl -fsSL -o /tmp/crun "https://github.com/containers/crun/releases/download/${CRUN_VERSION}/crun-${CRUN_VERSION}-linux-${CRUN_ARCH}"
+          echo "${CRUN_SHA256}  /tmp/crun" | sha256sum -c -
+          sudo install -m 0755 /tmp/crun /usr/bin/crun
+          rm -f /tmp/crun
+
+          # Prime rootless Podman API socket before Go testcontainers init() probes paths (otherwise
+          # /var/run/docker.sock can win on runners that ship both Docker and Podman).
+          podman info >/dev/null 2>&1 || true
+
+          podman --version
+          /usr/bin/crun --version
+
+          if [ "$(uname -m)" = "x86_64" ]; then
+            PROTOC_ARCH=x86_64
+            PROTOC_SHA256=3e866620c5be27664f3d2fa2d656b5f3e09b5152b42f1bedbf427b333e90021a
+          else
+            PROTOC_ARCH=aarch_64
+            PROTOC_SHA256=6427349140e01f06e049e707a58709a4f221ae73ab9a0425bc4a00c8d0e1ab32
+          fi
+          curl -Lo protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-${PROTOC_ARCH}.zip"
+          echo "${PROTOC_SHA256}  protoc.zip" | sha256sum -c -
+          sudo unzip -q -o protoc.zip bin/protoc -d /usr/local
+          sudo chmod a+x /usr/local/bin/protoc
+          protoc --version
+          rm -rf protoc.zip
+
+          go install oras.land/oras/cmd/oras@v1.3.0
+          oras version
+          echo "::endgroup::"
+
+      # Custom runner image already has apt packages, crun, protoc, oras, Go, and KVM.
+      # Still prime Podman and validate the binary Podman actually invokes.
+      # oras is baked via `go install` into GOPATH/bin; setup-go is skipped here so that
+      # dir is often missing from PATH — put it on PATH and require the binary (no install).
+      - name: Verify preinstalled dependencies
+        if: ${{ inputs.skip_package_install == 'true' }}
+        shell: bash
+        run: |
+          echo "::group::Verifying preinstalled dependencies (custom runner image)"
+          set -euo pipefail
+          go version
+          # Match non-skip path: go-installed tools live under GOPATH/bin.
+          export PATH="$(go env GOPATH)/bin:${HOME}/go/bin:${PATH}"
+          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+          echo "${HOME}/go/bin" >> "${GITHUB_PATH}"
+          podman info >/dev/null 2>&1 || true
+          podman --version
+          # Podman uses /usr/bin/crun by absolute path — check that binary, not PATH.
+          CRUN_MIN=1.14.3
+          /usr/bin/crun --version
+          CRUN_GOT=$(/usr/bin/crun --version | awk '/^crun version /{print $3; exit}')
+          if [[ -z "${CRUN_GOT}" ]]; then
+            echo "ERROR: could not parse /usr/bin/crun version" >&2
+            exit 1
+          fi
+          if [[ "$(printf '%s\n' "${CRUN_MIN}" "${CRUN_GOT}" | sort -V | head -n1)" != "${CRUN_MIN}" ]]; then
+            echo "ERROR: /usr/bin/crun is ${CRUN_GOT}, need >= ${CRUN_MIN}" >&2
+            exit 1
+          fi
+          protoc --version
+          if ! command -v oras >/dev/null 2>&1; then
+            echo "ERROR: oras not found on PATH (expected under GOPATH/bin from the custom image)" >&2
+            exit 1
+          fi
+          oras version
+          echo "::endgroup::"
+      
+      - name: Install bubblewrap for unit tests
+        shell: bash
+        if: ${{ inputs.unit_tests == 'true' && inputs.skip_package_install != 'true' }}
+        run: |
+          sudo apt ${APT_OPTS} -o Dir::Cache::Archives="${APT_CACHE_DIR}" install -y bubblewrap apparmor-profiles
+          sudo ln -s /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap || true
+          sudo apparmor_parser /etc/apparmor.d/bwrap
+
+      - name: Fix container storage driver
+        shell: bash
+        run: |
+          # Fix storage driver so it can be used with BIB (see https://github.com/osbuild/bootc-image-builder/issues/446)
+          sudo rm -rf /var/lib/containers/storage || true
+          sudo mkdir -p /etc/containers
+          echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"" | sudo tee /etc/containers/storage.conf
+
+      - name: Save apt cache
+        if: ${{ inputs.skip_package_install != 'true' && github.ref == 'refs/heads/main' && steps.restore-apt-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.APT_CACHE_DIR }}
+          key: ${{ runner.os }}-${{ runner.arch }}-apt-${{ inputs.setup_kvm != '' && 'kvm' || 'base' }}-${{ hashFiles('.github/actions/setup-dependencies/action.yaml') }}

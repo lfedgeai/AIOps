@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package flightctl.v1;
+
+option go_package = "github.com/flightctl/flightctl/api/grpc/v1/grpc-v1";
+
+// Enrollment provides methods for .
+service Enrollment {
+  // TPMChallenge establishes a bidirectional stream to conduct the TPM challenge-response.
+  rpc TPMChallenge(stream AgentChallenge) returns (stream ServerChallenge);
+
+  // WatchEnrollmentHooks streams the Device EnrollmentHooks condition. The first
+  // event is a snapshot of the current state; further events are sent when the
+  // condition changes. The stream ends once the reason is no longer NotifyPending
+  // (or the condition is absent).
+  rpc WatchEnrollmentHooks(WatchEnrollmentHooksRequest) returns (stream EnrollmentHooksEvent);
+}
+
+// WatchEnrollmentHooksRequest identifies the device whose EnrollmentHooks
+// condition should be watched.
+message WatchEnrollmentHooksRequest {
+  // The name of the Device resource (must match the authenticated client identity).
+  string device_name = 1;
+}
+
+// EnrollmentHooksEvent carries the current EnrollmentHooks condition state.
+message EnrollmentHooksEvent {
+  // Condition reason (e.g. NotifyPending, Pending, Failed). Empty when the
+  // condition is absent.
+  string reason = 1;
+  // Condition status (True/False/Unknown). Empty when the condition is absent.
+  string status = 2;
+  // Condition message.
+  string message = 3;
+  // Index of the EnrollmentHooks condition in status.conditions for PATCH.
+  // -1 when the condition is absent.
+  int32 condition_index = 4;
+  // Failure policy from the enrollment-hooks snapshot (Block/Continue).
+  string failure_policy = 5;
+  // Device labels for AfterEnrolling hook context.
+  map<string, string> labels = 6;
+  // True when no EnrollmentHooks condition exists on the device.
+  bool condition_absent = 7;
+}
+
+// AgentChallenge is a wrapper for all possible messages the agent can send.
+message AgentChallenge {
+  oneof payload {
+    // The first message sent by the agent to request a challenge.
+    ChallengeRequest challenge_request = 1;
+    // The agent's response containing the decrypted secret.
+    ChallengeResponse challenge_response = 2;
+  }
+}
+
+// ServerChallenge is a wrapper for all possible messages the service can send.
+message ServerChallenge {
+  oneof payload {
+    // The service's challenge containing the credential blob.
+    Challenge challenge = 1;
+    // A message indicating the entire challenge was successful.
+    ChallengeComplete success = 2;
+    // A message indicating a failure at some point in the challenge.
+    ChallengeError error = 3;
+  }
+}
+
+// ChallengeRequest is sent by the client to initiate the challenge for a specific EnrollmentRequest.
+message ChallengeRequest {
+  // The name of the EnrollmentRequest resource created via the REST API.
+  string enrollment_request_name = 1;
+}
+
+// Challenge is sent by the server and contains the credential blob the agent needs to solve.
+message Challenge {
+  // The encrypted data blob that the agent must
+  // pass to the TPM's ActivateCredential command.
+  bytes credential_blob = 1;
+  // The encrypted secret that accompanies the credential blob.
+  bytes encrypted_secret = 2;
+}
+
+// ChallengeResponse contains the agent's decrypted secret.
+message ChallengeResponse {
+  // The raw bytes of the secret decrypted by the TPM.
+  bytes secret = 1;
+}
+
+// ChallengeComplete signals a successful end to the challenge.
+message ChallengeComplete {
+  // A human-readable success message.
+  string message = 1;
+}
+
+// ChallengeError signals a failure and terminates the challenge.
+message ChallengeError {
+  // A human-readable error message.
+  string message = 1;
+}

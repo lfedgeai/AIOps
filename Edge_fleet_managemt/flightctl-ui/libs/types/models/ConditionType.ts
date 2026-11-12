@@ -1,0 +1,30 @@
+/* generated using openapi-typescript-codegen -- do no edit */
+/* istanbul ignore file */
+/* tslint:disable */
+/* eslint-disable */
+/**
+ * Type of condition in CamelCase.
+ */
+export enum ConditionType {
+  EnrollmentRequestApproved = 'Approved',
+  EnrollmentRequestTPMVerified = 'TPMVerified',
+  CertificateSigningRequestApproved = 'Approved',
+  CertificateSigningRequestDenied = 'Denied',
+  CertificateSigningRequestFailed = 'Failed',
+  CertificateSigningRequestTPMVerified = 'TPMVerified',
+  RepositoryAccessible = 'Accessible',
+  ResourceSyncAccessible = 'Accessible',
+  ResourceSyncResourceParsed = 'ResourceParsed',
+  ResourceSyncSynced = 'Synced',
+  LabelSyncMappingReady = 'Ready',
+  FleetValid = 'Valid',
+  FleetRolloutInProgress = 'RolloutInProgress',
+  DeviceUpdating = 'Updating',
+  DeviceSpecValid = 'SpecValid',
+  DeviceMultipleOwners = 'MultipleOwners',
+  DeviceLabelsSynced = 'LabelsSynced',
+  DeviceDecommissioning = 'DeviceDecommissioning',
+  FleetDeltaPreparing = 'FleetDeltaPreparing',
+  DeviceDeltaPreparing = 'DeviceDeltaPreparing',
+  DeviceEnrollmentHooks = 'EnrollmentHooks',
+}

@@ -1,0 +1,474 @@
+name: "Build Images and Charts"
+description: |
+  Reusable workflow that builds backend container images, Helm charts, CLI, and simulator.
+  Runs parallel jobs: containers, helm charts, CLI, and simulator.
+  Uploads artifacts: image bundle, packaged helm chart, CLI binary, and simulator binary.
+
+on:
+  workflow_call:
+    inputs:
+      repository:
+        description: "Repository to checkout (default: current repo)"
+        required: false
+        type: string
+        default: ""
+      ref:
+        description: "Git ref to checkout (default: current ref)"
+        required: false
+        type: string
+        default: ""
+      validate_fips:
+        description: "Run FIPS validation on the built images. Set to false for baseline builds whose ref may predate the fips-validate Makefile target."
+        required: false
+        type: boolean
+        default: true
+      build_catalog_collector:
+        description: "Also build the catalog collector image. It is not part of the default backend build; only runs that can select the collector e2e suite need it. Defaults to false so existing callers are unaffected."
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      git_tag:
+        description: "Computed git tag for artifacts"
+        value: ${{ jobs.build-backend-containers.outputs.git_tag }}
+      cli_git_tag:
+        description: "Computed git tag from CLI build"
+        value: ${{ jobs.build-cli.outputs.git_tag }}
+
+jobs:
+  build-backend-containers:
+    # Larger self-hosted runners: parallel container builds (make -j4) exhaust
+    # disk on GitHub-hosted ubuntu-24.04 (ENOSPC pulling kubevirt / writing CLI bins).
+    # Match e2e (run-e2e-tests.yaml) which already uses flightctl-ci-runner.
+    runs-on: flightctl-ci-runner
+    outputs:
+      git_tag: ${{ steps.compute-tag.outputs.git_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android >/dev/null 2>&1 &
+          echo "Started background removal of /usr/local/lib/android (PID: $!)"
+          df -h
+
+      - name: Compute tag
+        id: compute-tag
+        uses: ./.github/actions/compute-tag
+
+      - name: Set buildah cache path
+        run: echo "BUILDAH_CACHE_PATH=${TMPDIR:-/var/tmp}/buildah-cache-$(id -u)" >> "$GITHUB_ENV"
+
+      - name: Restore buildah cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.BUILDAH_CACHE_PATH }}
+          key: ${{ runner.os }}-buildah-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-buildah-
+
+      - name: Build backend containers
+        env:
+          SOURCE_GIT_TAG: ${{ steps.compute-tag.outputs.git_tag }}
+          SOURCE_GIT_TREE_STATE: ${{ steps.compute-tag.outputs.git_tree_state }}
+          SOURCE_GIT_COMMIT: ${{ steps.compute-tag.outputs.git_commit }}
+          REGISTRY: quay.io
+          REGISTRY_OWNER: flightctl
+          OS: el9
+          BUILD_CATALOG_COLLECTOR: ${{ inputs.build_catalog_collector }}
+        run: |
+          set -euo pipefail
+
+          echo "::group::Building backend containers"
+          make -j4 build-containers
+          echo "::endgroup::"
+
+          # The catalog collector is not part of build-containers: no default
+          # deployment installs it. Its e2e suite does, so runs that can
+          # select that suite build it here - in this step, so it is stamped
+          # with the same SOURCE_GIT_* metadata and tagged for the same
+          # registry, owner and OS as every other backend image, and before
+          # the bundle step so it travels to the cluster with them.
+          if [[ "${BUILD_CATALOG_COLLECTOR}" == "true" ]]; then
+            echo "::group::Building catalog collector container"
+            make flightctl-catalog-collector-container
+            echo "::endgroup::"
+          else
+            echo "Catalog collector image not requested; skipping."
+          fi
+
+      - name: Bundle images
+        id: bundle-images
+        env:
+          TAG: ${{ steps.compute-tag.outputs.git_tag }}
+          REGISTRY: quay.io
+          REGISTRY_OWNER: flightctl
+          OS: el9
+        run: |
+          set -euo pipefail
+          echo "::group::Creating images bundle"
+          BUNDLE_FILE="flightctl-images-bundle.tar"
+          if make -n bundle-images >/dev/null 2>&1; then
+            echo "Found make target bundle-images, using it"
+            make bundle-images
+          else
+            echo "bundle-images target not found, falling back to direct save"
+            echo "Getting list of loaded flightctl images with tag: $TAG"
+            mapfile -t loaded_images < <(podman images --format "{{.Repository}}:{{.Tag}}" | grep "quay\.io/flightctl/flightctl-.*:${TAG}")
+            echo "Creating bundle with ${#loaded_images[@]} images:"
+            printf '  %s\n' "${loaded_images[@]}"
+            podman save --format docker-archive -o "${BUNDLE_FILE}" -m "${loaded_images[@]}"
+          fi
+
+          echo "Bundle created: $(ls -lh ${BUNDLE_FILE})"
+          echo "bundle_file=$BUNDLE_FILE" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+
+      - name: List bundled images
+        id: list-images
+        env:
+          TAG: ${{ steps.compute-tag.outputs.git_tag }}
+          BUNDLE_FILE: ${{ steps.bundle-images.outputs.bundle_file }}
+        run: |
+          set -euo pipefail
+          echo "::group::Listing images in bundle"
+          IMAGES=$(podman images --format "{{.Repository}}:{{.Tag}}" | grep "quay\.io/flightctl/flightctl-.*:${TAG}" | sort)
+          echo "$IMAGES"
+          echo "::endgroup::"
+          
+          # Save for summary
+          {
+            echo "images<<EOF"
+            echo "$IMAGES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "count=$(echo "$IMAGES" | wc -l)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload images bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: flightctl-images-bundle-${{ steps.compute-tag.outputs.git_tag }}
+          path: ${{ steps.bundle-images.outputs.bundle_file }}
+          compression-level: 1
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Generate build summary
+        env:
+          IMAGE_TAG: ${{ steps.compute-tag.outputs.git_tag }}
+          RUN_ID: ${{ github.run_id }}
+          IMAGES: ${{ steps.list-images.outputs.images }}
+          IMAGE_COUNT: ${{ steps.list-images.outputs.count }}
+        run: |
+          set -euo pipefail
+          
+          {
+            echo "## :gear: Services Ready for Deployment"
+            echo ""
+            echo "**Tag:** \`${IMAGE_TAG}\` | [All artifacts](https://github.com/${{ github.repository }}/actions/runs/${RUN_ID}#artifacts)"
+            echo ""
+            echo "<details>"
+            echo "<summary><strong>Container Images (${IMAGE_COUNT})</strong></summary>"
+            echo ""
+            echo "$IMAGES" | sed 's/^/- `/' | sed 's/$/`/'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save buildah cache
+        uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: ${{ env.BUILDAH_CACHE_PATH }}
+          key: ${{ runner.os }}-buildah-${{ github.run_id }}
+
+  validate-fips:
+    # Runs on a stock GitHub-hosted runner, mirroring the FIPS validation in
+    # publish-containers.yaml, which runs the same "podman unshare -- fips-validator
+    # image" command on ubuntu-24.04.
+    runs-on: ubuntu-24.04
+    needs: build-backend-containers
+    # Skipped when validate_fips is false (e.g. baseline builds whose checked-out
+    # ref predates the fips-validate Makefile target); PR builds validate normally.
+    if: ${{ inputs.validate_fips }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+
+      - name: Download backend images bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: flightctl-images-bundle-${{ needs.build-backend-containers.outputs.git_tag }}
+          path: artifacts
+
+      - name: Load images into podman
+        run: |
+          set -euo pipefail
+          echo "::group::Loading images from bundle"
+          podman load -i artifacts/flightctl-images-bundle.tar
+          echo "::endgroup::"
+
+          echo "::group::Loaded images"
+          podman images --format '{{.Repository}}:{{.Tag}}' | grep flightctl || true
+          echo "::endgroup::"
+
+      - name: Install fips-validator
+        run: |
+          set -euo pipefail
+          go install github.com/flightctl/fips-validator@latest
+          # GitHub-hosted runners do not have $(go env GOPATH)/bin on PATH, so
+          # expose the freshly-installed binary to the subsequent "make
+          # fips-validate" step (which resolves it via command -v).
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Validate FIPS compliance
+        run: make fips-validate FIPS_IMAGE_PATTERN='quay\.io/flightctl/flightctl-.*-el9'
+
+  build-helm-charts:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compute tag
+        id: compute-tag
+        uses: ./.github/actions/compute-tag
+
+      - name: Build helm charts
+        id: build-charts
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.compute-tag.outputs.helm_tag }}"
+
+          echo "::group::Building helm charts"
+          helm dependency build ./deploy/helm/flightctl
+          helm package ./deploy/helm/flightctl \
+            --version "$TAG" \
+            --app-version "v$TAG"
+
+          # Rename to consistent names for easier consumption
+          GENERATED_FILE="flightctl-${TAG}.tgz"
+          CHART_FILE="flightctl-chart.tgz"
+          mv "$GENERATED_FILE" "$CHART_FILE"
+          echo "Chart file: $CHART_FILE"
+          echo "chart_file=$CHART_FILE" >> "$GITHUB_OUTPUT"
+
+          # Independent catalog-collector chart: packaged here so chart
+          # regressions are caught on every PR build.
+          #
+          # This workflow is also called with "ref" pointing at a different
+          # commit than the one it was loaded from (the upgrade test builds a
+          # baseline from the PR's target branch). That checkout predates the
+          # chart, so its absence is a normal state and not a build failure;
+          # the upload below is skipped to match.
+          COLLECTOR_CHART_DIR="./deploy/helm/flightctl-catalog-collector"
+          if [ -d "$COLLECTOR_CHART_DIR" ]; then
+            helm package "$COLLECTOR_CHART_DIR" \
+              --version "$TAG" \
+              --app-version "v$TAG"
+
+            COLLECTOR_GENERATED_FILE="flightctl-catalog-collector-${TAG}.tgz"
+            COLLECTOR_CHART_FILE="flightctl-catalog-collector-chart.tgz"
+            mv "$COLLECTOR_GENERATED_FILE" "$COLLECTOR_CHART_FILE"
+            echo "Catalog collector chart file: $COLLECTOR_CHART_FILE"
+            echo "collector_chart_file=$COLLECTOR_CHART_FILE" >> "$GITHUB_OUTPUT"
+          else
+            echo "No catalog collector chart at $COLLECTOR_CHART_DIR; skipping"
+          fi
+          echo "::endgroup::"
+
+      - name: Upload helm chart artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-chart-${{ steps.compute-tag.outputs.git_tag }}
+          path: ${{ steps.build-charts.outputs.chart_file }}
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+      # Uploaded as its own artifact rather than added to the one above: the
+      # main chart artifact is consumed by name by downstream jobs that expect
+      # exactly one file, and the catalog collector chart is installed
+      # independently anyway.
+      - name: Upload catalog collector helm chart artifact
+        if: steps.build-charts.outputs.collector_chart_file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-chart-catalog-collector-${{ steps.compute-tag.outputs.git_tag }}
+          path: ${{ steps.build-charts.outputs.collector_chart_file }}
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+  build-cli:
+    runs-on: ubuntu-24.04
+    outputs:
+      git_tag: ${{ steps.compute-tag.outputs.git_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compute tag
+        id: compute-tag
+        uses: ./.github/actions/compute-tag
+
+      - name: Restore Go cache
+        id: cache-go-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Build CLI binary
+        run: |
+          set -euo pipefail
+          echo "::group::Building CLI binary"
+          make build-cli
+          cp bin/flightctl flightctl-linux-amd64
+          echo "::endgroup::"
+
+      - name: Upload CLI binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: flightctl-linux-amd64-${{ steps.compute-tag.outputs.git_tag }}
+          path: flightctl-linux-amd64
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Save Go cache
+        uses: actions/cache/save@v4
+        # Same key across every PR/branch (hashFiles('**/go.sum') rarely changes), but Actions
+        # cache save is scoped per-ref, so an unconditional save here leaves one throwaway
+        # ~1GB copy behind per PR/branch that nothing else can ever restore from and nothing
+        # ever deletes - pure eviction pressure on the repo's shared 10GB budget. Restrict
+        # saves to main, matching the buildah cache above; every other ref still benefits via
+        # restore-keys fallback to main's copy. cache-hit skip avoids racing this job's save
+        # against build-restore's identically-keyed save when both run on main concurrently.
+        if: always() && github.ref == 'refs/heads/main' && steps.cache-go-restore.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+
+  build-restore:
+    runs-on: ubuntu-24.04
+    outputs:
+      git_tag: ${{ steps.compute-tag.outputs.git_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compute tag
+        id: compute-tag
+        uses: ./.github/actions/compute-tag
+
+      - name: Restore Go cache
+        id: cache-go-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Build restore binary
+        run: |
+          set -euo pipefail
+          echo "::group::Building restore binary"
+          make build-restore
+          cp bin/flightctl-restore flightctl-restore-linux-amd64
+          echo "::endgroup::"
+
+      - name: Upload restore binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: flightctl-restore-linux-amd64-${{ steps.compute-tag.outputs.git_tag }}
+          path: flightctl-restore-linux-amd64
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Save Go cache
+        uses: actions/cache/save@v4
+        # See the "Save Go cache" step in build-cli above for why this is main-only and
+        # skips on cache-hit.
+        if: always() && github.ref == 'refs/heads/main' && steps.cache-go-restore.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+
+  build-simulator:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+
+      - name: Compute tag
+        id: compute-tag
+        uses: ./.github/actions/compute-tag
+
+      - name: Restore Go cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Build device simulator
+        run: |
+          set -euo pipefail
+          echo "::group::Building device simulator"
+          DISABLE_FIPS="true" make build-devicesimulator
+          echo "::endgroup::"
+
+      - name: Upload simulator binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: devicesimulator-${{ steps.compute-tag.outputs.git_tag }}
+          path: bin/devicesimulator
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1

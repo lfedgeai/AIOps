@@ -1,0 +1,164 @@
+import * as React from 'react';
+import { Flex, FlexItem } from '@patternfly/react-core';
+import { ActionsColumn, type IAction, type OnSelect, Td, Tr } from '@patternfly/react-table';
+
+import type { Device } from '@flightctl/types';
+import DeviceFleet from '../DeviceDetails/DeviceFleet';
+import { getDecommissionDisabledReason, getEditDisabledReason, getResumeDisabledReason } from '../../../utils/devices';
+import { getDisabledTooltipProps } from '../../../utils/tooltip';
+import { type ListAction } from '../../ListPage/types';
+import ApplicationSummaryStatus from '../../Status/ApplicationSummaryStatus';
+import DeviceStatus from '../../Status/DeviceStatus';
+import SystemUpdateStatus from '../../Status/SystemUpdateStatus';
+import { useTranslation } from '../../../hooks/useTranslation';
+import { ROUTE, useNavigate } from '../../../hooks/useNavigate';
+import ResourceLink from '../../common/ResourceLink';
+import OsModeIcon from '../../common/OsModeContent';
+import { buildAllDropdownActions } from '../../common/ActionsDropdownList';
+import { type ApiTableColumn } from '../../Table/Table';
+
+type EnrolledDeviceTableRowProps = {
+  device: Device;
+  rowIndex: number;
+  onRowSelect: (device: Device) => OnSelect;
+  isRowSelected: (device: Device) => boolean;
+  canEdit?: boolean;
+  canDecommission?: boolean;
+  decommissionAction?: ListAction;
+  canResume?: boolean;
+  resumeAction?: ListAction;
+  singleSelect?: boolean;
+  hideActions?: boolean;
+  deviceColumns: ApiTableColumn[];
+};
+
+const EnrolledDeviceTableRow = ({
+  device,
+  rowIndex,
+  onRowSelect,
+  isRowSelected,
+  canEdit,
+  canDecommission,
+  decommissionAction,
+  canResume,
+  resumeAction,
+  singleSelect,
+  hideActions,
+  deviceColumns,
+  children,
+}: React.PropsWithChildren<EnrolledDeviceTableRowProps>) => {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const deviceName = device.metadata.name as string;
+  const deviceAlias = device.metadata.labels?.alias;
+  const editActionProps = getDisabledTooltipProps(getEditDisabledReason(device, t));
+  const decommissionDisabledReason = getDecommissionDisabledReason(device, t);
+  const resumeDisabledReason = getResumeDisabledReason(device, t);
+
+  const columnIds = React.useMemo(() => deviceColumns.map(({ id }) => id), [deviceColumns]);
+
+  const regularActions: IAction[] = [
+    ...(canEdit
+      ? [
+          {
+            title: t('Edit device configurations'),
+            'data-testid': 'device-row-menu-edit-configurations',
+            onClick: () => navigate({ route: ROUTE.DEVICE_EDIT, postfix: deviceName }),
+            ...editActionProps,
+          } as IAction,
+        ]
+      : []),
+    {
+      title: t('View device details'),
+      'data-testid': 'device-row-menu-view-details',
+      onClick: () => navigate({ route: ROUTE.DEVICE_DETAILS, postfix: deviceName }),
+    } as IAction,
+    ...(canResume && resumeAction
+      ? [
+          resumeAction({
+            resourceId: deviceName,
+            resourceName: deviceAlias,
+            disabledReason: resumeDisabledReason,
+          }),
+        ]
+      : []),
+  ];
+  const dangerActions: IAction[] =
+    canDecommission && decommissionAction
+      ? [
+          decommissionAction({
+            resourceId: deviceName,
+            resourceName: deviceAlias,
+            disabledReason: decommissionDisabledReason,
+          }),
+        ]
+      : [];
+  const actionItems = buildAllDropdownActions(regularActions, dangerActions);
+
+  return (
+    <Tr data-testid={`enrolled-device-row-${rowIndex}`}>
+      <Td
+        select={{
+          rowIndex,
+          onSelect: onRowSelect(device),
+          isSelected: isRowSelected(device),
+          variant: singleSelect ? 'radio' : 'checkbox',
+        }}
+      />
+      {columnIds.includes('alias') && (
+        <Td dataLabel={t('Alias')}>
+          <Flex
+            alignItems={{ default: 'alignItemsCenter' }}
+            spaceItems={{ default: 'spaceItemsSm' }}
+            flexWrap={{ default: 'nowrap' }}
+          >
+            <FlexItem>
+              <OsModeIcon osMode={device.status?.systemInfo?.osMode} />
+            </FlexItem>
+            <FlexItem>
+              <ResourceLink
+                id={deviceName}
+                name={deviceAlias || t('Untitled')}
+                routeLink={ROUTE.DEVICE_DETAILS}
+                data-testid={`device-name-link-${deviceName}`}
+              />
+            </FlexItem>
+          </Flex>
+        </Td>
+      )}
+      {columnIds.includes('name') && (
+        <Td dataLabel={t('Name')}>
+          <ResourceLink id={deviceName} data-testid={`device-internal-name-link-${rowIndex}`} />
+        </Td>
+      )}
+      {children}
+      {columnIds.includes('fleet') && (
+        <Td dataLabel={t('Fleet')}>
+          <DeviceFleet device={device} />
+        </Td>
+      )}
+      {columnIds.includes('appStatus') && (
+        <Td dataLabel={t('Application status')}>
+          <ApplicationSummaryStatus statusSummary={device.status?.applicationsSummary} />
+        </Td>
+      )}
+      {columnIds.includes('deviceStatus') && (
+        <Td dataLabel={t('Device status')}>
+          <DeviceStatus summaryStatus={device.status?.summary} />
+        </Td>
+      )}
+      {columnIds.includes('updateStatus') && (
+        <Td dataLabel={t('Update status')} data-testid={`device-update-status-${rowIndex}`}>
+          <SystemUpdateStatus updateStatus={device.status?.updated} />
+        </Td>
+      )}
+      {!hideActions && (
+        <Td isActionCell data-testid={`device-row-actions-${deviceName}`}>
+          <ActionsColumn items={actionItems} />
+        </Td>
+      )}
+    </Tr>
+  );
+};
+
+export default EnrolledDeviceTableRow;

@@ -1,0 +1,637 @@
+package systeminfo
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/agent/config"
+	"github.com/flightctl/flightctl/internal/agent/device/errors"
+	"github.com/flightctl/flightctl/internal/agent/device/fileio"
+	"github.com/flightctl/flightctl/internal/agent/device/status"
+	"github.com/flightctl/flightctl/internal/agent/device/systeminfo/common"
+	"github.com/flightctl/flightctl/internal/util"
+	"github.com/flightctl/flightctl/pkg/executer"
+	"github.com/flightctl/flightctl/pkg/log"
+	"github.com/flightctl/flightctl/pkg/version"
+)
+
+type manager struct {
+	bootID     string
+	bootTime   string
+	isRebooted bool
+
+	exec       executer.Executer
+	readWriter fileio.ReadWriter
+	dataDir    string
+
+	mu                 sync.Mutex
+	collectionMu       sync.Mutex
+	infoKeys           []string
+	customKeys         []string
+	collectionTimeout  time.Duration
+	collectionInterval time.Duration
+	collectionChanged  chan struct{}
+	runtimeCollectors  map[string]CollectorFn
+	collection         []*collector
+	now                func() time.Time
+	rng                *rand.Rand
+
+	// gpus and kvm cache the collected GPU inventory and KVM availability. They
+	// are refreshed during the collection cycle rather than on every status
+	// generation, and are read under mu.
+	gpus *[]v1beta1.DeviceGpu
+	kvm  *v1beta1.DeviceKvm
+
+	log *log.PrefixLogger
+}
+
+func NewManager(
+	log *log.PrefixLogger,
+	exec executer.Executer,
+	readWriter fileio.ReadWriter,
+	dataDir string,
+	infoKeys []string,
+	customKeys []string,
+	collectionTimeout util.Duration,
+	collectionInterval util.Duration,
+) *manager {
+	m := &manager{
+		exec:               exec,
+		readWriter:         readWriter,
+		dataDir:            dataDir,
+		infoKeys:           infoKeys,
+		customKeys:         customKeys,
+		collectionTimeout:  time.Duration(collectionTimeout),
+		collectionInterval: time.Duration(collectionInterval),
+		collectionChanged:  make(chan struct{}, 1),
+		runtimeCollectors:  make(map[string]CollectorFn),
+		now:                time.Now,
+		rng:                rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())), //nolint:gosec // G404 - shuffling does not require crypto-strength randomness
+		log:                log,
+	}
+	m.rebuildCollectors()
+	return m
+}
+
+func (m *manager) Initialize(ctx context.Context) (err error) {
+	m.bootTime, err = getBootTime(ctx, m.exec)
+	if err != nil {
+		return err
+	}
+	m.bootID, err = getBootID(m.readWriter)
+	if err != nil {
+		return err
+	}
+
+	previousBoot, err := getBoot(m.readWriter, m.dataDir)
+	if err != nil {
+		return err
+	}
+
+	if !previousBoot.IsEmpty() && previousBoot.ID != m.bootID {
+		m.isRebooted = true
+	}
+
+	// if we are rebooted or the previous status is empty, update the boot status on disk
+	if m.isRebooted || previousBoot.IsEmpty() {
+		// if we are rebooted, update the new boot status on disk
+		systemBootPath := filepath.Join(m.dataDir, SystemFileName)
+		boot := Boot{
+			Time: m.bootTime,
+			ID:   m.bootID,
+		}
+		bootBytes, err := json.Marshal(boot)
+		if err != nil {
+			return fmt.Errorf("marshalling system status: %w", err)
+		}
+
+		if err := m.readWriter.WriteFile(systemBootPath, bootBytes, 0644); err != nil {
+			return fmt.Errorf("writing system status: %w", err)
+		}
+	}
+
+	// Restore persisted executor cache so that lastTransitionTime values
+	// survive agent restarts and only update when values actually change.
+	m.loadExecutorCache()
+	m.rebuildCollectors()
+
+	m.collect(ctx)
+
+	return nil
+}
+
+// ReloadConfig reloads the system info from the agent config.
+func (m *manager) ReloadConfig(ctx context.Context, cfg *config.Config) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.log.Info("Reloading system info config")
+
+	if !reflect.DeepEqual(m.infoKeys, cfg.SystemInfo) {
+		m.log.Infof("Updating system info keys: %v -> %v", m.infoKeys, cfg.SystemInfo)
+		m.infoKeys = cfg.SystemInfo
+	}
+	if !reflect.DeepEqual(m.customKeys, cfg.SystemInfoCustom) {
+		m.log.Infof("Updating custom system info keys: %v -> %v", m.customKeys, cfg.SystemInfoCustom)
+		m.customKeys = cfg.SystemInfoCustom
+	}
+	// Reload custom script definitions on every SIGHUP, even when the
+	// configured keys are unchanged.
+	m.rebuildCollectors()
+	collectionChanged := true
+
+	timeout := time.Duration(cfg.SystemInfoTimeout)
+	if m.collectionTimeout != timeout {
+		m.log.Infof("Updating system info collection timeout: %v -> %v", m.collectionTimeout, timeout)
+		m.collectionTimeout = timeout
+	}
+
+	interval := time.Duration(cfg.SystemInfoCollectionInterval())
+	if m.collectionInterval != interval {
+		m.log.Infof("Updating system info collection interval: %v -> %v", m.collectionInterval, interval)
+		m.collectionInterval = interval
+		collectionChanged = true
+	}
+	if collectionChanged {
+		select {
+		case m.collectionChanged <- struct{}{}:
+		default:
+		}
+	}
+
+	return nil
+}
+
+func (m *manager) IsRebooted() bool {
+	return m.isRebooted
+}
+
+func (m *manager) BootID() string {
+	return m.bootID
+}
+
+func (m *manager) BootTime() string {
+	return m.bootTime
+}
+
+func (m *manager) Status(ctx context.Context, deviceStatus *v1beta1.DeviceStatus, opts ...status.CollectorOpt) error {
+	collectorOpts := status.CollectorOpts{}
+	for _, opt := range opts {
+		opt(&collectorOpts)
+	}
+	if collectorOpts.Force {
+		m.collect(ctx)
+	}
+	deviceStatus.SystemInfo, deviceStatus.SystemInfoStatus = m.systemInfoFromCache()
+	m.applyGPU(&deviceStatus.SystemInfo)
+	m.applyKVM(&deviceStatus.SystemInfo)
+
+	return nil
+}
+
+// Run starts periodic system info collection and stops when ctx is cancelled.
+func (m *manager) Run(ctx context.Context) {
+	var (
+		interval time.Duration
+		ticker   *time.Ticker
+		ticks    <-chan time.Time
+	)
+	updateTicker := func() {
+		m.mu.Lock()
+		updatedInterval := m.collectionInterval
+		m.mu.Unlock()
+		if updatedInterval != interval {
+			if updatedInterval <= 0 {
+				if ticker != nil {
+					ticker.Stop()
+					ticker = nil
+					ticks = nil
+				}
+				m.log.Debugf("Systeminfo collection disabled (no interval)")
+			} else if ticker == nil {
+				ticker = time.NewTicker(updatedInterval)
+				ticks = ticker.C
+				m.log.Debugf("Starting systeminfo collection loop (interval=%s)", updatedInterval)
+			} else {
+				ticker.Reset(updatedInterval)
+				m.log.Debugf("Systeminfo collection loop changed (interval=%s)", updatedInterval)
+			}
+		}
+		interval = updatedInterval
+	}
+	updateTicker()
+	defer func() {
+		if ticker != nil {
+			ticker.Stop()
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			m.log.Debugf("Systeminfo collection loop stopped")
+			return
+		case <-m.collectionChanged:
+			updateTicker()
+			m.collect(ctx)
+		case <-ticks:
+			m.collect(ctx)
+		}
+	}
+}
+
+func (m *manager) rebuildCollectors() {
+	m.collection = buildCollectors(
+		m.log,
+		m.exec,
+		m.readWriter,
+		filepath.Join(m.dataDir, HardwareMapFileName),
+		managerCollectionRequest(m.infoKeys, m.customKeys),
+		m.runtimeCollectors,
+		m.collection,
+	)
+}
+
+func managerCollectionRequest(infoKeys, customKeys []string) collectionRequest {
+	custom := customCollectionRequest{mode: customCollectionDisabled}
+	if customKeys == nil || slices.Contains(customKeys, "*") {
+		custom.mode = customCollectionDiscover
+	} else if len(customKeys) > 0 {
+		custom = customCollectionRequest{mode: customCollectionConfigured, keys: customKeys}
+	}
+	return collectionRequest{infoKeys: infoKeys, custom: custom}
+}
+
+func (m *manager) collect(ctx context.Context) {
+	m.collectConfigured(ctx, false)
+	m.refreshGPU(ctx)
+	m.refreshKVM(ctx)
+	m.saveExecutorCache()
+}
+
+// CollectPending collects sources that have not yet been collected.
+func (m *manager) CollectPending(ctx context.Context) {
+	m.collectConfigured(ctx, true)
+}
+
+func (m *manager) collectConfigured(ctx context.Context, pendingOnly bool) {
+	m.collectionMu.Lock()
+	defer m.collectionMu.Unlock()
+
+	m.mu.Lock()
+	timeout := m.collectionTimeout
+	sources := slices.Clone(m.collection)
+	if pendingOnly {
+		sources = slices.DeleteFunc(sources, func(source *collector) bool {
+			return !source.pending()
+		})
+	}
+	m.mu.Unlock()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	m.collectSources(ctx, sources)
+}
+
+func (m *manager) collectSources(ctx context.Context, sources []*collector) {
+	// Shuffle sources so that when the global timeout fires, different
+	// sources get a chance to run on each collection cycle instead of
+	// always starving the ones at the end of a fixed list.
+	m.rng.Shuffle(len(sources), func(i, j int) {
+		sources[i], sources[j] = sources[j], sources[i]
+	})
+
+	for _, source := range sources {
+		if ctx.Err() != nil {
+			return
+		}
+		info := &Info{Hardware: HardwareFacts{}}
+		err := source.collect(ctx, info)
+		if err == nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		if err != nil && !errors.IsContext(err) {
+			m.log.Warningf("System info collector failed: %v", err)
+		}
+		m.mu.Lock()
+		source.apply(info, err, m.now())
+		m.mu.Unlock()
+		if ctx.Err() != nil {
+			return
+		}
+	}
+}
+
+func (m *manager) infoFromCache() *Info {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	info := &Info{
+		CollectedAt: time.Now().Format(time.RFC3339),
+		Hardware:    HardwareFacts{},
+		Metadata: map[string]interface{}{
+			"collector_version": version.Get().String(),
+			"collector_type":    "flightctl-agent",
+		},
+	}
+	for _, source := range m.collection {
+		if source.raw == nil {
+			continue
+		}
+		for _, executor := range source.executors {
+			if executor.projectInfo != nil {
+				executor.projectInfo(info, source.raw)
+			}
+		}
+	}
+	return info
+}
+
+func (m *manager) systemInfoFromCache() (v1beta1.DeviceSystemInfo, *v1beta1.DeviceSystemInfoStatus) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	systemInfo := m.defaultSystemInfo()
+	systemInfo.AdditionalProperties = make(map[string]string)
+	customInfo := make(v1beta1.CustomDeviceInfo)
+	statuses := v1beta1.DeviceSystemInfoStatuses{
+		SystemInfo: make(map[string]v1beta1.SystemInfoSourceStatus),
+		CustomInfo: make(map[string]v1beta1.SystemInfoSourceStatus),
+	}
+	failed := 0
+	total := 0
+	unknown := false
+	for _, source := range m.collection {
+		for _, exec := range source.executors {
+			if exec.kind == hiddenSource {
+				continue
+			}
+			total++
+			if !exec.attempted {
+				unknown = true
+				continue
+			}
+			entry := v1beta1.SystemInfoSourceStatus{
+				LastTransitionTime: exec.lastTransitionTime,
+				Status:             v1beta1.SystemInfoSourceStatusHealthy,
+			}
+			if exec.failed {
+				entry.Message = new(exec.message)
+				entry.Status = v1beta1.SystemInfoSourceStatusError
+				failed++
+			}
+			if exec.kind == systemInfoSource {
+				statuses.SystemInfo[exec.key] = entry
+				if exec.hasValue {
+					systemInfo.AdditionalProperties[exec.key] = exec.value
+				}
+			} else {
+				statuses.CustomInfo[exec.key] = entry
+				if exec.hasValue {
+					customInfo[exec.key] = exec.value
+				}
+			}
+		}
+	}
+	if len(customInfo) > 0 {
+		systemInfo.CustomInfo = &customInfo
+	}
+
+	summary := v1beta1.SystemInfoSummaryStatusHealthy
+	if total == 0 || unknown {
+		summary = v1beta1.SystemInfoSummaryStatusUnknown
+	} else if failed == total {
+		summary = v1beta1.SystemInfoSummaryStatusError
+	} else if failed > 0 {
+		summary = v1beta1.SystemInfoSummaryStatusDegraded
+	}
+	return systemInfo, &v1beta1.DeviceSystemInfoStatus{
+		Statuses: statuses,
+		Summary:  v1beta1.DeviceSystemInfoSummaryStatus{Status: summary},
+	}
+}
+
+// refreshGPU collects the GPU inventory and caches it so Status reports a
+// snapshot rather than scanning the filesystem on every status generation. It is
+// called from the collection cycle (see collect).
+//
+// It must be called WITHOUT holding m.mu: it calls infoFromCache (which acquires
+// m.mu) and performs best-effort filesystem reads before taking the lock to
+// store the result. readWriter is nil only in unit tests that construct the
+// manager struct directly; skip the scan in that case.
+func (m *manager) refreshGPU(ctx context.Context) {
+	if m.readWriter == nil || ctx.Err() != nil {
+		return
+	}
+	info := m.infoFromCache()
+	hardwareMapPath := filepath.Join(m.dataDir, HardwareMapFileName)
+	gpus := collectGPUSystemInfo(m.log, m.readWriter, hardwareMapPath, info)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Preserve the previously cached inventory when a GPU scan fails (nil) so a
+	// transient failure does not clear the reported GPU inventory.
+	if gpus != nil {
+		m.gpus = gpus
+	}
+}
+
+// refreshKVM collects KVM availability and caches it so Status reports a
+// snapshot rather than scanning the filesystem on every status generation. It is
+// called from the collection cycle (see collect).
+//
+// readWriter is nil only in unit tests that construct the manager struct
+// directly; skip the scan in that case.
+func (m *manager) refreshKVM(ctx context.Context) {
+	if m.readWriter == nil || ctx.Err() != nil {
+		return
+	}
+	kvm := collectKVMSystemInfo(m.log, m.readWriter)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.kvm = kvm
+}
+
+// applyGPU records the GPU inventory on the system info. It is always reported,
+// regardless of which info keys are configured. The value is read from the cache
+// populated by refreshGPU during collection.
+func (m *manager) applyGPU(systemInfo *v1beta1.DeviceSystemInfo) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	systemInfo.Gpus = m.gpus
+}
+
+// applyKVM records KVM availability on the system info. It is always reported,
+// regardless of which info keys are configured. The value is read from the cache
+// populated by refreshKVM during collection.
+func (m *manager) applyKVM(systemInfo *v1beta1.DeviceSystemInfo) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	systemInfo.Kvm = m.kvm
+}
+
+// defaultSystemInfo returns the default system info.
+func (m *manager) defaultSystemInfo() v1beta1.DeviceSystemInfo {
+	return v1beta1.DeviceSystemInfo{
+		BootID:               m.bootID,
+		AgentVersion:         version.Get().String(),
+		OperatingSystem:      runtime.GOOS,
+		Architecture:         runtime.GOARCH,
+		AdditionalProperties: make(map[string]string),
+	}
+}
+
+// RegisterCollector allows the caller to register a collector function for system information.
+func (m *manager) RegisterCollector(ctx context.Context, key string, fn CollectorFn) {
+	if ctx != nil && ctx.Err() != nil {
+		return
+	}
+	if key == "" || fn == nil {
+		if m.log != nil {
+			m.log.Errorf("Invalid system info collector registration (key=%q, fn=nil=%t)", key, fn == nil)
+		}
+		return
+	}
+
+	if !common.IsRuntimeKey(key) {
+		if m.log != nil {
+			m.log.Errorf("Unknown system info collector key: %q", key)
+		}
+		return
+	}
+
+	if _, isBuiltIn := collectorForInfoKey(key); isBuiltIn {
+		if m.log != nil {
+			m.log.Errorf("BuiltIn system info key must not be registered as a runtime collector: %q", key)
+		}
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.log != nil {
+		m.log.Debugf("Registering system info collector: %s", key)
+	}
+
+	if _, ok := m.runtimeCollectors[key]; ok {
+		if m.log != nil {
+			m.log.Errorf("Collector %s already registered", key)
+		}
+		return
+	}
+
+	m.runtimeCollectors[key] = fn
+	if slices.Contains(m.infoKeys, key) {
+		m.rebuildCollectors()
+	}
+}
+
+// getBoot returns the boot status from disk.
+func getBoot(readWriter fileio.ReadWriter, dataDir string) (*Boot, error) {
+	statusPath := filepath.Join(dataDir, SystemFileName)
+	statusBytes, err := readWriter.ReadFile(statusPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// if the file does not exist, return an empty status
+			return &Boot{}, nil
+		}
+		return nil, fmt.Errorf("reading boot status: %w", err)
+	}
+
+	var boot Boot
+	if err := json.Unmarshal(statusBytes, &boot); err != nil {
+		return nil, fmt.Errorf("unmarshal boot status: %w", err)
+	}
+
+	return &boot, nil
+}
+
+// loadExecutorCache reads the persisted executor cache from disk and seeds
+// m.collection so that a subsequent rebuildCollectors call preserves the
+// cached lastTransitionTime values.
+func (m *manager) loadExecutorCache() {
+	cachePath := filepath.Join(m.dataDir, ExecutorCacheFileName)
+	data, err := m.readWriter.ReadFile(cachePath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			m.log.Warnf("failed to read executor cache, starting fresh: %v", err)
+		}
+		return
+	}
+	var states []persistedExecutorState
+	if err := json.Unmarshal(data, &states); err != nil {
+		m.log.Warningf("Failed to parse executor cache %s: %v", cachePath, err)
+		return
+	}
+	m.collection = collectionFromPersistedStates(states)
+}
+
+// saveExecutorCache persists the current executor states to disk so that
+// lastTransitionTime values survive agent restarts.
+func (m *manager) saveExecutorCache() {
+	if m.readWriter == nil {
+		return
+	}
+	m.mu.Lock()
+	states := snapshotExecutorStates(m.collection)
+	m.mu.Unlock()
+
+	data, err := json.Marshal(states)
+	if err != nil {
+		m.log.Warningf("Failed to marshal executor cache: %v", err)
+		return
+	}
+	cachePath := filepath.Join(m.dataDir, ExecutorCacheFileName)
+	if err := m.readWriter.WriteFile(cachePath, data, 0644); err != nil {
+		m.log.Warningf("Failed to write executor cache %s: %v", cachePath, err)
+	}
+}
+
+// returns the boot time as a string.
+func getBootTime(ctx context.Context, exec executer.Executer) (string, error) {
+	args := []string{"-s"}
+	stdout, stderr, exitCode := exec.ExecuteWithContext(ctx, "uptime", args...)
+	if exitCode != 0 {
+		return "", fmt.Errorf("device uptime: %w", errors.FromStderr(stderr, exitCode))
+	}
+
+	// parse boot time in local timezone since uptime -s returns timestamp in local time
+	bootTime, err := time.ParseInLocation("2006-01-02 15:04:05", strings.TrimSpace(stdout), time.Local)
+	if err != nil {
+		return "", err
+	}
+
+	return bootTime.UTC().Format(time.RFC3339), nil
+}
+
+// returns the boot ID. If the boot ID file is not found it returns unknown.
+func getBootID(reader fileio.Reader) (string, error) {
+	id, err := reader.ReadFile(bootIDPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+
+	return strings.TrimSpace(string(id)), nil
+}

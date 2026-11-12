@@ -1,0 +1,22 @@
+.fctl-shortcut__cell {
+  padding-bottom: var(--pf-t--global--spacer--md);
+}
+
+.fctl-shortcut__cell:first-child {
+  padding-right: var(--pf-t--global--spacer--md);
+  text-align: right;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.fctl-shortcut__command:not(:last-child):after {
+  content: ' + ';
+}
+
+.fctl-shortcut__command-key {
+  border: 1px solid var(--pf-t--global--border--color--100);
+  border-radius: 3px;
+  color: var(--pf-t--global--text--color--200);
+  font-size: var(--pf-t--global--font--size--sm);
+  padding: 1px 3px;
+}

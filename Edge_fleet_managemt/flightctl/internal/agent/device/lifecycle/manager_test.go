@@ -1,0 +1,1161 @@
+package lifecycle
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
+	"math/big"
+	"testing"
+	"time"
+
+	"github.com/flightctl/flightctl/api/core/v1beta1"
+	"github.com/flightctl/flightctl/internal/agent/client"
+	"github.com/flightctl/flightctl/internal/agent/device/fileio"
+	"github.com/flightctl/flightctl/internal/agent/device/hook"
+	"github.com/flightctl/flightctl/internal/agent/device/os"
+	"github.com/flightctl/flightctl/internal/agent/device/status"
+	"github.com/flightctl/flightctl/internal/agent/identity"
+	agentapi "github.com/flightctl/flightctl/internal/api/client/agent"
+	"github.com/flightctl/flightctl/pkg/log"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+	"k8s.io/apimachinery/pkg/util/wait"
+)
+
+// generateTestCertificate creates a valid test certificate for testing
+func generateTestCertificate(t *testing.T) string {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: "test-device",
+		},
+		NotBefore:   time.Now(),
+		NotAfter:    time.Now().Add(time.Hour * 24 * 365),
+		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses: nil,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+	require.NoError(t, err)
+
+	certPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: certDER,
+	})
+
+	return string(certPEM)
+}
+
+func TestLifecycleManager_verifyEnrollment(t *testing.T) {
+	tests := []struct {
+		name           string
+		setupMocks     func(*client.MockEnrollment, *identity.MockProvider, *fileio.MockReadWriter)
+		expectedResult bool
+		expectedError  string
+	}{
+		{
+			name: "identity proof required and succeeds",
+			setupMocks: func(mockEnrollment *client.MockEnrollment, mockIdentity *identity.MockProvider, mockReadWriter *fileio.MockReadWriter) {
+				enrollmentRequest := &v1beta1.EnrollmentRequest{
+					Status: &v1beta1.EnrollmentRequestStatus{
+						Conditions: []v1beta1.Condition{
+							// No "Approved" condition, so identity proof is required
+						},
+					},
+				}
+				mockEnrollment.EXPECT().GetEnrollmentRequest(gomock.Any(), "test-device").Return(enrollmentRequest, nil)
+				mockIdentity.EXPECT().ProveIdentity(gomock.Any(), enrollmentRequest).Return(nil)
+			},
+			expectedResult: false,
+			expectedError:  "",
+		},
+		{
+			name: "identity proof fails with ErrIdentityProofFailed",
+			setupMocks: func(mockEnrollment *client.MockEnrollment, mockIdentity *identity.MockProvider, mockReadWriter *fileio.MockReadWriter) {
+				enrollmentRequest := &v1beta1.EnrollmentRequest{
+					Status: &v1beta1.EnrollmentRequestStatus{
+						Conditions: []v1beta1.Condition{
+							// No "Approved" condition, so identity proof is required
+						},
+					},
+				}
+				mockEnrollment.EXPECT().GetEnrollmentRequest(gomock.Any(), "test-device").Return(enrollmentRequest, nil)
+				mockIdentity.EXPECT().ProveIdentity(gomock.Any(), enrollmentRequest).Return(identity.ErrIdentityProofFailed)
+			},
+			expectedResult: false,
+			expectedError:  "proving identity: identity proof failed",
+		},
+		{
+			name: "identity proof fails with other error",
+			setupMocks: func(mockEnrollment *client.MockEnrollment, mockIdentity *identity.MockProvider, mockReadWriter *fileio.MockReadWriter) {
+				enrollmentRequest := &v1beta1.EnrollmentRequest{
+					Status: &v1beta1.EnrollmentRequestStatus{
+						Conditions: []v1beta1.Condition{
+							// No "Approved" condition, so identity proof is required
+						},
+					},
+				}
+				mockEnrollment.EXPECT().GetEnrollmentRequest(gomock.Any(), "test-device").Return(enrollmentRequest, nil)
+				mockIdentity.EXPECT().ProveIdentity(gomock.Any(), enrollmentRequest).Return(errors.New("network error"))
+			},
+			expectedResult: false,
+			expectedError:  "",
+		},
+		{
+			name: "enrollment denied",
+			setupMocks: func(mockEnrollment *client.MockEnrollment, mockIdentity *identity.MockProvider, mockReadWriter *fileio.MockReadWriter) {
+				enrollmentRequest := &v1beta1.EnrollmentRequest{
+					Status: &v1beta1.EnrollmentRequestStatus{
+						Conditions: []v1beta1.Condition{
+							{
+								Type:    "Denied",
+								Reason:  "PolicyViolation",
+								Message: "Device does not meet policy requirements",
+							},
+						},
+					},
+				}
+				mockEnrollment.EXPECT().GetEnrollmentRequest(gomock.Any(), "test-device").Return(enrollmentRequest, nil)
+			},
+			expectedResult: false,
+			expectedError:  "enrollment request denied: reason: PolicyViolation, message: Device does not meet policy requirements",
+		},
+		{
+			name: "enrollment failed",
+			setupMocks: func(mockEnrollment *client.MockEnrollment, mockIdentity *identity.MockProvider, mockReadWriter *fileio.MockReadWriter) {
+				enrollmentRequest := &v1beta1.EnrollmentRequest{
+					Status: &v1beta1.EnrollmentRequestStatus{
+						Conditions: []v1beta1.Condition{
+							{
+								Type:    "Failed",
+								Reason:  "ProcessingError",
+								Message: "Failed to process enrollment request",
+							},
+						},
+					},
+				}
+				mockEnrollment.EXPECT().GetEnrollmentRequest(gomock.Any(), "test-device").Return(enrollmentRequest, nil)
+			},
+			expectedResult: false,
+			expectedError:  "enrollment request failed: reason: ProcessingError, message: Failed to process enrollment request",
+		},
+		{
+			name: "enrollment approved with certificate",
+			setupMocks: func(mockEnrollment *client.MockEnrollment, mockIdentity *identity.MockProvider, mockReadWriter *fileio.MockReadWriter) {
+				certificate := generateTestCertificate(t)
+				enrollmentRequest := &v1beta1.EnrollmentRequest{
+					Status: &v1beta1.EnrollmentRequestStatus{
+						Conditions: []v1beta1.Condition{
+							{
+								Type: "Approved",
+							},
+						},
+						Certificate: &certificate,
+					},
+				}
+				mockEnrollment.EXPECT().GetEnrollmentRequest(gomock.Any(), "test-device").Return(enrollmentRequest, nil)
+				mockIdentity.EXPECT().StoreCertificate([]byte(certificate)).Return(nil)
+				// CSR cleanup now uses standalone functions (identity.LoadCSR/StoreCSR) with mockReadWriter
+				mockReadWriter.EXPECT().PathExists("certs/agent.csr").Return(true, nil)
+				mockReadWriter.EXPECT().ReadFile("certs/agent.csr").Return([]byte("test-csr"), nil)
+				mockReadWriter.EXPECT().PathExists("certs/agent.csr").Return(true, nil)
+				mockReadWriter.EXPECT().OverwriteAndWipe("certs/agent.csr").Return(nil)
+			},
+			expectedResult: true,
+			expectedError:  "",
+		},
+		{
+			name: "enrollment approved but no certificate yet",
+			setupMocks: func(mockEnrollment *client.MockEnrollment, mockIdentity *identity.MockProvider, mockReadWriter *fileio.MockReadWriter) {
+				enrollmentRequest := &v1beta1.EnrollmentRequest{
+					Status: &v1beta1.EnrollmentRequestStatus{
+						Conditions: []v1beta1.Condition{
+							{
+								Type: "Approved",
+							},
+						},
+						Certificate: nil,
+					},
+				}
+				mockEnrollment.EXPECT().GetEnrollmentRequest(gomock.Any(), "test-device").Return(enrollmentRequest, nil)
+			},
+			expectedResult: false,
+			expectedError:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockEnrollment := client.NewMockEnrollment(ctrl)
+			mockIdentity := identity.NewMockProvider(ctrl)
+			mockStatus := status.NewMockManager(ctrl)
+			mockReadWriter := fileio.NewMockReadWriter(ctrl)
+
+			manager := &LifecycleManager{
+				deviceName:       "test-device",
+				enrollmentClient: mockEnrollment,
+				identityProvider: mockIdentity,
+				statusManager:    mockStatus,
+				deviceReadWriter: mockReadWriter,
+				backoff:          wait.Backoff{},
+				log:              log.NewPrefixLogger("test"),
+			}
+
+			tt.setupMocks(mockEnrollment, mockIdentity, mockReadWriter)
+
+			ctx := context.Background()
+			result, err := manager.verifyEnrollment(ctx)
+
+			require.Equal(t, tt.expectedResult, result)
+			if tt.expectedError == "" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.expectedError)
+			}
+		})
+	}
+}
+
+func TestLifecycleManager_Initialize_NoBannerOnEnrollmentFailure(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupMocks  func(*client.MockEnrollment, *identity.MockProvider, *fileio.MockReadWriter, *hook.MockManager)
+		expectError string
+	}{
+		{
+			name: "When enrollment request creation fails it should not write the QR banner",
+			setupMocks: func(mockEnrollment *client.MockEnrollment, mockIdentity *identity.MockProvider, mockReadWriter *fileio.MockReadWriter, mockHook *hook.MockManager) {
+				mockIdentity.EXPECT().HasCertificate().Return(false)
+				mockHook.EXPECT().OnBeforeEnrolling(gomock.Any(), gomock.Any()).Return(nil)
+				mockReadWriter.EXPECT().ReadFile(gomock.Any()).Return(nil, errors.New("not found")).AnyTimes()
+				mockEnrollment.EXPECT().CreateEnrollmentRequest(gomock.Any(), gomock.Any()).Return(nil, errors.New("connection refused")).AnyTimes()
+			},
+			expectError: "creating enrollment request",
+		},
+		{
+			name: "When enrollment request succeeds it should write the QR banner",
+			setupMocks: func(mockEnrollment *client.MockEnrollment, mockIdentity *identity.MockProvider, mockReadWriter *fileio.MockReadWriter, mockHook *hook.MockManager) {
+				mockIdentity.EXPECT().HasCertificate().Return(false)
+				mockHook.EXPECT().OnBeforeEnrolling(gomock.Any(), gomock.Any()).Return(nil)
+				mockReadWriter.EXPECT().ReadFile(gomock.Any()).Return(nil, errors.New("not found")).AnyTimes()
+				mockEnrollment.EXPECT().CreateEnrollmentRequest(gomock.Any(), gomock.Any()).Return(nil, nil)
+				mockReadWriter.EXPECT().WriteFile(BannerFile, gomock.Any(), gomock.Any()).Return(nil)
+				mockEnrollment.EXPECT().GetEnrollmentRequest(gomock.Any(), "test-device").Return(&v1beta1.EnrollmentRequest{
+					Status: &v1beta1.EnrollmentRequestStatus{
+						Conditions: []v1beta1.Condition{
+							{Type: "Denied", Reason: "test", Message: "test"},
+						},
+					},
+				}, nil)
+			},
+			expectError: "enrollment request denied",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockEnrollment := client.NewMockEnrollment(ctrl)
+			mockIdentity := identity.NewMockProvider(ctrl)
+			mockReadWriter := fileio.NewMockReadWriter(ctrl)
+			mockHookManager := hook.NewMockManager(ctrl)
+
+			manager := &LifecycleManager{
+				deviceName:                 "test-device",
+				enrollmentUIEndpoint:       "http://localhost:9001",
+				enrollmentClient:           mockEnrollment,
+				identityProvider:           mockIdentity,
+				deviceReadWriter:           mockReadWriter,
+				hookManager:                mockHookManager,
+				preEnrollmentFailurePolicy: "Continue",
+				systemdClient:              client.NewSystemd(nil, ""),
+				backoff: wait.Backoff{
+					Steps:    1,
+					Duration: time.Millisecond,
+				},
+				log: log.NewPrefixLogger("test"),
+			}
+
+			tt.setupMocks(mockEnrollment, mockIdentity, mockReadWriter, mockHookManager)
+
+			ctx := context.Background()
+			err := manager.Initialize(ctx, &v1beta1.DeviceStatus{})
+
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tt.expectError)
+		})
+	}
+}
+
+func TestLifecycleManager_enrollmentRequest_capabilities(t *testing.T) {
+	tests := []struct {
+		name             string
+		osMode           v1beta1.OsModeType
+		deltaEligible    bool
+		expectedEligible bool
+	}{
+		{
+			name:             "When osMode is image and delta eligible it should set spec.osMode and systemInfo",
+			osMode:           v1beta1.OsModeImage,
+			deltaEligible:    true,
+			expectedEligible: true,
+		},
+		{
+			name:             "When osMode is package it should include osMode and deltaEligible false",
+			osMode:           v1beta1.OsModePackage,
+			deltaEligible:    false,
+			expectedEligible: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockEnrollment := client.NewMockEnrollment(ctrl)
+			mockReadWriter := fileio.NewMockReadWriter(ctrl)
+
+			manager := &LifecycleManager{
+				deviceName:       "test-device",
+				enrollmentCSR:    []byte("test-csr"),
+				enrollmentClient: mockEnrollment,
+				deviceReadWriter: mockReadWriter,
+				caps: os.Capabilities{
+					OsMode:          tt.osMode,
+					DeltaEligible:   tt.deltaEligible,
+					BootcVersion:    "bootc 1.15.0",
+					OCIDeltaVersion: "oci-delta 0.2.1",
+				},
+				backoff: wait.Backoff{
+					Steps:    1,
+					Duration: time.Millisecond,
+				},
+				log: log.NewPrefixLogger("test"),
+			}
+
+			mockReadWriter.EXPECT().ReadFile(gomock.Any()).Return(nil, errors.New("not found")).AnyTimes()
+
+			var capturedReq v1beta1.EnrollmentRequest
+			mockEnrollment.EXPECT().CreateEnrollmentRequest(gomock.Any(), gomock.Any()).
+				Do(func(_ context.Context, req v1beta1.EnrollmentRequest, _ ...any) {
+					capturedReq = req
+				}).Return(nil, nil)
+
+			ctx := context.Background()
+			err := manager.enrollmentRequest(ctx, &v1beta1.DeviceStatus{}, nil)
+
+			require.NoError(t, err)
+			require.NotNil(t, capturedReq.Spec.OsMode)
+			require.Equal(t, tt.osMode, *capturedReq.Spec.OsMode)
+			require.NotNil(t, capturedReq.Spec.DeviceStatus)
+			require.Nil(t, capturedReq.Spec.DeviceStatus.Capabilities)
+			require.NotNil(t, capturedReq.Spec.DeviceStatus.SystemInfo.DeltaEligible)
+			require.Equal(t, tt.expectedEligible, *capturedReq.Spec.DeviceStatus.SystemInfo.DeltaEligible)
+			require.NotNil(t, capturedReq.Spec.DeviceStatus.SystemInfo.BootcVersion)
+			require.Equal(t, "bootc 1.15.0", *capturedReq.Spec.DeviceStatus.SystemInfo.BootcVersion)
+			require.NotNil(t, capturedReq.Spec.DeviceStatus.SystemInfo.OciDeltaVersion)
+			require.Equal(t, "oci-delta 0.2.1", *capturedReq.Spec.DeviceStatus.SystemInfo.OciDeltaVersion)
+		})
+	}
+}
+
+func TestLifecycleManager_buildEnrollmentLabels(t *testing.T) {
+	tests := []struct {
+		name                string
+		labelFromSystemInfo map[string]string
+		defaultLabels       map[string]string
+		deviceStatus        *v1beta1.DeviceStatus
+		expected            map[string]string
+	}{
+		{
+			name:                "When no label mappings it should add default alias and default labels",
+			labelFromSystemInfo: map[string]string{},
+			defaultLabels: map[string]string{
+				"env": "prod",
+			},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					Architecture: "x86_64",
+					AdditionalProperties: map[string]string{
+						"hostname": "test-host",
+					},
+				},
+			},
+			expected: map[string]string{
+				"alias": "test-host",
+				"env":   "prod",
+			},
+		},
+		{
+			name: "When mapping systemInfo fields it should extract them correctly and add default alias",
+			labelFromSystemInfo: map[string]string{
+				"arch": "architecture",
+				"os":   "operatingSystem",
+			},
+			defaultLabels: map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					Architecture:    "x86_64",
+					OperatingSystem: "linux",
+					AdditionalProperties: map[string]string{
+						"hostname": "test-host",
+					},
+				},
+			},
+			expected: map[string]string{
+				"arch":  "x86_64",
+				"os":    "linux",
+				"alias": "test-host",
+			},
+		},
+		{
+			name: "When mapping customInfo fields it should extract them correctly and add default alias",
+			labelFromSystemInfo: map[string]string{
+				"site": "customInfo.siteId",
+				"rack": "customInfo.rackNumber",
+			},
+			defaultLabels: map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname": "test-host",
+					},
+					CustomInfo: &v1beta1.CustomDeviceInfo{
+						"siteId":     "site-123",
+						"rackNumber": "rack-5",
+					},
+				},
+			},
+			expected: map[string]string{
+				"site":  "site-123",
+				"rack":  "rack-5",
+				"alias": "test-host",
+			},
+		},
+		{
+			name: "When alias is configured it should not add default alias",
+			labelFromSystemInfo: map[string]string{
+				"alias": "productName",
+			},
+			defaultLabels: map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname":    "test-host",
+						"productName": "my-product",
+					},
+				},
+			},
+			expected: map[string]string{
+				"alias": "my-product",
+			},
+		},
+		{
+			name: "When defaultLabels conflict with mapped labels it should use defaultLabels",
+			labelFromSystemInfo: map[string]string{
+				"env": "architecture",
+			},
+			defaultLabels: map[string]string{
+				"env": "prod",
+			},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					Architecture: "x86_64",
+					AdditionalProperties: map[string]string{
+						"hostname": "test-host",
+					},
+				},
+			},
+			expected: map[string]string{
+				"env":   "prod", // defaultLabels takes precedence
+				"alias": "test-host",
+			},
+		},
+		{
+			name: "When mixing built-in and customInfo fields it should extract both and add default alias",
+			labelFromSystemInfo: map[string]string{
+				"arch": "architecture",
+				"site": "customInfo.siteId",
+			},
+			defaultLabels: map[string]string{
+				"env": "prod",
+			},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					Architecture: "arm64",
+					AdditionalProperties: map[string]string{
+						"hostname": "test-host",
+					},
+					CustomInfo: &v1beta1.CustomDeviceInfo{
+						"siteId": "site-456",
+					},
+				},
+			},
+			expected: map[string]string{
+				"arch":  "arm64",
+				"site":  "site-456",
+				"env":   "prod",
+				"alias": "test-host",
+			},
+		},
+		{
+			name: "When built-in field does not exist it should skip that label",
+			labelFromSystemInfo: map[string]string{
+				"arch":    "architecture",
+				"missing": "nonexistent",
+			},
+			defaultLabels: map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					Architecture: "x86_64",
+					AdditionalProperties: map[string]string{
+						"hostname": "test-host",
+					},
+					CustomInfo: &v1beta1.CustomDeviceInfo{},
+				},
+			},
+			expected: map[string]string{
+				"arch":  "x86_64",
+				"alias": "test-host",
+				// "missing" should not be present
+			},
+		},
+		{
+			name: "When customInfo field does not exist it should skip that label",
+			labelFromSystemInfo: map[string]string{
+				"arch":    "architecture",
+				"missing": "customInfo.nonexistent",
+			},
+			defaultLabels: map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					Architecture: "x86_64",
+					AdditionalProperties: map[string]string{
+						"hostname": "test-host",
+					},
+					CustomInfo: &v1beta1.CustomDeviceInfo{
+						"siteId": "site-123",
+					},
+				},
+			},
+			expected: map[string]string{
+				"arch":  "x86_64",
+				"alias": "test-host",
+				// "missing" should not be present
+			},
+		},
+		{
+			name: "When mapping AdditionalProperties it should extract them correctly and add default alias",
+			labelFromSystemInfo: map[string]string{
+				"customField": "myCustomField",
+			},
+			defaultLabels: map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname":      "test-host",
+						"myCustomField": "custom-value",
+					},
+				},
+			},
+			expected: map[string]string{
+				"customField": "custom-value",
+				"alias":       "test-host",
+			},
+		},
+		{
+			name:                "When hostname is empty it should not add default alias",
+			labelFromSystemInfo: map[string]string{},
+			defaultLabels:       map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname": "",
+					},
+				},
+			},
+			expected: map[string]string{},
+		},
+		{
+			name:                "When hostname is (none) it should not add default alias",
+			labelFromSystemInfo: map[string]string{},
+			defaultLabels:       map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname": "(none)",
+					},
+				},
+			},
+			expected: map[string]string{},
+		},
+		{
+			name:                "When hostname is localhost it should not add default alias",
+			labelFromSystemInfo: map[string]string{},
+			defaultLabels:       map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname": "localhost",
+					},
+				},
+			},
+			expected: map[string]string{},
+		},
+		{
+			name:                "When hostname is localhost.localdomain it should not add default alias",
+			labelFromSystemInfo: map[string]string{},
+			defaultLabels:       map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname": "localhost.localdomain",
+					},
+				},
+			},
+			expected: map[string]string{},
+		},
+		{
+			name:                "When hostname is localhost6.localdomain6 it should not add default alias",
+			labelFromSystemInfo: map[string]string{},
+			defaultLabels:       map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname": "localhost6.localdomain6",
+					},
+				},
+			},
+			expected: map[string]string{},
+		},
+		{
+			name:                "When hostname is LOCALHOST (uppercase) it should not add default alias",
+			labelFromSystemInfo: map[string]string{},
+			defaultLabels:       map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname": "LOCALHOST",
+					},
+				},
+			},
+			expected: map[string]string{},
+		},
+		{
+			name:                "When hostname is 127.0.0.1 it should not add default alias",
+			labelFromSystemInfo: map[string]string{},
+			defaultLabels:       map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname": "127.0.0.1",
+					},
+				},
+			},
+			expected: map[string]string{},
+		},
+		{
+			name:                "When hostname is ::1 it should not add default alias",
+			labelFromSystemInfo: map[string]string{},
+			defaultLabels:       map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname": "::1",
+					},
+				},
+			},
+			expected: map[string]string{},
+		},
+		{
+			name: "When systemInfo value contains spaces it should be sanitized",
+			labelFromSystemInfo: map[string]string{
+				"os-name": "distroName",
+			},
+			defaultLabels: map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname":   "test-host",
+						"distroName": "CentOS Stream",
+					},
+				},
+			},
+			expected: map[string]string{
+				"os-name": "CentOS-Stream", // Sanitized: space replaced with hyphen
+				"alias":   "test-host",
+			},
+		},
+		{
+			name: "When systemInfo value has special characters it should be sanitized",
+			labelFromSystemInfo: map[string]string{
+				"distro": "distroVersion",
+			},
+			defaultLabels: map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname":      "test-host",
+						"distroVersion": "9.5 (Plow)",
+					},
+				},
+			},
+			expected: map[string]string{
+				"distro": "9.5--Plow", // Sanitized: space and parens replaced
+				"alias":  "test-host",
+			},
+		},
+		{
+			name:                "When default-labels contain invalid values they should be skipped",
+			labelFromSystemInfo: map[string]string{},
+			defaultLabels: map[string]string{
+				"valid-label":   "valid-value",
+				"invalid-label": "value with spaces", // Invalid: contains spaces
+			},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname": "test-host",
+					},
+				},
+			},
+			expected: map[string]string{
+				"valid-label": "valid-value",
+				"alias":       "test-host",
+				// "invalid-label" is skipped
+			},
+		},
+		{
+			name: "When hostname contains spaces it should be sanitized",
+			labelFromSystemInfo: map[string]string{
+				"arch": "architecture",
+			},
+			defaultLabels: map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					Architecture: "x86_64",
+					AdditionalProperties: map[string]string{
+						"hostname": "my host name",
+					},
+				},
+			},
+			expected: map[string]string{
+				"arch":  "x86_64",
+				"alias": "my-host-name", // Sanitized hostname
+			},
+		},
+		{
+			name: "When sanitization results in empty string it should skip the label",
+			labelFromSystemInfo: map[string]string{
+				"bad-label": "customField",
+			},
+			defaultLabels: map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					AdditionalProperties: map[string]string{
+						"hostname":    "test-host",
+						"customField": "!!!", // Cannot be sanitized to valid label
+					},
+				},
+			},
+			expected: map[string]string{
+				"alias": "test-host",
+				// "bad-label" is skipped because sanitization results in empty string
+			},
+		},
+		{
+			name: "When label-from-systeminfo has invalid key it should be skipped",
+			labelFromSystemInfo: map[string]string{
+				"valid-key":           "architecture",
+				"bad key with spaces": "distroName", // Invalid key
+			},
+			defaultLabels: map[string]string{},
+			deviceStatus: &v1beta1.DeviceStatus{
+				SystemInfo: v1beta1.DeviceSystemInfo{
+					Architecture: "x86_64",
+					AdditionalProperties: map[string]string{
+						"hostname":   "test-host",
+						"distroName": "CentOS Stream",
+					},
+				},
+			},
+			expected: map[string]string{
+				"valid-key": "x86_64",
+				"alias":     "test-host",
+				// "bad key with spaces" is skipped due to invalid key
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := &LifecycleManager{
+				labelFromSystemInfo: tt.labelFromSystemInfo,
+				defaultLabels:       tt.defaultLabels,
+				log:                 log.NewPrefixLogger("test"),
+			}
+
+			result := manager.buildEnrollmentLabels(tt.deviceStatus, nil)
+			require.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestLifecycleManager_PreEnrollmentHooks(t *testing.T) {
+	t.Run("When OnBeforeEnrolling runs it should be called before CreateEnrollmentRequest", func(t *testing.T) {
+		require := require.New(t)
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnrollment := client.NewMockEnrollment(ctrl)
+		mockIdentity := identity.NewMockProvider(ctrl)
+		mockReadWriter := fileio.NewMockReadWriter(ctrl)
+		mockHookManager := hook.NewMockManager(ctrl)
+
+		callOrder := []string{}
+
+		mockIdentity.EXPECT().HasCertificate().Return(false)
+		mockHookManager.EXPECT().OnBeforeEnrolling(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, _ *hook.EnrollmentContext) error {
+				callOrder = append(callOrder, "OnBeforeEnrolling")
+				return nil
+			})
+		mockReadWriter.EXPECT().ReadFile(gomock.Any()).Return(nil, errors.New("not found")).AnyTimes()
+		mockEnrollment.EXPECT().CreateEnrollmentRequest(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, _ v1beta1.EnrollmentRequest, _ ...any) (*v1beta1.EnrollmentRequest, error) {
+				callOrder = append(callOrder, "CreateEnrollmentRequest")
+				return nil, nil
+			})
+		mockReadWriter.EXPECT().WriteFile(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		mockEnrollment.EXPECT().GetEnrollmentRequest(gomock.Any(), gomock.Any()).Return(&v1beta1.EnrollmentRequest{
+			Status: &v1beta1.EnrollmentRequestStatus{
+				Conditions: []v1beta1.Condition{{Type: "Denied", Reason: "test", Message: "test"}},
+			},
+		}, nil)
+
+		manager := &LifecycleManager{
+			deviceName:                 "test-device",
+			enrollmentClient:           mockEnrollment,
+			identityProvider:           mockIdentity,
+			deviceReadWriter:           mockReadWriter,
+			hookManager:                mockHookManager,
+			preEnrollmentFailurePolicy: "Continue",
+			preEnrollmentBackoff:       wait.Backoff{Steps: 1, Duration: time.Millisecond},
+			systemdClient:              client.NewSystemd(nil, ""),
+			backoff:                    wait.Backoff{Steps: 1, Duration: time.Millisecond},
+			log:                        log.NewPrefixLogger("test"),
+		}
+
+		err := manager.Initialize(context.Background(), &v1beta1.DeviceStatus{})
+		require.Error(err)
+		require.Equal([]string{"OnBeforeEnrolling", "CreateEnrollmentRequest"}, callOrder)
+	})
+
+	t.Run("When already initialized it should not call OnBeforeEnrolling", func(t *testing.T) {
+		require := require.New(t)
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockIdentity := identity.NewMockProvider(ctrl)
+		mockReadWriter := fileio.NewMockReadWriter(ctrl)
+		mockHookManager := hook.NewMockManager(ctrl)
+
+		mockIdentity.EXPECT().HasCertificate().Return(true)
+		mockReadWriter.EXPECT().WriteFile(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+		manager := &LifecycleManager{
+			deviceName:                 "test-device",
+			identityProvider:           mockIdentity,
+			deviceReadWriter:           mockReadWriter,
+			hookManager:                mockHookManager,
+			preEnrollmentFailurePolicy: "Continue",
+			preEnrollmentBackoff:       wait.Backoff{Steps: 1, Duration: time.Millisecond},
+			systemdClient:              client.NewSystemd(nil, ""),
+			log:                        log.NewPrefixLogger("test"),
+		}
+
+		err := manager.Initialize(context.Background(), &v1beta1.DeviceStatus{})
+		require.NoError(err)
+	})
+
+	t.Run("When hook succeeds it should populate preEnrollment with success=true on ER", func(t *testing.T) {
+		require := require.New(t)
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnrollment := client.NewMockEnrollment(ctrl)
+		mockIdentity := identity.NewMockProvider(ctrl)
+		mockReadWriter := fileio.NewMockReadWriter(ctrl)
+		mockHookManager := hook.NewMockManager(ctrl)
+
+		mockIdentity.EXPECT().HasCertificate().Return(false)
+		mockHookManager.EXPECT().OnBeforeEnrolling(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, enrollCtx *hook.EnrollmentContext) error {
+				enrollCtx.Success = true
+				enrollCtx.Actions = []hook.EnrollmentActionResult{{
+					Source:   "/etc/flightctl/hooks.d/beforeenrolling/01-test.yaml",
+					ExitCode: 0, Output: "hook output",
+				}}
+				return nil
+			})
+		mockReadWriter.EXPECT().ReadFile(gomock.Any()).Return(nil, errors.New("not found")).AnyTimes()
+
+		var capturedER v1beta1.EnrollmentRequest
+		mockEnrollment.EXPECT().CreateEnrollmentRequest(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, er v1beta1.EnrollmentRequest, _ ...any) (*v1beta1.EnrollmentRequest, error) {
+				capturedER = er
+				return nil, nil
+			})
+		mockReadWriter.EXPECT().WriteFile(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		mockEnrollment.EXPECT().GetEnrollmentRequest(gomock.Any(), gomock.Any()).Return(&v1beta1.EnrollmentRequest{
+			Status: &v1beta1.EnrollmentRequestStatus{
+				Conditions: []v1beta1.Condition{{Type: "Denied", Reason: "test", Message: "test"}},
+			},
+		}, nil)
+
+		manager := &LifecycleManager{
+			deviceName:                 "test-device",
+			enrollmentClient:           mockEnrollment,
+			identityProvider:           mockIdentity,
+			deviceReadWriter:           mockReadWriter,
+			hookManager:                mockHookManager,
+			preEnrollmentFailurePolicy: "Continue",
+			preEnrollmentBackoff:       wait.Backoff{Steps: 1, Duration: time.Millisecond},
+			systemdClient:              client.NewSystemd(nil, ""),
+			backoff:                    wait.Backoff{Steps: 1, Duration: time.Millisecond},
+			log:                        log.NewPrefixLogger("test"),
+		}
+
+		err := manager.Initialize(context.Background(), &v1beta1.DeviceStatus{})
+		require.Error(err)
+		require.NotNil(capturedER.Spec.PreEnrollment)
+		require.True(capturedER.Spec.PreEnrollment.Success)
+		require.NotNil(capturedER.Spec.PreEnrollment.Actions)
+		require.Len(*capturedER.Spec.PreEnrollment.Actions, 1)
+		require.Equal("/etc/flightctl/hooks.d/beforeenrolling/01-test.yaml", (*capturedER.Spec.PreEnrollment.Actions)[0].Source)
+		require.Equal(0, (*capturedER.Spec.PreEnrollment.Actions)[0].ExitCode)
+		require.NotNil((*capturedER.Spec.PreEnrollment.Actions)[0].Output)
+		require.Equal("hook output", *(*capturedER.Spec.PreEnrollment.Actions)[0].Output)
+	})
+
+	t.Run("When hook fails with Continue policy it should submit ER with success=false", func(t *testing.T) {
+		require := require.New(t)
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnrollment := client.NewMockEnrollment(ctrl)
+		mockIdentity := identity.NewMockProvider(ctrl)
+		mockReadWriter := fileio.NewMockReadWriter(ctrl)
+		mockHookManager := hook.NewMockManager(ctrl)
+
+		mockIdentity.EXPECT().HasCertificate().Return(false)
+		mockHookManager.EXPECT().OnBeforeEnrolling(gomock.Any(), gomock.Any()).Return(errors.New("hook failed"))
+		mockReadWriter.EXPECT().ReadFile(gomock.Any()).Return(nil, errors.New("not found")).AnyTimes()
+
+		var capturedER v1beta1.EnrollmentRequest
+		mockEnrollment.EXPECT().CreateEnrollmentRequest(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, er v1beta1.EnrollmentRequest, _ ...any) (*v1beta1.EnrollmentRequest, error) {
+				capturedER = er
+				return nil, nil
+			})
+		mockReadWriter.EXPECT().WriteFile(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		mockEnrollment.EXPECT().GetEnrollmentRequest(gomock.Any(), gomock.Any()).Return(&v1beta1.EnrollmentRequest{
+			Status: &v1beta1.EnrollmentRequestStatus{
+				Conditions: []v1beta1.Condition{{Type: "Denied", Reason: "test", Message: "test"}},
+			},
+		}, nil)
+
+		manager := &LifecycleManager{
+			deviceName:                 "test-device",
+			enrollmentClient:           mockEnrollment,
+			identityProvider:           mockIdentity,
+			deviceReadWriter:           mockReadWriter,
+			hookManager:                mockHookManager,
+			preEnrollmentFailurePolicy: "Continue",
+			preEnrollmentBackoff:       wait.Backoff{Steps: 1, Duration: time.Millisecond},
+			systemdClient:              client.NewSystemd(nil, ""),
+			backoff:                    wait.Backoff{Steps: 1, Duration: time.Millisecond},
+			log:                        log.NewPrefixLogger("test"),
+		}
+
+		err := manager.Initialize(context.Background(), &v1beta1.DeviceStatus{})
+		require.Error(err)
+		require.NotNil(capturedER.Spec.PreEnrollment)
+		require.False(capturedER.Spec.PreEnrollment.Success)
+	})
+
+	t.Run("When hook fails with Block policy it should not submit ER and return error", func(t *testing.T) {
+		require := require.New(t)
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockIdentity := identity.NewMockProvider(ctrl)
+		mockReadWriter := fileio.NewMockReadWriter(ctrl)
+		mockHookManager := hook.NewMockManager(ctrl)
+
+		mockIdentity.EXPECT().HasCertificate().Return(false)
+		mockHookManager.EXPECT().OnBeforeEnrolling(gomock.Any(), gomock.Any()).Return(errors.New("hook failed")).AnyTimes()
+
+		manager := &LifecycleManager{
+			deviceName:                 "test-device",
+			identityProvider:           mockIdentity,
+			deviceReadWriter:           mockReadWriter,
+			hookManager:                mockHookManager,
+			preEnrollmentFailurePolicy: "Block",
+			preEnrollmentBackoff:       wait.Backoff{Steps: 2, Duration: time.Millisecond, Cap: time.Millisecond},
+			systemdClient:              client.NewSystemd(nil, ""),
+			backoff:                    wait.Backoff{Steps: 1, Duration: time.Millisecond},
+			log:                        log.NewPrefixLogger("test"),
+		}
+
+		err := manager.Initialize(context.Background(), &v1beta1.DeviceStatus{})
+		require.Error(err)
+		require.Contains(err.Error(), "Block policy")
+	})
+
+	t.Run("When hook fails then succeeds with Block policy it should submit ER", func(t *testing.T) {
+		require := require.New(t)
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnrollment := client.NewMockEnrollment(ctrl)
+		mockIdentity := identity.NewMockProvider(ctrl)
+		mockReadWriter := fileio.NewMockReadWriter(ctrl)
+		mockHookManager := hook.NewMockManager(ctrl)
+
+		mockIdentity.EXPECT().HasCertificate().Return(false)
+		callCount := 0
+		mockHookManager.EXPECT().OnBeforeEnrolling(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, enrollCtx *hook.EnrollmentContext) error {
+				callCount++
+				if callCount <= 1 {
+					enrollCtx.Success = false
+					enrollCtx.Actions = []hook.EnrollmentActionResult{{
+						Source:   "/etc/flightctl/hooks.d/beforeenrolling/01-test.yaml",
+						ExitCode: 1, Output: "first attempt failed",
+					}}
+					return errors.New("hook failed first attempt")
+				}
+				enrollCtx.Success = true
+				enrollCtx.Actions = []hook.EnrollmentActionResult{{
+					Source:   "/etc/flightctl/hooks.d/beforeenrolling/01-test.yaml",
+					ExitCode: 0, Output: "retry succeeded",
+				}}
+				enrollCtx.HookLabels = map[string]string{"day1.example.com/role": "edge"}
+				return nil
+			}).AnyTimes()
+		mockReadWriter.EXPECT().ReadFile(gomock.Any()).Return(nil, errors.New("not found")).AnyTimes()
+		mockReadWriter.EXPECT().WriteFile(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		var capturedER v1beta1.EnrollmentRequest
+		mockEnrollment.EXPECT().CreateEnrollmentRequest(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, er v1beta1.EnrollmentRequest, _ ...agentapi.RequestEditorFn) (*v1beta1.EnrollmentRequest, error) {
+				capturedER = er
+				return nil, nil
+			})
+		mockEnrollment.EXPECT().GetEnrollmentRequest(gomock.Any(), gomock.Any()).Return(&v1beta1.EnrollmentRequest{
+			Status: &v1beta1.EnrollmentRequestStatus{
+				Conditions: []v1beta1.Condition{{Type: "Denied", Reason: "test", Message: "test"}},
+			},
+		}, nil)
+
+		manager := &LifecycleManager{
+			deviceName:                 "test-device",
+			enrollmentClient:           mockEnrollment,
+			identityProvider:           mockIdentity,
+			deviceReadWriter:           mockReadWriter,
+			hookManager:                mockHookManager,
+			preEnrollmentFailurePolicy: "Block",
+			preEnrollmentBackoff:       wait.Backoff{Steps: 3, Duration: time.Millisecond, Cap: time.Millisecond},
+			systemdClient:              client.NewSystemd(nil, ""),
+			backoff:                    wait.Backoff{Steps: 1, Duration: time.Millisecond},
+			log:                        log.NewPrefixLogger("test"),
+		}
+
+		err := manager.Initialize(context.Background(), &v1beta1.DeviceStatus{})
+		require.Error(err)
+		require.GreaterOrEqual(callCount, 2)
+		require.NotNil(capturedER.Spec.PreEnrollment)
+		require.True(capturedER.Spec.PreEnrollment.Success)
+		require.NotNil(capturedER.Spec.PreEnrollment.Actions)
+		require.Len(*capturedER.Spec.PreEnrollment.Actions, 1)
+		require.Equal(0, (*capturedER.Spec.PreEnrollment.Actions)[0].ExitCode)
+		require.NotNil((*capturedER.Spec.PreEnrollment.Actions)[0].Output)
+		require.Equal("retry succeeded", *(*capturedER.Spec.PreEnrollment.Actions)[0].Output)
+		require.NotNil(capturedER.Spec.Labels)
+		require.Equal("edge", (*capturedER.Spec.Labels)["day1.example.com/role"])
+	})
+}
+
+func TestLifecycleManager_buildEnrollmentLabels_WithHookLabels(t *testing.T) {
+	t.Run("When hook labels conflict with systemInfo and defaultLabels it should give hook labels highest priority", func(t *testing.T) {
+		require := require.New(t)
+		manager := &LifecycleManager{
+			labelFromSystemInfo: map[string]string{"env": "architecture"},
+			defaultLabels:       map[string]string{"env": "default"},
+			log:                 log.NewPrefixLogger("test"),
+		}
+		hookLabels := map[string]string{
+			"env":                   "edge",
+			"day1.example.com/role": "edge",
+		}
+		status := &v1beta1.DeviceStatus{
+			SystemInfo: v1beta1.DeviceSystemInfo{
+				Architecture: "x86_64",
+			},
+		}
+		result := manager.buildEnrollmentLabels(status, hookLabels)
+		require.Equal("edge", result["env"])
+		require.Equal("edge", result["day1.example.com/role"])
+	})
+
+	t.Run("When hook labels are nil it should use existing merge order", func(t *testing.T) {
+		require := require.New(t)
+		manager := &LifecycleManager{
+			labelFromSystemInfo: map[string]string{"arch": "architecture"},
+			defaultLabels:       map[string]string{"region": "us-east"},
+			log:                 log.NewPrefixLogger("test"),
+		}
+		status := &v1beta1.DeviceStatus{
+			SystemInfo: v1beta1.DeviceSystemInfo{
+				Architecture: "x86_64",
+			},
+		}
+		result := manager.buildEnrollmentLabels(status, nil)
+		require.Equal("x86_64", result["arch"])
+		require.Equal("us-east", result["region"])
+	})
+
+	t.Run("When hook labels and all sources present it should merge all", func(t *testing.T) {
+		require := require.New(t)
+		manager := &LifecycleManager{
+			labelFromSystemInfo: map[string]string{"arch": "architecture"},
+			defaultLabels:       map[string]string{"region": "us-east"},
+			log:                 log.NewPrefixLogger("test"),
+		}
+		hookLabels := map[string]string{"site": "dc1"}
+		status := &v1beta1.DeviceStatus{
+			SystemInfo: v1beta1.DeviceSystemInfo{
+				Architecture: "x86_64",
+			},
+		}
+		result := manager.buildEnrollmentLabels(status, hookLabels)
+		require.Equal("x86_64", result["arch"])
+		require.Equal("us-east", result["region"])
+		require.Equal("dc1", result["site"])
+	})
+}
