@@ -4,7 +4,11 @@ WORKDIR /app
 # Switch to root for build operations
 USER 0
 
-RUN dnf install -y --installroot=/runtime-root --setopt=install_weak_deps=False --nodocs podman fuse-overlayfs openssl-libs tzdata
+# UBI9 repo sync workaround (aardvark-dns/netavark mismatch): pull from CentOS Stream 9
+RUN ARCH=$(uname -m) && \
+    echo -e "[cs9-baseos]\nname=CentOS Stream 9 - BaseOS\nbaseurl=https://mirror.stream.centos.org/9-stream/BaseOS/${ARCH}/os/\nenabled=1\ngpgcheck=0" > /etc/yum.repos.d/cs9.repo && \
+    echo -e "[cs9-appstream]\nname=CentOS Stream 9 - AppStream\nbaseurl=https://mirror.stream.centos.org/9-stream/AppStream/${ARCH}/os/\nenabled=1\ngpgcheck=0" >> /etc/yum.repos.d/cs9.repo
+RUN dnf install -y --nobest --installroot=/runtime-root --setopt=install_weak_deps=False --nodocs podman fuse-overlayfs openssl-libs tzdata
 
 # Copy dependencies first (most stable)
 COPY go.mod go.sum ./
