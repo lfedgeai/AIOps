@@ -20,6 +20,46 @@ FAULTS = ["scale_zero", "kill_pod"]
 
 
 @dsl.component(base_image=HARNESS_IMAGE)
+def preflight_models():
+    """Require a real response from both models before any fault is injected."""
+    import base64
+    import json
+    import urllib.request
+
+    from kubernetes import client, config
+
+    config.load_incluster_config()
+    with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace") as f:
+        namespace = f.read().strip()
+    secret = client.CoreV1Api().read_namespaced_secret("aiops-model-credentials", namespace)
+    env = {k: base64.b64decode(v).decode() for k, v in (secret.data or {}).items()}
+    endpoints = [
+        ("DEEPSEEK", "deepseek-r1-distill-qwen-14b", 1024),
+        ("GRANITE", "granite-3-2-8b-instruct", 64),
+    ]
+    for name, default_model, max_tokens in endpoints:
+        base, key = env.get(f"{name}_API_BASE"), env.get(f"{name}_API_KEY")
+        if not base or not key:
+            raise RuntimeError(f"Missing endpoint or credentials for {name}")
+        payload = json.dumps({
+            "model": env.get(f"{name}_MODEL") or default_model,
+            "messages": [{"role": "user", "content": "Reply with exactly: pong"}],
+            "max_tokens": max_tokens,
+            "temperature": 0,
+        }).encode()
+        req = urllib.request.Request(
+            base.rstrip("/") + "/chat/completions", data=payload,
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=120) as response:
+            choices = json.load(response).get("choices") or []
+        message = choices[0].get("message", {}) if choices else {}
+        if not str(message.get("content") or "").strip() and not message.get("tool_calls"):
+            raise RuntimeError(f"{name} returned an empty completion")
+        print(f"Model preflight passed: {name}")
+
+
+@dsl.component(base_image=HARNESS_IMAGE)
 def reset_environment() -> str:
     """Reset the OTEL demo to a clean baseline before the next harness cell.
 
@@ -42,11 +82,11 @@ def reset_environment() -> str:
                "product-catalog", "payment", "email", "frontend"]
     issues = []
 
-    # Scale all deployments back to at least 1 replica
+    # Only restore the deployment that this pipeline injects faults into.
     for dep_name in targets:
         try:
             dep = apps.read_namespaced_deployment(dep_name, namespace)
-            if (dep.spec.replicas or 0) < 1:
+            if dep_name == "cart" and (dep.spec.replicas or 0) < 1:
                 apps.patch_namespaced_deployment(dep_name, namespace, {"spec": {"replicas": 1}})
                 print(f"  scaled {dep_name} back to 1")
         except Exception as e:
@@ -56,27 +96,32 @@ def reset_environment() -> str:
     try:
         policies = net.list_namespaced_network_policy(namespace)
         for pol in policies.items:
-            if pol.metadata.name.startswith("harness-block-"):
+            if pol.metadata.name == "harness-block-cart":
                 net.delete_namespaced_network_policy(pol.metadata.name, namespace)
                 print(f"  deleted network policy {pol.metadata.name}")
-    except Exception:
-        pass
+    except Exception as e:
+        issues.append(f"network policies: {e}")
 
     # Wait for pods to become Ready
     deadline = time.time() + 120
     while time.time() < deadline:
         all_ready = True
-        for dep_name in ["cart", "checkout"]:
+        for dep_name in targets:
             try:
                 dep = apps.read_namespaced_deployment(dep_name, namespace)
                 ready = dep.status.ready_replicas or 0
-                if ready < 1:
+                if ready < max(1, dep.spec.replicas or 0) or (dep.status.available_replicas or 0) < max(1, dep.spec.replicas or 0):
                     all_ready = False
             except Exception:
                 all_ready = False
         if all_ready:
             break
         time.sleep(5)
+    else:
+        raise RuntimeError("OTEL Demo did not return to a ready baseline")
+
+    if issues:
+        raise RuntimeError(f"Reset failed: {'; '.join(issues)}")
 
     status = "clean" if not issues else f"warnings: {'; '.join(issues)}"
     print(f"[reset] environment ready ({status})")
@@ -104,11 +149,36 @@ def harness_cell(agent: str, fault: str) -> dict:
 
     # Configure harness connections
     os.environ["CLICKHOUSE_HTTP"] = "http://clickhouse.agentic-aiops-harness.svc.cluster.local:8123"
-    os.environ["MLFLOW_TRACKING_URI"] = "http://mlflow.agentic-aiops-harness.svc.cluster.local:5000"
+    import certifi
+    import mlflow
+    import tempfile
+
+    sa_path = "/var/run/secrets/kubernetes.io/serviceaccount"
+    os.environ["MLFLOW_TRACKING_URI"] = "https://mlflow.redhat-ods-applications.svc:8443/mlflow"
+    os.environ["MLFLOW_WORKSPACE"] = ns
+    with open(f"{sa_path}/token") as token_file:
+        os.environ["MLFLOW_TRACKING_TOKEN"] = token_file.read().strip()
+    # Keep the public CA roots as well as the OpenShift service CA for MaaS.
+    with tempfile.NamedTemporaryFile(mode="w", delete=False) as bundle:
+        for path in (certifi.where(), f"{sa_path}/service-ca.crt"):
+            with open(path) as source:
+                bundle.write(source.read() + "\n")
+        os.environ["REQUESTS_CA_BUNDLE"] = bundle.name
+    os.environ.pop("MLFLOW_TRACKING_INSECURE_TLS", None)
+    os.environ.pop("MLFLOW_RUN_ID", None)
+    mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+    mlflow.set_workspace(ns)
+    mlflow.set_experiment("agentic_aiops_mttd_mttr")
     os.environ["K8S_FAULT_NAMESPACE"] = "otel-demo"
     os.environ["K8S_NAMESPACE"] = "otel-demo"
     os.environ["PYTHONPATH"] = "/app"
     os.environ["AGENT_TIMEOUT"] = "600"
+
+    # Do not inject a fault unless the selected model can answer requests.
+    subprocess.run(
+        [sys.executable, "/app/scripts/preflight_agent_apis.py", "--agents", agent, "--require-all"],
+        check=True, cwd="/app", timeout=150,
+    )
 
     cmd = [
         sys.executable, "-u", "/app/code/harness/run_harness.py",
@@ -126,18 +196,45 @@ def harness_cell(agent: str, fault: str) -> dict:
     print(proc.stdout[-5000:])
     if proc.returncode != 0:
         print(proc.stderr[-3000:], file=sys.stderr)
-    try:
-        with open("/tmp/result.json") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {"error": "no output", "detected": False, "mttd_seconds": None,
-                "approach": agent, "fault_flag": fault}
+        raise RuntimeError(f"Harness failed with exit code {proc.returncode}")
+    if "[harness] MLflow log error:" in proc.stdout or "[harness] MLflow start_run error:" in proc.stdout:
+        raise RuntimeError("Harness did not log to MLflow; see the step log")
+    with open("/tmp/result.json") as f:
+        result = json.load(f)
+    if result.get("approach") != agent or result.get("fault_flag") != fault:
+        raise RuntimeError("Harness returned a result for the wrong cell")
+
+    from mlflow.tracking import MlflowClient
+    experiment = mlflow.get_experiment_by_name("agentic_aiops_mttd_mttr")
+    expected_name = f"{result['run_id']}_{agent}_scenarioa_{fault}_cart"
+    runs = MlflowClient().search_runs(
+        [experiment.experiment_id], filter_string=f"attributes.run_name = '{expected_name}'",
+        order_by=["start_time DESC"], max_results=1,
+    )
+    if not runs or "detected" not in runs[0].data.metrics:
+        raise RuntimeError("Harness metrics were not found in RHOAI MLflow")
+    if runs[0].data.tags.get("aiops.prompt_registry_status") != "ok":
+        raise RuntimeError("Agent prompts were not registered in RHOAI MLflow; see the agent trace artifacts")
+    if not any(item.path == "harness_run.json" for item in MlflowClient().list_artifacts(runs[0].info.run_id)):
+        raise RuntimeError("Harness result artifact was not found in RHOAI MLflow")
+
+    # Large agent transcripts in KFP parameters broke report deserialization.
+    # The full result and transcript remain in the MLflow run artifacts.
+    keys = ("run_id", "approach", "fault_flag", "detected", "mttd_seconds",
+            "rca_correct", "remediation_executed")
+    compact = {key: result.get(key) for key in keys}
+    compact["agent_error"] = bool(result.get("agent_error"))
+    return compact
 
 
 @dsl.component(base_image=HARNESS_IMAGE)
 def generate_report(
-    results: list[dict],
+    result_1: dict,
+    result_2: dict,
+    result_3: dict,
+    result_4: dict,
     run_name: str,
+    report_artifact: dsl.Output[dsl.Artifact],
 ) -> dict:
     """Aggregate all cell results into a summary report.
 
@@ -148,8 +245,28 @@ def generate_report(
     import json
     import os
 
-    # MLflow logging
-    os.environ["MLFLOW_TRACKING_URI"] = "http://mlflow.agentic-aiops-harness.svc.cluster.local:5000"
+    import certifi
+    import mlflow
+    import tempfile
+
+    sa_path = "/var/run/secrets/kubernetes.io/serviceaccount"
+    with open(f"{sa_path}/namespace") as namespace_file:
+        workspace = namespace_file.read().strip()
+    with open(f"{sa_path}/token") as token_file:
+        os.environ["MLFLOW_TRACKING_TOKEN"] = token_file.read().strip()
+    os.environ["MLFLOW_WORKSPACE"] = workspace
+    os.environ["MLFLOW_TRACKING_URI"] = "https://mlflow.redhat-ods-applications.svc:8443/mlflow"
+    with tempfile.NamedTemporaryFile(mode="w", delete=False) as bundle:
+        for path in (certifi.where(), f"{sa_path}/service-ca.crt"):
+            with open(path) as source:
+                bundle.write(source.read() + "\n")
+        os.environ["REQUESTS_CA_BUNDLE"] = bundle.name
+    os.environ.pop("MLFLOW_TRACKING_INSECURE_TLS", None)
+    os.environ.pop("MLFLOW_RUN_ID", None)
+    mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+    mlflow.set_workspace(workspace)
+
+    results = [result_1, result_2, result_3, result_4]
 
     total = len(results)
     detected = sum(1 for r in results if r.get("detected"))
@@ -176,7 +293,7 @@ def generate_report(
         "total_cells": total,
         "detected": detected,
         "detection_rate": round(detected / total, 3) if total else 0,
-        "mean_mttd_seconds": round(mean_mttd, 1) if mean_mttd else None,
+        "mean_mttd_seconds": round(mean_mttd, 1) if mean_mttd is not None else None,
         "rca_correct": rca_correct,
         "remediation_executed": remediation,
         "agent_errors": errors,
@@ -204,28 +321,22 @@ def generate_report(
     }
 
     # Log to MLflow
-    try:
-        import mlflow
-
-        mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
-        mlflow.set_experiment("agentic_aiops_mttd_mttr")
-        with mlflow.start_run(run_name=f"{run_name}_summary"):
-            mlflow.log_metric("total_cells", total)
-            mlflow.log_metric("detected_count", detected)
-            mlflow.log_metric("detection_rate", report["detection_rate"])
-            if mean_mttd:
-                mlflow.log_metric("mean_mttd_seconds", mean_mttd)
-            mlflow.log_metric("rca_correct_count", rca_correct)
-            mlflow.log_metric("remediation_executed_count", remediation)
-            mlflow.log_metric("agent_error_count", errors)
-            mlflow.log_dict(report, "artifacts/summary_report.json")
-            mlflow.set_tag("run_type", "pipeline_summary")
-            mlflow.set_tag("pipeline", run_name)
-    except Exception as e:
-        print(f"[report] MLflow logging failed: {e}")
+    mlflow.set_experiment("agentic_aiops_mttd_mttr")
+    with mlflow.start_run(run_name=f"{run_name}_summary"):
+        mlflow.log_metric("total_cells", total)
+        mlflow.log_metric("detected_count", detected)
+        mlflow.log_metric("detection_rate", report["detection_rate"])
+        if mean_mttd is not None:
+            mlflow.log_metric("mean_mttd_seconds", mean_mttd)
+        mlflow.log_metric("rca_correct_count", rca_correct)
+        mlflow.log_metric("remediation_executed_count", remediation)
+        mlflow.log_metric("agent_error_count", errors)
+        mlflow.log_dict(report, "summary_report.json")
+        mlflow.set_tag("run_type", "pipeline_summary")
+        mlflow.set_tag("pipeline", run_name)
 
     # Write report to file for pipeline artifact
-    with open("/tmp/report.json", "w") as f:
+    with open(report_artifact.path, "w") as f:
         json.dump(report, f, indent=2)
 
     print(json.dumps(report, indent=2))
@@ -242,34 +353,33 @@ def aiops_eval_matrix():
     Each cell depends on the previous cell completing (and the reset step
     between them), preventing parallel fault-injection interference.
     """
-    results = []
-    previous_cell = None
+    final_reset = reset_environment().set_caching_options(False)
+    final_reset.set_display_name("final reset")
+    with dsl.ExitHandler(exit_task=final_reset):
+        results = []
+        preflight = preflight_models().set_caching_options(False)
+        previous_cell = preflight
 
-    for agent in AGENTS:
-        for fault in FAULTS:
-            # Reset environment before each cell
-            reset = reset_environment()
-            reset.set_display_name(f"reset / {fault}")
-
-            # Run the harness cell
-            cell = harness_cell(agent=agent, fault=fault)
-            cell.set_display_name(f"{agent.split('-')[0][:10]} / {fault}")
-
-            # Chain sequentially: reset after previous cell, cell after reset
-            if previous_cell is not None:
+        for agent in AGENTS:
+            for fault in FAULTS:
+                reset = reset_environment().set_caching_options(False)
+                reset.set_display_name(f"reset / {fault}")
+                cell = harness_cell(agent=agent, fault=fault).set_caching_options(False)
+                cell.set_display_name(f"{agent.split('-')[0][:10]} / {fault}")
                 reset.after(previous_cell)
-            cell.after(reset)
+                cell.after(reset)
+                previous_cell = cell
+                results.append(cell.output)
 
-            previous_cell = cell
-            results.append(cell.output)
-
-    # Generate the final report after all cells complete
-    report = generate_report(
-        results=results,
-        run_name="aiops-eval-matrix",
-    )
-    report.set_display_name("summary report")
-    report.after(previous_cell)
+        report = generate_report(
+            result_1=results[0],
+            result_2=results[1],
+            result_3=results[2],
+            result_4=results[3],
+            run_name="aiops-eval-matrix",
+        ).set_caching_options(False)
+        report.set_display_name("summary report")
+        report.after(previous_cell)
 
 
 if __name__ == "__main__":

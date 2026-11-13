@@ -2,15 +2,163 @@
 # Name: aiops-eval-matrix
 # Description: AIOps harness: sequential agents × faults with environment reset and summary report
 components:
+  comp-exit-handler-1:
+    dag:
+      tasks:
+        generate-report:
+          cachingOptions: {}
+          componentRef:
+            name: comp-generate-report
+          dependentTasks:
+          - harness-cell
+          - harness-cell-2
+          - harness-cell-3
+          - harness-cell-4
+          inputs:
+            parameters:
+              result_1:
+                taskOutputParameter:
+                  outputParameterKey: Output
+                  producerTask: harness-cell
+              result_2:
+                taskOutputParameter:
+                  outputParameterKey: Output
+                  producerTask: harness-cell-2
+              result_3:
+                taskOutputParameter:
+                  outputParameterKey: Output
+                  producerTask: harness-cell-3
+              result_4:
+                taskOutputParameter:
+                  outputParameterKey: Output
+                  producerTask: harness-cell-4
+              run_name:
+                runtimeValue:
+                  constant: aiops-eval-matrix
+          taskInfo:
+            name: summary report
+        harness-cell:
+          cachingOptions: {}
+          componentRef:
+            name: comp-harness-cell
+          dependentTasks:
+          - reset-environment-2
+          inputs:
+            parameters:
+              agent:
+                runtimeValue:
+                  constant: rhdp_deepseek-r1-distill-qwen-14b
+              fault:
+                runtimeValue:
+                  constant: scale_zero
+          taskInfo:
+            name: rhdp_deeps / scale_zero
+        harness-cell-2:
+          cachingOptions: {}
+          componentRef:
+            name: comp-harness-cell-2
+          dependentTasks:
+          - reset-environment-3
+          inputs:
+            parameters:
+              agent:
+                runtimeValue:
+                  constant: rhdp_deepseek-r1-distill-qwen-14b
+              fault:
+                runtimeValue:
+                  constant: kill_pod
+          taskInfo:
+            name: rhdp_deeps / kill_pod
+        harness-cell-3:
+          cachingOptions: {}
+          componentRef:
+            name: comp-harness-cell-3
+          dependentTasks:
+          - reset-environment-4
+          inputs:
+            parameters:
+              agent:
+                runtimeValue:
+                  constant: rhdp_granite-3-2-8b-instruct
+              fault:
+                runtimeValue:
+                  constant: scale_zero
+          taskInfo:
+            name: rhdp_grani / scale_zero
+        harness-cell-4:
+          cachingOptions: {}
+          componentRef:
+            name: comp-harness-cell-4
+          dependentTasks:
+          - reset-environment-5
+          inputs:
+            parameters:
+              agent:
+                runtimeValue:
+                  constant: rhdp_granite-3-2-8b-instruct
+              fault:
+                runtimeValue:
+                  constant: kill_pod
+          taskInfo:
+            name: rhdp_grani / kill_pod
+        preflight-models:
+          cachingOptions: {}
+          componentRef:
+            name: comp-preflight-models
+          taskInfo:
+            name: preflight-models
+        reset-environment-2:
+          cachingOptions: {}
+          componentRef:
+            name: comp-reset-environment-2
+          dependentTasks:
+          - preflight-models
+          taskInfo:
+            name: reset / scale_zero
+        reset-environment-3:
+          cachingOptions: {}
+          componentRef:
+            name: comp-reset-environment-3
+          dependentTasks:
+          - harness-cell
+          taskInfo:
+            name: reset / kill_pod
+        reset-environment-4:
+          cachingOptions: {}
+          componentRef:
+            name: comp-reset-environment-4
+          dependentTasks:
+          - harness-cell-2
+          taskInfo:
+            name: reset / scale_zero
+        reset-environment-5:
+          cachingOptions: {}
+          componentRef:
+            name: comp-reset-environment-5
+          dependentTasks:
+          - harness-cell-3
+          taskInfo:
+            name: reset / kill_pod
   comp-generate-report:
     executorLabel: exec-generate-report
     inputDefinitions:
       parameters:
-        results:
-          parameterType: LIST
+        result_1:
+          parameterType: STRUCT
+        result_2:
+          parameterType: STRUCT
+        result_3:
+          parameterType: STRUCT
+        result_4:
+          parameterType: STRUCT
         run_name:
           parameterType: STRING
     outputDefinitions:
+      artifacts:
+        report_artifact:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
       parameters:
         Output:
           parameterType: STRUCT
@@ -62,6 +210,8 @@ components:
       parameters:
         Output:
           parameterType: STRUCT
+  comp-preflight-models:
+    executorLabel: exec-preflight-models
   comp-reset-environment:
     executorLabel: exec-reset-environment
     outputDefinitions:
@@ -82,6 +232,12 @@ components:
           parameterType: STRING
   comp-reset-environment-4:
     executorLabel: exec-reset-environment-4
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-reset-environment-5:
+    executorLabel: exec-reset-environment-5
     outputDefinitions:
       parameters:
         Output:
@@ -114,57 +270,69 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef generate_report(\n    results: list[dict],\n    run_name: str,\n\
-          ) -> dict:\n    \"\"\"Aggregate all cell results into a summary report.\n\
-          \n    Computes detection rate, mean MTTD, per-agent breakdown, and logs\n\
-          \    everything to MLflow as a summary run. Outputs the report as a\n  \
-          \  pipeline artifact.\n    \"\"\"\n    import json\n    import os\n\n  \
-          \  # MLflow logging\n    os.environ[\"MLFLOW_TRACKING_URI\"] = \"http://mlflow.agentic-aiops-harness.svc.cluster.local:5000\"\
-          \n\n    total = len(results)\n    detected = sum(1 for r in results if r.get(\"\
-          detected\"))\n    mttds = [r.get(\"mttd_seconds\") for r in results if r.get(\"\
-          mttd_seconds\") is not None]\n    mean_mttd = sum(mttds) / len(mttds) if\
-          \ mttds else None\n    rca_correct = sum(1 for r in results if r.get(\"\
-          rca_correct\"))\n    remediation = sum(1 for r in results if r.get(\"remediation_executed\"\
-          ))\n    errors = sum(1 for r in results if r.get(\"agent_error\"))\n\n \
-          \   # Per-agent breakdown\n    by_agent = {}\n    for r in results:\n  \
-          \      agent = r.get(\"approach\", \"unknown\")\n        if agent not in\
-          \ by_agent:\n            by_agent[agent] = {\"total\": 0, \"detected\":\
-          \ 0, \"mttds\": []}\n        by_agent[agent][\"total\"] += 1\n        if\
-          \ r.get(\"detected\"):\n            by_agent[agent][\"detected\"] += 1\n\
-          \        if r.get(\"mttd_seconds\") is not None:\n            by_agent[agent][\"\
-          mttds\"].append(r[\"mttd_seconds\"])\n\n    report = {\n        \"run_name\"\
-          : run_name,\n        \"total_cells\": total,\n        \"detected\": detected,\n\
-          \        \"detection_rate\": round(detected / total, 3) if total else 0,\n\
-          \        \"mean_mttd_seconds\": round(mean_mttd, 1) if mean_mttd else None,\n\
-          \        \"rca_correct\": rca_correct,\n        \"remediation_executed\"\
-          : remediation,\n        \"agent_errors\": errors,\n        \"per_agent\"\
-          : {\n            agent: {\n                \"total\": v[\"total\"],\n  \
-          \              \"detected\": v[\"detected\"],\n                \"detection_rate\"\
-          : round(v[\"detected\"] / v[\"total\"], 3),\n                \"mean_mttd_seconds\"\
-          : round(sum(v[\"mttds\"]) / len(v[\"mttds\"]), 1) if v[\"mttds\"] else None,\n\
-          \            }\n            for agent, v in by_agent.items()\n        },\n\
-          \        \"cells\": [\n            {\n                \"agent\": r.get(\"\
-          approach\"),\n                \"fault\": r.get(\"fault_flag\"),\n      \
-          \          \"detected\": r.get(\"detected\"),\n                \"mttd_seconds\"\
-          : r.get(\"mttd_seconds\"),\n                \"rca_correct\": r.get(\"rca_correct\"\
-          ),\n                \"remediation_executed\": r.get(\"remediation_executed\"\
-          ),\n                \"agent_error\": r.get(\"agent_error\"),\n         \
-          \   }\n            for r in results\n        ],\n    }\n\n    # Log to MLflow\n\
-          \    try:\n        import mlflow\n\n        mlflow.set_tracking_uri(os.environ[\"\
-          MLFLOW_TRACKING_URI\"])\n        mlflow.set_experiment(\"agentic_aiops_mttd_mttr\"\
-          )\n        with mlflow.start_run(run_name=f\"{run_name}_summary\"):\n  \
-          \          mlflow.log_metric(\"total_cells\", total)\n            mlflow.log_metric(\"\
-          detected_count\", detected)\n            mlflow.log_metric(\"detection_rate\"\
-          , report[\"detection_rate\"])\n            if mean_mttd:\n             \
-          \   mlflow.log_metric(\"mean_mttd_seconds\", mean_mttd)\n            mlflow.log_metric(\"\
-          rca_correct_count\", rca_correct)\n            mlflow.log_metric(\"remediation_executed_count\"\
-          , remediation)\n            mlflow.log_metric(\"agent_error_count\", errors)\n\
-          \            mlflow.log_dict(report, \"artifacts/summary_report.json\")\n\
-          \            mlflow.set_tag(\"run_type\", \"pipeline_summary\")\n      \
-          \      mlflow.set_tag(\"pipeline\", run_name)\n    except Exception as e:\n\
-          \        print(f\"[report] MLflow logging failed: {e}\")\n\n    # Write\
-          \ report to file for pipeline artifact\n    with open(\"/tmp/report.json\"\
-          , \"w\") as f:\n        json.dump(report, f, indent=2)\n\n    print(json.dumps(report,\
+          \ *\n\ndef generate_report(\n    result_1: dict,\n    result_2: dict,\n\
+          \    result_3: dict,\n    result_4: dict,\n    run_name: str,\n    report_artifact:\
+          \ dsl.Output[dsl.Artifact],\n) -> dict:\n    \"\"\"Aggregate all cell results\
+          \ into a summary report.\n\n    Computes detection rate, mean MTTD, per-agent\
+          \ breakdown, and logs\n    everything to MLflow as a summary run. Outputs\
+          \ the report as a\n    pipeline artifact.\n    \"\"\"\n    import json\n\
+          \    import os\n\n    import certifi\n    import mlflow\n    import tempfile\n\
+          \n    sa_path = \"/var/run/secrets/kubernetes.io/serviceaccount\"\n    with\
+          \ open(f\"{sa_path}/namespace\") as namespace_file:\n        workspace =\
+          \ namespace_file.read().strip()\n    with open(f\"{sa_path}/token\") as\
+          \ token_file:\n        os.environ[\"MLFLOW_TRACKING_TOKEN\"] = token_file.read().strip()\n\
+          \    os.environ[\"MLFLOW_WORKSPACE\"] = workspace\n    os.environ[\"MLFLOW_TRACKING_URI\"\
+          ] = \"https://mlflow.redhat-ods-applications.svc:8443/mlflow\"\n    with\
+          \ tempfile.NamedTemporaryFile(mode=\"w\", delete=False) as bundle:\n   \
+          \     for path in (certifi.where(), f\"{sa_path}/service-ca.crt\"):\n  \
+          \          with open(path) as source:\n                bundle.write(source.read()\
+          \ + \"\\n\")\n        os.environ[\"REQUESTS_CA_BUNDLE\"] = bundle.name\n\
+          \    os.environ.pop(\"MLFLOW_TRACKING_INSECURE_TLS\", None)\n    os.environ.pop(\"\
+          MLFLOW_RUN_ID\", None)\n    mlflow.set_tracking_uri(os.environ[\"MLFLOW_TRACKING_URI\"\
+          ])\n    mlflow.set_workspace(workspace)\n\n    results = [result_1, result_2,\
+          \ result_3, result_4]\n\n    total = len(results)\n    detected = sum(1\
+          \ for r in results if r.get(\"detected\"))\n    mttds = [r.get(\"mttd_seconds\"\
+          ) for r in results if r.get(\"mttd_seconds\") is not None]\n    mean_mttd\
+          \ = sum(mttds) / len(mttds) if mttds else None\n    rca_correct = sum(1\
+          \ for r in results if r.get(\"rca_correct\"))\n    remediation = sum(1 for\
+          \ r in results if r.get(\"remediation_executed\"))\n    errors = sum(1 for\
+          \ r in results if r.get(\"agent_error\"))\n\n    # Per-agent breakdown\n\
+          \    by_agent = {}\n    for r in results:\n        agent = r.get(\"approach\"\
+          , \"unknown\")\n        if agent not in by_agent:\n            by_agent[agent]\
+          \ = {\"total\": 0, \"detected\": 0, \"mttds\": []}\n        by_agent[agent][\"\
+          total\"] += 1\n        if r.get(\"detected\"):\n            by_agent[agent][\"\
+          detected\"] += 1\n        if r.get(\"mttd_seconds\") is not None:\n    \
+          \        by_agent[agent][\"mttds\"].append(r[\"mttd_seconds\"])\n\n    report\
+          \ = {\n        \"run_name\": run_name,\n        \"total_cells\": total,\n\
+          \        \"detected\": detected,\n        \"detection_rate\": round(detected\
+          \ / total, 3) if total else 0,\n        \"mean_mttd_seconds\": round(mean_mttd,\
+          \ 1) if mean_mttd is not None else None,\n        \"rca_correct\": rca_correct,\n\
+          \        \"remediation_executed\": remediation,\n        \"agent_errors\"\
+          : errors,\n        \"per_agent\": {\n            agent: {\n            \
+          \    \"total\": v[\"total\"],\n                \"detected\": v[\"detected\"\
+          ],\n                \"detection_rate\": round(v[\"detected\"] / v[\"total\"\
+          ], 3),\n                \"mean_mttd_seconds\": round(sum(v[\"mttds\"]) /\
+          \ len(v[\"mttds\"]), 1) if v[\"mttds\"] else None,\n            }\n    \
+          \        for agent, v in by_agent.items()\n        },\n        \"cells\"\
+          : [\n            {\n                \"agent\": r.get(\"approach\"),\n  \
+          \              \"fault\": r.get(\"fault_flag\"),\n                \"detected\"\
+          : r.get(\"detected\"),\n                \"mttd_seconds\": r.get(\"mttd_seconds\"\
+          ),\n                \"rca_correct\": r.get(\"rca_correct\"),\n         \
+          \       \"remediation_executed\": r.get(\"remediation_executed\"),\n   \
+          \             \"agent_error\": r.get(\"agent_error\"),\n            }\n\
+          \            for r in results\n        ],\n    }\n\n    # Log to MLflow\n\
+          \    mlflow.set_experiment(\"agentic_aiops_mttd_mttr\")\n    with mlflow.start_run(run_name=f\"\
+          {run_name}_summary\"):\n        mlflow.log_metric(\"total_cells\", total)\n\
+          \        mlflow.log_metric(\"detected_count\", detected)\n        mlflow.log_metric(\"\
+          detection_rate\", report[\"detection_rate\"])\n        if mean_mttd is not\
+          \ None:\n            mlflow.log_metric(\"mean_mttd_seconds\", mean_mttd)\n\
+          \        mlflow.log_metric(\"rca_correct_count\", rca_correct)\n       \
+          \ mlflow.log_metric(\"remediation_executed_count\", remediation)\n     \
+          \   mlflow.log_metric(\"agent_error_count\", errors)\n        mlflow.log_dict(report,\
+          \ \"summary_report.json\")\n        mlflow.set_tag(\"run_type\", \"pipeline_summary\"\
+          )\n        mlflow.set_tag(\"pipeline\", run_name)\n\n    # Write report\
+          \ to file for pipeline artifact\n    with open(report_artifact.path, \"\
+          w\") as f:\n        json.dump(report, f, indent=2)\n\n    print(json.dumps(report,\
           \ indent=2))\n    return report\n\n"
         image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
     exec-harness-cell:
@@ -203,22 +371,58 @@ deploymentSpec:
           , ns)\n    for key, value in (secret.data or {}).items():\n        os.environ[key]\
           \ = base64.b64decode(value).decode()\n\n    # Configure harness connections\n\
           \    os.environ[\"CLICKHOUSE_HTTP\"] = \"http://clickhouse.agentic-aiops-harness.svc.cluster.local:8123\"\
-          \n    os.environ[\"MLFLOW_TRACKING_URI\"] = \"http://mlflow.agentic-aiops-harness.svc.cluster.local:5000\"\
-          \n    os.environ[\"K8S_FAULT_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"\
+          \n    import certifi\n    import mlflow\n    import tempfile\n\n    sa_path\
+          \ = \"/var/run/secrets/kubernetes.io/serviceaccount\"\n    os.environ[\"\
+          MLFLOW_TRACKING_URI\"] = \"https://mlflow.redhat-ods-applications.svc:8443/mlflow\"\
+          \n    os.environ[\"MLFLOW_WORKSPACE\"] = ns\n    with open(f\"{sa_path}/token\"\
+          ) as token_file:\n        os.environ[\"MLFLOW_TRACKING_TOKEN\"] = token_file.read().strip()\n\
+          \    # Keep the public CA roots as well as the OpenShift service CA for\
+          \ MaaS.\n    with tempfile.NamedTemporaryFile(mode=\"w\", delete=False)\
+          \ as bundle:\n        for path in (certifi.where(), f\"{sa_path}/service-ca.crt\"\
+          ):\n            with open(path) as source:\n                bundle.write(source.read()\
+          \ + \"\\n\")\n        os.environ[\"REQUESTS_CA_BUNDLE\"] = bundle.name\n\
+          \    os.environ.pop(\"MLFLOW_TRACKING_INSECURE_TLS\", None)\n    os.environ.pop(\"\
+          MLFLOW_RUN_ID\", None)\n    mlflow.set_tracking_uri(os.environ[\"MLFLOW_TRACKING_URI\"\
+          ])\n    mlflow.set_workspace(ns)\n    mlflow.set_experiment(\"agentic_aiops_mttd_mttr\"\
+          )\n    os.environ[\"K8S_FAULT_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"\
           K8S_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"PYTHONPATH\"] = \"/app\"\
-          \n    os.environ[\"AGENT_TIMEOUT\"] = \"600\"\n\n    cmd = [\n        sys.executable,\
-          \ \"-u\", \"/app/code/harness/run_harness.py\",\n        \"--scenario\"\
-          , \"a\",\n        \"--flag\", fault,\n        \"--variant\", \"cart\",\n\
-          \        \"--context-c\", \"0\",\n        \"--agents\", agent,\n       \
-          \ \"--no-judge\",\n        \"--detection-timeout\", \"600\",\n        \"\
-          --fault-duration\", \"120\",\n        \"--output\", \"/tmp/result.json\"\
+          \n    os.environ[\"AGENT_TIMEOUT\"] = \"600\"\n\n    # Do not inject a fault\
+          \ unless the selected model can answer requests.\n    subprocess.run(\n\
+          \        [sys.executable, \"/app/scripts/preflight_agent_apis.py\", \"--agents\"\
+          , agent, \"--require-all\"],\n        check=True, cwd=\"/app\", timeout=150,\n\
+          \    )\n\n    cmd = [\n        sys.executable, \"-u\", \"/app/code/harness/run_harness.py\"\
+          ,\n        \"--scenario\", \"a\",\n        \"--flag\", fault,\n        \"\
+          --variant\", \"cart\",\n        \"--context-c\", \"0\",\n        \"--agents\"\
+          , agent,\n        \"--no-judge\",\n        \"--detection-timeout\", \"600\"\
+          ,\n        \"--fault-duration\", \"120\",\n        \"--output\", \"/tmp/result.json\"\
           ,\n    ]\n    proc = subprocess.run(cmd, capture_output=True, text=True,\
           \ timeout=900, cwd=\"/app\")\n    print(proc.stdout[-5000:])\n    if proc.returncode\
-          \ != 0:\n        print(proc.stderr[-3000:], file=sys.stderr)\n    try:\n\
-          \        with open(\"/tmp/result.json\") as f:\n            return json.load(f)\n\
-          \    except FileNotFoundError:\n        return {\"error\": \"no output\"\
-          , \"detected\": False, \"mttd_seconds\": None,\n                \"approach\"\
-          : agent, \"fault_flag\": fault}\n\n"
+          \ != 0:\n        print(proc.stderr[-3000:], file=sys.stderr)\n        raise\
+          \ RuntimeError(f\"Harness failed with exit code {proc.returncode}\")\n \
+          \   if \"[harness] MLflow log error:\" in proc.stdout or \"[harness] MLflow\
+          \ start_run error:\" in proc.stdout:\n        raise RuntimeError(\"Harness\
+          \ did not log to MLflow; see the step log\")\n    with open(\"/tmp/result.json\"\
+          ) as f:\n        result = json.load(f)\n    if result.get(\"approach\")\
+          \ != agent or result.get(\"fault_flag\") != fault:\n        raise RuntimeError(\"\
+          Harness returned a result for the wrong cell\")\n\n    from mlflow.tracking\
+          \ import MlflowClient\n    experiment = mlflow.get_experiment_by_name(\"\
+          agentic_aiops_mttd_mttr\")\n    expected_name = f\"{result['run_id']}_{agent}_scenarioa_{fault}_cart\"\
+          \n    runs = MlflowClient().search_runs(\n        [experiment.experiment_id],\
+          \ filter_string=f\"attributes.run_name = '{expected_name}'\",\n        order_by=[\"\
+          start_time DESC\"], max_results=1,\n    )\n    if not runs or \"detected\"\
+          \ not in runs[0].data.metrics:\n        raise RuntimeError(\"Harness metrics\
+          \ were not found in RHOAI MLflow\")\n    if runs[0].data.tags.get(\"aiops.prompt_registry_status\"\
+          ) != \"ok\":\n        raise RuntimeError(\"Agent prompts were not registered\
+          \ in RHOAI MLflow; see the agent trace artifacts\")\n    if not any(item.path\
+          \ == \"harness_run.json\" for item in MlflowClient().list_artifacts(runs[0].info.run_id)):\n\
+          \        raise RuntimeError(\"Harness result artifact was not found in RHOAI\
+          \ MLflow\")\n\n    # Large agent transcripts in KFP parameters broke report\
+          \ deserialization.\n    # The full result and transcript remain in the MLflow\
+          \ run artifacts.\n    keys = (\"run_id\", \"approach\", \"fault_flag\",\
+          \ \"detected\", \"mttd_seconds\",\n            \"rca_correct\", \"remediation_executed\"\
+          )\n    compact = {key: result.get(key) for key in keys}\n    compact[\"\
+          agent_error\"] = bool(result.get(\"agent_error\"))\n    return compact\n\
+          \n"
         image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
     exec-harness-cell-2:
       container:
@@ -256,22 +460,58 @@ deploymentSpec:
           , ns)\n    for key, value in (secret.data or {}).items():\n        os.environ[key]\
           \ = base64.b64decode(value).decode()\n\n    # Configure harness connections\n\
           \    os.environ[\"CLICKHOUSE_HTTP\"] = \"http://clickhouse.agentic-aiops-harness.svc.cluster.local:8123\"\
-          \n    os.environ[\"MLFLOW_TRACKING_URI\"] = \"http://mlflow.agentic-aiops-harness.svc.cluster.local:5000\"\
-          \n    os.environ[\"K8S_FAULT_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"\
+          \n    import certifi\n    import mlflow\n    import tempfile\n\n    sa_path\
+          \ = \"/var/run/secrets/kubernetes.io/serviceaccount\"\n    os.environ[\"\
+          MLFLOW_TRACKING_URI\"] = \"https://mlflow.redhat-ods-applications.svc:8443/mlflow\"\
+          \n    os.environ[\"MLFLOW_WORKSPACE\"] = ns\n    with open(f\"{sa_path}/token\"\
+          ) as token_file:\n        os.environ[\"MLFLOW_TRACKING_TOKEN\"] = token_file.read().strip()\n\
+          \    # Keep the public CA roots as well as the OpenShift service CA for\
+          \ MaaS.\n    with tempfile.NamedTemporaryFile(mode=\"w\", delete=False)\
+          \ as bundle:\n        for path in (certifi.where(), f\"{sa_path}/service-ca.crt\"\
+          ):\n            with open(path) as source:\n                bundle.write(source.read()\
+          \ + \"\\n\")\n        os.environ[\"REQUESTS_CA_BUNDLE\"] = bundle.name\n\
+          \    os.environ.pop(\"MLFLOW_TRACKING_INSECURE_TLS\", None)\n    os.environ.pop(\"\
+          MLFLOW_RUN_ID\", None)\n    mlflow.set_tracking_uri(os.environ[\"MLFLOW_TRACKING_URI\"\
+          ])\n    mlflow.set_workspace(ns)\n    mlflow.set_experiment(\"agentic_aiops_mttd_mttr\"\
+          )\n    os.environ[\"K8S_FAULT_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"\
           K8S_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"PYTHONPATH\"] = \"/app\"\
-          \n    os.environ[\"AGENT_TIMEOUT\"] = \"600\"\n\n    cmd = [\n        sys.executable,\
-          \ \"-u\", \"/app/code/harness/run_harness.py\",\n        \"--scenario\"\
-          , \"a\",\n        \"--flag\", fault,\n        \"--variant\", \"cart\",\n\
-          \        \"--context-c\", \"0\",\n        \"--agents\", agent,\n       \
-          \ \"--no-judge\",\n        \"--detection-timeout\", \"600\",\n        \"\
-          --fault-duration\", \"120\",\n        \"--output\", \"/tmp/result.json\"\
+          \n    os.environ[\"AGENT_TIMEOUT\"] = \"600\"\n\n    # Do not inject a fault\
+          \ unless the selected model can answer requests.\n    subprocess.run(\n\
+          \        [sys.executable, \"/app/scripts/preflight_agent_apis.py\", \"--agents\"\
+          , agent, \"--require-all\"],\n        check=True, cwd=\"/app\", timeout=150,\n\
+          \    )\n\n    cmd = [\n        sys.executable, \"-u\", \"/app/code/harness/run_harness.py\"\
+          ,\n        \"--scenario\", \"a\",\n        \"--flag\", fault,\n        \"\
+          --variant\", \"cart\",\n        \"--context-c\", \"0\",\n        \"--agents\"\
+          , agent,\n        \"--no-judge\",\n        \"--detection-timeout\", \"600\"\
+          ,\n        \"--fault-duration\", \"120\",\n        \"--output\", \"/tmp/result.json\"\
           ,\n    ]\n    proc = subprocess.run(cmd, capture_output=True, text=True,\
           \ timeout=900, cwd=\"/app\")\n    print(proc.stdout[-5000:])\n    if proc.returncode\
-          \ != 0:\n        print(proc.stderr[-3000:], file=sys.stderr)\n    try:\n\
-          \        with open(\"/tmp/result.json\") as f:\n            return json.load(f)\n\
-          \    except FileNotFoundError:\n        return {\"error\": \"no output\"\
-          , \"detected\": False, \"mttd_seconds\": None,\n                \"approach\"\
-          : agent, \"fault_flag\": fault}\n\n"
+          \ != 0:\n        print(proc.stderr[-3000:], file=sys.stderr)\n        raise\
+          \ RuntimeError(f\"Harness failed with exit code {proc.returncode}\")\n \
+          \   if \"[harness] MLflow log error:\" in proc.stdout or \"[harness] MLflow\
+          \ start_run error:\" in proc.stdout:\n        raise RuntimeError(\"Harness\
+          \ did not log to MLflow; see the step log\")\n    with open(\"/tmp/result.json\"\
+          ) as f:\n        result = json.load(f)\n    if result.get(\"approach\")\
+          \ != agent or result.get(\"fault_flag\") != fault:\n        raise RuntimeError(\"\
+          Harness returned a result for the wrong cell\")\n\n    from mlflow.tracking\
+          \ import MlflowClient\n    experiment = mlflow.get_experiment_by_name(\"\
+          agentic_aiops_mttd_mttr\")\n    expected_name = f\"{result['run_id']}_{agent}_scenarioa_{fault}_cart\"\
+          \n    runs = MlflowClient().search_runs(\n        [experiment.experiment_id],\
+          \ filter_string=f\"attributes.run_name = '{expected_name}'\",\n        order_by=[\"\
+          start_time DESC\"], max_results=1,\n    )\n    if not runs or \"detected\"\
+          \ not in runs[0].data.metrics:\n        raise RuntimeError(\"Harness metrics\
+          \ were not found in RHOAI MLflow\")\n    if runs[0].data.tags.get(\"aiops.prompt_registry_status\"\
+          ) != \"ok\":\n        raise RuntimeError(\"Agent prompts were not registered\
+          \ in RHOAI MLflow; see the agent trace artifacts\")\n    if not any(item.path\
+          \ == \"harness_run.json\" for item in MlflowClient().list_artifacts(runs[0].info.run_id)):\n\
+          \        raise RuntimeError(\"Harness result artifact was not found in RHOAI\
+          \ MLflow\")\n\n    # Large agent transcripts in KFP parameters broke report\
+          \ deserialization.\n    # The full result and transcript remain in the MLflow\
+          \ run artifacts.\n    keys = (\"run_id\", \"approach\", \"fault_flag\",\
+          \ \"detected\", \"mttd_seconds\",\n            \"rca_correct\", \"remediation_executed\"\
+          )\n    compact = {key: result.get(key) for key in keys}\n    compact[\"\
+          agent_error\"] = bool(result.get(\"agent_error\"))\n    return compact\n\
+          \n"
         image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
     exec-harness-cell-3:
       container:
@@ -309,22 +549,58 @@ deploymentSpec:
           , ns)\n    for key, value in (secret.data or {}).items():\n        os.environ[key]\
           \ = base64.b64decode(value).decode()\n\n    # Configure harness connections\n\
           \    os.environ[\"CLICKHOUSE_HTTP\"] = \"http://clickhouse.agentic-aiops-harness.svc.cluster.local:8123\"\
-          \n    os.environ[\"MLFLOW_TRACKING_URI\"] = \"http://mlflow.agentic-aiops-harness.svc.cluster.local:5000\"\
-          \n    os.environ[\"K8S_FAULT_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"\
+          \n    import certifi\n    import mlflow\n    import tempfile\n\n    sa_path\
+          \ = \"/var/run/secrets/kubernetes.io/serviceaccount\"\n    os.environ[\"\
+          MLFLOW_TRACKING_URI\"] = \"https://mlflow.redhat-ods-applications.svc:8443/mlflow\"\
+          \n    os.environ[\"MLFLOW_WORKSPACE\"] = ns\n    with open(f\"{sa_path}/token\"\
+          ) as token_file:\n        os.environ[\"MLFLOW_TRACKING_TOKEN\"] = token_file.read().strip()\n\
+          \    # Keep the public CA roots as well as the OpenShift service CA for\
+          \ MaaS.\n    with tempfile.NamedTemporaryFile(mode=\"w\", delete=False)\
+          \ as bundle:\n        for path in (certifi.where(), f\"{sa_path}/service-ca.crt\"\
+          ):\n            with open(path) as source:\n                bundle.write(source.read()\
+          \ + \"\\n\")\n        os.environ[\"REQUESTS_CA_BUNDLE\"] = bundle.name\n\
+          \    os.environ.pop(\"MLFLOW_TRACKING_INSECURE_TLS\", None)\n    os.environ.pop(\"\
+          MLFLOW_RUN_ID\", None)\n    mlflow.set_tracking_uri(os.environ[\"MLFLOW_TRACKING_URI\"\
+          ])\n    mlflow.set_workspace(ns)\n    mlflow.set_experiment(\"agentic_aiops_mttd_mttr\"\
+          )\n    os.environ[\"K8S_FAULT_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"\
           K8S_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"PYTHONPATH\"] = \"/app\"\
-          \n    os.environ[\"AGENT_TIMEOUT\"] = \"600\"\n\n    cmd = [\n        sys.executable,\
-          \ \"-u\", \"/app/code/harness/run_harness.py\",\n        \"--scenario\"\
-          , \"a\",\n        \"--flag\", fault,\n        \"--variant\", \"cart\",\n\
-          \        \"--context-c\", \"0\",\n        \"--agents\", agent,\n       \
-          \ \"--no-judge\",\n        \"--detection-timeout\", \"600\",\n        \"\
-          --fault-duration\", \"120\",\n        \"--output\", \"/tmp/result.json\"\
+          \n    os.environ[\"AGENT_TIMEOUT\"] = \"600\"\n\n    # Do not inject a fault\
+          \ unless the selected model can answer requests.\n    subprocess.run(\n\
+          \        [sys.executable, \"/app/scripts/preflight_agent_apis.py\", \"--agents\"\
+          , agent, \"--require-all\"],\n        check=True, cwd=\"/app\", timeout=150,\n\
+          \    )\n\n    cmd = [\n        sys.executable, \"-u\", \"/app/code/harness/run_harness.py\"\
+          ,\n        \"--scenario\", \"a\",\n        \"--flag\", fault,\n        \"\
+          --variant\", \"cart\",\n        \"--context-c\", \"0\",\n        \"--agents\"\
+          , agent,\n        \"--no-judge\",\n        \"--detection-timeout\", \"600\"\
+          ,\n        \"--fault-duration\", \"120\",\n        \"--output\", \"/tmp/result.json\"\
           ,\n    ]\n    proc = subprocess.run(cmd, capture_output=True, text=True,\
           \ timeout=900, cwd=\"/app\")\n    print(proc.stdout[-5000:])\n    if proc.returncode\
-          \ != 0:\n        print(proc.stderr[-3000:], file=sys.stderr)\n    try:\n\
-          \        with open(\"/tmp/result.json\") as f:\n            return json.load(f)\n\
-          \    except FileNotFoundError:\n        return {\"error\": \"no output\"\
-          , \"detected\": False, \"mttd_seconds\": None,\n                \"approach\"\
-          : agent, \"fault_flag\": fault}\n\n"
+          \ != 0:\n        print(proc.stderr[-3000:], file=sys.stderr)\n        raise\
+          \ RuntimeError(f\"Harness failed with exit code {proc.returncode}\")\n \
+          \   if \"[harness] MLflow log error:\" in proc.stdout or \"[harness] MLflow\
+          \ start_run error:\" in proc.stdout:\n        raise RuntimeError(\"Harness\
+          \ did not log to MLflow; see the step log\")\n    with open(\"/tmp/result.json\"\
+          ) as f:\n        result = json.load(f)\n    if result.get(\"approach\")\
+          \ != agent or result.get(\"fault_flag\") != fault:\n        raise RuntimeError(\"\
+          Harness returned a result for the wrong cell\")\n\n    from mlflow.tracking\
+          \ import MlflowClient\n    experiment = mlflow.get_experiment_by_name(\"\
+          agentic_aiops_mttd_mttr\")\n    expected_name = f\"{result['run_id']}_{agent}_scenarioa_{fault}_cart\"\
+          \n    runs = MlflowClient().search_runs(\n        [experiment.experiment_id],\
+          \ filter_string=f\"attributes.run_name = '{expected_name}'\",\n        order_by=[\"\
+          start_time DESC\"], max_results=1,\n    )\n    if not runs or \"detected\"\
+          \ not in runs[0].data.metrics:\n        raise RuntimeError(\"Harness metrics\
+          \ were not found in RHOAI MLflow\")\n    if runs[0].data.tags.get(\"aiops.prompt_registry_status\"\
+          ) != \"ok\":\n        raise RuntimeError(\"Agent prompts were not registered\
+          \ in RHOAI MLflow; see the agent trace artifacts\")\n    if not any(item.path\
+          \ == \"harness_run.json\" for item in MlflowClient().list_artifacts(runs[0].info.run_id)):\n\
+          \        raise RuntimeError(\"Harness result artifact was not found in RHOAI\
+          \ MLflow\")\n\n    # Large agent transcripts in KFP parameters broke report\
+          \ deserialization.\n    # The full result and transcript remain in the MLflow\
+          \ run artifacts.\n    keys = (\"run_id\", \"approach\", \"fault_flag\",\
+          \ \"detected\", \"mttd_seconds\",\n            \"rca_correct\", \"remediation_executed\"\
+          )\n    compact = {key: result.get(key) for key in keys}\n    compact[\"\
+          agent_error\"] = bool(result.get(\"agent_error\"))\n    return compact\n\
+          \n"
         image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
     exec-harness-cell-4:
       container:
@@ -362,22 +638,110 @@ deploymentSpec:
           , ns)\n    for key, value in (secret.data or {}).items():\n        os.environ[key]\
           \ = base64.b64decode(value).decode()\n\n    # Configure harness connections\n\
           \    os.environ[\"CLICKHOUSE_HTTP\"] = \"http://clickhouse.agentic-aiops-harness.svc.cluster.local:8123\"\
-          \n    os.environ[\"MLFLOW_TRACKING_URI\"] = \"http://mlflow.agentic-aiops-harness.svc.cluster.local:5000\"\
-          \n    os.environ[\"K8S_FAULT_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"\
+          \n    import certifi\n    import mlflow\n    import tempfile\n\n    sa_path\
+          \ = \"/var/run/secrets/kubernetes.io/serviceaccount\"\n    os.environ[\"\
+          MLFLOW_TRACKING_URI\"] = \"https://mlflow.redhat-ods-applications.svc:8443/mlflow\"\
+          \n    os.environ[\"MLFLOW_WORKSPACE\"] = ns\n    with open(f\"{sa_path}/token\"\
+          ) as token_file:\n        os.environ[\"MLFLOW_TRACKING_TOKEN\"] = token_file.read().strip()\n\
+          \    # Keep the public CA roots as well as the OpenShift service CA for\
+          \ MaaS.\n    with tempfile.NamedTemporaryFile(mode=\"w\", delete=False)\
+          \ as bundle:\n        for path in (certifi.where(), f\"{sa_path}/service-ca.crt\"\
+          ):\n            with open(path) as source:\n                bundle.write(source.read()\
+          \ + \"\\n\")\n        os.environ[\"REQUESTS_CA_BUNDLE\"] = bundle.name\n\
+          \    os.environ.pop(\"MLFLOW_TRACKING_INSECURE_TLS\", None)\n    os.environ.pop(\"\
+          MLFLOW_RUN_ID\", None)\n    mlflow.set_tracking_uri(os.environ[\"MLFLOW_TRACKING_URI\"\
+          ])\n    mlflow.set_workspace(ns)\n    mlflow.set_experiment(\"agentic_aiops_mttd_mttr\"\
+          )\n    os.environ[\"K8S_FAULT_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"\
           K8S_NAMESPACE\"] = \"otel-demo\"\n    os.environ[\"PYTHONPATH\"] = \"/app\"\
-          \n    os.environ[\"AGENT_TIMEOUT\"] = \"600\"\n\n    cmd = [\n        sys.executable,\
-          \ \"-u\", \"/app/code/harness/run_harness.py\",\n        \"--scenario\"\
-          , \"a\",\n        \"--flag\", fault,\n        \"--variant\", \"cart\",\n\
-          \        \"--context-c\", \"0\",\n        \"--agents\", agent,\n       \
-          \ \"--no-judge\",\n        \"--detection-timeout\", \"600\",\n        \"\
-          --fault-duration\", \"120\",\n        \"--output\", \"/tmp/result.json\"\
+          \n    os.environ[\"AGENT_TIMEOUT\"] = \"600\"\n\n    # Do not inject a fault\
+          \ unless the selected model can answer requests.\n    subprocess.run(\n\
+          \        [sys.executable, \"/app/scripts/preflight_agent_apis.py\", \"--agents\"\
+          , agent, \"--require-all\"],\n        check=True, cwd=\"/app\", timeout=150,\n\
+          \    )\n\n    cmd = [\n        sys.executable, \"-u\", \"/app/code/harness/run_harness.py\"\
+          ,\n        \"--scenario\", \"a\",\n        \"--flag\", fault,\n        \"\
+          --variant\", \"cart\",\n        \"--context-c\", \"0\",\n        \"--agents\"\
+          , agent,\n        \"--no-judge\",\n        \"--detection-timeout\", \"600\"\
+          ,\n        \"--fault-duration\", \"120\",\n        \"--output\", \"/tmp/result.json\"\
           ,\n    ]\n    proc = subprocess.run(cmd, capture_output=True, text=True,\
           \ timeout=900, cwd=\"/app\")\n    print(proc.stdout[-5000:])\n    if proc.returncode\
-          \ != 0:\n        print(proc.stderr[-3000:], file=sys.stderr)\n    try:\n\
-          \        with open(\"/tmp/result.json\") as f:\n            return json.load(f)\n\
-          \    except FileNotFoundError:\n        return {\"error\": \"no output\"\
-          , \"detected\": False, \"mttd_seconds\": None,\n                \"approach\"\
-          : agent, \"fault_flag\": fault}\n\n"
+          \ != 0:\n        print(proc.stderr[-3000:], file=sys.stderr)\n        raise\
+          \ RuntimeError(f\"Harness failed with exit code {proc.returncode}\")\n \
+          \   if \"[harness] MLflow log error:\" in proc.stdout or \"[harness] MLflow\
+          \ start_run error:\" in proc.stdout:\n        raise RuntimeError(\"Harness\
+          \ did not log to MLflow; see the step log\")\n    with open(\"/tmp/result.json\"\
+          ) as f:\n        result = json.load(f)\n    if result.get(\"approach\")\
+          \ != agent or result.get(\"fault_flag\") != fault:\n        raise RuntimeError(\"\
+          Harness returned a result for the wrong cell\")\n\n    from mlflow.tracking\
+          \ import MlflowClient\n    experiment = mlflow.get_experiment_by_name(\"\
+          agentic_aiops_mttd_mttr\")\n    expected_name = f\"{result['run_id']}_{agent}_scenarioa_{fault}_cart\"\
+          \n    runs = MlflowClient().search_runs(\n        [experiment.experiment_id],\
+          \ filter_string=f\"attributes.run_name = '{expected_name}'\",\n        order_by=[\"\
+          start_time DESC\"], max_results=1,\n    )\n    if not runs or \"detected\"\
+          \ not in runs[0].data.metrics:\n        raise RuntimeError(\"Harness metrics\
+          \ were not found in RHOAI MLflow\")\n    if runs[0].data.tags.get(\"aiops.prompt_registry_status\"\
+          ) != \"ok\":\n        raise RuntimeError(\"Agent prompts were not registered\
+          \ in RHOAI MLflow; see the agent trace artifacts\")\n    if not any(item.path\
+          \ == \"harness_run.json\" for item in MlflowClient().list_artifacts(runs[0].info.run_id)):\n\
+          \        raise RuntimeError(\"Harness result artifact was not found in RHOAI\
+          \ MLflow\")\n\n    # Large agent transcripts in KFP parameters broke report\
+          \ deserialization.\n    # The full result and transcript remain in the MLflow\
+          \ run artifacts.\n    keys = (\"run_id\", \"approach\", \"fault_flag\",\
+          \ \"detected\", \"mttd_seconds\",\n            \"rca_correct\", \"remediation_executed\"\
+          )\n    compact = {key: result.get(key) for key in keys}\n    compact[\"\
+          agent_error\"] = bool(result.get(\"agent_error\"))\n    return compact\n\
+          \n"
+        image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
+    exec-preflight-models:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - preflight_models
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef preflight_models():\n    \"\"\"Require a real response from both\
+          \ models before any fault is injected.\"\"\"\n    import base64\n    import\
+          \ json\n    import urllib.request\n\n    from kubernetes import client,\
+          \ config\n\n    config.load_incluster_config()\n    with open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
+          ) as f:\n        namespace = f.read().strip()\n    secret = client.CoreV1Api().read_namespaced_secret(\"\
+          aiops-model-credentials\", namespace)\n    env = {k: base64.b64decode(v).decode()\
+          \ for k, v in (secret.data or {}).items()}\n    endpoints = [\n        (\"\
+          DEEPSEEK\", \"deepseek-r1-distill-qwen-14b\", 1024),\n        (\"GRANITE\"\
+          , \"granite-3-2-8b-instruct\", 64),\n    ]\n    for name, default_model,\
+          \ max_tokens in endpoints:\n        base, key = env.get(f\"{name}_API_BASE\"\
+          ), env.get(f\"{name}_API_KEY\")\n        if not base or not key:\n     \
+          \       raise RuntimeError(f\"Missing endpoint or credentials for {name}\"\
+          )\n        payload = json.dumps({\n            \"model\": env.get(f\"{name}_MODEL\"\
+          ) or default_model,\n            \"messages\": [{\"role\": \"user\", \"\
+          content\": \"Reply with exactly: pong\"}],\n            \"max_tokens\":\
+          \ max_tokens,\n            \"temperature\": 0,\n        }).encode()\n  \
+          \      req = urllib.request.Request(\n            base.rstrip(\"/\") + \"\
+          /chat/completions\", data=payload,\n            headers={\"Authorization\"\
+          : f\"Bearer {key}\", \"Content-Type\": \"application/json\"},\n        )\n\
+          \        with urllib.request.urlopen(req, timeout=120) as response:\n  \
+          \          choices = json.load(response).get(\"choices\") or []\n      \
+          \  message = choices[0].get(\"message\", {}) if choices else {}\n      \
+          \  if not str(message.get(\"content\") or \"\").strip() and not message.get(\"\
+          tool_calls\"):\n            raise RuntimeError(f\"{name} returned an empty\
+          \ completion\")\n        print(f\"Model preflight passed: {name}\")\n\n"
         image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
     exec-reset-environment:
       container:
@@ -414,28 +778,32 @@ deploymentSpec:
           \    core = client.CoreV1Api()\n    net = client.NetworkingV1Api()\n\n \
           \   namespace = \"otel-demo\"\n    targets = [\"cart\", \"checkout\", \"\
           valkey-cart\", \"load-generator\",\n               \"product-catalog\",\
-          \ \"payment\", \"email\", \"frontend\"]\n    issues = []\n\n    # Scale\
-          \ all deployments back to at least 1 replica\n    for dep_name in targets:\n\
-          \        try:\n            dep = apps.read_namespaced_deployment(dep_name,\
-          \ namespace)\n            if (dep.spec.replicas or 0) < 1:\n           \
-          \     apps.patch_namespaced_deployment(dep_name, namespace, {\"spec\": {\"\
-          replicas\": 1}})\n                print(f\"  scaled {dep_name} back to 1\"\
-          )\n        except Exception as e:\n            issues.append(f\"{dep_name}:\
-          \ {e}\")\n\n    # Remove leftover harness network policies\n    try:\n \
-          \       policies = net.list_namespaced_network_policy(namespace)\n     \
-          \   for pol in policies.items:\n            if pol.metadata.name.startswith(\"\
-          harness-block-\"):\n                net.delete_namespaced_network_policy(pol.metadata.name,\
+          \ \"payment\", \"email\", \"frontend\"]\n    issues = []\n\n    # Only restore\
+          \ the deployment that this pipeline injects faults into.\n    for dep_name\
+          \ in targets:\n        try:\n            dep = apps.read_namespaced_deployment(dep_name,\
+          \ namespace)\n            if dep_name == \"cart\" and (dep.spec.replicas\
+          \ or 0) < 1:\n                apps.patch_namespaced_deployment(dep_name,\
+          \ namespace, {\"spec\": {\"replicas\": 1}})\n                print(f\" \
+          \ scaled {dep_name} back to 1\")\n        except Exception as e:\n     \
+          \       issues.append(f\"{dep_name}: {e}\")\n\n    # Remove leftover harness\
+          \ network policies\n    try:\n        policies = net.list_namespaced_network_policy(namespace)\n\
+          \        for pol in policies.items:\n            if pol.metadata.name ==\
+          \ \"harness-block-cart\":\n                net.delete_namespaced_network_policy(pol.metadata.name,\
           \ namespace)\n                print(f\"  deleted network policy {pol.metadata.name}\"\
-          )\n    except Exception:\n        pass\n\n    # Wait for pods to become\
-          \ Ready\n    deadline = time.time() + 120\n    while time.time() < deadline:\n\
-          \        all_ready = True\n        for dep_name in [\"cart\", \"checkout\"\
-          ]:\n            try:\n                dep = apps.read_namespaced_deployment(dep_name,\
-          \ namespace)\n                ready = dep.status.ready_replicas or 0\n \
-          \               if ready < 1:\n                    all_ready = False\n \
-          \           except Exception:\n                all_ready = False\n     \
-          \   if all_ready:\n            break\n        time.sleep(5)\n\n    status\
-          \ = \"clean\" if not issues else f\"warnings: {'; '.join(issues)}\"\n  \
-          \  print(f\"[reset] environment ready ({status})\")\n    return status\n\
+          )\n    except Exception as e:\n        issues.append(f\"network policies:\
+          \ {e}\")\n\n    # Wait for pods to become Ready\n    deadline = time.time()\
+          \ + 120\n    while time.time() < deadline:\n        all_ready = True\n \
+          \       for dep_name in targets:\n            try:\n                dep\
+          \ = apps.read_namespaced_deployment(dep_name, namespace)\n             \
+          \   ready = dep.status.ready_replicas or 0\n                if ready < max(1,\
+          \ dep.spec.replicas or 0) or (dep.status.available_replicas or 0) < max(1,\
+          \ dep.spec.replicas or 0):\n                    all_ready = False\n    \
+          \        except Exception:\n                all_ready = False\n        if\
+          \ all_ready:\n            break\n        time.sleep(5)\n    else:\n    \
+          \    raise RuntimeError(\"OTEL Demo did not return to a ready baseline\"\
+          )\n\n    if issues:\n        raise RuntimeError(f\"Reset failed: {'; '.join(issues)}\"\
+          )\n\n    status = \"clean\" if not issues else f\"warnings: {'; '.join(issues)}\"\
+          \n    print(f\"[reset] environment ready ({status})\")\n    return status\n\
           \n"
         image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
     exec-reset-environment-2:
@@ -473,28 +841,32 @@ deploymentSpec:
           \    core = client.CoreV1Api()\n    net = client.NetworkingV1Api()\n\n \
           \   namespace = \"otel-demo\"\n    targets = [\"cart\", \"checkout\", \"\
           valkey-cart\", \"load-generator\",\n               \"product-catalog\",\
-          \ \"payment\", \"email\", \"frontend\"]\n    issues = []\n\n    # Scale\
-          \ all deployments back to at least 1 replica\n    for dep_name in targets:\n\
-          \        try:\n            dep = apps.read_namespaced_deployment(dep_name,\
-          \ namespace)\n            if (dep.spec.replicas or 0) < 1:\n           \
-          \     apps.patch_namespaced_deployment(dep_name, namespace, {\"spec\": {\"\
-          replicas\": 1}})\n                print(f\"  scaled {dep_name} back to 1\"\
-          )\n        except Exception as e:\n            issues.append(f\"{dep_name}:\
-          \ {e}\")\n\n    # Remove leftover harness network policies\n    try:\n \
-          \       policies = net.list_namespaced_network_policy(namespace)\n     \
-          \   for pol in policies.items:\n            if pol.metadata.name.startswith(\"\
-          harness-block-\"):\n                net.delete_namespaced_network_policy(pol.metadata.name,\
+          \ \"payment\", \"email\", \"frontend\"]\n    issues = []\n\n    # Only restore\
+          \ the deployment that this pipeline injects faults into.\n    for dep_name\
+          \ in targets:\n        try:\n            dep = apps.read_namespaced_deployment(dep_name,\
+          \ namespace)\n            if dep_name == \"cart\" and (dep.spec.replicas\
+          \ or 0) < 1:\n                apps.patch_namespaced_deployment(dep_name,\
+          \ namespace, {\"spec\": {\"replicas\": 1}})\n                print(f\" \
+          \ scaled {dep_name} back to 1\")\n        except Exception as e:\n     \
+          \       issues.append(f\"{dep_name}: {e}\")\n\n    # Remove leftover harness\
+          \ network policies\n    try:\n        policies = net.list_namespaced_network_policy(namespace)\n\
+          \        for pol in policies.items:\n            if pol.metadata.name ==\
+          \ \"harness-block-cart\":\n                net.delete_namespaced_network_policy(pol.metadata.name,\
           \ namespace)\n                print(f\"  deleted network policy {pol.metadata.name}\"\
-          )\n    except Exception:\n        pass\n\n    # Wait for pods to become\
-          \ Ready\n    deadline = time.time() + 120\n    while time.time() < deadline:\n\
-          \        all_ready = True\n        for dep_name in [\"cart\", \"checkout\"\
-          ]:\n            try:\n                dep = apps.read_namespaced_deployment(dep_name,\
-          \ namespace)\n                ready = dep.status.ready_replicas or 0\n \
-          \               if ready < 1:\n                    all_ready = False\n \
-          \           except Exception:\n                all_ready = False\n     \
-          \   if all_ready:\n            break\n        time.sleep(5)\n\n    status\
-          \ = \"clean\" if not issues else f\"warnings: {'; '.join(issues)}\"\n  \
-          \  print(f\"[reset] environment ready ({status})\")\n    return status\n\
+          )\n    except Exception as e:\n        issues.append(f\"network policies:\
+          \ {e}\")\n\n    # Wait for pods to become Ready\n    deadline = time.time()\
+          \ + 120\n    while time.time() < deadline:\n        all_ready = True\n \
+          \       for dep_name in targets:\n            try:\n                dep\
+          \ = apps.read_namespaced_deployment(dep_name, namespace)\n             \
+          \   ready = dep.status.ready_replicas or 0\n                if ready < max(1,\
+          \ dep.spec.replicas or 0) or (dep.status.available_replicas or 0) < max(1,\
+          \ dep.spec.replicas or 0):\n                    all_ready = False\n    \
+          \        except Exception:\n                all_ready = False\n        if\
+          \ all_ready:\n            break\n        time.sleep(5)\n    else:\n    \
+          \    raise RuntimeError(\"OTEL Demo did not return to a ready baseline\"\
+          )\n\n    if issues:\n        raise RuntimeError(f\"Reset failed: {'; '.join(issues)}\"\
+          )\n\n    status = \"clean\" if not issues else f\"warnings: {'; '.join(issues)}\"\
+          \n    print(f\"[reset] environment ready ({status})\")\n    return status\n\
           \n"
         image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
     exec-reset-environment-3:
@@ -532,28 +904,32 @@ deploymentSpec:
           \    core = client.CoreV1Api()\n    net = client.NetworkingV1Api()\n\n \
           \   namespace = \"otel-demo\"\n    targets = [\"cart\", \"checkout\", \"\
           valkey-cart\", \"load-generator\",\n               \"product-catalog\",\
-          \ \"payment\", \"email\", \"frontend\"]\n    issues = []\n\n    # Scale\
-          \ all deployments back to at least 1 replica\n    for dep_name in targets:\n\
-          \        try:\n            dep = apps.read_namespaced_deployment(dep_name,\
-          \ namespace)\n            if (dep.spec.replicas or 0) < 1:\n           \
-          \     apps.patch_namespaced_deployment(dep_name, namespace, {\"spec\": {\"\
-          replicas\": 1}})\n                print(f\"  scaled {dep_name} back to 1\"\
-          )\n        except Exception as e:\n            issues.append(f\"{dep_name}:\
-          \ {e}\")\n\n    # Remove leftover harness network policies\n    try:\n \
-          \       policies = net.list_namespaced_network_policy(namespace)\n     \
-          \   for pol in policies.items:\n            if pol.metadata.name.startswith(\"\
-          harness-block-\"):\n                net.delete_namespaced_network_policy(pol.metadata.name,\
+          \ \"payment\", \"email\", \"frontend\"]\n    issues = []\n\n    # Only restore\
+          \ the deployment that this pipeline injects faults into.\n    for dep_name\
+          \ in targets:\n        try:\n            dep = apps.read_namespaced_deployment(dep_name,\
+          \ namespace)\n            if dep_name == \"cart\" and (dep.spec.replicas\
+          \ or 0) < 1:\n                apps.patch_namespaced_deployment(dep_name,\
+          \ namespace, {\"spec\": {\"replicas\": 1}})\n                print(f\" \
+          \ scaled {dep_name} back to 1\")\n        except Exception as e:\n     \
+          \       issues.append(f\"{dep_name}: {e}\")\n\n    # Remove leftover harness\
+          \ network policies\n    try:\n        policies = net.list_namespaced_network_policy(namespace)\n\
+          \        for pol in policies.items:\n            if pol.metadata.name ==\
+          \ \"harness-block-cart\":\n                net.delete_namespaced_network_policy(pol.metadata.name,\
           \ namespace)\n                print(f\"  deleted network policy {pol.metadata.name}\"\
-          )\n    except Exception:\n        pass\n\n    # Wait for pods to become\
-          \ Ready\n    deadline = time.time() + 120\n    while time.time() < deadline:\n\
-          \        all_ready = True\n        for dep_name in [\"cart\", \"checkout\"\
-          ]:\n            try:\n                dep = apps.read_namespaced_deployment(dep_name,\
-          \ namespace)\n                ready = dep.status.ready_replicas or 0\n \
-          \               if ready < 1:\n                    all_ready = False\n \
-          \           except Exception:\n                all_ready = False\n     \
-          \   if all_ready:\n            break\n        time.sleep(5)\n\n    status\
-          \ = \"clean\" if not issues else f\"warnings: {'; '.join(issues)}\"\n  \
-          \  print(f\"[reset] environment ready ({status})\")\n    return status\n\
+          )\n    except Exception as e:\n        issues.append(f\"network policies:\
+          \ {e}\")\n\n    # Wait for pods to become Ready\n    deadline = time.time()\
+          \ + 120\n    while time.time() < deadline:\n        all_ready = True\n \
+          \       for dep_name in targets:\n            try:\n                dep\
+          \ = apps.read_namespaced_deployment(dep_name, namespace)\n             \
+          \   ready = dep.status.ready_replicas or 0\n                if ready < max(1,\
+          \ dep.spec.replicas or 0) or (dep.status.available_replicas or 0) < max(1,\
+          \ dep.spec.replicas or 0):\n                    all_ready = False\n    \
+          \        except Exception:\n                all_ready = False\n        if\
+          \ all_ready:\n            break\n        time.sleep(5)\n    else:\n    \
+          \    raise RuntimeError(\"OTEL Demo did not return to a ready baseline\"\
+          )\n\n    if issues:\n        raise RuntimeError(f\"Reset failed: {'; '.join(issues)}\"\
+          )\n\n    status = \"clean\" if not issues else f\"warnings: {'; '.join(issues)}\"\
+          \n    print(f\"[reset] environment ready ({status})\")\n    return status\n\
           \n"
         image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
     exec-reset-environment-4:
@@ -591,28 +967,95 @@ deploymentSpec:
           \    core = client.CoreV1Api()\n    net = client.NetworkingV1Api()\n\n \
           \   namespace = \"otel-demo\"\n    targets = [\"cart\", \"checkout\", \"\
           valkey-cart\", \"load-generator\",\n               \"product-catalog\",\
-          \ \"payment\", \"email\", \"frontend\"]\n    issues = []\n\n    # Scale\
-          \ all deployments back to at least 1 replica\n    for dep_name in targets:\n\
-          \        try:\n            dep = apps.read_namespaced_deployment(dep_name,\
-          \ namespace)\n            if (dep.spec.replicas or 0) < 1:\n           \
-          \     apps.patch_namespaced_deployment(dep_name, namespace, {\"spec\": {\"\
-          replicas\": 1}})\n                print(f\"  scaled {dep_name} back to 1\"\
-          )\n        except Exception as e:\n            issues.append(f\"{dep_name}:\
-          \ {e}\")\n\n    # Remove leftover harness network policies\n    try:\n \
-          \       policies = net.list_namespaced_network_policy(namespace)\n     \
-          \   for pol in policies.items:\n            if pol.metadata.name.startswith(\"\
-          harness-block-\"):\n                net.delete_namespaced_network_policy(pol.metadata.name,\
+          \ \"payment\", \"email\", \"frontend\"]\n    issues = []\n\n    # Only restore\
+          \ the deployment that this pipeline injects faults into.\n    for dep_name\
+          \ in targets:\n        try:\n            dep = apps.read_namespaced_deployment(dep_name,\
+          \ namespace)\n            if dep_name == \"cart\" and (dep.spec.replicas\
+          \ or 0) < 1:\n                apps.patch_namespaced_deployment(dep_name,\
+          \ namespace, {\"spec\": {\"replicas\": 1}})\n                print(f\" \
+          \ scaled {dep_name} back to 1\")\n        except Exception as e:\n     \
+          \       issues.append(f\"{dep_name}: {e}\")\n\n    # Remove leftover harness\
+          \ network policies\n    try:\n        policies = net.list_namespaced_network_policy(namespace)\n\
+          \        for pol in policies.items:\n            if pol.metadata.name ==\
+          \ \"harness-block-cart\":\n                net.delete_namespaced_network_policy(pol.metadata.name,\
           \ namespace)\n                print(f\"  deleted network policy {pol.metadata.name}\"\
-          )\n    except Exception:\n        pass\n\n    # Wait for pods to become\
-          \ Ready\n    deadline = time.time() + 120\n    while time.time() < deadline:\n\
-          \        all_ready = True\n        for dep_name in [\"cart\", \"checkout\"\
-          ]:\n            try:\n                dep = apps.read_namespaced_deployment(dep_name,\
-          \ namespace)\n                ready = dep.status.ready_replicas or 0\n \
-          \               if ready < 1:\n                    all_ready = False\n \
-          \           except Exception:\n                all_ready = False\n     \
-          \   if all_ready:\n            break\n        time.sleep(5)\n\n    status\
-          \ = \"clean\" if not issues else f\"warnings: {'; '.join(issues)}\"\n  \
-          \  print(f\"[reset] environment ready ({status})\")\n    return status\n\
+          )\n    except Exception as e:\n        issues.append(f\"network policies:\
+          \ {e}\")\n\n    # Wait for pods to become Ready\n    deadline = time.time()\
+          \ + 120\n    while time.time() < deadline:\n        all_ready = True\n \
+          \       for dep_name in targets:\n            try:\n                dep\
+          \ = apps.read_namespaced_deployment(dep_name, namespace)\n             \
+          \   ready = dep.status.ready_replicas or 0\n                if ready < max(1,\
+          \ dep.spec.replicas or 0) or (dep.status.available_replicas or 0) < max(1,\
+          \ dep.spec.replicas or 0):\n                    all_ready = False\n    \
+          \        except Exception:\n                all_ready = False\n        if\
+          \ all_ready:\n            break\n        time.sleep(5)\n    else:\n    \
+          \    raise RuntimeError(\"OTEL Demo did not return to a ready baseline\"\
+          )\n\n    if issues:\n        raise RuntimeError(f\"Reset failed: {'; '.join(issues)}\"\
+          )\n\n    status = \"clean\" if not issues else f\"warnings: {'; '.join(issues)}\"\
+          \n    print(f\"[reset] environment ready ({status})\")\n    return status\n\
+          \n"
+        image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
+    exec-reset-environment-5:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - reset_environment
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef reset_environment() -> str:\n    \"\"\"Reset the OTEL demo to\
+          \ a clean baseline before the next harness cell.\n\n    Scales all fault-target\
+          \ deployments back to 1 replica, removes any\n    leftover harness artifacts\
+          \ (network policies, env vars), and waits\n    for pods to become Ready.\n\
+          \    \"\"\"\n    import os\n    import time\n\n    from kubernetes import\
+          \ client, config\n\n    config.load_incluster_config()\n    apps = client.AppsV1Api()\n\
+          \    core = client.CoreV1Api()\n    net = client.NetworkingV1Api()\n\n \
+          \   namespace = \"otel-demo\"\n    targets = [\"cart\", \"checkout\", \"\
+          valkey-cart\", \"load-generator\",\n               \"product-catalog\",\
+          \ \"payment\", \"email\", \"frontend\"]\n    issues = []\n\n    # Only restore\
+          \ the deployment that this pipeline injects faults into.\n    for dep_name\
+          \ in targets:\n        try:\n            dep = apps.read_namespaced_deployment(dep_name,\
+          \ namespace)\n            if dep_name == \"cart\" and (dep.spec.replicas\
+          \ or 0) < 1:\n                apps.patch_namespaced_deployment(dep_name,\
+          \ namespace, {\"spec\": {\"replicas\": 1}})\n                print(f\" \
+          \ scaled {dep_name} back to 1\")\n        except Exception as e:\n     \
+          \       issues.append(f\"{dep_name}: {e}\")\n\n    # Remove leftover harness\
+          \ network policies\n    try:\n        policies = net.list_namespaced_network_policy(namespace)\n\
+          \        for pol in policies.items:\n            if pol.metadata.name ==\
+          \ \"harness-block-cart\":\n                net.delete_namespaced_network_policy(pol.metadata.name,\
+          \ namespace)\n                print(f\"  deleted network policy {pol.metadata.name}\"\
+          )\n    except Exception as e:\n        issues.append(f\"network policies:\
+          \ {e}\")\n\n    # Wait for pods to become Ready\n    deadline = time.time()\
+          \ + 120\n    while time.time() < deadline:\n        all_ready = True\n \
+          \       for dep_name in targets:\n            try:\n                dep\
+          \ = apps.read_namespaced_deployment(dep_name, namespace)\n             \
+          \   ready = dep.status.ready_replicas or 0\n                if ready < max(1,\
+          \ dep.spec.replicas or 0) or (dep.status.available_replicas or 0) < max(1,\
+          \ dep.spec.replicas or 0):\n                    all_ready = False\n    \
+          \        except Exception:\n                all_ready = False\n        if\
+          \ all_ready:\n            break\n        time.sleep(5)\n    else:\n    \
+          \    raise RuntimeError(\"OTEL Demo did not return to a ready baseline\"\
+          )\n\n    if issues:\n        raise RuntimeError(f\"Reset failed: {'; '.join(issues)}\"\
+          )\n\n    status = \"clean\" if not issues else f\"warnings: {'; '.join(issues)}\"\
+          \n    print(f\"[reset] environment ready ({status})\")\n    return status\n\
           \n"
         image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
 pipelineInfo:
@@ -622,147 +1065,20 @@ pipelineInfo:
 root:
   dag:
     tasks:
-      generate-report:
-        cachingOptions:
-          enableCache: true
+      exit-handler-1:
         componentRef:
-          name: comp-generate-report
-        dependentTasks:
-        - harness-cell
-        - harness-cell-2
-        - harness-cell-3
-        - harness-cell-4
-        inputs:
-          parameters:
-            pipelinechannel--harness-cell-2-Output:
-              taskOutputParameter:
-                outputParameterKey: Output
-                producerTask: harness-cell-2
-            pipelinechannel--harness-cell-3-Output:
-              taskOutputParameter:
-                outputParameterKey: Output
-                producerTask: harness-cell-3
-            pipelinechannel--harness-cell-4-Output:
-              taskOutputParameter:
-                outputParameterKey: Output
-                producerTask: harness-cell-4
-            pipelinechannel--harness-cell-Output:
-              taskOutputParameter:
-                outputParameterKey: Output
-                producerTask: harness-cell
-            results:
-              runtimeValue:
-                constant:
-                - '{{$.inputs.parameters[''pipelinechannel--harness-cell-Output'']}}'
-                - '{{$.inputs.parameters[''pipelinechannel--harness-cell-2-Output'']}}'
-                - '{{$.inputs.parameters[''pipelinechannel--harness-cell-3-Output'']}}'
-                - '{{$.inputs.parameters[''pipelinechannel--harness-cell-4-Output'']}}'
-            run_name:
-              runtimeValue:
-                constant: aiops-eval-matrix
+          name: comp-exit-handler-1
         taskInfo:
-          name: summary report
-      harness-cell:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-harness-cell
-        dependentTasks:
-        - reset-environment
-        inputs:
-          parameters:
-            agent:
-              runtimeValue:
-                constant: rhdp_deepseek-r1-distill-qwen-14b
-            fault:
-              runtimeValue:
-                constant: scale_zero
-        taskInfo:
-          name: rhdp_deeps / scale_zero
-      harness-cell-2:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-harness-cell-2
-        dependentTasks:
-        - reset-environment-2
-        inputs:
-          parameters:
-            agent:
-              runtimeValue:
-                constant: rhdp_deepseek-r1-distill-qwen-14b
-            fault:
-              runtimeValue:
-                constant: kill_pod
-        taskInfo:
-          name: rhdp_deeps / kill_pod
-      harness-cell-3:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-harness-cell-3
-        dependentTasks:
-        - reset-environment-3
-        inputs:
-          parameters:
-            agent:
-              runtimeValue:
-                constant: rhdp_granite-3-2-8b-instruct
-            fault:
-              runtimeValue:
-                constant: scale_zero
-        taskInfo:
-          name: rhdp_grani / scale_zero
-      harness-cell-4:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-harness-cell-4
-        dependentTasks:
-        - reset-environment-4
-        inputs:
-          parameters:
-            agent:
-              runtimeValue:
-                constant: rhdp_granite-3-2-8b-instruct
-            fault:
-              runtimeValue:
-                constant: kill_pod
-        taskInfo:
-          name: rhdp_grani / kill_pod
+          name: exit-handler-1
       reset-environment:
-        cachingOptions:
-          enableCache: true
+        cachingOptions: {}
         componentRef:
           name: comp-reset-environment
-        taskInfo:
-          name: reset / scale_zero
-      reset-environment-2:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-reset-environment-2
         dependentTasks:
-        - harness-cell
+        - exit-handler-1
         taskInfo:
-          name: reset / kill_pod
-      reset-environment-3:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-reset-environment-3
-        dependentTasks:
-        - harness-cell-2
-        taskInfo:
-          name: reset / scale_zero
-      reset-environment-4:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-reset-environment-4
-        dependentTasks:
-        - harness-cell-3
-        taskInfo:
-          name: reset / kill_pod
+          name: final reset
+        triggerPolicy:
+          strategy: ALL_UPSTREAM_TASKS_COMPLETED
 schemaVersion: 2.1.0
 sdkVersion: kfp-2.17.0

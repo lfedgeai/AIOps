@@ -1,0 +1,62 @@
+# PIPELINE DEFINITION
+# Name: test-mlflow-access
+components:
+  comp-test-rhoai-mlflow:
+    executorLabel: exec-test-rhoai-mlflow
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-test-rhoai-mlflow:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - test_rhoai_mlflow
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef test_rhoai_mlflow() -> str:\n    import json, os\n    mlflow_vars\
+          \ = {k: v for k, v in os.environ.items() if \"MLFLOW\" in k.upper()}\n \
+          \   print(f\"MLflow env vars: {json.dumps(mlflow_vars, indent=2)}\")\n \
+          \   tracking_uri = os.environ.get(\"MLFLOW_TRACKING_URI\", \"\")\n    print(f\"\
+          Tracking URI: {tracking_uri}\")\n    if not tracking_uri:\n        return\
+          \ \"NO_TRACKING_URI_INJECTED\"\n    try:\n        import mlflow\n      \
+          \  mlflow.set_tracking_uri(tracking_uri)\n        client = mlflow.tracking.MlflowClient()\n\
+          \        exps = client.search_experiments()\n        return f\"SUCCESS:\
+          \ connected, found {len(exps)} experiments\"\n    except Exception as e:\n\
+          \        return f\"FAILED: {type(e).__name__}: {e}\"\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/agentic-aiops-harness/aiops-harness:latest
+pipelineInfo:
+  name: test-mlflow-access
+root:
+  dag:
+    tasks:
+      test-rhoai-mlflow:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-test-rhoai-mlflow
+        taskInfo:
+          name: test-rhoai-mlflow
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.17.0

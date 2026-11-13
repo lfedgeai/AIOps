@@ -1,0 +1,25 @@
+# The MLflow prompt registry shares the registeredmodels resource with models.
+# Apply after replacing __AIOPS_NAMESPACE__ with the pipeline workspace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aiops-pipeline-prompt-registry
+  namespace: __AIOPS_NAMESPACE__
+rules:
+  - apiGroups: ["mlflow.kubeflow.org"]
+    resources: ["registeredmodels"]
+    verbs: ["create", "get", "list", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aiops-pipeline-prompt-registry
+  namespace: __AIOPS_NAMESPACE__
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aiops-pipeline-prompt-registry
+subjects:
+  - kind: ServiceAccount
+    name: pipeline-runner-aiops-dspa
+    namespace: __AIOPS_NAMESPACE__

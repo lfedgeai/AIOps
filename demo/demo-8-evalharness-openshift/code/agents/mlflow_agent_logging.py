@@ -12,6 +12,8 @@ import os
 import shutil
 import sys
 import tempfile
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ ART_TOOL_CALLS = "agent_llm_tool_calls.json"
 ART_ROUNDS = "agent_llm_rounds.json"
 ART_THINKING = "agent_llm_thinking.json"
 ART_LOG_ERROR = "agent_mlflow_log_error.json"
+_TRACE_INVOCATION = uuid.uuid4().hex
 
 # MLflow Datasets / inputs: context tag values (shown in UI)
 CTX_AGENT_PROMPTS = "agent_prompts"
@@ -552,6 +555,8 @@ def log_agent_trace_to_mlflow(
 
     client = MlflowClient(uri)
     sub = (artifact_subdir or "").strip().strip("/")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    snapshot = f"agent_trace/{_TRACE_INVOCATION}/{stamp}-{uuid.uuid4().hex[:8]}"
 
     def path(leaf: str, root_name: str) -> str:
         if sub:
@@ -571,13 +576,42 @@ def log_agent_trace_to_mlflow(
             client, rid, {"rounds": llm_rounds}, path("llm_rounds.json", ART_ROUNDS)
         )
 
+    # Keep immutable copies for every call, including multiple polls and rounds.
+    _client_log_dict_or_artifact(client, rid, prompts, f"{snapshot}/prompts.json")
+    _client_log_dict_or_artifact(client, rid, {"tool_calls": tool_calls}, f"{snapshot}/tool_calls.json")
+    if thinking:
+        _client_log_dict_or_artifact(client, rid, {"thinking": thinking}, f"{snapshot}/thinking.json")
+    if llm_rounds is not None:
+        _client_log_dict_or_artifact(client, rid, {"rounds": llm_rounds}, f"{snapshot}/llm_rounds.json")
+
     try:
         _log_text_artifact(client, rid, _render_prompts_text(prompts), "agent_prompts.txt")
         _log_text_artifact(client, rid, _render_tool_calls_text(tool_calls), "agent_tool_calls.txt")
+        _log_text_artifact(client, rid, _render_prompts_text(prompts), f"{snapshot}/prompts.txt")
         if llm_rounds is not None:
             _log_text_artifact(client, rid, _render_llm_rounds_text(llm_rounds), "agent_llm_rounds.txt")
     except Exception as e:
         print(f"[agent] MLflow text artifacts failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+
+    if os.environ.get("MLFLOW_WORKSPACE") and (prompts.get("system_prompt") or prompts.get("user_prompt")):
+        try:
+            from code.agents.mlflow_prompt_registry import register_agent_prompts
+
+            manifest = register_agent_prompts(client, rid, prompts)
+            manifest_path = f"{snapshot}/prompt_registry.json"
+            _client_log_dict_or_artifact(client, rid, manifest, manifest_path)
+            client.set_tag(rid, "aiops.prompt_registry_manifest", manifest_path)
+            client.set_tag(rid, "aiops.prompt_registry_status", "ok")
+        except Exception as e:
+            print(f"[agent] Prompt Registry failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            try:
+                _client_log_dict_or_artifact(
+                    client, rid, {"type": type(e).__name__, "error": str(e)},
+                    f"{snapshot}/prompt_registry_error.json",
+                )
+                client.set_tag(rid, "aiops.prompt_registry_status", "error")
+            except Exception as inner:
+                print(f"[agent] Could not record Prompt Registry error: {inner}", file=sys.stderr, flush=True)
 
     log_mlflow_dataset_inputs_for_agent_trace(
         client,
