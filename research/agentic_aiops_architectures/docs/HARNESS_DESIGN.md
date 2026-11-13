@@ -24,7 +24,25 @@ Each **cell** is one trial on a live OpenShift cluster: inject a Kubernetes faul
 | `mttr_verified_seconds` | Injection → recovery verified | |
 | `agent_error` | Harness-recorded agent/API failure for the cell | Reported alongside rates — never silently folded into "no detect" |
 
-The `(OR)` marker flags a combined headline: true when **any** contributing layer is true — `remediation_correct = any(remediation_declared, remediation_executed, remediation_judge)` and `rca_correct = any(rca_declared, rca_inferred, rca_judge)` (`score_hybrid`, `code/harness/evaluation.py`); layers that did not run (e.g. a skipped judge) do not vote. Each layer alone is a weak witness of the same fact — an agent can declare the right fix and never act, or execute it and describe it poorly — so the strict per-layer values stay as separate columns and the knowing-vs-doing gap stays visible.
+The `(OR)` marker on `rca_correct` and `remediation_correct` marks a summary score. A summary score combines several separate checks and is true when at least one check is true.
+
+`remediation_correct` does not say that a remediation happened. It says the agent found the correct fix. Whether the agent applied the fix is a separate metric, `remediation_executed`.
+
+`remediation_correct` is true when the agent did any one of these:
+
+1. It wrote the correct fix in its final answer (`remediation_declared`).
+2. It ran the correct fix on the cluster (`remediation_executed`).
+3. The judge model credited the fix (`remediation_judge`).
+
+`rca_correct` is true when any one of these is true: the agent named the failing component (`rca_declared`), the failing component follows from the fix the agent ran (`rca_inferred`), or the judge model agreed (`rca_judge`).
+
+A check that did not run is ignored. It does not count as false. For example, a run without a judge has no `remediation_judge` value, so the other two checks decide the summary.
+
+The OR exists because no single check is enough on its own. An agent can write the correct fix and never run it. An agent can run the correct fix and describe it so poorly that the text check fails. A single check would mark both agents as wrong.
+
+The summary score cannot show whether the agent only knew the fix or also applied it. The separate check results stay in the output as their own columns, so this difference stays visible.
+
+The combining code is `score_hybrid` in `code/harness/evaluation.py`.
 
 The core premise is **fairness**: a cross-agent comparison is only valid when agents share task framing, tools, scoring, and infra health. Everything below exists to protect that premise or to fix a violation of it.
 
