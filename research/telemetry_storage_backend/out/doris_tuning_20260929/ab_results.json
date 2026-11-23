@@ -1,0 +1,799 @@
+{
+ "clickhouse_load_s": 18.7,
+ "clickhouse_old_queries": {
+  "correlation_by_timestamp": {
+   "latency_s": 0.024664999975357205,
+   "rows": 20,
+   "latency_min_s": 0.020307584025431424,
+   "latency_max_s": 0.15638120903167874,
+   "runs": 5
+  },
+  "correlation_by_trace_id": {
+   "latency_s": 0.03147266694577411,
+   "rows": 20,
+   "latency_min_s": 0.029217374976724386,
+   "latency_max_s": 0.032521957997232676,
+   "runs": 5
+  },
+  "data_volume": {
+   "latency_s": 0.006316874991171062,
+   "rows": 3,
+   "latency_min_s": 0.005412917002104223,
+   "latency_max_s": 0.007346083002630621,
+   "runs": 5
+  },
+  "logs_errors_by_service": {
+   "latency_s": 0.05508454202208668,
+   "rows": 13,
+   "latency_min_s": 0.0498847080161795,
+   "latency_max_s": 0.06678062496939674,
+   "runs": 5
+  },
+  "logs_recent": {
+   "latency_s": 0.013295375043526292,
+   "rows": 100,
+   "latency_min_s": 0.01277891598874703,
+   "latency_max_s": 0.017259375017601997,
+   "runs": 5
+  },
+  "logs_search_error": {
+   "latency_s": 0.05139312503160909,
+   "rows": 73,
+   "latency_min_s": 0.05073529202491045,
+   "latency_max_s": 0.06113704101881012,
+   "runs": 5
+  },
+  "metrics_by_service_hourly": {
+   "latency_s": 0.005831082991790026,
+   "rows": 2,
+   "latency_min_s": 0.005567917018197477,
+   "latency_max_s": 0.022086999961175025,
+   "runs": 5
+  },
+  "metrics_p95_latency": {
+   "latency_s": 0.00611766695510596,
+   "rows": 2,
+   "latency_min_s": 0.005783542001154274,
+   "latency_max_s": 0.006598459032829851,
+   "runs": 5
+  },
+  "sla_latency_compliance": {
+   "latency_s": 0.00750316702760756,
+   "rows": 1,
+   "latency_min_s": 0.006792041996959597,
+   "latency_max_s": 0.02012804098194465,
+   "runs": 5
+  },
+  "spans_error_by_service": {
+   "latency_s": 0.03374116698978469,
+   "rows": 2,
+   "latency_min_s": 0.03042904200265184,
+   "latency_max_s": 0.04132883297279477,
+   "runs": 5
+  },
+  "trace_by_id": {
+   "latency_s": 0.006013665988575667,
+   "rows": 4,
+   "latency_min_s": 0.005261082958895713,
+   "latency_max_s": 0.00713475001975894,
+   "runs": 5
+  },
+  "traces_slow_by_service": {
+   "latency_s": 0.005638832983095199,
+   "rows": 0,
+   "latency_min_s": 0.00550083298003301,
+   "latency_max_s": 0.005869249987881631,
+   "runs": 5
+  }
+ },
+ "clickhouse_new_queries": {
+  "correlation_by_timestamp": {
+   "latency_s": 0.0170769160031341,
+   "rows": 20,
+   "latency_min_s": 0.016684749978594482,
+   "latency_max_s": 0.017967166961170733,
+   "runs": 5
+  },
+  "correlation_by_trace_id": {
+   "latency_s": 0.029351666977163404,
+   "rows": 20,
+   "latency_min_s": 0.028304832987487316,
+   "latency_max_s": 0.03273591701872647,
+   "runs": 5
+  },
+  "data_volume": {
+   "latency_s": 0.007265415973961353,
+   "rows": 3,
+   "latency_min_s": 0.006891832977999002,
+   "latency_max_s": 0.009657457994762808,
+   "runs": 5
+  },
+  "logs_errors_by_service": {
+   "latency_s": 0.05352529202355072,
+   "rows": 13,
+   "latency_min_s": 0.05125141603639349,
+   "latency_max_s": 0.07210779201705009,
+   "runs": 5
+  },
+  "logs_recent": {
+   "latency_s": 0.010727624990977347,
+   "rows": 100,
+   "latency_min_s": 0.01008933299453929,
+   "latency_max_s": 0.011087374994531274,
+   "runs": 5
+  },
+  "logs_search_error": {
+   "latency_s": 0.0539627080434002,
+   "rows": 73,
+   "latency_min_s": 0.04837466700701043,
+   "latency_max_s": 0.06585662497673184,
+   "runs": 5
+  },
+  "metrics_by_service_hourly": {
+   "latency_s": 0.006846999982371926,
+   "rows": 2,
+   "latency_min_s": 0.005874291993677616,
+   "latency_max_s": 0.007102541974745691,
+   "runs": 5
+  },
+  "metrics_p95_latency": {
+   "latency_s": 0.005196750047616661,
+   "rows": 2,
+   "latency_min_s": 0.005072500032838434,
+   "latency_max_s": 0.006705957988742739,
+   "runs": 5
+  },
+  "sla_latency_compliance": {
+   "latency_s": 0.006029291020240635,
+   "rows": 1,
+   "latency_min_s": 0.005820790946017951,
+   "latency_max_s": 0.013243458000943065,
+   "runs": 5
+  },
+  "spans_error_by_service": {
+   "latency_s": 0.028888917004223913,
+   "rows": 2,
+   "latency_min_s": 0.027276666020043194,
+   "latency_max_s": 0.03123408299870789,
+   "runs": 5
+  },
+  "trace_by_id": {
+   "latency_s": 0.007564542000181973,
+   "rows": 4,
+   "latency_min_s": 0.00725845800479874,
+   "latency_max_s": 0.011240124993491918,
+   "runs": 5
+  },
+  "traces_slow_by_service": {
+   "latency_s": 0.005978667002636939,
+   "rows": 0,
+   "latency_min_s": 0.005149791017174721,
+   "latency_max_s": 0.006698125042021275,
+   "runs": 5
+  }
+ },
+ "clickhouse_scaled_old_queries": {
+  "correlation_by_timestamp": {
+   "latency_s": 0.028943250013981014,
+   "rows": 20,
+   "latency_min_s": 0.02782000001752749,
+   "latency_max_s": 0.0344863340142183,
+   "runs": 10
+  },
+  "correlation_by_trace_id": {
+   "latency_s": 0.1123103125137277,
+   "rows": 20,
+   "latency_min_s": 0.10905583394924179,
+   "latency_max_s": 0.11692175001371652,
+   "runs": 10
+  },
+  "data_volume": {
+   "latency_s": 0.00633939600083977,
+   "rows": 3,
+   "latency_min_s": 0.005745959002524614,
+   "latency_max_s": 0.010344000009354204,
+   "runs": 10
+  },
+  "logs_errors_by_service": {
+   "latency_s": 0.14765545801492408,
+   "rows": 13,
+   "latency_min_s": 0.11279345798538998,
+   "latency_max_s": 0.17726029199548066,
+   "runs": 10
+  },
+  "logs_recent": {
+   "latency_s": 0.011845729488413781,
+   "rows": 100,
+   "latency_min_s": 0.011419332993682474,
+   "latency_max_s": 0.012671458011027426,
+   "runs": 10
+  },
+  "logs_search_error": {
+   "latency_s": 0.13641585397999734,
+   "rows": 100,
+   "latency_min_s": 0.12277937500039116,
+   "latency_max_s": 0.2229974580113776,
+   "runs": 10
+  },
+  "metrics_by_service_hourly": {
+   "latency_s": 0.006988917011767626,
+   "rows": 2,
+   "latency_min_s": 0.006475250003859401,
+   "latency_max_s": 0.009388041973579675,
+   "runs": 10
+  },
+  "metrics_p95_latency": {
+   "latency_s": 0.006094540993217379,
+   "rows": 2,
+   "latency_min_s": 0.005587041960097849,
+   "latency_max_s": 0.008252874948084354,
+   "runs": 10
+  },
+  "sla_latency_compliance": {
+   "latency_s": 0.00829345901729539,
+   "rows": 1,
+   "latency_min_s": 0.007345999998506159,
+   "latency_max_s": 0.009509666997473687,
+   "runs": 10
+  },
+  "spans_error_by_service": {
+   "latency_s": 0.10066570801427588,
+   "rows": 2,
+   "latency_min_s": 0.08785762498155236,
+   "latency_max_s": 0.10964404203696176,
+   "runs": 10
+  },
+  "trace_by_id": {
+   "latency_s": 0.012200124998344108,
+   "rows": 4,
+   "latency_min_s": 0.009760083979927003,
+   "latency_max_s": 0.014366000017616898,
+   "runs": 10
+  },
+  "traces_slow_by_service": {
+   "latency_s": 0.007006187486695126,
+   "rows": 0,
+   "latency_min_s": 0.006855665997136384,
+   "latency_max_s": 0.007487499970011413,
+   "runs": 10
+  }
+ },
+ "clickhouse_scaled_new_queries": {
+  "correlation_by_timestamp": {
+   "latency_s": 0.028146354510681704,
+   "rows": 20,
+   "latency_min_s": 0.02627158403629437,
+   "latency_max_s": 0.03108400001656264,
+   "runs": 10
+  },
+  "correlation_by_trace_id": {
+   "latency_s": 0.11163958298857324,
+   "rows": 20,
+   "latency_min_s": 0.10896620800485834,
+   "latency_max_s": 0.12047995801549405,
+   "runs": 10
+  },
+  "data_volume": {
+   "latency_s": 0.0063388335111085325,
+   "rows": 3,
+   "latency_min_s": 0.005648292019031942,
+   "latency_max_s": 0.007768375042360276,
+   "runs": 10
+  },
+  "logs_errors_by_service": {
+   "latency_s": 0.14682116647600196,
+   "rows": 13,
+   "latency_min_s": 0.11418820900144055,
+   "latency_max_s": 0.17307333298958838,
+   "runs": 10
+  },
+  "logs_recent": {
+   "latency_s": 0.03745408350368962,
+   "rows": 100,
+   "latency_min_s": 0.01491637498838827,
+   "latency_max_s": 0.04515562497545034,
+   "runs": 10
+  },
+  "logs_search_error": {
+   "latency_s": 0.13438662549015135,
+   "rows": 100,
+   "latency_min_s": 0.12479858397273347,
+   "latency_max_s": 0.15481566701782867,
+   "runs": 10
+  },
+  "metrics_by_service_hourly": {
+   "latency_s": 0.008813208027277142,
+   "rows": 2,
+   "latency_min_s": 0.007821666018571705,
+   "latency_max_s": 0.011524249974172562,
+   "runs": 10
+  },
+  "metrics_p95_latency": {
+   "latency_s": 0.0063980000268202275,
+   "rows": 2,
+   "latency_min_s": 0.005819957994390279,
+   "latency_max_s": 0.00863962498260662,
+   "runs": 10
+  },
+  "sla_latency_compliance": {
+   "latency_s": 0.007517895515775308,
+   "rows": 1,
+   "latency_min_s": 0.007200666994322091,
+   "latency_max_s": 0.008341040986124426,
+   "runs": 10
+  },
+  "spans_error_by_service": {
+   "latency_s": 0.09585554152727127,
+   "rows": 2,
+   "latency_min_s": 0.0857082920265384,
+   "latency_max_s": 0.10370779200457036,
+   "runs": 10
+  },
+  "trace_by_id": {
+   "latency_s": 0.011553771008038893,
+   "rows": 4,
+   "latency_min_s": 0.010513792047277093,
+   "latency_max_s": 0.015223124995827675,
+   "runs": 10
+  },
+  "traces_slow_by_service": {
+   "latency_s": 0.007331500033615157,
+   "rows": 0,
+   "latency_min_s": 0.006835000007413328,
+   "latency_max_s": 0.008160417026374489,
+   "runs": 10
+  }
+ },
+ "doris_old_load_s": 20.4,
+ "doris_old_counts": {
+  "metrics": 1108,
+  "logs": 278,
+  "spans": 77014
+ },
+ "A_old_harness_old_schema": {
+  "correlation_by_timestamp": {
+   "latency_s": 0.35600805282592773,
+   "rows": 20,
+   "latency_min_s": 0.34421300888061523,
+   "latency_max_s": 0.39995503425598145,
+   "runs": 5
+  },
+  "correlation_by_trace_id": {
+   "latency_s": 0.3596179485321045,
+   "rows": 20,
+   "latency_min_s": 0.3438262939453125,
+   "latency_max_s": 0.3625950813293457,
+   "runs": 5
+  },
+  "data_volume": {
+   "latency_s": 0.3087167739868164,
+   "rows": 3,
+   "latency_min_s": 0.2904810905456543,
+   "latency_max_s": 0.371323823928833,
+   "runs": 5
+  },
+  "logs_errors_by_service": {
+   "latency_s": 0.3428828716278076,
+   "rows": 13,
+   "latency_min_s": 0.33313608169555664,
+   "latency_max_s": 0.35169100761413574,
+   "runs": 5
+  },
+  "logs_recent": {
+   "latency_s": 0.38985323905944824,
+   "rows": 100,
+   "latency_min_s": 0.33930492401123047,
+   "latency_max_s": 0.42468714714050293,
+   "runs": 5
+  },
+  "logs_search_error": {
+   "latency_s": 0.3375861644744873,
+   "rows": 73,
+   "latency_min_s": 0.3267998695373535,
+   "latency_max_s": 0.37335681915283203,
+   "runs": 5
+  },
+  "metrics_by_service_hourly": {
+   "latency_s": 0.3132970333099365,
+   "rows": 2,
+   "latency_min_s": 0.30121421813964844,
+   "latency_max_s": 0.35007500648498535,
+   "runs": 5
+  },
+  "metrics_p95_latency": {
+   "latency_s": 0.29437994956970215,
+   "rows": 2,
+   "latency_min_s": 0.2887270450592041,
+   "latency_max_s": 0.3245246410369873,
+   "runs": 5
+  },
+  "sla_latency_compliance": {
+   "latency_s": 0.2858412265777588,
+   "rows": 1,
+   "latency_min_s": 0.2792849540710449,
+   "latency_max_s": 0.3098900318145752,
+   "runs": 5
+  },
+  "spans_error_by_service": {
+   "latency_s": 0.2988302707672119,
+   "rows": 2,
+   "latency_min_s": 0.2910439968109131,
+   "latency_max_s": 0.3068733215332031,
+   "runs": 5
+  },
+  "trace_by_id": {
+   "latency_s": 0.2988009452819824,
+   "rows": 4,
+   "latency_min_s": 0.2837522029876709,
+   "latency_max_s": 0.3274979591369629,
+   "runs": 5
+  },
+  "traces_slow_by_service": {
+   "latency_s": 0.291079044342041,
+   "rows": 0,
+   "latency_min_s": 0.27197694778442383,
+   "latency_max_s": 0.3130669593811035,
+   "runs": 5
+  }
+ },
+ "B_new_harness_old_schema": {
+  "correlation_by_timestamp": {
+   "latency_s": 0.038025917019695044,
+   "rows": 20,
+   "latency_min_s": 0.03677245799917728,
+   "latency_max_s": 0.04281166702276096,
+   "runs": 5
+  },
+  "correlation_by_trace_id": {
+   "latency_s": 0.03877395804738626,
+   "rows": 20,
+   "latency_min_s": 0.03542595898034051,
+   "latency_max_s": 0.043899500044062734,
+   "runs": 5
+  },
+  "data_volume": {
+   "latency_s": 0.022500457998830825,
+   "rows": 3,
+   "latency_min_s": 0.022063332959078252,
+   "latency_max_s": 0.023200166993774474,
+   "runs": 5
+  },
+  "logs_errors_by_service": {
+   "latency_s": 0.0278721249778755,
+   "rows": 13,
+   "latency_min_s": 0.02718508301768452,
+   "latency_max_s": 0.036502458970062435,
+   "runs": 5
+  },
+  "logs_recent": {
+   "latency_s": 0.08459137502359226,
+   "rows": 100,
+   "latency_min_s": 0.03932199999690056,
+   "latency_max_s": 0.10132766701281071,
+   "runs": 5
+  },
+  "logs_search_error": {
+   "latency_s": 0.060656999994535,
+   "rows": 73,
+   "latency_min_s": 0.05315570899983868,
+   "latency_max_s": 0.07174458302324638,
+   "runs": 5
+  },
+  "metrics_by_service_hourly": {
+   "latency_s": 0.01680375001160428,
+   "rows": 2,
+   "latency_min_s": 0.015903583029285073,
+   "latency_max_s": 0.017951874993741512,
+   "runs": 5
+  },
+  "metrics_p95_latency": {
+   "latency_s": 0.015689791995100677,
+   "rows": 2,
+   "latency_min_s": 0.01391433400567621,
+   "latency_max_s": 0.01631883403751999,
+   "runs": 5
+  },
+  "sla_latency_compliance": {
+   "latency_s": 0.015060291974805295,
+   "rows": 1,
+   "latency_min_s": 0.014081666013225913,
+   "latency_max_s": 0.016625541960820556,
+   "runs": 5
+  },
+  "spans_error_by_service": {
+   "latency_s": 0.021773209038656205,
+   "rows": 2,
+   "latency_min_s": 0.019779208989348263,
+   "latency_max_s": 0.02257466595619917,
+   "runs": 5
+  },
+  "trace_by_id": {
+   "latency_s": 0.018358249973971397,
+   "rows": 4,
+   "latency_min_s": 0.01723791699623689,
+   "latency_max_s": 0.019001582986675203,
+   "runs": 5
+  },
+  "traces_slow_by_service": {
+   "latency_s": 0.015174874977674335,
+   "rows": 0,
+   "latency_min_s": 0.0146439170348458,
+   "latency_max_s": 0.015592332987580448,
+   "runs": 5
+  }
+ },
+ "doris_new_load_s": 22.0,
+ "doris_new_counts": {
+  "spans": 77014,
+  "logs": 278,
+  "metrics": 1108
+ },
+ "C_new_harness_new_schema": {
+  "correlation_by_timestamp": {
+   "latency_s": 0.04825362499104813,
+   "rows": 20,
+   "latency_min_s": 0.045380582974758,
+   "latency_max_s": 0.052085333969444036,
+   "runs": 5
+  },
+  "correlation_by_trace_id": {
+   "latency_s": 0.04448133398545906,
+   "rows": 20,
+   "latency_min_s": 0.0440222910256125,
+   "latency_max_s": 0.04947187501238659,
+   "runs": 5
+  },
+  "data_volume": {
+   "latency_s": 0.02522237499943003,
+   "rows": 3,
+   "latency_min_s": 0.024491165997460485,
+   "latency_max_s": 0.02676041697850451,
+   "runs": 5
+  },
+  "logs_errors_by_service": {
+   "latency_s": 0.019390500034205616,
+   "rows": 13,
+   "latency_min_s": 0.018858709023334086,
+   "latency_max_s": 0.02391687495401129,
+   "runs": 5
+  },
+  "logs_recent": {
+   "latency_s": 0.06841100001474842,
+   "rows": 100,
+   "latency_min_s": 0.04966020799474791,
+   "latency_max_s": 0.08363245899090543,
+   "runs": 5
+  },
+  "logs_search_error": {
+   "latency_s": 0.03697587503120303,
+   "rows": 73,
+   "latency_min_s": 0.034650665998924524,
+   "latency_max_s": 0.0650749999913387,
+   "runs": 5
+  },
+  "metrics_by_service_hourly": {
+   "latency_s": 0.02064154203981161,
+   "rows": 2,
+   "latency_min_s": 0.017745250021107495,
+   "latency_max_s": 0.02152904198737815,
+   "runs": 5
+  },
+  "metrics_p95_latency": {
+   "latency_s": 0.022506000008434057,
+   "rows": 2,
+   "latency_min_s": 0.020941374998074025,
+   "latency_max_s": 0.06631908298004419,
+   "runs": 5
+  },
+  "sla_latency_compliance": {
+   "latency_s": 0.02310712495818734,
+   "rows": 1,
+   "latency_min_s": 0.02098775003105402,
+   "latency_max_s": 0.024189290998037905,
+   "runs": 5
+  },
+  "spans_error_by_service": {
+   "latency_s": 0.026677083980757743,
+   "rows": 2,
+   "latency_min_s": 0.025045874994248152,
+   "latency_max_s": 0.033643541974015534,
+   "runs": 5
+  },
+  "trace_by_id": {
+   "latency_s": 0.023424707993399352,
+   "rows": 12,
+   "latency_min_s": 0.021994083013851196,
+   "latency_max_s": 0.025627708004321903,
+   "runs": 5
+  },
+  "traces_slow_by_service": {
+   "latency_s": 0.018550834036432207,
+   "rows": 0,
+   "latency_min_s": 0.01760900003137067,
+   "latency_max_s": 0.02006937499390915,
+   "runs": 5
+  }
+ },
+ "doris_old_scaled_counts": {
+  "logs": 4448,
+  "metrics": 35456,
+  "spans": 2464448
+ },
+ "B_scaled": {
+  "correlation_by_timestamp": {
+   "latency_s": 0.08911512501072139,
+   "rows": 20,
+   "latency_min_s": 0.07226641703164205,
+   "latency_max_s": 0.10467037500347942,
+   "runs": 10
+  },
+  "correlation_by_trace_id": {
+   "latency_s": 0.23362991647445597,
+   "rows": 20,
+   "latency_min_s": 0.21461120899766684,
+   "latency_max_s": 0.2593623749562539,
+   "runs": 10
+  },
+  "data_volume": {
+   "latency_s": 0.023507416481152177,
+   "rows": 3,
+   "latency_min_s": 0.02166462503373623,
+   "latency_max_s": 0.025962917017750442,
+   "runs": 10
+  },
+  "logs_errors_by_service": {
+   "latency_s": 0.3417325420305133,
+   "rows": 13,
+   "latency_min_s": 0.18681933399057016,
+   "latency_max_s": 0.7661601660074666,
+   "runs": 10
+  },
+  "logs_recent": {
+   "latency_s": 0.035496958502335474,
+   "rows": 100,
+   "latency_min_s": 0.03282520896755159,
+   "latency_max_s": 0.049828916031401604,
+   "runs": 10
+  },
+  "logs_search_error": {
+   "latency_s": 0.4329688749858178,
+   "rows": 100,
+   "latency_min_s": 0.28863054199609905,
+   "latency_max_s": 0.9755822079605423,
+   "runs": 10
+  },
+  "metrics_by_service_hourly": {
+   "latency_s": 0.0182767704827711,
+   "rows": 2,
+   "latency_min_s": 0.01664445799542591,
+   "latency_max_s": 0.020235500007402152,
+   "runs": 10
+  },
+  "metrics_p95_latency": {
+   "latency_s": 0.022033895482309163,
+   "rows": 2,
+   "latency_min_s": 0.017250583041459322,
+   "latency_max_s": 0.027286084019578993,
+   "runs": 10
+  },
+  "sla_latency_compliance": {
+   "latency_s": 0.03348802053369582,
+   "rows": 1,
+   "latency_min_s": 0.03214149997802451,
+   "latency_max_s": 0.051475999993272126,
+   "runs": 10
+  },
+  "spans_error_by_service": {
+   "latency_s": 0.05831072901492007,
+   "rows": 2,
+   "latency_min_s": 0.05104712501633912,
+   "latency_max_s": 0.08599745796527714,
+   "runs": 10
+  },
+  "trace_by_id": {
+   "latency_s": 0.022270417015533894,
+   "rows": 4,
+   "latency_min_s": 0.02105841599404812,
+   "latency_max_s": 0.029724457999691367,
+   "runs": 10
+  },
+  "traces_slow_by_service": {
+   "latency_s": 0.022763874992961064,
+   "rows": 0,
+   "latency_min_s": 0.016656124964356422,
+   "latency_max_s": 0.05532216699793935,
+   "runs": 10
+  }
+ },
+ "doris_new_scaled_counts": {
+  "logs": 4448,
+  "metrics": 35456,
+  "spans": 2464448
+ },
+ "C_scaled": {
+  "correlation_by_timestamp": {
+   "latency_s": 0.07929039598093368,
+   "rows": 20,
+   "latency_min_s": 0.07032850000541657,
+   "latency_max_s": 0.08649349998449907,
+   "runs": 10
+  },
+  "correlation_by_trace_id": {
+   "latency_s": 0.1471003960177768,
+   "rows": 20,
+   "latency_min_s": 0.14309891697485,
+   "latency_max_s": 0.22309658298036084,
+   "runs": 10
+  },
+  "data_volume": {
+   "latency_s": 0.02306531250360422,
+   "rows": 3,
+   "latency_min_s": 0.02177633298560977,
+   "latency_max_s": 0.025104124972131103,
+   "runs": 10
+  },
+  "logs_errors_by_service": {
+   "latency_s": 0.016788291512057185,
+   "rows": 13,
+   "latency_min_s": 0.015442416013684124,
+   "latency_max_s": 0.022818249999545515,
+   "runs": 10
+  },
+  "logs_recent": {
+   "latency_s": 0.03641739601152949,
+   "rows": 100,
+   "latency_min_s": 0.030104917008429766,
+   "latency_max_s": 0.049266125017311424,
+   "runs": 10
+  },
+  "logs_search_error": {
+   "latency_s": 0.051330416987184435,
+   "rows": 100,
+   "latency_min_s": 0.03635120898252353,
+   "latency_max_s": 0.07488354202359915,
+   "runs": 10
+  },
+  "metrics_by_service_hourly": {
+   "latency_s": 0.01764541701413691,
+   "rows": 2,
+   "latency_min_s": 0.016310542006976902,
+   "latency_max_s": 0.0187959159957245,
+   "runs": 10
+  },
+  "metrics_p95_latency": {
+   "latency_s": 0.01754818801418878,
+   "rows": 2,
+   "latency_min_s": 0.01649041601922363,
+   "latency_max_s": 0.018135624995920807,
+   "runs": 10
+  },
+  "sla_latency_compliance": {
+   "latency_s": 0.030743895971681923,
+   "rows": 1,
+   "latency_min_s": 0.02969924994977191,
+   "latency_max_s": 0.0366912079625763,
+   "runs": 10
+  },
+  "spans_error_by_service": {
+   "latency_s": 0.01955535399611108,
+   "rows": 2,
+   "latency_min_s": 0.018430792028084397,
+   "latency_max_s": 0.0210857079946436,
+   "runs": 10
+  },
+  "trace_by_id": {
+   "latency_s": 0.018776979501126334,
+   "rows": 16,
+   "latency_min_s": 0.017930416972376406,
+   "latency_max_s": 0.0204564580344595,
+   "runs": 10
+  },
+  "traces_slow_by_service": {
+   "latency_s": 0.014652125013526529,
+   "rows": 0,
+   "latency_min_s": 0.013380750024225563,
+   "latency_max_s": 0.01659154100343585,
+   "runs": 10
+  }
+ }
+}
