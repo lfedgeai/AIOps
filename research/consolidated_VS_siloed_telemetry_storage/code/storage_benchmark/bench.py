@@ -5,6 +5,7 @@ Every answer is compared with the generator's ground truth. A latency counts onl
 correct answer. Siloed time is split into backend time (HTTP) and correlation time (code).
 """
 import argparse, json, os, shutil, statistics as st, subprocess, time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import requests
 import correlate
@@ -14,15 +15,28 @@ CH, LOKI, TEMPO, THANOS = "http://127.0.0.1:38123", "http://127.0.0.1:33100", "h
 NS, MIN = 10**9, 60 * 10**9
 TASKS = ["trace_context", "service_window", "error_drilldown", "bulk_join"]
 SILOED = ["loki", "tempo", "thanos-receive", "thanos-query"]
+ALL = '{service_name=~".+"}'
+VARIANTS = {"trace_context": ["broad_seq", "broad_par", "scoped"], "service_window": ["broad_seq", "broad_par"],
+            "error_drilldown": ["broad_seq", "scoped"], "bulk_join": ["broad_seq", "broad_par", "scoped"]}
+def scope(svcs): return '{service_name=~"%s"}' % "|".join(sorted(svcs))
 PAGE = 5000  # Loki's default max_entries_limit_per_query
 
 
 class Siloed:
-    def __init__(self, m): self.m, self.s = m, requests.Session()
+    """One siloed client. Variants:
+    broad_seq   all-services Loki selector, one call after another
+    broad_par   the same calls; independent calls run concurrently
+    scoped      Tempo first; Loki is then limited to the services (and, for one trace, the
+                time range) that Tempo returned. The calls depend on each other.
+    """
+    def __init__(self, m):
+        self.m = m
+        self.s = {n: requests.Session() for n in ("loki", "tempo", "thanos")}
+        self.pool = ThreadPoolExecutor(3)
 
     def get(self, name, url, **params):
         t = time.perf_counter()
-        r = self.s.get(url, params=params, headers={"Accept": "application/json"}, timeout=120)
+        r = self.s[name].get(url, params=params, headers={"Accept": "application/json"}, timeout=120)
         body = r.content
         ms = (time.perf_counter() - t) * 1e3
         if r.status_code != 200: raise RuntimeError(f"{name} {r.status_code}: {body[:300]}")
@@ -37,36 +51,57 @@ class Siloed:
             if len(ts) < PAGE: return
             cur = max(ts)  # inclusive; the correlator removes the overlap
 
-    def run(self, task):
-        m, self.raw, self.calls = self.m, {}, []
-        f0, f1 = m["f0"], m["f1"]
-        if task == "trace_context":
-            self.get("tempo", f"{TEMPO}/api/v2/traces/{m['trace_id']}")
-            self.logs('{service_name=~".+"} | trace_id="%s"' % m["trace_id"], f0, f1 + MIN)
-            par = True
-        elif task == "service_window":
-            self.get("tempo", f"{TEMPO}/api/metrics/query_range", q="{} | count_over_time() by (resource.service.name, status)", start=f0 // NS, end=f1 // NS, step="60s")
-            self.get("loki", f"{LOKI}/loki/api/v1/query_range", query='sum by (service_name) (count_over_time({service_name=~".+"} | severity_text="ERROR" [1m]))', start=f0 + MIN, end=f1, step="60")
-            self.get("thanos", f"{THANOS}/api/v1/query_range", query="max by (service_name) (max_over_time(app_request_error_ratio[1m]))", start=(f0 + MIN) // NS, end=f1 // NS, step=60)
-            par = True
-        elif task == "error_drilldown":
-            self.get("thanos", f"{THANOS}/api/v1/query", query="topk(1, avg by (service_name) (avg_over_time(app_request_error_ratio[5m])))", time=f1 // NS)
-            d0, d1 = f0 + MIN, f0 + 2 * MIN
-            self.get("tempo", f"{TEMPO}/api/search", q='{resource.service.name="%s" && status=error}' % correlate.worst_service(self.raw), start=d0 // NS, end=d1 // NS, limit=10000)
-            ids = correlate.search_ids(self.raw)
-            # POST is not needed below about 500 IDs; batch so that the URL stays short.
-            for i in range(0, len(ids), 150):
-                self.logs('{service_name=~".+"} | severity_text="ERROR" | trace_id=~"%s"' % "|".join(ids[i:i + 150]), d0, d1 + MIN)
-            par = False
-        else:
-            self.get("tempo", f"{TEMPO}/api/search", q="{status=error} | select(resource.service.name)", start=f0 // NS, end=f1 // NS, limit=100000, spss=100)
-            self.logs('{service_name=~".+"} | severity_text="ERROR" | trace_id!=""', f0, f1 + MIN)
-            par = True
+    def all(self, par, *fs):
+        if par: list(self.pool.map(lambda f: f(), fs))
+        else: [f() for f in fs]
+
+    def run(self, task, variant):
+        self.raw, self.calls = {}, []
+        t = time.perf_counter()
+        getattr(self, task)(variant)
+        wall = (time.perf_counter() - t) * 1e3
         per = {}
         for n, ms in self.calls: per[n] = per.get(n, 0) + ms
-        seq = sum(per.values())
-        return {"backend_ms": seq, "parallel_ms": max(per.values()) if par else seq, "calls": len(self.calls),
-                "bytes": sum(len(b) for v in self.raw.values() for b in v), "per_backend": per}
+        return {"wall_ms": wall, "calls": len(self.calls), "bytes": sum(len(b) for v in self.raw.values() for b in v), "per_backend": per}
+
+    def trace_context(self, v):
+        m, f0, f1 = self.m, self.m["f0"], self.m["f1"]
+        tempo = lambda: self.get("tempo", f"{TEMPO}/api/v2/traces/{m['trace_id']}")
+        sel, a, b = ALL, f0, f1 + MIN
+        if v == "scoped":
+            tempo()
+            svcs, a, b = correlate.trace_scope(self.raw)
+            sel, a, b = scope(svcs), a - NS, b + NS
+        loki = lambda: self.logs('%s | trace_id="%s"' % (sel, m["trace_id"]), a, b)
+        loki() if v == "scoped" else self.all(v == "broad_par", tempo, loki)
+
+    def service_window(self, v):
+        f0, f1 = self.m["f0"], self.m["f1"]
+        self.all(v == "broad_par",
+            lambda: self.get("tempo", f"{TEMPO}/api/metrics/query_range", q="{} | count_over_time() by (resource.service.name, status)", start=f0 // NS, end=f1 // NS, step="60s"),
+            lambda: self.get("loki", f"{LOKI}/loki/api/v1/query_range", query='sum by (service_name) (count_over_time(%s | severity_text="ERROR" [1m]))' % ALL, start=f0 + MIN, end=f1, step="60"),
+            lambda: self.get("thanos", f"{THANOS}/api/v1/query_range", query="max by (service_name) (max_over_time(app_request_error_ratio[1m]))", start=(f0 + MIN) // NS, end=f1 // NS, step=60))
+
+    def error_drilldown(self, v):
+        f0, f1 = self.m["f0"], self.m["f1"]
+        d0, d1 = f0 + MIN, f0 + 2 * MIN
+        self.get("thanos", f"{THANOS}/api/v1/query", query="topk(1, avg by (service_name) (avg_over_time(app_request_error_ratio[5m])))", time=f1 // NS)
+        q = '{resource.service.name="%s" && status=error}' % correlate.worst_service(self.raw)
+        if v == "scoped": q = "(%s && {status=error}) | select(resource.service.name)" % q
+        self.get("tempo", f"{TEMPO}/api/search", q=q, start=d0 // NS, end=d1 // NS, limit=10000, spss=100)
+        ids = correlate.search_ids(self.raw)
+        sel = scope(correlate.search_services(self.raw)) if v == "scoped" else ALL
+        for i in range(0, len(ids), 150):  # keep the URL short
+            self.logs('%s | severity_text="ERROR" | trace_id=~"%s"' % (sel, "|".join(ids[i:i + 150])), d0, d1 + MIN)
+
+    def bulk_join(self, v):
+        f0, f1 = self.m["f0"], self.m["f1"]
+        tempo = lambda: self.get("tempo", f"{TEMPO}/api/search", q="{status=error} | select(resource.service.name)", start=f0 // NS, end=f1 // NS, limit=100000, spss=100)
+        sel = ALL
+        if v == "scoped":
+            tempo(); sel = scope(correlate.search_services(self.raw))
+        loki = lambda: self.logs('%s | severity_text="ERROR" | trace_id!=""' % sel, f0, f1 + MIN)
+        loki() if v == "scoped" else self.all(v == "broad_par", tempo, loki)
 
 
 def ch_sql(task, m):
@@ -147,70 +182,81 @@ def wait_visible(m, timeout=300):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--corpus", default="out/corpus.json"); p.add_argument("--runs", type=int, default=30)
+    p.add_argument("--corpus", default="out/corpus.json"); p.add_argument("--rounds", type=int, default=4)
+    p.add_argument("--runs", type=int, default=10, help="timed runs per task and variant in each round")
     p.add_argument("--warmup", type=int, default=3); p.add_argument("--out", default="out/results.json")
     p.add_argument("--go", default="out/correlate")
     a = p.parse_args()
     m = json.loads(Path(a.corpus).read_text()); f0_ms = m["f0"] // 10**6
-    res = {"corpus": {k: v for k, v in m.items() if k != "truth"}, "runs": a.runs, "warmup": a.warmup,
-           "host": {"cpuset": os.environ.get("BENCH_CPUSET", "0,2,4,6"), "load_before": os.getloadavg()}, "tasks": {}}
+    res = {"corpus": {k: v for k, v in m.items() if k != "truth"}, "rounds": a.rounds, "runs": a.runs, "warmup": a.warmup,
+           "host": {"cpuset": os.environ.get("BENCH_CPUSET", "0,2,4,6"), "load": [os.getloadavg()]}, "tasks": {}}
     res["ingested"] = wait_visible(m)
     print("ingest complete, no loss:", res["ingested"])
-    errors = []
+    errors, acc = [], {}
 
-    compose("pause", *SILOED)
-    try:
+    def add(task, arm, **kv):
+        for k, x in kv.items(): acc.setdefault((task, arm), {}).setdefault(k, []).append(x)
+
+    def clickhouse():
         s = requests.Session()
         for task in TASKS:
-            be, cl = [], []
-            sql = ch_sql(task, m) + " FORMAT JSONCompact"
-            for i in range(a.warmup + a.runs):
-                t = time.perf_counter()
-                r = s.post(CH, params={"user": "default", "password": "bench", "output_format_json_quote_64bit_integers": 0}, data=sql, timeout=120); body = r.content
-                t1 = time.perf_counter()
-                if r.status_code != 200: raise SystemExit(f"{task}: {body[:600]}")
-                got = ch_canon(task, body); t2 = time.perf_counter()
-                if not same(got, m["truth"][task]): errors.append(("clickhouse", task, got)); break
-                if i >= a.warmup: be.append((t1 - t) * 1e3); cl.append((t2 - t1) * 1e3)
-            if be: res["tasks"].setdefault(task, {})["clickhouse"] = {"backend_ms": summ(be), "parse_ms": summ(cl), "total_ms": summ([x + y for x, y in zip(be, cl)]), "calls": 1, "bytes": len(body)}
-    finally: compose("unpause", *SILOED)
+            for arm, extra in (("clickhouse", ""), ("clickhouse_no_skip_index", " SETTINGS use_skip_indexes=0")):
+                sql = ch_sql(task, m) + extra + " FORMAT JSONCompact"
+                for i in range(a.warmup + a.runs):
+                    t = time.perf_counter()
+                    r = s.post(CH, params={"user": "default", "password": "bench", "output_format_json_quote_64bit_integers": 0}, data=sql, timeout=120); body = r.content
+                    t1 = time.perf_counter()
+                    if r.status_code != 200: raise SystemExit(f"{task}: {body[:600]}")
+                    got = ch_canon(task, body); t2 = time.perf_counter()
+                    if not same(got, m["truth"][task]): errors.append((arm, task, got)); break
+                    if i >= a.warmup: add(task, arm, total_ms=(t2 - t) * 1e3, backend_ms=(t1 - t) * 1e3, calls=1, bytes=len(body))
 
-    wait_visible(m)
-    compose("pause", "clickhouse")
-    try:
+    def siloed():
         sil = Siloed(m)
         for task in TASKS:
-            rows, py = [], []
             fn = getattr(correlate, task)
-            for i in range(a.warmup + a.runs):
-                r = sil.run(task)
-                t = time.perf_counter(); got = fn(sil.raw, f0_ms); dt = (time.perf_counter() - t) * 1e3
-                if not same(got, m["truth"][task]): errors.append(("siloed", task, got)); break
-                if i >= a.warmup: rows.append(r); py.append(dt)
-            if not rows: continue
-            d = Path(a.go).parent.resolve() / "raw" / task
-            shutil.rmtree(d, ignore_errors=True); d.mkdir(parents=True)
-            for n, bodies in sil.raw.items():
-                for i, b in enumerate(bodies): (d / f"{n}_{i:04d}.json").write_bytes(b)
-            g = json.loads(subprocess.run([str(Path(a.go).resolve()), task, str(d), str(f0_ms), str(a.warmup + a.runs)], check=True, capture_output=True, text=True).stdout)
-            if not same(g["result"], m["truth"][task]): errors.append(("siloed-go", task, g["result"])); continue
-            go = [x / 1e6 for x in g["ns"][a.warmup:]]
-            res["tasks"].setdefault(task, {})["siloed"] = {
-                "backend_ms": summ([r["backend_ms"] for r in rows]), "backend_parallel_ms": summ([r["parallel_ms"] for r in rows]),
-                "correlate_python_ms": summ(py), "correlate_go_ms": summ(go),
-                "total_python_ms": summ([r["backend_ms"] + x for r, x in zip(rows, py)]),
-                "per_backend_ms": {k: summ([r["per_backend"][k] for r in rows]) for k in rows[0]["per_backend"]},
-                "calls": rows[0]["calls"], "bytes": rows[0]["bytes"]}
-    finally: compose("unpause", "clickhouse")
-    res["host"]["load_after"] = os.getloadavg()
+            for v in VARIANTS[task]:
+                for i in range(a.warmup + a.runs):
+                    r = sil.run(task, v)
+                    t = time.perf_counter(); got = fn(sil.raw, f0_ms); dt = (time.perf_counter() - t) * 1e3
+                    if not same(got, m["truth"][task]): errors.append((v, task, got)); break
+                    if i >= a.warmup:
+                        # wall_ms already includes glue parsing between dependent calls
+                        add(task, v, total_ms=r["wall_ms"] + dt, backend_ms=r["wall_ms"], correlate_python_ms=dt, calls=r["calls"], bytes=r["bytes"],
+                            **{f"{k}_ms": x for k, x in r["per_backend"].items()})
+                if any(e[:2] == (v, task) for e in errors): continue
+                d = Path(a.go).parent.resolve() / "raw" / task
+                shutil.rmtree(d, ignore_errors=True); d.mkdir(parents=True)
+                for n, bodies in sil.raw.items():
+                    for i, b in enumerate(bodies): (d / f"{n}_{i:04d}.json").write_bytes(b)
+                g = json.loads(subprocess.run([str(Path(a.go).resolve()), task, str(d), str(f0_ms), str(a.warmup + a.runs)], check=True, capture_output=True, text=True).stdout)
+                if not same(g["result"], m["truth"][task]): errors.append((v + "-go", task, g["result"])); continue
+                for x in g["ns"][a.warmup:]: add(task, v, correlate_go_ms=x / 1e6)
+
+    for rnd in range(a.rounds):
+        # Alternate the order. The design that is not measured is paused.
+        for design in (("ch", "sil") if rnd % 2 == 0 else ("sil", "ch")):
+            paused = SILOED if design == "ch" else ["clickhouse"]
+            wait_visible(m)
+            compose("pause", *paused)
+            try: clickhouse() if design == "ch" else siloed()
+            finally: compose("unpause", *paused)
+        res["host"]["load"].append(os.getloadavg())
+        if errors: break
+
+    for (task, arm), d in acc.items():
+        res["tasks"].setdefault(task, {})[arm] = {k: (x[0] if k in ("calls", "bytes") else summ(x)) for k, x in d.items()}
+        # p50 per round shows whether the rounds agree
+        n = a.runs
+        res["tasks"][task][arm]["p50_by_round"] = [round(st.median(d["total_ms"][i:i + n]), 2) for i in range(0, len(d["total_ms"]), n)]
     res["errors"] = [(d, t) for d, t, _ in errors]
     Path(a.out).write_text(json.dumps(res, indent=1))
     for d, t, got in errors: print("WRONG ANSWER", d, t, "\n got ", json.dumps(got)[:700], "\n want", json.dumps(m["truth"][t])[:700])
-    print(f"{'task':16}{'CH total':>10}{'sil seq':>10}{'sil par':>10}{'py corr':>9}{'go corr':>9}{'calls':>6}{'CH bytes':>10}{'sil bytes':>11}   (p50 ms)")
-    for t, v in res["tasks"].items():
-        if len(v) < 2: continue
-        c, x = v["clickhouse"], v["siloed"]
-        print(f"{t:16}{c['total_ms']['p50']:10.1f}{x['backend_ms']['p50']:10.1f}{x['backend_parallel_ms']['p50']:10.1f}{x['correlate_python_ms']['p50']:9.2f}{x['correlate_go_ms']['p50']:9.2f}{x['calls']:6}{c['bytes']:10}{x['bytes']:11}")
+    print(f"{'task':16}{'arm':26}{'p50':>8}{'p95':>8}{'py':>7}{'go':>7}{'calls':>6}{'bytes':>9}  p50 by round (ms)")
+    for t, arms in res["tasks"].items():
+        for arm, v in arms.items():
+            py, go = (v.get(k, {}).get("p50", 0) for k in ("correlate_python_ms", "correlate_go_ms"))
+            print(f"{t:16}{arm:26}{v['total_ms']['p50']:8.1f}{v['total_ms']['p95']:8.1f}{py:7.2f}{go:7.2f}{v['calls']:6}{v['bytes']:9}  {v['p50_by_round']}")
     raise SystemExit(1 if errors else 0)
 
 if __name__ == "__main__": main()

@@ -25,6 +25,20 @@ def worst_service(raw): return json.loads(raw["thanos"][0])["data"]["result"][0]
 def search_ids(raw): return [t["traceID"].rjust(32, "0") for t in json.loads(raw["tempo"][0]).get("traces") or []]
 
 
+def search_services(raw):
+    return {_res(s["attributes"], "service.name") for t in json.loads(raw["tempo"][0]).get("traces") or [] for ss in t["spanSets"] for s in ss["spans"]}
+
+
+def trace_scope(raw):
+    """Services and time range of one trace, to limit the Loki query."""
+    svcs, t = set(), []
+    for rs in json.loads(raw["tempo"][0])["trace"]["resourceSpans"]:
+        svcs.add(_res(rs["resource"]["attributes"], "service.name"))
+        for ss in rs["scopeSpans"]:
+            for s in ss["spans"]: t += [int(s["startTimeUnixNano"]), int(s["endTimeUnixNano"])]
+    return svcs, min(t), max(t)
+
+
 def trace_context(raw, f0_ms):
     spans = []
     for rs in json.loads(raw["tempo"][0])["trace"]["resourceSpans"]:
