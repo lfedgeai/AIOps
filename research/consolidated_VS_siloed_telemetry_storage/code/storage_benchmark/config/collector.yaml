@@ -1,0 +1,34 @@
+receivers:
+  otlp:
+    protocols:
+      http: {endpoint: 0.0.0.0:4318, max_request_body_size: 67108864}
+processors:
+  batch: {timeout: 1s, send_batch_size: 5000, send_batch_max_size: 5000}
+exporters:
+  clickhouse:
+    endpoint: tcp://clickhouse:9000?dial_timeout=10s
+    database: otel
+    username: default
+    password: bench
+    create_schema: true
+    sending_queue: {queue_size: 5000}
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    sending_queue: {queue_size: 5000}
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls: {insecure: true}
+    sending_queue: {queue_size: 5000}
+  prometheusremotewrite:
+    endpoint: http://thanos-receive:19291/api/v1/receive
+    add_metric_suffixes: false
+    resource_to_telemetry_conversion: {enabled: true}
+    # One consumer: remote write must arrive in time order.
+    remote_write_queue: {enabled: true, queue_size: 10000, num_consumers: 1}
+service:
+  telemetry:
+    logs: {level: warn}
+  pipelines:
+    traces: {receivers: [otlp], processors: [batch], exporters: [clickhouse, otlp/tempo]}
+    logs: {receivers: [otlp], processors: [batch], exporters: [clickhouse, otlphttp/loki]}
+    metrics: {receivers: [otlp], processors: [batch], exporters: [clickhouse, prometheusremotewrite]}

@@ -1,0 +1,60 @@
+# Both storage designs behind one OTel Collector. Same total memory (4 GiB) and
+# the same CPU set for each design. The runner pauses the design it is not measuring.
+name: tsb45
+x-cpu: &cpu
+  cpuset: ${BENCH_CPUSET:-0,2,4,6}
+services:
+  clickhouse:
+    <<: *cpu
+    image: clickhouse/clickhouse-server:26.3
+    mem_limit: 4g
+    environment: {CLICKHOUSE_PASSWORD: bench, CLICKHOUSE_DB: otel}
+    ports: ["127.0.0.1:38123:8123"]
+    ulimits: {nofile: 65536}
+
+  loki:
+    <<: *cpu
+    image: grafana/loki:3.6.22
+    mem_limit: 1536m
+    command: -config.file=/etc/loki/config.yaml
+    volumes: ["./config/loki.yaml:/etc/loki/config.yaml:ro"]
+    ports: ["127.0.0.1:33100:3100"]
+  tempo:
+    <<: *cpu
+    image: grafana/tempo:2.9.5
+    mem_limit: 1536m
+    user: "0"
+    command: -config.file=/etc/tempo/config.yaml
+    volumes: ["./config/tempo.yaml:/etc/tempo/config.yaml:ro"]
+    ports: ["127.0.0.1:33200:3200"]
+  thanos-receive:
+    <<: *cpu
+    image: thanosio/thanos:v0.42.5
+    mem_limit: 640m
+    user: "0"
+    command:
+      - receive
+      - --tsdb.path=/tmp/receive
+      - --grpc-address=0.0.0.0:10901
+      - --http-address=0.0.0.0:10902
+      - --remote-write.address=0.0.0.0:19291
+      - --label=replica="a"
+  thanos-query:
+    <<: *cpu
+    image: thanosio/thanos:v0.42.5
+    mem_limit: 384m
+    command:
+      - query
+      - --http-address=0.0.0.0:9090
+      - --endpoint=thanos-receive:10901
+    ports: ["127.0.0.1:39090:9090"]
+    depends_on: [thanos-receive]
+
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.165.0
+    mem_limit: 1g
+    command: --config=/etc/otel/config.yaml
+    volumes: ["./config/collector.yaml:/etc/otel/config.yaml:ro"]
+    ports: ["127.0.0.1:34318:4318"]
+    depends_on: [clickhouse, loki, tempo, thanos-receive]
+    restart: on-failure
