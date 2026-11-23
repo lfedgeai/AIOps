@@ -16,7 +16,7 @@ Working papers by O'Neill Joseph, November 2026. Empirical tests are left for a 
 ## 🎯 Desired Outcomes
 * **Primary Objective:** Reconstruct the architecture as an argument, name the joints where a conclusion is not yet entailed, and supply the connections that close those joints.
 * **Key Deliverables:**
-    - [x] **Architecture note:** Distributed framework and component diagram.
+    - [x] **Architecture note:** Distributed framework, with the consolidated flow and the trust, minting, and execution diagrams.
     - [x] **Validation paper:** Which conclusions follow from the note, and under which assumptions.
     - [x] **Critique:** Which of those assumptions the note does not yet supply.
     - [x] **Repairs:** The policy, enforcement, and effect-inspection connections that close the remaining joint.
@@ -58,7 +58,7 @@ HTML is written to `results/papers/`. That directory is generated and is not kep
 ├── results/               # Generated paper builds
 ├── docs/
 │   ├── architecture/      # SHAS framework note
-│   ├── figures/           # Architecture diagram
+│   ├── figures/           # Flow, trust, minting, and execution diagrams
 │   ├── papers/            # Validation, critique, and repairs
 │   └── references/        # Shared bibliography
 └── README.md
@@ -66,7 +66,7 @@ HTML is written to `results/papers/`. That directory is generated and is not kep
 
 ## Reading order
 
-1. [Architecture note](docs/architecture/shas-framework.md) and [diagram](docs/figures/shas-diagram.jpg).
+1. [Architecture note](docs/architecture/shas-framework.md), with the [consolidated flow](docs/figures/shas-flow.svg) and the diagrams for [trust boundaries](docs/figures/shas-trust-boundaries.svg), [minting](docs/figures/shas-minting.svg), and [execution](docs/figures/shas-execution.svg).
 2. [The Logic of Scope-and-History Agentic Security](docs/papers/scope-history-validation.md) — whether the conclusions follow.
 3. [Where the Scope-and-History Argument Does Not Follow](docs/papers/scope-history-critique.md) — which joints are still open.
 4. [Supplying the Missing Connections](docs/papers/scope-history-repairs.md) — the connections that close the remaining joint.

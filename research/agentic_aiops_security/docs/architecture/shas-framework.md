@@ -4,7 +4,7 @@
 
 Scope & History-Aware Agentic Security (SHAS) is a distributed architecture that acts as a wrapper around the existing SPIFFE/SPIRE identity framework. While SPIRE effectively answers which workload is calling and which node it runs on, it does not account for shifts in context, leaving agentic systems vulnerable to prompt-injection threats. SHAS addresses these vulnerabilities by embedding an agent’s scope, historical reputation, and intended credentials directly into the security architecture. By enforcing strict profile validations, deterministic policy blocks, and post-execution memory sanitization, SHAS mitigates four primary classes of context attacks: direct prompt injection, indirect prompt injection across trust boundaries, context hacking of shared memory, and temporal attacks that reuse memory or authority after expiration.
 
-![Scope and History-Aware Agentic Security wrapper over SPIFFE/SPIRE. The core holds the orchestrator, dispatcher, policy-as-code revision, discovery memory, and SPIRE. The Bellman protocol publishes the minted registry to edge attestation gateways. Anomalous and cold-start work stays in the task sandbox until reconcile. The Recorder admits a safe report to context memory or quarantines a dangerous chain.](../figures/shas-diagram.jpg)
+![Consolidated flow. The request passes the guardrails, is planned from discovery memory, and revised by Asago. The dispatcher cuts the profile at a trust boundary, Cedar permits publication, and the check value rides the Bellman countdown into the SPIRE token gate. The gateway and Progent gate the call. A cold start or an anomalous call stays in the sandbox until reconcile. The Recorder admits the next brief, quarantines a dangerous chain, wipes the agent, and keeps a same-fault bonded report for forensics.](../figures/shas-flow.svg)
 
 ## **1\. The Distributed Threat Landscape**
 
@@ -19,11 +19,15 @@ This traversal spans several trust boundaries:
 | Federated network (Vendor networks) | Moderate  | Moderate  | Limited  | Low  |
 | Internet | None  | High  | None  | None  |
 
+![Four trust boundaries. Trust, governance, and traceability fall from the core, through the intranet and a federated vendor network, to the internet. A fetch at the internet boundary and a write in the core are different profiles.](../figures/shas-trust-boundaries.svg)
+
 When an agent accesses external sites to fulfill a query, it is exposed to the local threat landscape. Without proper containment, an agent could ingest a prompt injection, bring it back across boundaries into the Core network, and poison the swarm’s shared context or memory graph. SHAS treats such boundary crossings as dual-exposure vectors and limits the blast radius of compromised agents by ensuring that even poisoned agents can only execute their strictly assigned, historically validated tasks.
 
 ## **2\. Core Architecture & Minting**
 
 To prevent poisoned memory propagation, agents in the SHAS framework are strictly minted for their tasks, and the multi-turn swarm memory is maintained as a highly monitored series of briefs rather than an open communication channel.
+
+![Minting and the clock. The user prompt passes input guardrails. Discovery reports stay in their own memory. Asago revises the plan, output guardrails screen it, the dispatcher cuts the profile along a trust boundary, and Cedar permits publication. The check value binds the system prompt. Bellman carries the countdown, and SPIRE issues a token only inside that countdown. Zanzibar is the helper-reuse relation.](../figures/shas-minting.svg)
 
 ### **2.1 Orchestration, Planning, and Discovery**
 
@@ -64,6 +68,8 @@ To prevent poisoned memory propagation, agents in the SHAS framework are strictl
 ## **3\. The Execution Pipeline & Zero Trust Containment**
 
 SHAS enforces zero trust principles by placing enforcement points directly on the request path, ensuring anomalous or unauthorized behavior never reaches the primary database.
+
+![Execution, containment, and memory. The gateway asks five questions and hashes the system prompt. Progent blocks a forbidden tool call. Cold starts and anomalous permitted calls stay in the sandbox until a dry run and an in-toto layout allow reconcile. The Recorder admits a safe report as the next brief, quarantines a dangerous chain, wipes the agent, and keeps a same-fault bonded report for forensics.](../figures/shas-execution.svg)
 
 ### **3.1 The Attestation Gateway**
 

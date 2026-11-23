@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1120" role="img" aria-labelledby="title desc" font-family="Helvetica, Arial, sans-serif">
+  <title id="title">SHAS minting and the clock</title>
+  <desc id="desc">From the user prompt through input guardrails, discovery memory, Asago revision, output guardrails, the dispatcher grain rule, a Cedar publication permit, the check value, the Bellman countdown, and the SPIRE token gate. Zanzibar is the helper-reuse relation, not the plan engine.</desc>
+  <rect width="1200" height="1120" fill="#f7f6f3"/>
+  <text x="40" y="46" fill="#1c1917" font-size="26" font-weight="700">Minting and the clock</text>
+  <text x="40" y="74" fill="#57534e" font-size="15">The plan is revised. A separate engine publishes the profile. SPIRE issues a token only inside the countdown.</text>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1.2 L 8.5 5 L 0 8.8 Z" fill="#44403c"/>
+    </marker>
+  </defs>
+
+  <!-- Main chain -->
+  <g>
+    <rect x="88" y="104" width="620" height="58" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+    <rect x="88" y="104" width="6" height="58" fill="#1e3a5f"/>
+    <text x="110" y="128" fill="#1c1917" font-size="15" font-weight="700">User prompt</text>
+    <text x="110" y="148" fill="#44403c" font-size="13">The request that starts the task.</text>
+  </g>
+  <line x1="398" y1="162" x2="398" y2="178" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="88" y="180" width="620" height="74" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+    <rect x="88" y="180" width="6" height="74" fill="#1e3a5f"/>
+    <text x="110" y="204" fill="#1c1917" font-size="15" font-weight="700">Input guardrails</text>
+    <text x="110" y="226" fill="#44403c" font-size="13">The initial user prompt is screened against the duty.</text>
+    <text x="110" y="244" fill="#44403c" font-size="13">A request that leaves the duty fails before an agent is assigned.</text>
+  </g>
+  <line x1="398" y1="254" x2="398" y2="270" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="88" y="272" width="620" height="74" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+    <rect x="88" y="272" width="6" height="74" fill="#1f4d3a"/>
+    <text x="110" y="296" fill="#1c1917" font-size="15" font-weight="700">Orchestrator</text>
+    <text x="110" y="318" fill="#44403c" font-size="13">Builds a granular plan from the user request</text>
+    <text x="110" y="336" fill="#44403c" font-size="13">and from discovery memory.</text>
+  </g>
+  <line x1="398" y1="346" x2="398" y2="362" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="88" y="364" width="620" height="74" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+    <rect x="88" y="364" width="6" height="74" fill="#1f4d3a"/>
+    <text x="110" y="388" fill="#1c1917" font-size="15" font-weight="700">Asago</text>
+    <text x="110" y="410" fill="#44403c" font-size="13">Policy-as-code revises the plan until it passes</text>
+    <text x="110" y="428" fill="#44403c" font-size="13">or the administrator's turn limit is reached.</text>
+  </g>
+  <path d="M88 401 H56 V309 H88" fill="none" stroke="#1f4d3a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="16" y="292" fill="#1f4d3a" font-size="11" font-weight="700" transform="rotate(-90 16 292)">revision loop</text>
+  <line x1="398" y1="438" x2="398" y2="454" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="88" y="456" width="620" height="74" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+    <rect x="88" y="456" width="6" height="74" fill="#1e3a5f"/>
+    <text x="110" y="480" fill="#1c1917" font-size="15" font-weight="700">Output guardrails</text>
+    <text x="110" y="502" fill="#44403c" font-size="13">The orchestrator's plan is screened against the same duty.</text>
+    <text x="110" y="520" fill="#44403c" font-size="13">A plan that leaves the duty fails before it is assigned.</text>
+  </g>
+  <line x1="398" y1="530" x2="398" y2="546" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="88" y="548" width="620" height="74" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+    <rect x="88" y="548" width="6" height="74" fill="#7c4a12"/>
+    <text x="110" y="572" fill="#1c1917" font-size="15" font-weight="700">Dispatcher</text>
+    <text x="110" y="594" fill="#44403c" font-size="13">Prefers existing single-job agents. A new mint stops</text>
+    <text x="110" y="612" fill="#44403c" font-size="13">at a security boundary, under least privilege.</text>
+  </g>
+  <line x1="398" y1="622" x2="398" y2="638" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="88" y="640" width="620" height="74" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+    <rect x="88" y="640" width="6" height="74" fill="#7c4a12"/>
+    <text x="110" y="664" fill="#1c1917" font-size="15" font-weight="700">Cedar</text>
+    <text x="110" y="686" fill="#44403c" font-size="13">An engine outside the dispatcher permits publication.</text>
+    <text x="110" y="704" fill="#44403c" font-size="13">A profile that spans two trust boundaries is never published.</text>
+  </g>
+  <line x1="398" y1="714" x2="398" y2="730" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="88" y="732" width="620" height="74" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+    <rect x="88" y="732" width="6" height="74" fill="#7f1d1d"/>
+    <text x="110" y="756" fill="#1c1917" font-size="15" font-weight="700">Check value</text>
+    <text x="110" y="778" fill="#44403c" font-size="13">The system prompt and creation metadata produce a public check value.</text>
+    <text x="110" y="796" fill="#44403c" font-size="13">The best-guess addendum is not part of that prompt.</text>
+  </g>
+  <line x1="398" y1="806" x2="398" y2="822" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="88" y="824" width="620" height="88" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+    <rect x="88" y="824" width="6" height="88" fill="#7f1d1d"/>
+    <text x="110" y="848" fill="#1c1917" font-size="15" font-weight="700">Bellman</text>
+    <text x="110" y="870" fill="#44403c" font-size="13">A signed broadcast of valid, commissioning, and decommissioning agents.</text>
+    <text x="110" y="888" fill="#44403c" font-size="13">Unused agents carry a countdown. A later list that still includes</text>
+    <text x="110" y="906" fill="#44403c" font-size="13">an agent resets it. A revocation forces a publication.</text>
+  </g>
+  <line x1="398" y1="912" x2="398" y2="928" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="88" y="930" width="620" height="74" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+    <rect x="88" y="930" width="6" height="74" fill="#7f1d1d"/>
+    <text x="110" y="954" fill="#1c1917" font-size="15" font-weight="700">SPIRE token gate</text>
+    <text x="110" y="976" fill="#44403c" font-size="13">A token is issued only when the remaining countdown outlasts it</text>
+    <text x="110" y="994" fill="#44403c" font-size="13">and a resetting publication occurs before the countdown expires.</text>
+  </g>
+
+  <!-- Discovery -->
+  <g>
+    <rect x="748" y="180" width="412" height="166" rx="8" fill="#ffffff" stroke="#1f4d3a"/>
+    <text x="768" y="208" fill="#1f4d3a" font-size="15" font-weight="700">Discovery memory</text>
+    <text x="768" y="234" fill="#44403c" font-size="13">Short-lived, read-only pollers report what</text>
+    <text x="768" y="252" fill="#44403c" font-size="13">the current role can already see.</text>
+    <text x="768" y="276" fill="#44403c" font-size="13">Those reports are stored apart from</text>
+    <text x="768" y="294" fill="#44403c" font-size="13">workload memory.</text>
+    <text x="768" y="318" fill="#44403c" font-size="13">The orchestrator and the dispatcher plan</text>
+    <text x="768" y="336" fill="#44403c" font-size="13">from this memory.</text>
+  </g>
+  <path d="M748 300 H720 V309 H708" fill="none" stroke="#1f4d3a" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Best guess -->
+  <g>
+    <rect x="748" y="732" width="412" height="150" rx="8" fill="#ffffff" stroke="#7f1d1d"/>
+    <text x="768" y="760" fill="#7f1d1d" font-size="15" font-weight="700">Best-guess addendum</text>
+    <text x="768" y="786" fill="#44403c" font-size="13">Attached only to the first user prompt</text>
+    <text x="768" y="804" fill="#44403c" font-size="13">of a newly minted agent.</text>
+    <text x="768" y="828" fill="#44403c" font-size="13">Excluded from the system prompt, so it</text>
+    <text x="768" y="846" fill="#44403c" font-size="13">cannot change the published check value.</text>
+    <text x="768" y="868" fill="#44403c" font-size="13">The input guardrail still screens it.</text>
+  </g>
+  <path d="M748 800 H720" fill="none" stroke="#7f1d1d" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+
+  <!-- Zanzibar -->
+  <g>
+    <rect x="748" y="520" width="412" height="176" rx="8" fill="#fffaf3" stroke="#7c4a12" stroke-dasharray="5 4"/>
+    <text x="768" y="548" fill="#7c4a12" font-size="15" font-weight="700">Zanzibar — helper reuse</text>
+    <text x="768" y="574" fill="#44403c" font-size="13">Equal or reduced scope is a relation</text>
+    <text x="768" y="592" fill="#44403c" font-size="13">between two published profiles.</text>
+    <text x="768" y="616" fill="#44403c" font-size="13">A remembered helper is requested again</text>
+    <text x="768" y="634" fill="#44403c" font-size="13">only when that relation holds.</text>
+    <text x="768" y="662" fill="#7c4a12" font-size="13" font-weight="700">Not the plan engine. Not Asago.</text>
+    <text x="768" y="680" fill="#7c4a12" font-size="13" font-weight="700">Not Cedar.</text>
+  </g>
+  <path d="M748 608 H720 V585 H708" fill="none" stroke="#7c4a12" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+</svg>
