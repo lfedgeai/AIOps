@@ -1,0 +1,23 @@
+server: {http_listen_port: 3200, log_level: warn}
+distributor:
+  receivers: {otlp: {protocols: {grpc: {endpoint: 0.0.0.0:4317}}}}
+ingester: {max_block_duration: 5m}
+# local-blocks serves TraceQL metrics for data that is not in the backend yet.
+metrics_generator:
+  processor: {local_blocks: {filter_server_spans: false, flush_to_storage: false}}
+  # The corpus is backfilled. With the 2m default, Tempo clamps block time ranges and
+  # time-filtered queries then miss older spans.
+  traces_storage: {path: /tmp/tempo/generator/traces, ingestion_time_range_slack: 3h}
+  storage: {path: /tmp/tempo/generator/wal}
+  metrics_ingestion_time_range_slack: 3h
+query_frontend:
+  search: {max_duration: 24h, default_result_limit: 20, max_result_limit: 0}
+  metrics: {max_duration: 24h, query_backend_after: 24h}
+storage:
+  trace: {backend: local, local: {path: /tmp/tempo/blocks}, wal: {path: /tmp/tempo/wal, ingestion_time_range_slack: 3h}}
+overrides:
+  defaults:
+    ingestion: {rate_limit_bytes: 536870912, burst_size_bytes: 536870912, max_traces_per_user: 0}
+    global: {max_bytes_per_trace: 0}
+    metrics_generator: {processors: [local-blocks]}
+usage_report: {reporting_enabled: false}
