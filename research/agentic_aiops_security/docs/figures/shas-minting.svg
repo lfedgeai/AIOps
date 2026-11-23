@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1120" role="img" aria-labelledby="title desc" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1140" role="img" aria-labelledby="title desc" font-family="Helvetica, Arial, sans-serif">
   <title id="title">SHAS minting and the clock</title>
-  <desc id="desc">From the user prompt through input guardrails, discovery memory, Asago revision, output guardrails, the dispatcher grain rule, a Cedar publication permit, the check value, the Bellman countdown, and the SPIRE token gate. Zanzibar is the helper-reuse relation, not the plan engine.</desc>
-  <rect width="1200" height="1120" fill="#f7f6f3"/>
+  <desc id="desc">From the user prompt through input guardrails, discovery memory, Asago revision, output guardrails, the dispatcher grain rule, a Cedar publication permit, the check value, the Bellman countdown, and the SPIRE token gate. The transaction token that names the principal stays out of the check value. Zanzibar is the helper-reuse relation, not the plan engine.</desc>
+  <rect width="1200" height="1140" fill="#f7f6f3"/>
   <text x="40" y="46" fill="#1c1917" font-size="26" font-weight="700">Minting and the clock</text>
   <text x="40" y="74" fill="#57534e" font-size="15">The plan is revised. A separate engine publishes the profile. SPIRE issues a token only inside the countdown.</text>
 
@@ -77,30 +77,32 @@
   <line x1="398" y1="714" x2="398" y2="730" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
 
   <g>
-    <rect x="88" y="732" width="620" height="74" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
-    <rect x="88" y="732" width="6" height="74" fill="#7f1d1d"/>
-    <text x="110" y="756" fill="#1c1917" font-size="15" font-weight="700">Check value</text>
-    <text x="110" y="778" fill="#44403c" font-size="13">The system prompt and creation metadata produce a public check value.</text>
-    <text x="110" y="796" fill="#44403c" font-size="13">The best-guess addendum is not part of that prompt.</text>
+    <rect x="88" y="732" width="620" height="112" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+    <rect x="88" y="732" width="6" height="112" fill="#7f1d1d"/>
+    <text x="110" y="754" fill="#1c1917" font-size="15" font-weight="700">Check value</text>
+    <text x="110" y="774" fill="#44403c" font-size="13">The hash binds the system prompt, the creation metadata,</text>
+    <text x="110" y="792" fill="#44403c" font-size="13">and the agent's long-lived capability token.</text>
+    <text x="110" y="810" fill="#44403c" font-size="13">The best-guess addendum stays out of that hash.</text>
+    <text x="110" y="828" fill="#44403c" font-size="13">A transaction token for the principal stays off that hash.</text>
   </g>
-  <line x1="398" y1="806" x2="398" y2="822" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="398" y1="844" x2="398" y2="862" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
 
   <g>
-    <rect x="88" y="824" width="620" height="88" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
-    <rect x="88" y="824" width="6" height="88" fill="#7f1d1d"/>
-    <text x="110" y="848" fill="#1c1917" font-size="15" font-weight="700">Bellman</text>
-    <text x="110" y="870" fill="#44403c" font-size="13">A signed broadcast of valid, commissioning, and decommissioning agents.</text>
-    <text x="110" y="888" fill="#44403c" font-size="13">Unused agents carry a countdown. A later list that still includes</text>
-    <text x="110" y="906" fill="#44403c" font-size="13">an agent resets it. A revocation forces a publication.</text>
+    <rect x="88" y="864" width="620" height="96" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+    <rect x="88" y="864" width="6" height="96" fill="#7f1d1d"/>
+    <text x="110" y="888" fill="#1c1917" font-size="15" font-weight="700">Bellman</text>
+    <text x="110" y="910" fill="#44403c" font-size="13">A signed broadcast of valid, commissioning, and decommissioning agents.</text>
+    <text x="110" y="928" fill="#44403c" font-size="13">Unused agents carry a countdown. A later list that still includes</text>
+    <text x="110" y="946" fill="#44403c" font-size="13">an agent resets it. A revocation forces a publication.</text>
   </g>
-  <line x1="398" y1="912" x2="398" y2="928" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="398" y1="960" x2="398" y2="976" stroke="#44403c" stroke-width="1.5" marker-end="url(#arrow)"/>
 
   <g>
-    <rect x="88" y="930" width="620" height="74" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
-    <rect x="88" y="930" width="6" height="74" fill="#7f1d1d"/>
-    <text x="110" y="954" fill="#1c1917" font-size="15" font-weight="700">SPIRE token gate</text>
-    <text x="110" y="976" fill="#44403c" font-size="13">A token is issued only when the remaining countdown outlasts it</text>
-    <text x="110" y="994" fill="#44403c" font-size="13">and a resetting publication occurs before the countdown expires.</text>
+    <rect x="88" y="978" width="620" height="80" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+    <rect x="88" y="978" width="6" height="80" fill="#7f1d1d"/>
+    <text x="110" y="1002" fill="#1c1917" font-size="15" font-weight="700">SPIRE token gate</text>
+    <text x="110" y="1024" fill="#44403c" font-size="13">SPIRE issues its short-lived workload token only when the countdown outlasts it</text>
+    <text x="110" y="1042" fill="#44403c" font-size="13">and a resetting publication occurs before the countdown expires.</text>
   </g>
 
   <!-- Discovery -->

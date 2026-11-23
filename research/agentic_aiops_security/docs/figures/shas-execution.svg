@@ -1,115 +1,123 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1360" role="img" aria-labelledby="title desc" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1428" role="img" aria-labelledby="title desc" font-family="Helvetica, Arial, sans-serif">
   <title id="title">SHAS execution, containment, and memory</title>
-  <desc id="desc">The attestation gateway asks five questions and checks the system-prompt hash. Progent blocks a forbidden tool call. Cold starts and anomalous permitted calls stay in the sandbox as CRDT shards until a dry run and an in-toto layout allow reconcile. The Recorder admits a safe report as the next brief, quarantines a dangerous chain, wipes the agent, and keeps a same-fault bonded report for forensics.</desc>
-  <rect width="1280" height="1360" fill="#f7f6f3"/>
+  <desc id="desc">The attestation gateway asks five questions, checks the system-prompt hash, and verifies a transaction token that names the principal while the agent's own identity remains the actor. It refuses a tool whose preceding sequence is not a path in the published control-flow graph. Progent blocks a forbidden tool call. Cold starts and anomalous permitted calls stay in the sandbox as CRDT shards until a dry run and an in-toto layout allow reconcile. The Recorder admits a safe report as the next brief, quarantines a dangerous chain, wipes the agent, and keeps a same-fault bonded report for forensics.</desc>
+  <rect width="1280" height="1428" fill="#f7f6f3"/>
   <text x="36" y="44" fill="#1c1917" font-size="26" font-weight="700">Execution, containment, and memory</text>
   <text x="36" y="72" fill="#57534e" font-size="15">A forbidden call is blocked. An anomalous call stays sharded until the dry run accepts it. Only an admitted report becomes the next brief.</text>
 
   <!-- Gateway -->
-  <rect x="36" y="100" width="1208" height="292" rx="12" fill="#eef2f6" stroke="#d6d3d1"/>
+  <rect x="36" y="100" width="1208" height="360" rx="12" fill="#eef2f6" stroke="#d6d3d1"/>
   <text x="56" y="128" fill="#1e3a5f" font-size="13" font-weight="700">ATTESTATION GATEWAY</text>
 
-  <rect x="56" y="144" width="760" height="224" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
-  <text x="76" y="172" fill="#1c1917" font-size="16" font-weight="700">Five questions, with SPIFFE/SPIRE</text>
-  <text x="76" y="200" fill="#1c1917" font-size="14">1. Is this one of the organization's approved agents?</text>
-  <text x="76" y="224" fill="#1c1917" font-size="14">2. Where did this agent come from?</text>
-  <text x="76" y="248" fill="#1c1917" font-size="14">3. When is the work supposed to be done?</text>
-  <text x="76" y="272" fill="#1c1917" font-size="14">4. What may it do and request from this resource, given its profile?</text>
-  <text x="76" y="296" fill="#1c1917" font-size="14">5. Who is this agent working on behalf of?</text>
-  <text x="76" y="344" fill="#57534e" font-size="13">Approval means only the approved work and only the approved class of data.</text>
+  <rect x="56" y="144" width="760" height="292" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+  <text x="76" y="172" fill="#1c1917" font-size="16" font-weight="700">Five questions</text>
+  <text x="76" y="198" fill="#1c1917" font-size="14">1. Is this one of the organization's approved agents?</text>
+  <text x="76" y="220" fill="#1c1917" font-size="14">2. Where did this agent come from?</text>
+  <text x="76" y="242" fill="#1c1917" font-size="14">3. When is the work supposed to be done?</text>
+  <text x="76" y="264" fill="#1c1917" font-size="14">4. What may it do and request from this resource, given its profile?</text>
+  <text x="76" y="286" fill="#1c1917" font-size="14">5. Who is this agent working on behalf of?</text>
+  <text x="76" y="308" fill="#44403c" font-size="13">A transaction token names the principal. The agent stays the actor.</text>
+  <text x="76" y="326" fill="#44403c" font-size="13">Refused outside its trust domain. It stays out of the check-value hash.</text>
+  <text x="76" y="350" fill="#1e3a5f" font-size="13" font-weight="700">Published control-flow graph</text>
+  <text x="76" y="370" fill="#44403c" font-size="13">A tool runs only when the preceding sequence is a path in that graph.</text>
+  <text x="76" y="390" fill="#44403c" font-size="13">A missing edge is refused. It is not sent to the sandbox.</text>
+  <text x="76" y="414" fill="#57534e" font-size="13">Approval means only the approved work and only the approved class of data.</text>
 
-  <rect x="836" y="144" width="384" height="224" rx="8" fill="#ffffff" stroke="#7f1d1d"/>
+  <rect x="836" y="144" width="384" height="292" rx="8" fill="#ffffff" stroke="#7f1d1d"/>
   <text x="856" y="172" fill="#7f1d1d" font-size="16" font-weight="700">Check value</text>
-  <text x="856" y="200" fill="#44403c" font-size="13">The gateway hashes the presented</text>
-  <text x="856" y="218" fill="#44403c" font-size="13">system prompt and compares it with</text>
-  <text x="856" y="236" fill="#44403c" font-size="13">the value in the local Bellman registry.</text>
-  <text x="856" y="264" fill="#44403c" font-size="13">A prompt that does not match is not</text>
-  <text x="856" y="282" fill="#44403c" font-size="13">the minted agent.</text>
-  <text x="856" y="310" fill="#44403c" font-size="13">SPIRE still answers which workload</text>
-  <text x="856" y="328" fill="#44403c" font-size="13">is calling and which node it runs on.</text>
-  <text x="856" y="350" fill="#57534e" font-size="12">The hash stands beside those five questions.</text>
+  <text x="856" y="196" fill="#44403c" font-size="13">The gateway hashes the presented</text>
+  <text x="856" y="214" fill="#44403c" font-size="13">system prompt and the long-lived</text>
+  <text x="856" y="232" fill="#44403c" font-size="13">capability token, then compares</text>
+  <text x="856" y="250" fill="#44403c" font-size="13">that with the Bellman registry.</text>
+  <text x="856" y="268" fill="#44403c" font-size="13">A different token is not this agent.</text>
+  <text x="856" y="304" fill="#44403c" font-size="13">The same publication carries</text>
+  <text x="856" y="322" fill="#44403c" font-size="13">the control-flow graph. The gateway</text>
+  <text x="856" y="340" fill="#44403c" font-size="13">does not add edges from the live trace.</text>
+  <text x="856" y="366" fill="#57534e" font-size="12">SPIRE still answers which workload</text>
+  <text x="856" y="384" fill="#57534e" font-size="12">is calling and which node it runs on.</text>
+  <text x="856" y="410" fill="#57534e" font-size="12">The transaction token stays out of this hash.</text>
 
   <!-- Path -->
-  <rect x="36" y="416" width="1208" height="430" rx="12" fill="#f3f6f3" stroke="#d6d3d1"/>
-  <text x="56" y="444" fill="#1f4d3a" font-size="13" font-weight="700">ON THE PATH OF THE CALL</text>
+  <rect x="36" y="484" width="1208" height="430" rx="12" fill="#f3f6f3" stroke="#d6d3d1"/>
+  <text x="56" y="512" fill="#1f4d3a" font-size="13" font-weight="700">ON THE PATH OF THE CALL</text>
 
-  <rect x="56" y="460" width="380" height="360" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
-  <text x="76" y="490" fill="#1c1917" font-size="16" font-weight="700">Progent</text>
-  <text x="76" y="512" fill="#57534e" font-size="13">Policy enforcement point</text>
-  <text x="76" y="544" fill="#44403c" font-size="13">A tool call the published policy</text>
-  <text x="76" y="562" fill="#44403c" font-size="13">does not permit is blocked before</text>
-  <text x="76" y="580" fill="#44403c" font-size="13">it runs. The arguments are part</text>
-  <text x="76" y="598" fill="#44403c" font-size="13">of that decision.</text>
-  <text x="76" y="630" fill="#44403c" font-size="13">Deleting a malformed row can be</text>
-  <text x="76" y="648" fill="#44403c" font-size="13">permitted. Deleting thousands of</text>
-  <text x="76" y="666" fill="#44403c" font-size="13">drafts is a different call.</text>
-  <text x="76" y="698" fill="#1f4d3a" font-size="13" font-weight="700">The block is the policy.</text>
-  <text x="76" y="720" fill="#44403c" font-size="13">A permitted call is not blocked</text>
-  <text x="76" y="738" fill="#44403c" font-size="13">for looking unusual.</text>
-  <text x="76" y="770" fill="#57534e" font-size="13">That call continues to the right.</text>
-  <text x="76" y="792" fill="#57534e" font-size="13">An anomalous one is sandboxed.</text>
+  <rect x="56" y="528" width="380" height="360" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+  <text x="76" y="558" fill="#1c1917" font-size="16" font-weight="700">Progent</text>
+  <text x="76" y="580" fill="#57534e" font-size="13">Policy enforcement point</text>
+  <text x="76" y="612" fill="#44403c" font-size="13">A tool call the published policy</text>
+  <text x="76" y="630" fill="#44403c" font-size="13">does not permit is blocked before</text>
+  <text x="76" y="648" fill="#44403c" font-size="13">it runs. The arguments are part</text>
+  <text x="76" y="666" fill="#44403c" font-size="13">of that decision.</text>
+  <text x="76" y="698" fill="#44403c" font-size="13">Deleting a malformed row can be</text>
+  <text x="76" y="716" fill="#44403c" font-size="13">permitted. Deleting thousands of</text>
+  <text x="76" y="734" fill="#44403c" font-size="13">drafts is a different call.</text>
+  <text x="76" y="766" fill="#1f4d3a" font-size="13" font-weight="700">The block is the policy.</text>
+  <text x="76" y="788" fill="#44403c" font-size="13">A permitted call is not blocked</text>
+  <text x="76" y="806" fill="#44403c" font-size="13">for looking unusual.</text>
+  <text x="76" y="838" fill="#57534e" font-size="13">That call continues to the right.</text>
+  <text x="76" y="860" fill="#57534e" font-size="13">An anomalous one is sandboxed.</text>
 
-  <rect x="452" y="460" width="380" height="360" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
-  <text x="472" y="490" fill="#1c1917" font-size="16" font-weight="700">Local reputation</text>
-  <text x="472" y="512" fill="#57534e" font-size="13">Agent reputation database</text>
-  <text x="472" y="544" fill="#44403c" font-size="13">The baseline is recent work on</text>
-  <text x="472" y="562" fill="#44403c" font-size="13">the local node, kept from hours</text>
-  <text x="472" y="580" fill="#44403c" font-size="13">to weeks. It is not an internet store.</text>
-  <text x="472" y="612" fill="#44403c" font-size="13">A cold start has no baseline. Its</text>
-  <text x="472" y="630" fill="#44403c" font-size="13">first task runs in the sandbox and</text>
-  <text x="472" y="648" fill="#44403c" font-size="13">is the fingerprint.</text>
-  <text x="472" y="680" fill="#44403c" font-size="13">The monitoring client moves a</text>
-  <text x="472" y="698" fill="#44403c" font-size="13">permitted call that leaves the</text>
-  <text x="472" y="716" fill="#44403c" font-size="13">baseline, or that reaches a new</text>
-  <text x="472" y="734" fill="#44403c" font-size="13">resource, into the sandbox.</text>
-  <text x="472" y="770" fill="#1f4d3a" font-size="13" font-weight="700">Containment is on the path.</text>
-  <text x="472" y="792" fill="#44403c" font-size="13">The sandbox receives that call first.</text>
+  <rect x="452" y="528" width="380" height="360" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+  <text x="472" y="558" fill="#1c1917" font-size="16" font-weight="700">Local reputation</text>
+  <text x="472" y="580" fill="#57534e" font-size="13">Agent reputation database</text>
+  <text x="472" y="612" fill="#44403c" font-size="13">The baseline is recent work on</text>
+  <text x="472" y="630" fill="#44403c" font-size="13">the local node, kept from hours</text>
+  <text x="472" y="648" fill="#44403c" font-size="13">to weeks. It is not an internet store.</text>
+  <text x="472" y="680" fill="#44403c" font-size="13">A cold start has no baseline. Its</text>
+  <text x="472" y="698" fill="#44403c" font-size="13">first task runs in the sandbox and</text>
+  <text x="472" y="716" fill="#44403c" font-size="13">is the fingerprint.</text>
+  <text x="472" y="748" fill="#44403c" font-size="13">The monitoring client moves a</text>
+  <text x="472" y="766" fill="#44403c" font-size="13">permitted call that leaves the</text>
+  <text x="472" y="784" fill="#44403c" font-size="13">baseline, or that reaches a new</text>
+  <text x="472" y="802" fill="#44403c" font-size="13">resource, into the sandbox.</text>
+  <text x="472" y="838" fill="#1f4d3a" font-size="13" font-weight="700">Containment is on the path.</text>
+  <text x="472" y="860" fill="#44403c" font-size="13">The sandbox receives that call first.</text>
 
-  <rect x="848" y="460" width="372" height="360" rx="8" fill="#ffffff" stroke="#7c4a12"/>
-  <text x="868" y="490" fill="#1c1917" font-size="16" font-weight="700">Task sandbox</text>
-  <text x="868" y="516" fill="#44403c" font-size="13">Writes and deletes are local</text>
-  <text x="868" y="534" fill="#44403c" font-size="13">CRDT shards.</text>
-  <text x="868" y="560" fill="#44403c" font-size="13">A dry run asks whether those</text>
-  <text x="868" y="578" fill="#44403c" font-size="13">effects are destructive or breaking.</text>
-  <text x="868" y="604" fill="#44403c" font-size="13">An in-toto layout names the profile</text>
-  <text x="868" y="622" fill="#44403c" font-size="13">as the functionary and the shards as</text>
-  <text x="868" y="640" fill="#44403c" font-size="13">the product. The dry run is the</text>
-  <text x="868" y="658" fill="#44403c" font-size="13">inspection.</text>
-  <text x="868" y="684" fill="#44403c" font-size="13">Reconcile into the primary database</text>
-  <text x="868" y="702" fill="#44403c" font-size="13">only when the profile is valid and</text>
-  <text x="868" y="720" fill="#44403c" font-size="13">the dry run matches the layout.</text>
-  <text x="868" y="746" fill="#7c4a12" font-size="13" font-weight="700">Until then, the only outward</text>
-  <text x="868" y="764" fill="#7c4a12" font-size="13" font-weight="700">message is a keepalive.</text>
-  <text x="868" y="792" fill="#44403c" font-size="13">Untrusted data cannot choose the effects.</text>
+  <rect x="848" y="528" width="372" height="360" rx="8" fill="#ffffff" stroke="#7c4a12"/>
+  <text x="868" y="558" fill="#1c1917" font-size="16" font-weight="700">Task sandbox</text>
+  <text x="868" y="584" fill="#44403c" font-size="13">Writes and deletes are local</text>
+  <text x="868" y="602" fill="#44403c" font-size="13">CRDT shards.</text>
+  <text x="868" y="628" fill="#44403c" font-size="13">A dry run asks whether those</text>
+  <text x="868" y="646" fill="#44403c" font-size="13">effects are destructive or breaking.</text>
+  <text x="868" y="672" fill="#44403c" font-size="13">An in-toto layout names the profile</text>
+  <text x="868" y="690" fill="#44403c" font-size="13">as the functionary and the shards as</text>
+  <text x="868" y="708" fill="#44403c" font-size="13">the product. The dry run is the</text>
+  <text x="868" y="726" fill="#44403c" font-size="13">inspection.</text>
+  <text x="868" y="752" fill="#44403c" font-size="13">Reconcile into the primary database</text>
+  <text x="868" y="770" fill="#44403c" font-size="13">only when the profile is valid and</text>
+  <text x="868" y="788" fill="#44403c" font-size="13">the dry run matches the layout.</text>
+  <text x="868" y="814" fill="#7c4a12" font-size="13" font-weight="700">Until then, the only outward</text>
+  <text x="868" y="832" fill="#7c4a12" font-size="13" font-weight="700">message is a keepalive.</text>
+  <text x="868" y="860" fill="#44403c" font-size="13">Untrusted data cannot choose the effects.</text>
 
   <!-- Recorder -->
-  <rect x="36" y="870" width="1208" height="454" rx="12" fill="#f8f1f1" stroke="#d6d3d1"/>
-  <text x="56" y="898" fill="#7f1d1d" font-size="13" font-weight="700">RECORDER — AFTER THE WORK-ORDER REPORT</text>
+  <rect x="36" y="938" width="1208" height="454" rx="12" fill="#f8f1f1" stroke="#d6d3d1"/>
+  <text x="56" y="966" fill="#7f1d1d" font-size="13" font-weight="700">RECORDER — AFTER THE WORK-ORDER REPORT</text>
 
-  <rect x="56" y="916" width="600" height="210" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
-  <text x="76" y="944" fill="#1c1917" font-size="16" font-weight="700">Before anything is briefed</text>
-  <text x="76" y="974" fill="#44403c" font-size="13">Drift and adherence. A factual error inside the duty passes.</text>
-  <text x="76" y="994" fill="#44403c" font-size="13">An action outside the system prompt, such as exfiltration, fails.</text>
-  <text x="76" y="1020" fill="#44403c" font-size="13">Restricted fields are sanitized.</text>
-  <text x="76" y="1046" fill="#44403c" font-size="13">Direct-injection guardrails run on the finished report.</text>
-  <text x="76" y="1072" fill="#44403c" font-size="13">The session chain is audited before a report is added to memory.</text>
-  <text x="76" y="1100" fill="#57534e" font-size="13">Discovery memory is neither of these stores.</text>
+  <rect x="56" y="984" width="600" height="210" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+  <text x="76" y="1012" fill="#1c1917" font-size="16" font-weight="700">Before anything is briefed</text>
+  <text x="76" y="1042" fill="#44403c" font-size="13">Drift and adherence. A factual error inside the duty passes.</text>
+  <text x="76" y="1062" fill="#44403c" font-size="13">An action outside the system prompt, such as exfiltration, fails.</text>
+  <text x="76" y="1088" fill="#44403c" font-size="13">Restricted fields are sanitized.</text>
+  <text x="76" y="1114" fill="#44403c" font-size="13">Direct-injection guardrails run on the finished report.</text>
+  <text x="76" y="1140" fill="#44403c" font-size="13">The session chain is audited before a report is added to memory.</text>
+  <text x="76" y="1168" fill="#57534e" font-size="13">Discovery memory is neither of these stores.</text>
 
-  <rect x="672" y="916" width="548" height="96" rx="8" fill="#ffffff" stroke="#1f4d3a"/>
-  <text x="692" y="946" fill="#1f4d3a" font-size="15" font-weight="700">Admitted</text>
-  <text x="692" y="970" fill="#44403c" font-size="13">The report is the next brief. It is what a repeated</text>
-  <text x="692" y="988" fill="#44403c" font-size="13">task can read from context memory.</text>
+  <rect x="672" y="984" width="548" height="96" rx="8" fill="#ffffff" stroke="#1f4d3a"/>
+  <text x="692" y="1014" fill="#1f4d3a" font-size="15" font-weight="700">Admitted</text>
+  <text x="692" y="1038" fill="#44403c" font-size="13">The report is the next brief. It is what a repeated</text>
+  <text x="692" y="1056" fill="#44403c" font-size="13">task can read from context memory.</text>
 
-  <rect x="672" y="1026" width="548" height="100" rx="8" fill="#ffffff" stroke="#7f1d1d"/>
-  <text x="692" y="1056" fill="#7f1d1d" font-size="15" font-weight="700">Quarantined</text>
-  <text x="692" y="1080" fill="#44403c" font-size="13">A chain read as dangerous is stopped and isolated.</text>
-  <text x="692" y="1098" fill="#44403c" font-size="13">It is not the next brief.</text>
+  <rect x="672" y="1094" width="548" height="100" rx="8" fill="#ffffff" stroke="#7f1d1d"/>
+  <text x="692" y="1124" fill="#7f1d1d" font-size="15" font-weight="700">Quarantined</text>
+  <text x="692" y="1148" fill="#44403c" font-size="13">A chain read as dangerous is stopped and isolated.</text>
+  <text x="692" y="1166" fill="#44403c" font-size="13">It is not the next brief.</text>
 
-  <rect x="56" y="1142" width="1164" height="156" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
-  <text x="76" y="1170" fill="#1c1917" font-size="15" font-weight="700">Wipe, then a bonded redo only if the report failed</text>
-  <text x="76" y="1196" fill="#44403c" font-size="13">Once the report is filed, that agent's context, tool calling, tool cache, memory, and indices are wiped.</text>
-  <text x="76" y="1220" fill="#44403c" font-size="13">A rejected report is reattempted with a bonded agent: read-only, one-shot, and sent only to the nodes</text>
-  <text x="76" y="1238" fill="#44403c" font-size="13">that produced the failure. The whole prompt, including the delegated prompt, is hashed before dispatch.</text>
-  <text x="76" y="1266" fill="#44403c" font-size="13">A bonded report that shows the same fault is kept for forensics and is never added to memory.</text>
-  <text x="76" y="1284" fill="#44403c" font-size="13">If the workflow cannot continue without that report, the workflow fails.</text>
+  <rect x="56" y="1210" width="1164" height="156" rx="8" fill="#ffffff" stroke="#d6d3d1"/>
+  <text x="76" y="1238" fill="#1c1917" font-size="15" font-weight="700">Wipe, then a bonded redo only if the report failed</text>
+  <text x="76" y="1264" fill="#44403c" font-size="13">Once the report is filed, that agent's context, tool calling, tool cache, memory, and indices are wiped.</text>
+  <text x="76" y="1288" fill="#44403c" font-size="13">A rejected report is reattempted with a bonded agent: read-only, one-shot, and sent only to the nodes</text>
+  <text x="76" y="1306" fill="#44403c" font-size="13">that produced the failure. The whole prompt, including the delegated prompt, is hashed before dispatch.</text>
+  <text x="76" y="1334" fill="#44403c" font-size="13">A bonded report that shows the same fault is kept for forensics and is never added to memory.</text>
+  <text x="76" y="1352" fill="#44403c" font-size="13">If the workflow cannot continue without that report, the workflow fails.</text>
 </svg>

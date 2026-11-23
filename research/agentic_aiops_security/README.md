@@ -30,8 +30,8 @@ Working papers by O'Neill Joseph, November 2026. Empirical tests are left for a 
 The work is a theoretical reconstruction in three passes. The architecture note states the components. The validation paper asks whether each conclusion is entailed by those components. The critique grants the repairs already in the note and marks the joints that still need a premise. The repairs paper supplies those premises from mechanisms published since 2017: an external authorization decision before a profile is published, a policy enforcement point on the tool call, and an inspection of staged effects before reconcile.
 
 * **Approach:** Argument reconstruction. Each conclusion has to follow from a connection the architecture actually states.
-* **Core Logic:** SPIFFE/SPIRE answers who is calling and where it runs. SHAS adds the formulation (a published check value), the profile (scope and grain), the history (reputation and the Recorder), and the clock (the Bellman countdown). A finished report enters workload memory only after drift, sanitization, a direct-injection check, and a chain audit.
-* **Tech Stack:** `Markdown`, `Pandoc`, `SPIFFE/SPIRE` (the identity layer under study). Mechanisms named in the repairs: `Cedar`, `Zanzibar`, `Progent`, `in-toto`, `CaMeL`.
+* **Core Logic:** SPIFFE/SPIRE answers who is calling and where it runs. SHAS adds the formulation (a published check value over the system prompt and a long-lived capability token), the profile (scope and grain), the history (reputation and the Recorder), and the clock (the Bellman countdown). Who the work is for is a short-lived transaction token: the subject is the principal, the actor remains the agent's own workload identity, and the token is refused outside its trust domain. That token stays out of the check value. A finished report enters workload memory only after drift, sanitization, a direct-injection check, and a chain audit.
+* **Tech Stack:** `Markdown`, `Pandoc`, `SPIFFE/SPIRE` (the identity layer under study). Mechanisms named in the note and the repairs: `Cedar`, `Zanzibar`, `Progent`, `AgentGuardian`, `in-toto`, `CaMeL`, and a transaction token issued by RFC 8693 delegation for the principal a call is for.
 
 Build the working papers from the repository root:
 
@@ -59,6 +59,7 @@ HTML is written to `results/papers/`. That directory is generated and is not kep
 ├── docs/
 │   ├── architecture/      # SHAS framework note
 │   ├── figures/           # Flow, trust, minting, and execution diagrams
+│   │   └── archive/       # Original generated poster
 │   ├── papers/            # Validation, critique, and repairs
 │   └── references/        # Shared bibliography
 └── README.md
